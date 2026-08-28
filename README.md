@@ -2,10 +2,10 @@
 
 > 一个本地优先、Markdown 驱动、面向多个 AI Agent 的共享记忆核心。
 
-[English](README.en.md) · [GitHub](https://github.com/miffyblueboo/memleaf)
+[English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
 > **当前版本：v0.1（Python 包版本 0.1.0）。**
-> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。当前尚未发布到 PyPI。
+> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.1.0 已发布到 PyPI。
 > **v0.1 仅支持 Hermes。** Codex 与反重力不检测、不安装、不配置，也不扫描其模型配置。
 
 ## 项目定位
@@ -82,13 +82,21 @@ memleaf 不把每句话都保存为记忆。处理一轮完整的 user + assista
 
 ## 安装
 
-当前版本从 GitHub 源码安装，尚未发布到 PyPI。新安装使用以下命令；已有源码目录时跳过 `git clone`，先确认源码为 v0.1。默认路径是 `$HOME/memleaf`，不增加 `work` 层：
+memleaf 0.1.0 已发布到 PyPI。若只需要核心库、Python API、CLI 和 MCP Server，可直接安装：
+
+```bash
+python -m pip install memleaf
+```
+
+PyPI wheel 提供核心库、`memleaf` / `memleaf-mcp` 命令和 MCP Server，但 **不会执行完整 Hermes 宿主接入**。v0.1 如需自动安装并激活 Hermes MemoryProvider、配置 MCP、发现模型路由和初始化默认 Vault，仍推荐使用 GitHub 源码中的 `install.sh`：
 
 ```bash
 git clone --branch v0.1 --depth 1 https://github.com/miffyblueboo/memleaf.git "$HOME/memleaf"
 cd "$HOME/memleaf"
 ./install.sh
 ```
+
+已有源码目录时跳过 `git clone`，先确认源码为 v0.1。完整 Hermes 安装默认路径是 `$HOME/memleaf`，不增加 `work` 层。
 
 默认安装位置：
 
@@ -381,7 +389,7 @@ python -m build --wheel --sdist
 
 以下内容不应被 README 或安装结果误解为已交付能力：
 
-- 尚未发布 PyPI 正式包；
+- PyPI 包提供核心库、CLI 和 MCP Server；完整 Hermes 自动接入仍需使用源码中的 `install.sh`；
 - v0.1 仅支持 Hermes；Codex 和 Antigravity（反重力）不检测、不安装、不配置；
 - Hermes 的检索门控是 Soft Gate，不保证阻止所有未检索回答；
 - 没有模型路由时只能捕获和检索，不能完成自动提炼、显式记忆或压缩；
