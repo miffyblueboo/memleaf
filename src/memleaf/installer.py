@@ -72,7 +72,7 @@ def _copy_provider(hermes_home: Path) -> Path:
         target.unlink()
     plugins.mkdir(parents=True, exist_ok=True)
 
-    package = resources.files("memleaf.hermes_provider")
+    package = resources.files("memleaf").joinpath("hermes_provider")
     required = ("__init__.py", "plugin.yaml", "README.md")
     with tempfile.TemporaryDirectory(prefix=".memleaf-provider-", dir=plugins) as temp_name:
         staging = Path(temp_name)
