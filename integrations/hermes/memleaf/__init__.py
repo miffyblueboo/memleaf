@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import re
-import select
+import queue
 import shutil
 import subprocess
 import threading
@@ -86,6 +86,7 @@ _MODEL_VALIDATION_DETAILS = frozenset(
 )
 _CALL_FAILED = object()
 _MISSING_TOOL_RESULT = object()
+_MCP_PIPE_EOF = object()
 _MAX_TOOL_RESULT_CHARS = 64 * 1024
 _MAX_TOOL_RESULT_LAYERS = 4
 _UNTRUSTED_TOOL_RESULT_TAG = "<untrusted_tool_result"
@@ -803,6 +804,8 @@ class _MCPClient:
             _MAX_PROCESS_TIMEOUT,
         )
         self._process: Optional[subprocess.Popen[str]] = None
+        self._stdout_queue: Optional[queue.Queue[object]] = None
+        self._stdout_thread: Optional[threading.Thread] = None
         self._next_id = 1
         self._lock = threading.RLock()
 
@@ -818,6 +821,36 @@ class _MCPClient:
             return str(known)
         raise FileNotFoundError("memleaf-mcp executable is unavailable")
 
+    def _start_stdout_reader_locked(self, process: subprocess.Popen[str]) -> None:
+        """Read child stdout on a thread so Windows pipes can use timeouts."""
+
+        output_queue: queue.Queue[object] = queue.Queue()
+        self._stdout_queue = output_queue
+
+        def reader() -> None:
+            stream = process.stdout
+            if stream is None:
+                output_queue.put(_MCP_PIPE_EOF)
+                return
+            try:
+                while True:
+                    line = stream.readline()
+                    if not line:
+                        break
+                    output_queue.put(line)
+            except (OSError, ValueError):
+                pass
+            finally:
+                output_queue.put(_MCP_PIPE_EOF)
+
+        thread = threading.Thread(
+            target=reader,
+            name="memleaf-mcp-stdout",
+            daemon=True,
+        )
+        self._stdout_thread = thread
+        thread.start()
+
     def _start_locked(self) -> None:
         if self._process is not None and self._process.poll() is None:
             return
@@ -830,6 +863,7 @@ class _MCPClient:
             text=True,
             bufsize=1,
         )
+        self._start_stdout_reader_locked(self._process)
         self._request_locked(
             "initialize",
             {
@@ -847,19 +881,22 @@ class _MCPClient:
         self._process.stdin.flush()
 
     def _read_response_locked(self, request_id: int, timeout: Optional[float] = None) -> dict[str, Any]:
-        if self._process is None or self._process.stdout is None:
+        if self._process is None or self._stdout_queue is None:
             raise RuntimeError("memleaf MCP process is not running")
+        output_queue = self._stdout_queue
         deadline = time.monotonic() + (timeout if timeout is not None else self.timeout)
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("memleaf MCP request timed out")
-            ready, _, _ = select.select([self._process.stdout], [], [], remaining)
-            if not ready:
-                raise TimeoutError("memleaf MCP request timed out")
-            line = self._process.stdout.readline()
-            if not line:
+            try:
+                line = output_queue.get(timeout=remaining)
+            except queue.Empty as error:
+                raise TimeoutError("memleaf MCP request timed out") from error
+            if line is _MCP_PIPE_EOF:
                 raise RuntimeError("memleaf MCP process exited unexpectedly")
+            if not isinstance(line, str):
+                continue
             try:
                 message = json.loads(line)
             except ValueError:
@@ -885,7 +922,10 @@ class _MCPClient:
 
     def _close_locked(self) -> None:
         process = self._process
+        thread = self._stdout_thread
         self._process = None
+        self._stdout_queue = None
+        self._stdout_thread = None
         if process is None:
             return
         if process.stdin is not None:
@@ -900,6 +940,13 @@ class _MCPClient:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=1.0)
+        if process.stdout is not None:
+            try:
+                process.stdout.close()
+            except OSError:
+                pass
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
 
     def close(self) -> None:
         with self._lock:

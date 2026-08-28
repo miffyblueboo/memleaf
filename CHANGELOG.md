@@ -2,6 +2,20 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.1.5 — 2026-08-29
+
+- Fixed the Hermes MemoryProvider stdio client on Windows by replacing
+  `select.select()` on subprocess pipes with a background stdout reader and
+  timeout-aware queue.
+- Added a real cross-platform Provider → `memleaf-mcp` integration test that
+  exercises `stats`, `scope_catalog`, and visible-turn `capture` through
+  the actual stdio subprocess boundary.
+- Windows CI now runs the real Hermes provider transport acceptance test on
+  Python 3.11, 3.12, and 3.13.
+- Kept provider tool registration intentionally empty: the MemoryProvider owns
+  automatic recall/capture/process while the separately configured MCP server
+  owns the 11 deliberate tools.
+
 ## 0.1.4 — 2026-08-28
 
 - Reject Hermes display-redacted API credentials such as `***` and head/tail masks instead of treating them as callable keys.
