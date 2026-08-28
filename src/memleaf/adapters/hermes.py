@@ -83,6 +83,7 @@ class HermesAdapter:
         path: str | Sequence[str] | None = None,
         memleaf_command: Path | str | None = None,
         hermes_home: Path | str | None = None,
+        platform: str | None = None,
     ) -> None:
         if runner is not None and command_runner is not None:
             raise ValueError("provide runner or command_runner, not both")
@@ -94,8 +95,11 @@ class HermesAdapter:
                 path if isinstance(path, str) else os.pathsep.join(path)
             )
         self.runner = runner or command_runner
+        self.platform = os.name if platform is None else platform
         if hermes_home is None:
-            self.hermes_home = hermes_home_for_platform(self.home, self.env)
+            self.hermes_home = hermes_home_for_platform(
+                self.home, self.env, platform=self.platform
+            )
         else:
             configured_home = Path(hermes_home).expanduser()
             if not configured_home.is_absolute():
@@ -121,7 +125,9 @@ class HermesAdapter:
 
     @property
     def known_executables(self) -> tuple[Path, ...]:
-        return hermes_known_executables(self.home, self.hermes_home)
+        return hermes_known_executables(
+            self.home, self.hermes_home, platform=self.platform
+        )
 
     def detect(self) -> Detection:
         config = self.config_path
