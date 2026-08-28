@@ -1,8 +1,9 @@
 $ErrorActionPreference = "Stop"
 
 function Invoke-MemleafPython {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
-    & $script:MemleafPython @script:MemleafPythonPrefix @Arguments
+    param([Parameter(Mandatory = $true)][string[]]$PythonArgs)
+
+    & $script:MemleafPython @script:MemleafPythonPrefix @PythonArgs
     if ($LASTEXITCODE -ne 0) {
         throw "Python command failed with exit code $LASTEXITCODE"
     }
@@ -37,22 +38,43 @@ if (Test-Path -LiteralPath $managedPython -PathType Leaf) {
     }
 }
 
-Invoke-MemleafPython -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)"
+Invoke-MemleafPython -PythonArgs @(
+    "-c",
+    "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)"
+)
 
 $oldHermesHome = $env:HERMES_HOME
 try {
     $env:HERMES_HOME = $hermesHome
 
-    & $script:MemleafPython @script:MemleafPythonPrefix -m pip --version *> $null
-    if ($LASTEXITCODE -ne 0) {
-        Invoke-MemleafPython -m ensurepip --upgrade
+    Write-Host "Installing memleaf from PyPI..."
+
+    $managedUv = Join-Path $hermesHome "bin\uv.exe"
+    $uvCommand = $null
+    if (Test-Path -LiteralPath $managedUv -PathType Leaf) {
+        $uvCommand = $managedUv
+    } else {
+        $foundUv = Get-Command uv -ErrorAction SilentlyContinue
+        if ($foundUv) {
+            $uvCommand = $foundUv.Source
+        }
     }
 
-    Write-Host "Installing memleaf from PyPI..."
-    Invoke-MemleafPython -m pip install --upgrade memleaf
+    if ($uvCommand) {
+        & $uvCommand pip install --python $script:MemleafPython --upgrade memleaf
+        if ($LASTEXITCODE -ne 0) {
+            throw "uv could not install memleaf (exit code $LASTEXITCODE)"
+        }
+    } else {
+        & $script:MemleafPython @script:MemleafPythonPrefix -m pip --version *> $null
+        if ($LASTEXITCODE -ne 0) {
+            Invoke-MemleafPython -PythonArgs @("-m", "ensurepip", "--upgrade")
+        }
+        Invoke-MemleafPython -PythonArgs @("-m", "pip", "install", "--upgrade", "memleaf")
+    }
 
     Write-Host "Configuring Hermes to use memleaf..."
-    Invoke-MemleafPython -m memleaf install
+    Invoke-MemleafPython -PythonArgs @("-m", "memleaf", "install")
 
     Write-Host ""
     Write-Host "memleaf is installed and configured for Hermes."
