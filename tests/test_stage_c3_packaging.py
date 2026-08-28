@@ -30,7 +30,7 @@ class StageC3PackagingTests(unittest.TestCase):
         self.assertEqual(self.project["license"], "MIT")
         self.assertEqual(self.project["license-files"], ["LICENSE"])
         self.assertNotIn("Development Status :: 3 - Alpha", self.project["classifiers"])
-        self.assertIn("License :: OSI Approved :: MIT License", self.project["classifiers"])
+        self.assertNotIn("License :: OSI Approved :: MIT License", self.project["classifiers"])
         self.assertNotIn("dynamic", self.project)
 
         import memleaf
