@@ -24,6 +24,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from .adapters.base import CommandRunner, adapter_environment, adapter_home, run_argv
+from .adapters.hermes import HermesAdapter
 from .config import DEFAULT_REQUEST_TIMEOUT, load_config, save_config
 
 
@@ -479,8 +480,12 @@ def discover_hermes(
 
     effective_home = adapter_home(home)
     environment = adapter_environment(env)
-    hermes_home = _configured_directory(effective_home, environment.get("HERMES_HOME"), ".hermes")
-    command = executable or shutil.which("hermes", path=environment.get("PATH"))
+    adapter = HermesAdapter(home=effective_home, env=environment)
+    hermes_home = adapter.hermes_home
+    command = executable
+    if command is None:
+        detection = adapter.detect()
+        command = detection.executable if detection.confidence == "high" else None
     if command is None:
         return [], ["hermes: executable not found"]
     dotenv = _hermes_env_path(command, hermes_home=hermes_home, env=environment, runner=runner)
