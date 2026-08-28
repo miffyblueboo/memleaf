@@ -1,0 +1,33 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build and coverage output
+build/
+dist/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local operating-system files
+.DS_Store
+.idea/
+
+# Local configuration and runtime data
+.env
+.env.*
+!.env.example
+.memleaf/
+*.log
+
+# Local acceptance evidence and private-vault cleanup notes
+HERMES_MCP_R3_ACCEPTANCE.md
+MEMORY_CLEANUP_CANDIDATES.md
