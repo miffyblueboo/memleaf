@@ -66,7 +66,7 @@ jobs:
   release:
     needs: [test, build]
     if: >-
-      github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.head_commit.message == 'release: v0.1'
+      github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release: v0.1.1')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -78,19 +78,19 @@ jobs:
         with:
           name: memleaf-distributions
           path: dist/
-      - name: Publish v0.1 without replacing any existing release
+      - name: Publish v0.1.1 without replacing any existing release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          test -f dist/memleaf-0.1.0-py3-none-any.whl
-          test -f dist/memleaf-0.1.0.tar.gz
-          (cd dist && sha256sum memleaf-0.1.0-py3-none-any.whl memleaf-0.1.0.tar.gz > SHA256SUMS)
-          gh release create v0.1 \
+          test -f dist/memleaf-0.1.1-py3-none-any.whl
+          test -f dist/memleaf-0.1.1.tar.gz
+          (cd dist && sha256sum memleaf-0.1.1-py3-none-any.whl memleaf-0.1.1.tar.gz > SHA256SUMS)
+          gh release create v0.1.1 \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "memleaf v0.1 — Hermes" \
-            --notes-file RELEASE_NOTES_v0.1.md \
+            --title "memleaf v0.1.1 — one-line Hermes setup" \
+            --notes-file RELEASE_NOTES_v0.1.1.md \
             --latest \
-            dist/memleaf-0.1.0-py3-none-any.whl \
-            dist/memleaf-0.1.0.tar.gz \
+            dist/memleaf-0.1.1-py3-none-any.whl \
+            dist/memleaf-0.1.1.tar.gz \
             dist/SHA256SUMS
