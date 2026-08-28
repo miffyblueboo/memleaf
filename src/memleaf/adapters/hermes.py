@@ -27,6 +27,47 @@ _MCP_IDLE_TIMEOUT_SECONDS = 60
 _MCP_EXPECTED_TOOL_COUNT = 11
 
 
+def hermes_home_for_platform(
+    home: Path,
+    env: Mapping[str, str],
+    *,
+    platform: str | None = None,
+) -> Path:
+    """Resolve Hermes' data/config home using the host's official defaults."""
+
+    raw = env.get("HERMES_HOME")
+    if raw:
+        configured = Path(raw).expanduser()
+        if not configured.is_absolute():
+            configured = home / configured
+        return configured.resolve()
+
+    effective_platform = os.name if platform is None else platform
+    if effective_platform == "nt":
+        local_appdata = env.get("LOCALAPPDATA")
+        if local_appdata:
+            return (Path(local_appdata).expanduser() / "hermes").resolve()
+    return (home / ".hermes").resolve()
+
+
+def hermes_known_executables(
+    home: Path,
+    hermes_home: Path,
+    *,
+    platform: str | None = None,
+) -> tuple[Path, ...]:
+    """Return official Hermes launcher locations in preference order."""
+
+    effective_platform = os.name if platform is None else platform
+    if effective_platform == "nt":
+        return (
+            hermes_home / "bin" / "hermes.exe",
+            hermes_home / "hermes-agent" / "venv" / "Scripts" / "hermes.exe",
+            hermes_home / "bin" / "hermes.cmd",
+        )
+    return (home / ".local" / "bin" / "hermes",)
+
+
 class HermesAdapter:
     """Use Hermes' CLI and read-only diagnostics instead of rewriting YAML."""
 
@@ -53,11 +94,10 @@ class HermesAdapter:
                 path if isinstance(path, str) else os.pathsep.join(path)
             )
         self.runner = runner or command_runner
-        raw_hermes_home = hermes_home if hermes_home is not None else self.env.get("HERMES_HOME")
-        if raw_hermes_home is None:
-            self.hermes_home = self.home / ".hermes"
+        if hermes_home is None:
+            self.hermes_home = hermes_home_for_platform(self.home, self.env)
         else:
-            configured_home = Path(raw_hermes_home).expanduser()
+            configured_home = Path(hermes_home).expanduser()
             if not configured_home.is_absolute():
                 configured_home = self.home / configured_home
             self.hermes_home = configured_home.resolve()
@@ -75,12 +115,18 @@ class HermesAdapter:
 
     @property
     def known_executable(self) -> Path:
-        return self.home / ".local" / "bin" / "hermes"
+        """Backward-compatible first known launcher path."""
+
+        return self.known_executables[0]
+
+    @property
+    def known_executables(self) -> tuple[Path, ...]:
+        return hermes_known_executables(self.home, self.hermes_home)
 
     def detect(self) -> Detection:
         config = self.config_path
         executable = resolve_executable(
-            "hermes", env=self.env, known_paths=(self.known_executable,)
+            "hermes", env=self.env, known_paths=self.known_executables
         )
         config_value = str(config)
         if executable is not None:
