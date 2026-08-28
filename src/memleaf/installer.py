@@ -25,8 +25,17 @@ from .vault import Vault
 _EXPECTED_TOOLS = 11
 
 
-def _hermes_home(home: Path) -> Path:
-    return hermes_home_for_platform(home, os.environ)
+def _hermes_home(
+    home: Path,
+    *,
+    env: dict[str, str] | None = None,
+    platform: str | None = None,
+) -> Path:
+    return hermes_home_for_platform(
+        home,
+        os.environ if env is None else env,
+        platform=platform,
+    )
 
 
 def _memleaf_mcp_command() -> Path:
