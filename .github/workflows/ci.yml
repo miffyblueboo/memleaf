@@ -49,8 +49,16 @@ jobs:
           python -m pip install .
       - name: Compile source and tests
         run: python -m compileall -q src tests examples
-      - name: Run unittest suite
-        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Run Windows installation tests
+        run: |
+          python -m unittest discover -s tests -p 'test_pypi_install.py' -v
+          python -m unittest discover -s tests -p 'test_stage_c3_packaging.py' -v
+      - name: Smoke-test installed commands and Vault
+        shell: pwsh
+        run: |
+          memleaf --version
+          memleaf-mcp --version
+          python -c "from pathlib import Path; import tempfile; from memleaf import Memleaf; d=tempfile.TemporaryDirectory(); m=Memleaf.initialize(Path(d.name)/'vault'); assert m.stats()['knowledge'] == 0; d.cleanup()"
       - name: Validate PowerShell installer syntax
         shell: pwsh
         run: |
