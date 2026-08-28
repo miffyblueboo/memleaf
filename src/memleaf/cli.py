@@ -18,6 +18,7 @@ from .adapters.base import (
     update_agents_index,
 )
 from .adapters.hermes import HermesAdapter
+from .credentials import credential_text
 from .config import load_config
 from .model_discovery import ModelCandidate, discover_models, manual_candidate, write_model_config
 from .vault import Vault
@@ -309,11 +310,15 @@ def _existing_memleaf_route(path: Path) -> ModelCandidate | None:
     llm = config.get("llm")
     if not isinstance(llm, dict):
         return None
-    key = llm.get("api_key")
-    if not isinstance(key, str) or not key.strip():
+    key = credential_text(llm.get("api_key"))
+    if key is None:
         env_name = llm.get("api_key_env")
-        key = os.environ.get(env_name) if isinstance(env_name, str) and env_name.strip() else None
-    if not isinstance(key, str) or not key.strip():
+        key = credential_text(
+            os.environ.get(env_name)
+            if isinstance(env_name, str) and env_name.strip()
+            else None
+        )
+    if key is None:
         return None
     try:
         return ModelCandidate(
