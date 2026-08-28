@@ -16,7 +16,7 @@ import tempfile
 from typing import Any
 
 from .adapters.base import update_agents_index
-from .adapters.hermes import HermesAdapter
+from .adapters.hermes import HermesAdapter, hermes_home_for_platform
 from .cli import _home_from_environment, _prepare_model_route
 from .locking import atomic_write_json
 from .vault import Vault
@@ -26,11 +26,7 @@ _EXPECTED_TOOLS = 11
 
 
 def _hermes_home(home: Path) -> Path:
-    raw = os.environ.get("HERMES_HOME")
-    if not raw:
-        return home / ".hermes"
-    value = Path(raw).expanduser()
-    return (value if value.is_absolute() else home / value).resolve()
+    return hermes_home_for_platform(home, os.environ)
 
 
 def _memleaf_mcp_command() -> Path:
@@ -105,7 +101,7 @@ def _copy_provider(hermes_home: Path) -> Path:
     return target
 
 
-def _write_provider_config(path: Path, command: Path) -> None:
+def _write_provider_config(path: Path, command: Path, vault: Path) -> None:
     if path.is_symlink():
         raise RuntimeError(f"refusing to write symlinked Hermes config: {path}")
     value: dict[str, Any] = {}
@@ -121,7 +117,7 @@ def _write_provider_config(path: Path, command: Path) -> None:
         value.update(parsed)
     value.update(
         {
-            "vault": "~/.memleaf",
+            "vault": str(vault.expanduser().resolve()),
             "command": str(command),
             "timeout": 5,
             "process_timeout": 300,
@@ -190,7 +186,7 @@ def install_hermes(*, vault_path: Path | None = None) -> dict[str, Any]:
 
     command = _memleaf_mcp_command()
     provider_path = _copy_provider(hermes_home)
-    _write_provider_config(hermes_home / "memleaf.json", command)
+    _write_provider_config(hermes_home / "memleaf.json", command, vault.root)
 
     activated = _run([detection.executable, "config", "set", "memory.provider", "memleaf"])
     if activated.returncode != 0 or not _verify_provider(detection.executable):
