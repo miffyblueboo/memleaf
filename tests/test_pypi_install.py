@@ -70,6 +70,18 @@ class PyPIInstallTests(unittest.TestCase):
                 ),
             )
 
+            launcher = expected / "bin" / "hermes.exe"
+            launcher.parent.mkdir(parents=True)
+            launcher.write_bytes(b"fake Windows launcher")
+            try:
+                launcher.chmod(0o755)
+            except OSError:
+                pass
+            detection = adapter.detect()
+            self.assertTrue(detection.detected)
+            self.assertEqual("high", detection.confidence)
+            self.assertEqual(str(launcher.resolve()), detection.executable)
+
     def test_provider_config_uses_absolute_vault_on_all_platforms(self) -> None:
         with tempfile.TemporaryDirectory(prefix="memleaf-provider-config-") as temporary:
             root = Path(temporary)
