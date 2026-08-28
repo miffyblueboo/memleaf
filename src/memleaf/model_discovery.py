@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 from .adapters.base import CommandRunner, adapter_environment, adapter_home, run_argv
 from .adapters.hermes import HermesAdapter
 from .config import DEFAULT_REQUEST_TIMEOUT, load_config, save_config
+from .credentials import credential_text, is_redacted_credential
 
 
 _DEFAULT_CONTEXT_WINDOW = 200_000
@@ -326,8 +327,9 @@ def _dotenv_value(path: Path, name: str) -> str | None:
         # A dotenv file may contain an intentionally empty declaration before
         # the real value (Hermes' generated file can do this).  Keep looking
         # instead of treating the empty declaration as authoritative.
-        if value:
-            return value
+        usable = credential_text(value)
+        if usable:
+            return usable
     return None
 
 
@@ -339,22 +341,26 @@ def _candidate_key(
     dotenv: Path | None = None,
     extra_env: Mapping[str, Any] | None = None,
 ) -> tuple[str | None, str]:
+    saw_redacted = False
     for key_name in ("api_key", "apiKey", "token", "bearer_token", "experimental_bearer_token"):
         raw = item.get(key_name)
         reference = _env_reference(raw)
         if reference:
-            value = env.get(reference)
+            value = credential_text(env.get(reference))
             if not value and extra_env:
-                value = _safe_text(extra_env.get(reference))
+                value = credential_text(extra_env.get(reference))
             if not value and dotenv:
-                value = _dotenv_value(dotenv, reference)
+                value = credential_text(_dotenv_value(dotenv, reference))
             if value:
                 return value, "environment"
-        elif isinstance(raw, str) and raw.strip():
-            return raw.strip(), "direct"
+        else:
+            direct = credential_text(raw)
+            if direct:
+                return direct, "direct"
+            saw_redacted = saw_redacted or is_redacted_credential(raw)
 
     env_name = None
-    for key_name in ("api_key_env", "apiKeyEnv", "env_key", "envKey", "token_env"):
+    for key_name in ("api_key_env", "apiKeyEnv", "env_key", "envKey", "key_env", "token_env"):
         env_name = _safe_text(item.get(key_name))
         if env_name:
             break
@@ -369,12 +375,14 @@ def _candidate_key(
                 env_name = guessed
     if env_name is None or not _ENV_NAME_RE.fullmatch(env_name):
         return None, "missing"
-    value = env.get(env_name)
+    value = credential_text(env.get(env_name))
     if not value and extra_env:
-        value = _safe_text(extra_env.get(env_name))
+        value = credential_text(extra_env.get(env_name))
     if not value and dotenv:
-        value = _dotenv_value(dotenv, env_name)
-    return (value, "environment") if value else (None, "missing")
+        value = credential_text(_dotenv_value(dotenv, env_name))
+    if value:
+        return value, "environment"
+    return None, "redacted" if saw_redacted else "missing"
 
 
 def _candidate(
@@ -402,7 +410,11 @@ def _candidate(
         return None, "invalid or missing base URL"
     key, key_source = _candidate_key(item, provider=provider_text, env=env, dotenv=dotenv, extra_env=extra_env)
     if key is None:
-        return None, "missing API credential"
+        return None, (
+            "API credential was redacted and no usable environment credential was found"
+            if key_source == "redacted"
+            else "missing API credential"
+        )
     try:
         built = ModelCandidate(
             source=source,
