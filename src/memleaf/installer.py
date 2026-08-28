@@ -7,6 +7,7 @@ import os
 from importlib import resources
 from pathlib import Path
 import shutil
+import site
 import stat
 import subprocess
 import sys
@@ -34,8 +35,10 @@ def _hermes_home(home: Path) -> Path:
 
 def _memleaf_mcp_command() -> Path:
     name = "memleaf-mcp.exe" if os.name == "nt" else "memleaf-mcp"
+    user_scripts = Path(site.USER_BASE) / ("Scripts" if os.name == "nt" else "bin")
     candidates = [
         Path(sysconfig.get_path("scripts")) / name,
+        user_scripts / name,
     ]
     found = shutil.which("memleaf-mcp")
     if found:
@@ -58,7 +61,15 @@ def _copy_provider(hermes_home: Path) -> Path:
     if plugins.exists() and (plugins.is_symlink() or not plugins.is_dir()):
         raise RuntimeError(f"unsafe Hermes plugin directory: {plugins}")
     if target.is_symlink():
-        raise RuntimeError(f"refusing symlinked Hermes provider path: {target}")
+        try:
+            old_target = target.resolve(strict=True)
+            old_manifest = old_target / "plugin.yaml"
+            old_text = old_manifest.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            raise RuntimeError(f"refusing unverified symlinked Hermes provider path: {target}") from error
+        if "name: memleaf" not in old_text:
+            raise RuntimeError(f"refusing non-memleaf Hermes provider symlink: {target}")
+        target.unlink()
     plugins.mkdir(parents=True, exist_ok=True)
 
     package = resources.files("memleaf.hermes_provider")
