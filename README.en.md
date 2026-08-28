@@ -4,9 +4,9 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: v0.1.1 (Python package version 0.1.1).**
+> **Version: 0.1.1.**
 > The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.1.1 is published on PyPI.
-> **v0.1 supports only Hermes.** Codex and Antigravity are not detected, installed, configured, or scanned for models.
+> **The current release supports only Hermes.** Codex and Antigravity are not detected, installed, configured, or scanned for models.
 
 ## Project scope
 
@@ -19,7 +19,7 @@ memleaf stores an AI agent's long-term memory as local Markdown files owned by t
 - A local stdio MCP server provides deliberate retrieval, reading, and maintenance operations.
 - The runtime uses only the Python standard library and requires Python 3.11 or newer.
 
-memleaf does not automatically put the entire Vault or a whole conversation history into the model context. The current v2 automatic path is “Scope Map → candidate directory → controlled body reads.”
+memleaf does not automatically put the entire Vault or a whole conversation history into the model context. Automatic retrieval follows “Scope Map → candidate directory → controlled body reads.”
 
 ## Current workflow
 
@@ -58,7 +58,7 @@ Current limits:
 - managed turn: at most 3 distinct memory IDs and 6,000 body characters in total;
 - `retrieval_id` must belong to the current turn, and a successful `search` is required before `read`;
 - `found`, `no_match`, and tool errors are distinct states; an error must not be reported as no match;
-- legacy `context()` and Python `search(view="full")` remain available for compatibility, but are not part of the new automatic injection path.
+- `context()` and Python `search(view="full")` remain available for compatibility, but are not part of the automatic retrieval path.
 
 Hermes uses a native MemoryProvider for lifecycle handling and obtains the Scope Map through MCP; its retrieval gate is a Soft Gate and cannot promise to block every answer that skipped retrieval.
 
@@ -82,7 +82,7 @@ Additional rules:
 
 ## Installation
 
-Requirements: Python 3.11+; v0.1.1 full automatic host setup supports Hermes only.
+Requirements: Python 3.11+; full automatic host setup currently supports Hermes only.
 
 For normal users, copy and run this single line:
 
@@ -125,7 +125,7 @@ If the Hermes executable is unavailable, no complete model route can be configur
 
 The repository `install.sh` remains available for source development, offline source installation, and troubleshooting; **normal PyPI users do not need to run it**.
 
-Codex and Antigravity are outside v0.1.1's supported host scope. The install flow does not detect, install, or modify their MCP, hook, or model configuration.
+Codex and Antigravity are not currently supported. The install flow does not detect, install, or modify their MCP, hook, or model configuration.
 
 ### Advanced initialization commands (optional)
 
@@ -193,7 +193,7 @@ The server currently exposes 11 tools:
 | Tool | Purpose |
 | --- | --- |
 | `capture` | Capture one explicitly supplied visible conversation event into the inbox |
-| `context` | Bounded legacy directory; not used by v2 automatic injection |
+| `context` | Compatibility directory; not used by the automatic retrieval path |
 | `scope_catalog` | Return Scopes, parents, and aliases without memory bodies |
 | `search` | Return a bounded candidate directory and `found`/`no_match` status |
 | `read` | Read a selected memory body in pages using the current `retrieval_id` |
@@ -353,7 +353,7 @@ Directories are normally created with mode `0700`, and files are stored as plain
 - Path validation, symlink checks, Vault locks, same-directory temporary files, fsync, and atomic replacement protect local writes.
 - memleaf does not upload the entire Vault and has no hosted backend, telemetry, or account system.
 - If an API or cloud model is selected, model-processing input leaves the machine and is sent to that provider.
-- Legacy `context()` and clients without a host-bound retrieval turn only have per-page limits; they cannot claim v2 cross-turn hard budgets.
+- `context()` and clients without a host-bound retrieval turn only have per-page limits; they cannot claim cross-turn hard budgets.
 
 ## Development and verification
 
@@ -365,37 +365,26 @@ python3.11 -m compileall -q src tests examples
 git diff --check
 ```
 
-The v0.1.1 GitHub Actions release pipeline passed Python 3.11, 3.12, and 3.13 tests, wheel/source-distribution builds, and tests from the source archive. Build packages with:
+GitHub Actions passed Python 3.11, 3.12, and 3.13 tests, wheel/source-distribution builds, and tests from the source archive. Build packages with:
 
 ```bash
 python -m pip install build
 python -m build --wheel --sdist
 ```
 
-## Roadmap
-
-- **v0.2: add Codex support**, retaining the shared Vault, Scope Map, and on-demand reading design.
-- More Agent tools will follow gradually, using each host's official integration and authorization mechanisms and opening support after verification.
-- These are future plans, not v0.1 capabilities; no release date is promised yet.
 
 ## Current boundaries
 
 The following should not be interpreted as delivered capabilities:
 
-- The v0.1.1 PyPI flow can complete Hermes integration from one command line; the source `install.sh` remains only for development, offline source installation, and troubleshooting.
-- v0.1 supports only Hermes. Codex and Antigravity are not detected, installed, or configured.
+- The PyPI flow can complete Hermes integration from one command line; the source `install.sh` remains only for development, offline source installation, and troubleshooting.
+- The current release supports only Hermes. Codex and Antigravity are not detected, installed, or configured.
 - Hermes retrieval gating is a Soft Gate and does not guarantee that every answer performed retrieval.
 - Without a model route, memleaf can capture and retrieve but cannot perform automatic extraction, explicit model-backed memory, or compaction.
 - Long-running real-host behavior still depends on the local Agent version, configuration, restart, and model availability.
 - There is no Obsidian plugin, web management UI, cloud sync, or transparent encryption layer.
 - Routine retrieval never performs batch history cleanup; deletion requires an explicit maintenance operation.
 
-Design and staged implementation notes:
-
-- [v0.1 release checks](RELEASE_CHECKLIST.md)
-- [V2 implementation plan](V2_IMPLEMENTATION_PLAN.md)
-- [Historical implementation plan](IMPLEMENTATION_PLAN.md)
-- [Examples](examples/README.md)
 
 ## License
 
