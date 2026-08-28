@@ -134,7 +134,7 @@ jobs:
           gh release create v0.1.5 \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "memleaf 0.1.4 — credential-safe Hermes discovery" \
+            --title "memleaf 0.1.5 — Windows Hermes stdio transport" \
             --notes-file RELEASE_NOTES_0.1.5.md \
             --latest \
             dist/memleaf-0.1.5-py3-none-any.whl \
