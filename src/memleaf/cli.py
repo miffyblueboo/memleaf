@@ -49,6 +49,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip host model discovery (an existing memleaf route is still preserved)",
     )
+    install = commands.add_parser(
+        "install",
+        help="fully install and configure memleaf for Hermes",
+    )
+    install.add_argument("--vault", type=Path, default=None, help="vault directory")
+    install.add_argument("--json", action="store_true", help="emit one JSON result")
     host_event = commands.add_parser(
         "host-event",
         help="legacy lifecycle compatibility entry (not installed in v0.1)",
@@ -65,6 +71,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "init":
             output = _init(args)
+        elif args.command == "install":
+            from .installer import install_hermes
+            output = install_hermes(vault_path=args.vault)
         elif args.command == "host-event":
             output = _host_event(args)
         else:  # pragma: no cover - argparse requires a known subcommand.
@@ -89,6 +98,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "host-event":
         print(json.dumps(output, ensure_ascii=False, separators=(",", ":")))
         return 0
+    if args.command == "install":
+        if args.json:
+            print(json.dumps(output, ensure_ascii=False, sort_keys=True))
+        elif output.get("status") == "configured":
+            print(f"memleaf installed for Hermes: {output['vault']}")
+            print("Restart Hermes to use memleaf.")
+        else:
+            print(f"memleaf install failed: {output.get('reason', 'unknown error')}", file=sys.stderr)
+        return 0 if output.get("status") == "configured" else 2
     if args.json:
         print(json.dumps(output, ensure_ascii=False, sort_keys=True))
     else:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memleaf"
-version = "0.1.0"
+version = "0.1.1"
 description = "A local-first Markdown memory core for AI agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,3 +29,6 @@ memleaf = "memleaf.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"memleaf.hermes_provider" = ["plugin.yaml", "README.md"]

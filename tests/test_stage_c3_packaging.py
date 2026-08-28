@@ -24,7 +24,7 @@ class StageC3PackagingTests(unittest.TestCase):
 
     def test_project_metadata_and_version_export(self) -> None:
         self.assertEqual(self.project["name"], "memleaf")
-        self.assertEqual(self.project["version"], "0.1.0")
+        self.assertEqual(self.project["version"], "0.1.1")
         self.assertEqual(self.project["requires-python"], ">=3.11")
         self.assertEqual(self.project["dependencies"], [])
         self.assertEqual(self.project["license"], "MIT")
@@ -46,6 +46,9 @@ class StageC3PackagingTests(unittest.TestCase):
                 "memleaf-mcp": "memleaf.mcp_server:main",
             },
         )
+        package_data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["setuptools"]["package-data"]
+        self.assertIn("plugin.yaml", package_data["memleaf.hermes_provider"])
+        self.assertIn("README.md", package_data["memleaf.hermes_provider"])
 
     def test_cli_version_matches_package_version(self) -> None:
         environment = os.environ.copy()
