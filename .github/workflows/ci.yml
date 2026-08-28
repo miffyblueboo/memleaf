@@ -52,7 +52,7 @@ jobs:
       - name: Run Windows installation tests
         run: |
           python -m unittest discover -s tests -p 'test_pypi_install.py' -v
-          python -m unittest discover -s tests -p 'test_model_discovery.py' -v
+          python -m unittest discover -s tests -p 'test_credential_safety.py' -v
           python -m unittest discover -s tests -p 'test_stage_c3_packaging.py' -v
       - name: Smoke-test installed commands and Vault
         shell: pwsh
