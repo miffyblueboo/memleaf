@@ -1,0 +1,19 @@
+name: Repair v0.1.5 release title
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.event.head_commit.message == 'chore: repair v0.1.5 release display title'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Correct GitHub Release display title
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit v0.1.5             --repo "$GITHUB_REPOSITORY"             --title "memleaf 0.1.5 — Windows Hermes stdio transport"
