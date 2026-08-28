@@ -18,6 +18,7 @@ from .base import (
 from .claude_compatible import ClaudeCompatibleBackend
 from .gemini import GeminiBackend
 from .openai_compatible import OpenAICompatibleBackend
+from ..credentials import credential_text
 
 
 _JSON_MODE_PROVIDERS = frozenset({"openai", "deepseek"})
@@ -75,7 +76,7 @@ class ModelRouter:
         protocol = str(config.get("protocol", "openai")).casefold()
         base_url = config.get("base_url")
         model = config.get("model")
-        api_key = config.get("api_key")
+        api_key = credential_text(config.get("api_key"))
         api_key_env = config.get("api_key_env")
         if not all(isinstance(item, str) and item.strip() for item in (base_url, model)):
             return None
@@ -83,11 +84,11 @@ class ModelRouter:
         # 0600 memleaf config.  Keep the old environment-name form as a
         # compatibility fallback for existing users, but never let an empty
         # direct value shadow a valid legacy environment configuration.
-        if not isinstance(api_key, str) or not api_key.strip():
+        if api_key is None:
             if not isinstance(api_key_env, str) or not api_key_env.strip():
                 return None
-            api_key = os.environ.get(api_key_env)
-        if not api_key:
+            api_key = credential_text(os.environ.get(api_key_env))
+        if api_key is None:
             return None
         try:
             request_timeout = normalize_request_timeout(

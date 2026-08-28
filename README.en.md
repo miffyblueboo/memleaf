@@ -4,8 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.1.3.**
-> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.1.3 is distributed through PyPI.
+> **Version: 0.1.4.**
+> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.1.4 is distributed through PyPI.
 > **The current release supports only Hermes.** Codex and Antigravity are not detected, installed, configured, or scanned for models.
 
 ## Project scope
@@ -115,7 +115,7 @@ Both installation paths automatically:
 
 1. Initialize the default Vault.
 2. Install or upgrade the Hermes MemoryProvider.
-3. Discover and save a callable chat-model route while preserving an existing valid memleaf route.
+3. Discover and save a callable chat-model route. Redacted credentials returned by the Hermes CLI are never treated as real API keys; discovery falls through to environment variables and Hermes `.env`, while preserving an existing valid memleaf route.
 4. Activate `memory.provider=memleaf`.
 5. Configure the memleaf MCP entry through Hermes' official CLI.
 6. Configure MCP lazy/idle lifecycle settings.
@@ -273,7 +273,7 @@ Capture, indexing, directory retrieval, and reading work offline. `process()`, `
 - `host`: use only a host callback explicitly supplied to the Python API;
 - `api`: use only the locally configured HTTP API.
 
-`memleaf init` looks for complete chat-model routes only in readable Hermes configuration, filters out non-chat models, and deterministically selects a lightweight model for extraction. An existing valid memleaf route is reused when discovery finds none; use `--no-model-discovery` to preserve a custom route without scanning. OAuth-only routes and model names without a callable route are not treated as usable.
+`memleaf init` looks for complete chat-model routes in readable Hermes model configuration, filters out non-chat models, and deterministically selects a lightweight model for extraction. Display-redacted values such as `***` or `sk-p...7890` are treated as missing credentials; discovery then tries environment variables and Hermes `.env`, and fails explicitly if no real credential is available instead of writing a false-success route. An existing valid memleaf route is reused when discovery finds none; use `--no-model-discovery` to preserve a custom route without scanning. OAuth-only routes and model names without a callable route are not treated as usable.
 
 API configuration example:
 

@@ -14,6 +14,7 @@ from memleaf.adapters.base import CommandResult
 from memleaf import cli
 from memleaf.config import load_config
 from memleaf.llm import ModelRouter
+from memleaf.credentials import credential_text
 from memleaf.model_discovery import (
     DiscoveryResult,
     ModelCandidate,
@@ -94,6 +95,107 @@ class ModelDiscoveryTests(unittest.TestCase):
             rendered = json.dumps(result.to_dict(), ensure_ascii=False)
             self.assertNotIn("env-secret", rendered)
             self.assertNotIn("custom-secret", rendered)
+
+    def test_redacted_hermes_key_falls_through_to_dotenv(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            hermes_home = home / "hermes"
+            hermes_home.mkdir()
+            (hermes_home / ".env").write_text(
+                "DEEPSEEK_API_KEY=real-env-secret\n",
+                encoding="utf-8",
+            )
+            payloads = {
+                "model": {},
+                "custom_providers": [
+                    {
+                        "name": "deepseek",
+                        "base_url": "https://api.deepseek.com/v1",
+                        "api_key": "***",
+                        "api_mode": "chat_completions",
+                        "model": "deepseek-chat",
+                    }
+                ],
+            }
+
+            def runner(argv, env=None):
+                if argv[1:3] == ["config", "env-path"]:
+                    return CommandResult(1, "", "not configured")
+                if argv[1:3] == ["config", "get"]:
+                    return CommandResult(0, json.dumps(payloads[argv[3]]), "")
+                return CommandResult(1, "", "not configured")
+
+            candidates, diagnostics = discover_hermes(
+                home=home,
+                env={"PATH": "", "HERMES_HOME": str(hermes_home)},
+                executable="/fake/hermes",
+                runner=runner,
+            )
+
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0].api_key, "real-env-secret")
+            self.assertNotIn("real-env-secret", " ".join(diagnostics))
+
+    def test_redacted_hermes_key_without_real_credential_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            hermes_home = home / "hermes"
+            hermes_home.mkdir()
+            payloads = {
+                "model": {},
+                "custom_providers": [
+                    {
+                        "name": "deepseek",
+                        "base_url": "https://api.deepseek.com/v1",
+                        "api_key": "sk-p...7890",
+                        "api_mode": "chat_completions",
+                        "model": "deepseek-chat",
+                    }
+                ],
+            }
+
+            def runner(argv, env=None):
+                if argv[1:3] == ["config", "env-path"]:
+                    return CommandResult(1, "", "not configured")
+                if argv[1:3] == ["config", "get"]:
+                    return CommandResult(0, json.dumps(payloads[argv[3]]), "")
+                return CommandResult(1, "", "not configured")
+
+            candidates, diagnostics = discover_hermes(
+                home=home,
+                env={"PATH": "", "HERMES_HOME": str(hermes_home)},
+                executable="/fake/hermes",
+                runner=runner,
+            )
+
+            self.assertEqual(candidates, [])
+            self.assertTrue(any("redacted" in item for item in diagnostics))
+            self.assertNotIn("sk-p...7890", " ".join(diagnostics))
+
+    def test_credential_redaction_recognizes_hermes_display_forms(self):
+        for value in ("***", "********", "sk-p...7890", "<redacted>", "[masked]"):
+            with self.subTest(value=value):
+                self.assertIsNone(credential_text(value))
+        self.assertEqual(credential_text("short-real-key"), "short-real-key")
+
+    def test_existing_redacted_memleaf_route_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "config.yaml"
+            path.write_text(
+                'llm:\n'
+                '  mode: "api"\n'
+                '  provider: "deepseek"\n'
+                '  protocol: "openai"\n'
+                '  base_url: "https://api.deepseek.com/v1"\n'
+                '  api_key: "***"\n'
+                '  api_key_env: ""\n'
+                '  model: "deepseek-chat"\n',
+                encoding="utf-8",
+            )
+            self.assertIsNone(cli._existing_memleaf_route(path))
+            router = ModelRouter.from_config(load_config(path, vault=root))
+            self.assertIsNone(router.api)
 
     def test_codex_responses_route_is_skipped_and_chat_route_is_callable(self):
         with tempfile.TemporaryDirectory() as temporary:

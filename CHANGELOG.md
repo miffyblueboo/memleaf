@@ -2,6 +2,13 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.1.4 — 2026-08-28
+
+- Reject Hermes display-redacted API credentials such as `***` and head/tail masks instead of treating them as callable keys.
+- Fall through from a redacted direct credential to configured environment variables and Hermes `.env` values.
+- Reject masked credentials in existing memleaf routes and at runtime so an old bad route cannot remain silently usable.
+- Add regression coverage for masked Hermes credentials on Linux and Windows.
+
 ## 0.1.3 — 2026-08-28
 
 - Restored the MIT License for the current release.

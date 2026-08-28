@@ -4,8 +4,8 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **当前版本：0.1.3。**
-> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.1.3 通过 PyPI 分发。
+> **当前版本：0.1.4。**
+> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.1.4 通过 PyPI 分发。
 > **当前版本仅支持 Hermes。** Codex 与反重力不检测、不安装、不配置，也不扫描其模型配置。
 
 ## 项目定位
@@ -115,7 +115,7 @@ python -m pip install -U memleaf && python -m memleaf install
 
 1. 初始化默认 Vault；
 2. 安装或升级 Hermes MemoryProvider；
-3. 发现并保存可用的聊天模型路由；已有有效 memleaf 路由会保留；
+3. 发现并保存可用的聊天模型路由；Hermes CLI 返回的脱敏凭证不会被当成真实 API key，而会继续尝试环境变量和 Hermes `.env`；已有有效 memleaf 路由会保留；
 4. 激活 `memory.provider=memleaf`；
 5. 通过 Hermes 官方 CLI 配置 memleaf MCP；
 6. 配置 MCP lazy/idle 生命周期；
@@ -273,7 +273,7 @@ python -m memleaf.mcp_server --vault /path/to/your/vault \
 - `host`：只使用 Python API 显式传入的宿主回调；
 - `api`：只使用本地配置的 HTTP API。
 
-`memleaf init` 仅从 Hermes 的可读取配置中寻找完整的聊天模型路由，过滤非聊天模型，并确定性选择轻量模型作为提炼模型。未发现可用路由时复用已有的有效 memleaf 配置；要保留自选路由并跳过扫描，使用 `--no-model-discovery`。不能调用的 OAuth-only 或只有模型名的配置不会被误判为可用。
+`memleaf init` 从 Hermes 的可读取模型配置中寻找完整的聊天模型路由，过滤非聊天模型，并确定性选择轻量模型作为提炼模型。Hermes CLI 输出中的 `***`、`sk-p...7890` 等显示脱敏值会被视为缺失凭证，并继续尝试环境变量或 Hermes `.env`；若仍找不到真实凭证则安装明确失败，不会写入一个看似成功但不可调用的模型路由。未发现可用路由时复用已有的有效 memleaf 配置；要保留自选路由并跳过扫描，使用 `--no-model-discovery`。不能调用的 OAuth-only 或只有模型名的配置不会被误判为可用。
 
 API 配置示例：
 
