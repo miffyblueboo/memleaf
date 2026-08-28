@@ -1,17 +1,31 @@
 name: Publish to PyPI
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/release.yml"
 
 jobs:
   build:
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       startsWith(github.event.workflow_run.head_commit.message, 'release: v')) ||
+      (github.event_name == 'push' &&
+       startsWith(github.event.head_commit.message, 'chore: bootstrap PyPI 0.1.1'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: Check out source
+      - name: Check out verified release source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -30,6 +44,13 @@ jobs:
           path: dist/
 
   publish:
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       startsWith(github.event.workflow_run.head_commit.message, 'release: v')) ||
+      (github.event_name == 'push' &&
+       startsWith(github.event.head_commit.message, 'chore: bootstrap PyPI 0.1.1'))
     needs: build
     runs-on: ubuntu-latest
     environment:
