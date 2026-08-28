@@ -60,7 +60,7 @@ try {
         }
     }
 
-    if ($uvCommand) {
+    if ($uvCommand -and $script:MemleafPythonPrefix.Count -eq 0) {
         & $uvCommand pip install --python $script:MemleafPython --upgrade memleaf
         if ($LASTEXITCODE -ne 0) {
             throw "uv could not install memleaf (exit code $LASTEXITCODE)"
