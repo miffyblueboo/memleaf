@@ -4,9 +4,9 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **当前版本：v0.1.1（Python 包版本 0.1.1）。**
+> **当前版本：0.1.1。**
 > 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.1.1 已发布到 PyPI。
-> **v0.1 仅支持 Hermes。** Codex 与反重力不检测、不安装、不配置，也不扫描其模型配置。
+> **当前版本仅支持 Hermes。** Codex 与反重力不检测、不安装、不配置，也不扫描其模型配置。
 
 ## 项目定位
 
@@ -19,7 +19,7 @@ memleaf 把 AI Agent 的长期记忆保存为用户自己拥有的本地 Markdow
 - 通过本地 stdio MCP 提供主动检索、读取、记忆维护等能力；
 - 核心运行时只使用 Python 标准库，要求 Python 3.11 或更高版本。
 
-memleaf 不会把整个 Vault 或整段历史对话自动塞进模型上下文。当前 v2 自动路径采用“Scope Map → 候选目录 → 受控读取正文”的流程。
+memleaf 不会把整个 Vault 或整段历史对话自动塞进模型上下文。自动检索采用“Scope Map → 候选目录 → 受控读取正文”的流程。
 
 ## 当前工作流
 
@@ -58,7 +58,7 @@ memleaf 不会把整个 Vault 或整段历史对话自动塞进模型上下文�
 - 受管理轮次最多读取 3 个不同记忆、累计 6000 个正文字符；
 - `retrieval_id` 必须属于当前轮次，且必须先有成功的 `search` 才能 `read`；
 - `found`、`no_match` 和工具错误是不同状态，错误不能被伪装成无匹配；
-- 旧版 `context()` 和 Python `search(view="full")` 仍为兼容接口，但不属于新的自动注入路径。
+- `context()` 和 Python `search(view="full")` 作为兼容接口保留，但不属于自动检索路径。
 
 Hermes 使用原生 MemoryProvider 维护生命周期，并通过 MCP 获取 Scope Map；Hermes 的检索门控是 Soft Gate，不能宣称阻止所有未检索回答。
 
@@ -82,7 +82,7 @@ memleaf 不把每句话都保存为记忆。处理一轮完整的 user + assista
 
 ## 安装
 
-要求：Python 3.11+；v0.1.1 的完整自动接入仅支持 Hermes。
+要求：Python 3.11+；当前版本的完整自动接入仅支持 Hermes。
 
 普通用户只需要复制执行这一行：
 
@@ -125,7 +125,7 @@ python -m pip install -U memleaf && python -m memleaf install --vault /path/to/v
 
 仓库中的 `install.sh` 继续保留给源码开发、离线源码安装和故障排查；**普通 PyPI 用户不需要执行它**。
 
-Codex 和 Antigravity（反重力）不属于 v0.1.1 范围：安装流程不会检测、安装或修改它们的 MCP、Hook 或模型配置。
+Codex 和 Antigravity（反重力）当前暂不支持：安装流程不会检测、安装或修改它们的 MCP、Hook 或模型配置。
 
 ### 高级初始化命令（可选）
 
@@ -193,7 +193,7 @@ python -m memleaf.mcp_server --vault "$HOME/.memleaf"
 | 工具 | 用途 |
 | --- | --- |
 | `capture` | 捕获一条明确传入的可见对话事件到 inbox |
-| `context` | 旧版兼容的有界轻量目录，不用于 v2 自动注入 |
+| `context` | 兼容保留的有界轻量目录，不用于自动检索路径 |
 | `scope_catalog` | 返回 Scope、父级和别名，不返回具体记忆正文 |
 | `search` | 返回有界候选目录和 `found`/`no_match` 状态 |
 | `read` | 使用当前 `retrieval_id` 分页读取选中的记忆正文 |
@@ -353,7 +353,7 @@ $HOME/.memleaf/
 - 路径校验、符号链接检查、Vault 锁、同目录临时文件、fsync 和原子替换用于保护本地写入；
 - memleaf 不主动上传整个 Vault，也没有托管后台、遥测或账号系统；
 - 选择 API/云端模型后，模型处理输入会离开本机并发送给该提供方；
-- 旧版 `context()` 或无宿主绑定的客户端只能获得单页边界，不能宣称 v2 的跨轮硬预算。
+- `context()` 或无宿主绑定的客户端只能获得单页边界，不能宣称具备跨轮硬预算。
 
 ## 开发与验证
 
@@ -365,37 +365,26 @@ python3.11 -m compileall -q src tests examples
 git diff --check
 ```
 
-GitHub Actions 已在 v0.1.1 发布流程中通过 Python 3.11、3.12、3.13 测试、wheel/source distribution 构建和源码包独立测试。构建发行包需要 `build`：
+GitHub Actions 已通过 Python 3.11、3.12、3.13 测试、wheel/source distribution 构建和源码包独立测试。构建发行包需要 `build`：
 
 ```bash
 python -m pip install build
 python -m build --wheel --sdist
 ```
 
-## 后续计划
-
-- **v0.2：增加 Codex 支持**，延续共享 Vault、Scope Map 和按需读取的设计。
-- 后续将逐步支持更多 Agent 工具；每个宿主遵循其官方接入与授权规范，通过验收后再开放。
-- 这些是后续计划，不属于 v0.1 已交付能力，暂不承诺具体日期。
 
 ## 当前边界
 
 以下内容不应被 README 或安装结果误解为已交付能力：
 
-- v0.1.1 的 PyPI 安装可通过一行命令完成 Hermes 自动接入；源码 `install.sh` 仅保留给开发、离线源码安装和故障排查；
-- v0.1 仅支持 Hermes；Codex 和 Antigravity（反重力）不检测、不安装、不配置；
+- PyPI 安装可通过一行命令完成 Hermes 自动接入；源码 `install.sh` 仅保留给开发、离线源码安装和故障排查；
+- 当前仅支持 Hermes；Codex 和 Antigravity（反重力）不检测、不安装、不配置；
 - Hermes 的检索门控是 Soft Gate，不保证阻止所有未检索回答；
 - 没有模型路由时只能捕获和检索，不能完成自动提炼、显式记忆或压缩；
 - 真实宿主长期运行效果仍取决于本机 Agent 版本、配置、重启和模型可用性；
 - 不提供 Obsidian 插件、Web 管理界面、云同步或透明加密层；
 - `history/` 的批量清理不会被普通检索自动执行，删除操作需要明确调用维护接口。
 
-设计和阶段性实施记录：
-
-- [v0.1 发布检查](RELEASE_CHECKLIST.md)
-- [V2 实施计划](V2_IMPLEMENTATION_PLAN.md)
-- [历史实现计划](IMPLEMENTATION_PLAN.md)
-- [示例说明](examples/README.md)
 
 ## License
 
