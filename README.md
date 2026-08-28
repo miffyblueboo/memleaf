@@ -4,8 +4,8 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **当前版本：0.1.1。**
-> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.1.1 已发布到 PyPI。
+> **当前版本：0.1.2。**
+> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.1.2 已发布到 PyPI。
 > **当前版本仅支持 Hermes。** Codex 与反重力不检测、不安装、不配置，也不扫描其模型配置。
 
 ## 项目定位
@@ -388,7 +388,11 @@ python -m build --wheel --sdist
 
 ## License
 
-MIT，见 [LICENSE](LICENSE)。
+memleaf 0.1.2 及后续版本采用 [AGPL-3.0-only](LICENSE)。
+
+AGPL 允许个人和商业使用，但修改、分发或通过网络提供受 AGPL 覆盖的版本时，需要遵守相应的源代码开放义务。希望在闭源商业产品或专有服务中使用 memleaf、且不希望受 AGPL 条款约束的企业，可以申请单独的商业授权，见 [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md)。
+
+0.1.0 和 0.1.1 已经按 MIT License 发布，既有 MIT 授权继续有效。历史许可证见 [LICENSES/MIT-0.1.0-0.1.1.txt](LICENSES/MIT-0.1.0-0.1.1.txt)。
 
 **memleaf**
 *Your memories, in files you own.*
