@@ -4,8 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: v0.1 (Python package version 0.1.0).**
-> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.1.0 is published on PyPI.
+> **Version: v0.1.1 (Python package version 0.1.1).**
+> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.1.1 is published on PyPI.
 > **v0.1 supports only Hermes.** Codex and Antigravity are not detected, installed, configured, or scanned for models.
 
 ## Project scope
@@ -82,59 +82,52 @@ Additional rules:
 
 ## Installation
 
-memleaf 0.1.0 is available on PyPI. If you only need the core library, Python API, CLI, and MCP server, install it directly:
+Requirements: Python 3.11+; v0.1.1 full automatic host setup supports Hermes only.
+
+For normal users, copy and run this single line:
 
 ```bash
-python -m pip install memleaf
+python -m pip install -U memleaf && python -m memleaf install
 ```
 
-The PyPI wheel provides the core library, the `memleaf` / `memleaf-mcp` commands, and the MCP server, but it **does not perform the full Hermes host integration**. For v0.1, use the GitHub source `install.sh` when you want automatic Hermes MemoryProvider installation and activation, MCP configuration, model-route discovery, and default Vault initialization:
+That one line first installs or upgrades memleaf from PyPI and then immediately performs the complete Hermes integration. Users do not need to `git clone`, `cd`, or run `install.sh`.
 
-```bash
-git clone --branch v0.1 --depth 1 https://github.com/miffyblueboo/memleaf.git "$HOME/memleaf"
-cd "$HOME/memleaf"
-./install.sh
-```
+`memleaf install` automatically:
 
-If the source is already present, skip `git clone` and first ensure it matches v0.1. The full Hermes install defaults to `$HOME/memleaf`, without an extra `work` layer.
+1. Initializes the default Vault at `$HOME/.memleaf`.
+2. Installs or upgrades the packaged Hermes MemoryProvider at `$HERMES_HOME/plugins/memleaf`.
+3. Discovers and saves a callable chat-model route while preserving an existing valid memleaf route.
+4. Activates `memory.provider=memleaf`.
+5. Configures the memleaf MCP entry through Hermes' official CLI.
+6. Configures MCP lazy/idle lifecycle settings.
+7. Verifies that the MCP server exposes all 11 tools.
+8. Records the local Agent integration status.
 
-Default locations:
+Restart Hermes after installation.
+
+Default user-data and Hermes integration locations:
 
 ```text
-$HOME/memleaf/              # source and editable installation
-$HOME/memleaf/.venv/        # memleaf virtual environment
-$HOME/.local/bin/memleaf   # user command entry point
-$HOME/.local/bin/memleaf-mcp
-$HOME/.memleaf/             # data Vault, separate from the source tree
+$HOME/.memleaf/                    # memleaf data Vault
+$HERMES_HOME/plugins/memleaf/      # Hermes MemoryProvider
+$HERMES_HOME/memleaf.json          # Provider Vault, MCP command, and timeout config
 ```
 
-The installer does not create an additional `work` layer. It links the source and creates command wrappers in a dedicated virtual environment using only the standard library, without pip/setuptools or changes to unrelated Python packages. macOS/Linux are supported. It finds Python 3.11+ automatically; use `MEMLEAF_PYTHON=/path/to/python3 ./install.sh` if needed.
+The Python package and the `memleaf` / `memleaf-mcp` commands are managed by the active Python/pip environment. A fixed `$HOME/memleaf` source checkout is no longer required.
 
-For an intentionally isolated test from a non-standard source directory, explicitly set the installation root to that checkout:
+A custom Vault still fits in one line:
 
 ```bash
-MEMLEAF_INSTALL_ROOT="$PWD" ./install.sh
+python -m pip install -U memleaf && python -m memleaf install --vault /path/to/vault
 ```
 
-### Host setup during installation
+If the Hermes executable is unavailable, no complete model route can be configured, Provider activation fails, or the 11-tool MCP verification fails, the installer returns an explicit failure instead of reporting an incomplete integration as successful.
 
-`install.sh` initializes `$HOME/.memleaf` and supports only Hermes. If an executable `hermes` is detected, it completes two independent Hermes integrations:
+The repository `install.sh` remains available for source development, offline source installation, and troubleshooting; **normal PyPI users do not need to run it**.
 
-1. Install and activate the official native Hermes `MemoryProvider` plugin.
-2. Configure `memleaf` through Hermes' official MCP CLI and verify that the server exposes 11 tools.
+Codex and Antigravity are outside v0.1.1's supported host scope. The install flow does not detect, install, or modify their MCP, hook, or model configuration.
 
-Hermes paths:
-
-```text
-$HOME/.hermes/plugins/memleaf/   # user-level provider plugin
-$HOME/.hermes/memleaf.json       # Vault, absolute MCP command, and timeouts
-```
-
-Restart Hermes after installation. If no complete callable chat-model route is found, an interactive terminal asks for model configuration and writes it directly to the Vault configuration file; non-interactive execution returns an explicit failure instead of reporting a false success.
-
-Codex and Antigravity are outside v0.1's scope. Neither installation nor `memleaf init --all` detects them or modifies their MCP, hook, or model configuration. Existing installations are left untouched; legacy adapters in the source tree do not imply support in this release.
-
-### Initialization commands
+### Advanced initialization commands (optional)
 
 Preview changes first:
 
@@ -372,7 +365,7 @@ python3.11 -m compileall -q src tests examples
 git diff --check
 ```
 
-GitHub Actions is configured to test Python 3.11, 3.12, and 3.13, build wheel/source distributions, and run tests from the source archive. Configuration is not evidence that remote CI has passed. Build packages with:
+The v0.1.1 GitHub Actions release pipeline passed Python 3.11, 3.12, and 3.13 tests, wheel/source-distribution builds, and tests from the source archive. Build packages with:
 
 ```bash
 python -m pip install build
@@ -389,7 +382,7 @@ python -m build --wheel --sdist
 
 The following should not be interpreted as delivered capabilities:
 
-- The PyPI package provides the core library, CLI, and MCP server; full automatic Hermes integration still uses the source `install.sh`.
+- The v0.1.1 PyPI flow can complete Hermes integration from one command line; the source `install.sh` remains only for development, offline source installation, and troubleshooting.
 - v0.1 supports only Hermes. Codex and Antigravity are not detected, installed, or configured.
 - Hermes retrieval gating is a Soft Gate and does not guarantee that every answer performed retrieval.
 - Without a model route, memleaf can capture and retrieve but cannot perform automatic extraction, explicit model-backed memory, or compaction.

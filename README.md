@@ -4,8 +4,8 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **当前版本：v0.1（Python 包版本 0.1.0）。**
-> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.1.0 已发布到 PyPI。
+> **当前版本：v0.1.1（Python 包版本 0.1.1）。**
+> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.1.1 已发布到 PyPI。
 > **v0.1 仅支持 Hermes。** Codex 与反重力不检测、不安装、不配置，也不扫描其模型配置。
 
 ## 项目定位
@@ -82,59 +82,52 @@ memleaf 不把每句话都保存为记忆。处理一轮完整的 user + assista
 
 ## 安装
 
-memleaf 0.1.0 已发布到 PyPI。若只需要核心库、Python API、CLI 和 MCP Server，可直接安装：
+要求：Python 3.11+；v0.1.1 的完整自动接入仅支持 Hermes。
+
+普通用户只需要复制执行这一行：
 
 ```bash
-python -m pip install memleaf
+python -m pip install -U memleaf && python -m memleaf install
 ```
 
-PyPI wheel 提供核心库、`memleaf` / `memleaf-mcp` 命令和 MCP Server，但 **不会执行完整 Hermes 宿主接入**。v0.1 如需自动安装并激活 Hermes MemoryProvider、配置 MCP、发现模型路由和初始化默认 Vault，仍推荐使用 GitHub 源码中的 `install.sh`：
+这一行会完成两件事：先从 PyPI 安装或升级 memleaf，然后立即执行完整 Hermes 接入。用户不需要 `git clone`、`cd` 或运行 `install.sh`。
 
-```bash
-git clone --branch v0.1 --depth 1 https://github.com/miffyblueboo/memleaf.git "$HOME/memleaf"
-cd "$HOME/memleaf"
-./install.sh
-```
+`memleaf install` 会自动：
 
-已有源码目录时跳过 `git clone`，先确认源码为 v0.1。完整 Hermes 安装默认路径是 `$HOME/memleaf`，不增加 `work` 层。
+1. 初始化默认 Vault：`$HOME/.memleaf`；
+2. 从已安装的 PyPI 包中安装/升级 Hermes MemoryProvider 到 `$HERMES_HOME/plugins/memleaf`；
+3. 发现并保存可用的聊天模型路由；已有有效 memleaf 路由会保留；
+4. 激活 `memory.provider=memleaf`；
+5. 通过 Hermes 官方 CLI 配置 memleaf MCP；
+6. 配置 MCP lazy/idle 生命周期；
+7. 验证 MCP Server 能发现 11 个工具；
+8. 写入本地 Agent 状态索引。
 
-默认安装位置：
+完成后重启 Hermes。
+
+默认用户数据和 Hermes 接入位置：
 
 ```text
-$HOME/memleaf/              # 源码和可编辑安装目录
-$HOME/memleaf/.venv/        # memleaf 虚拟环境
-$HOME/.local/bin/memleaf   # 用户级命令入口
-$HOME/.local/bin/memleaf-mcp
-$HOME/.memleaf/             # 数据 Vault，与源码目录分离
+$HOME/.memleaf/                    # memleaf 数据 Vault
+$HERMES_HOME/plugins/memleaf/      # Hermes MemoryProvider
+$HERMES_HOME/memleaf.json          # Provider 的 Vault、MCP 命令和超时配置
 ```
 
-安装脚本不会创建额外的 `work` 层。它使用标准库在独立虚拟环境中链接源码、生成命令入口，不依赖 pip/setuptools，也不升级用户其他 Python 包。支持 macOS/Linux；自动查找 Python 3.11+，找不到时可用 `MEMLEAF_PYTHON=/path/to/python3 ./install.sh` 指定。
+Python 包和 `memleaf` / `memleaf-mcp` 命令由当前 Python/pip 环境管理，不再要求固定的 `$HOME/memleaf` 源码目录。
 
-如果只是对非标准源码目录做隔离测试，必须显式指定当前源码目录：
+如需自定义 Vault，也仍是一行：
 
 ```bash
-MEMLEAF_INSTALL_ROOT="$PWD" ./install.sh
+python -m pip install -U memleaf && python -m memleaf install --vault /path/to/vault
 ```
 
-### 安装时的宿主配置
+如果没有检测到 Hermes 可执行文件、无法取得完整模型路由、Provider 激活失败或 MCP 的 11 工具验证失败，安装命令会明确返回失败，不会把未完成的接入报告为成功。
 
-`install.sh` 会先初始化 `$HOME/.memleaf`，仅接入 Hermes；如果检测到可执行的 Hermes，则继续完成两条彼此独立的接入链：
+仓库中的 `install.sh` 继续保留给源码开发、离线源码安装和故障排查；**普通 PyPI 用户不需要执行它**。
 
-1. 安装并激活 Hermes 官方原生 `MemoryProvider` 插件；
-2. 通过 Hermes 官方 MCP CLI 配置 `memleaf`，并验证 MCP Server 能发现 11 个工具。
+Codex 和 Antigravity（反重力）不属于 v0.1.1 范围：安装流程不会检测、安装或修改它们的 MCP、Hook 或模型配置。
 
-Hermes 相关路径：
-
-```text
-$HOME/.hermes/plugins/memleaf/   # 用户级 provider 插件
-$HOME/.hermes/memleaf.json       # Vault、绝对 MCP 命令和超时配置
-```
-
-安装后请重启 Hermes。若安装时找不到完整可调用的聊天模型路由，交互终端会要求补充模型配置并直接写入 Vault 配置文件；非交互执行会明确返回失败，不会伪造成功状态。
-
-Codex 和 Antigravity（反重力）不属于 v0.1 范围：安装和 `memleaf init --all` 均不检测、不修改它们的 MCP、Hook 或模型配置。已有安装保持原样；源码中的兼容适配器不代表本版支持接入。
-
-### 初始化命令
+### 高级初始化命令（可选）
 
 先查看计划变更：
 
@@ -372,7 +365,7 @@ python3.11 -m compileall -q src tests examples
 git diff --check
 ```
 
-GitHub Actions 已配置 Python 3.11、3.12、3.13 测试，以及 wheel/source distribution 构建和源码包独立测试；配置不等于远端运行已通过。构建发行包需要 `build`：
+GitHub Actions 已在 v0.1.1 发布流程中通过 Python 3.11、3.12、3.13 测试、wheel/source distribution 构建和源码包独立测试。构建发行包需要 `build`：
 
 ```bash
 python -m pip install build
@@ -389,7 +382,7 @@ python -m build --wheel --sdist
 
 以下内容不应被 README 或安装结果误解为已交付能力：
 
-- PyPI 包提供核心库、CLI 和 MCP Server；完整 Hermes 自动接入仍需使用源码中的 `install.sh`；
+- v0.1.1 的 PyPI 安装可通过一行命令完成 Hermes 自动接入；源码 `install.sh` 仅保留给开发、离线源码安装和故障排查；
 - v0.1 仅支持 Hermes；Codex 和 Antigravity（反重力）不检测、不安装、不配置；
 - Hermes 的检索门控是 Soft Gate，不保证阻止所有未检索回答；
 - 没有模型路由时只能捕获和检索，不能完成自动提炼、显式记忆或压缩；
