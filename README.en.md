@@ -2,10 +2,10 @@
 
 > A local-first, Markdown-driven shared memory core for AI agents.
 
-[中文](README.md) · [GitHub](https://github.com/miffyblueboo/memleaf)
+[中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
 > **Version: v0.1 (Python package version 0.1.0).**
-> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. The project has not been published to PyPI.
+> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.1.0 is published on PyPI.
 > **v0.1 supports only Hermes.** Codex and Antigravity are not detected, installed, configured, or scanned for models.
 
 ## Project scope
@@ -82,13 +82,21 @@ Additional rules:
 
 ## Installation
 
-Install this version from GitHub source; it is not on PyPI. For a new installation, run the commands below. If the source is already present, skip `git clone` and first ensure it matches v0.1. The default path is `$HOME/memleaf`, without an extra `work` layer:
+memleaf 0.1.0 is available on PyPI. If you only need the core library, Python API, CLI, and MCP server, install it directly:
+
+```bash
+python -m pip install memleaf
+```
+
+The PyPI wheel provides the core library, the `memleaf` / `memleaf-mcp` commands, and the MCP server, but it **does not perform the full Hermes host integration**. For v0.1, use the GitHub source `install.sh` when you want automatic Hermes MemoryProvider installation and activation, MCP configuration, model-route discovery, and default Vault initialization:
 
 ```bash
 git clone --branch v0.1 --depth 1 https://github.com/miffyblueboo/memleaf.git "$HOME/memleaf"
 cd "$HOME/memleaf"
 ./install.sh
 ```
+
+If the source is already present, skip `git clone` and first ensure it matches v0.1. The full Hermes install defaults to `$HOME/memleaf`, without an extra `work` layer.
 
 Default locations:
 
@@ -381,7 +389,7 @@ python -m build --wheel --sdist
 
 The following should not be interpreted as delivered capabilities:
 
-- There is no PyPI release yet.
+- The PyPI package provides the core library, CLI, and MCP server; full automatic Hermes integration still uses the source `install.sh`.
 - v0.1 supports only Hermes. Codex and Antigravity are not detected, installed, or configured.
 - Hermes retrieval gating is a Soft Gate and does not guarantee that every answer performed retrieval.
 - Without a model route, memleaf can capture and retrieve but cannot perform automatic extraction, explicit model-backed memory, or compaction.
