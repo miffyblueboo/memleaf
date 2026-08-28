@@ -4,6 +4,13 @@ All notable changes to memleaf are documented here.
 
 ## 0.1.4 — 2026-08-28
 
+- Reject Hermes display-redacted API credentials such as `***` and head/tail masks instead of treating them as callable keys.
+- Fall through from a redacted direct credential to configured environment variables and Hermes `.env` values.
+- Reject masked credentials in existing memleaf routes and at runtime so an old bad route cannot remain silently usable.
+- Add regression coverage for masked Hermes credentials on Linux and Windows.
+
+## 0.1.3 — 2026-08-28
+
 - Restored the MIT License for the current release.
 - Added native Windows Hermes path discovery using `HERMES_HOME` or the official
   `%LOCALAPPDATA%\hermes` default.
@@ -18,7 +25,7 @@ All notable changes to memleaf are documented here.
 ## 0.1.2 — 2026-08-28
 
 - This release was published under AGPL-3.0-only before the project returned to
-  MIT in 0.1.4. Its original license remains valid for copies of 0.1.2.
+  MIT in 0.1.3. Its original license remains valid for copies of 0.1.2.
 - Product behavior otherwise remained aligned with 0.1.1.
 
 ## 0.1.1 — 2026-08-28 (GitHub tag: v0.1.1)
