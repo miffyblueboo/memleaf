@@ -4,8 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.1.2.**
-> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.1.2 is published on PyPI.
+> **Version: 0.1.3.**
+> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.1.3 is distributed through PyPI.
 > **The current release supports only Hermes.** Codex and Antigravity are not detected, installed, configured, or scanned for models.
 
 ## Project scope
@@ -82,48 +82,51 @@ Additional rules:
 
 ## Installation
 
-Requirements: Python 3.11+; full automatic host setup currently supports Hermes only.
+Python 3.11+ is required. Full automatic host setup currently supports Hermes.
 
-For normal users, copy and run this single line:
+### Windows
+
+If Hermes is already installed on Windows 10/11, run this single line in **PowerShell**:
+
+```powershell
+irm https://raw.githubusercontent.com/miffyblueboo/memleaf/main/install.ps1 | iex
+```
+
+The Windows installer prefers Hermes' managed Python environment, so Hermes' Python does not need to be on the system PATH. It installs or upgrades memleaf from PyPI and then completes the Hermes integration automatically.
+
+The official native Windows Hermes locations are detected by default:
+
+```text
+%USERPROFILE%\.memleaf\                              # memleaf data Vault
+%LOCALAPPDATA%\hermes\plugins\memleaf\              # Hermes MemoryProvider
+%LOCALAPPDATA%\hermes\memleaf.json                   # Provider configuration
+%LOCALAPPDATA%\hermes\bin\hermes.exe / hermes.cmd   # Hermes launcher
+```
+
+If `HERMES_HOME` is set, memleaf uses it instead.
+
+### macOS / Linux
 
 ```bash
 python -m pip install -U memleaf && python -m memleaf install
 ```
 
-That one line first installs or upgrades memleaf from PyPI and then immediately performs the complete Hermes integration. Users do not need to `git clone`, `cd`, or run `install.sh`.
+Both installation paths automatically:
 
-`memleaf install` automatically:
-
-1. Initializes the default Vault at `$HOME/.memleaf`.
-2. Installs or upgrades the packaged Hermes MemoryProvider at `$HERMES_HOME/plugins/memleaf`.
-3. Discovers and saves a callable chat-model route while preserving an existing valid memleaf route.
-4. Activates `memory.provider=memleaf`.
-5. Configures the memleaf MCP entry through Hermes' official CLI.
-6. Configures MCP lazy/idle lifecycle settings.
-7. Verifies that the MCP server exposes all 11 tools.
-8. Records the local Agent integration status.
+1. Initialize the default Vault.
+2. Install or upgrade the Hermes MemoryProvider.
+3. Discover and save a callable chat-model route while preserving an existing valid memleaf route.
+4. Activate `memory.provider=memleaf`.
+5. Configure the memleaf MCP entry through Hermes' official CLI.
+6. Configure MCP lazy/idle lifecycle settings.
+7. Verify that the MCP server exposes all 11 tools.
+8. Record the local Agent integration status.
 
 Restart Hermes after installation.
 
-Default user-data and Hermes integration locations:
+If Hermes cannot be detected, no complete model route can be configured, Provider activation fails, or the 11-tool MCP verification fails, the installer returns an explicit failure rather than reporting an incomplete integration as successful.
 
-```text
-$HOME/.memleaf/                    # memleaf data Vault
-$HERMES_HOME/plugins/memleaf/      # Hermes MemoryProvider
-$HERMES_HOME/memleaf.json          # Provider Vault, MCP command, and timeout config
-```
-
-The Python package and the `memleaf` / `memleaf-mcp` commands are managed by the active Python/pip environment. A fixed `$HOME/memleaf` source checkout is no longer required.
-
-A custom Vault still fits in one line:
-
-```bash
-python -m pip install -U memleaf && python -m memleaf install --vault /path/to/vault
-```
-
-If the Hermes executable is unavailable, no complete model route can be configured, Provider activation fails, or the 11-tool MCP verification fails, the installer returns an explicit failure instead of reporting an incomplete integration as successful.
-
-The repository `install.sh` remains available for source development, offline source installation, and troubleshooting; **normal PyPI users do not need to run it**.
+The repository `install.sh` remains for source development, offline source installation, and troubleshooting. Normal PyPI users do not need to run it.
 
 Codex and Antigravity are not currently supported. The install flow does not detect, install, or modify their MCP, hook, or model configuration.
 
@@ -365,7 +368,7 @@ python3.11 -m compileall -q src tests examples
 git diff --check
 ```
 
-GitHub Actions passed Python 3.11, 3.12, and 3.13 tests, wheel/source-distribution builds, and tests from the source archive. Build packages with:
+GitHub Actions covers Python 3.11, 3.12, and 3.13 on Linux and Windows, plus wheel/source-distribution builds, source-archive tests, and PowerShell installer syntax validation. Build packages with:
 
 ```bash
 python -m pip install build
@@ -377,7 +380,7 @@ python -m build --wheel --sdist
 
 The following should not be interpreted as delivered capabilities:
 
-- The PyPI flow can complete Hermes integration from one command line; the source `install.sh` remains only for development, offline source installation, and troubleshooting.
+- Windows, macOS, and Linux each provide a one-line Hermes integration entry point; the source `install.sh` remains only for development, offline source installation, and troubleshooting.
 - The current release supports only Hermes. Codex and Antigravity are not detected, installed, or configured.
 - Hermes retrieval gating is a Soft Gate and does not guarantee that every answer performed retrieval.
 - Without a model route, memleaf can capture and retrieve but cannot perform automatic extraction, explicit model-backed memory, or compaction.
@@ -388,11 +391,7 @@ The following should not be interpreted as delivered capabilities:
 
 ## License
 
-memleaf 0.1.2 and later are licensed under [AGPL-3.0-only](LICENSE).
-
-The AGPL permits both personal and commercial use, subject to its source-code obligations for covered modification, distribution, and network use. Organizations that need to use memleaf in proprietary products or services without the AGPL obligations can obtain a separate commercial license; see [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md).
-
-Versions 0.1.0 and 0.1.1 were released under the MIT License, and the rights already granted for those releases remain in effect. See [LICENSES/MIT-0.1.0-0.1.1.txt](LICENSES/MIT-0.1.0-0.1.1.txt).
+MIT; see [LICENSE](LICENSE).
 
 **memleaf**
 
