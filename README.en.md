@@ -4,8 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.1.1.**
-> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.1.1 is published on PyPI.
+> **Version: 0.1.2.**
+> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.1.2 is published on PyPI.
 > **The current release supports only Hermes.** Codex and Antigravity are not detected, installed, configured, or scanned for models.
 
 ## Project scope
@@ -388,7 +388,11 @@ The following should not be interpreted as delivered capabilities:
 
 ## License
 
-MIT; see [LICENSE](LICENSE).
+memleaf 0.1.2 and later are licensed under [AGPL-3.0-only](LICENSE).
+
+The AGPL permits both personal and commercial use, subject to its source-code obligations for covered modification, distribution, and network use. Organizations that need to use memleaf in proprietary products or services without the AGPL obligations can obtain a separate commercial license; see [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md).
+
+Versions 0.1.0 and 0.1.1 were released under the MIT License, and the rights already granted for those releases remain in effect. See [LICENSES/MIT-0.1.0-0.1.1.txt](LICENSES/MIT-0.1.0-0.1.1.txt).
 
 **memleaf**
 

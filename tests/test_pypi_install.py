@@ -35,7 +35,7 @@ class PyPIInstallTests(unittest.TestCase):
 
             self.assertTrue(target.is_dir())
             self.assertFalse(target.is_symlink())
-            self.assertIn("version: 0.1.1", (target / "plugin.yaml").read_text(encoding="utf-8"))
+            self.assertIn("version: 0.1.2", (target / "plugin.yaml").read_text(encoding="utf-8"))
 
     def test_cli_install_is_a_first_class_command(self) -> None:
         result = {

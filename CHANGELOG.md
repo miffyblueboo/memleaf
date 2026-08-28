@@ -2,6 +2,14 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.1.2 — 2026-08-28
+
+- Changed the license for 0.1.2 and later to AGPL-3.0-only.
+- Added an optional commercial licensing path for proprietary use without AGPL obligations.
+- Preserved the MIT license terms for 0.1.0 and 0.1.1; previously granted MIT rights remain unchanged.
+- Added contribution licensing terms compatible with the public AGPL edition and optional commercial licensing.
+- Kept the existing one-line PyPI/Hermes installation behavior.
+
 ## 0.1.1 — 2026-08-28 (GitHub tag: v0.1.1)
 
 - Added a first-class `memleaf install` command for complete Hermes setup

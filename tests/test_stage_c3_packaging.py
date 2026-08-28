@@ -24,11 +24,11 @@ class StageC3PackagingTests(unittest.TestCase):
 
     def test_project_metadata_and_version_export(self) -> None:
         self.assertEqual(self.project["name"], "memleaf")
-        self.assertEqual(self.project["version"], "0.1.1")
+        self.assertEqual(self.project["version"], "0.1.2")
         self.assertEqual(self.project["requires-python"], ">=3.11")
         self.assertEqual(self.project["dependencies"], [])
-        self.assertEqual(self.project["license"], "MIT")
-        self.assertEqual(self.project["license-files"], ["LICENSE"])
+        self.assertEqual(self.project["license"], "AGPL-3.0-only")
+        self.assertEqual(self.project["license-files"], ["LICENSE", "LICENSES/MIT-0.1.0-0.1.1.txt"])
         self.assertNotIn("Development Status :: 3 - Alpha", self.project["classifiers"])
         self.assertNotIn("License :: OSI Approved :: MIT License", self.project["classifiers"])
         self.assertNotIn("dynamic", self.project)
