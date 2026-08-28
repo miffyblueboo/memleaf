@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import tempfile
 import unittest
 from unittest import mock
 
 from memleaf import cli
-from memleaf.installer import _copy_provider
+from memleaf.adapters.hermes import HermesAdapter
+from memleaf.installer import _copy_provider, _hermes_home, _write_provider_config
 
 
 class PyPIInstallTests(unittest.TestCase):
@@ -20,6 +22,7 @@ class PyPIInstallTests(unittest.TestCase):
             self.assertTrue((target / "README.md").is_file())
             self.assertIn("name: memleaf", (target / "plugin.yaml").read_text(encoding="utf-8"))
 
+    @unittest.skipIf(os.name == "nt", "symlink creation is not guaranteed on Windows")
     def test_copy_provider_replaces_verified_legacy_symlink(self) -> None:
         with tempfile.TemporaryDirectory(prefix="memleaf-pypi-legacy-") as temporary:
             root = Path(temporary)
@@ -35,7 +38,52 @@ class PyPIInstallTests(unittest.TestCase):
 
             self.assertTrue(target.is_dir())
             self.assertFalse(target.is_symlink())
-            self.assertIn("version: 0.1.2", (target / "plugin.yaml").read_text(encoding="utf-8"))
+            self.assertIn("version: 0.1.3", (target / "plugin.yaml").read_text(encoding="utf-8"))
+
+    def test_windows_hermes_paths_follow_official_native_layout(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="memleaf-win-paths-") as temporary:
+            root = Path(temporary)
+            home = root / "profile"
+            local = root / "LocalAppData"
+            expected = (local / "hermes").resolve()
+
+            self.assertEqual(
+                _hermes_home(
+                    home,
+                    env={"LOCALAPPDATA": str(local)},
+                    platform="nt",
+                ),
+                expected,
+            )
+            adapter = HermesAdapter(
+                home=home,
+                env={"LOCALAPPDATA": str(local), "PATH": ""},
+                platform="nt",
+            )
+            self.assertEqual(adapter.hermes_home, expected)
+            self.assertEqual(
+                adapter.known_executables,
+                (
+                    expected / "bin" / "hermes.exe",
+                    expected / "hermes-agent" / "venv" / "Scripts" / "hermes.exe",
+                    expected / "bin" / "hermes.cmd",
+                ),
+            )
+
+    def test_provider_config_uses_absolute_vault_on_all_platforms(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="memleaf-provider-config-") as temporary:
+            root = Path(temporary)
+            path = root / "hermes" / "memleaf.json"
+            command = root / "Scripts" / ("memleaf-mcp.exe" if os.name == "nt" else "memleaf-mcp")
+            command.parent.mkdir(parents=True)
+            command.write_text("", encoding="utf-8")
+            vault = root / "vault"
+            vault.mkdir()
+            _write_provider_config(path, command, vault)
+            import json
+            value = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(value["vault"], str(vault.resolve()))
+            self.assertEqual(value["command"], str(command))
 
     def test_cli_install_is_a_first_class_command(self) -> None:
         result = {
