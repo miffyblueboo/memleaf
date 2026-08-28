@@ -1,0 +1,260 @@
+"""One-line PyPI installer for the Hermes integration."""
+
+from __future__ import annotations
+
+import json
+import os
+from importlib import resources
+from pathlib import Path
+import shutil
+import stat
+import subprocess
+import sys
+import sysconfig
+import tempfile
+from typing import Any
+
+from .adapters.base import update_agents_index
+from .adapters.hermes import HermesAdapter
+from .cli import _home_from_environment, _prepare_model_route
+from .locking import atomic_write_json
+from .vault import Vault
+
+
+_EXPECTED_TOOLS = 11
+
+
+def _hermes_home(home: Path) -> Path:
+    raw = os.environ.get("HERMES_HOME")
+    if not raw:
+        return home / ".hermes"
+    value = Path(raw).expanduser()
+    return (value if value.is_absolute() else home / value).resolve()
+
+
+def _memleaf_mcp_command() -> Path:
+    name = "memleaf-mcp.exe" if os.name == "nt" else "memleaf-mcp"
+    candidates = [
+        Path(sysconfig.get_path("scripts")) / name,
+    ]
+    found = shutil.which("memleaf-mcp")
+    if found:
+        candidates.insert(0, Path(found))
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve()
+        except OSError:
+            continue
+        if resolved.is_file():
+            return resolved
+    raise RuntimeError("memleaf-mcp console entry point was not found after package installation")
+
+
+def _copy_provider(hermes_home: Path) -> Path:
+    plugins = hermes_home / "plugins"
+    target = plugins / "memleaf"
+    if hermes_home.is_symlink():
+        raise RuntimeError(f"refusing symlinked Hermes home: {hermes_home}")
+    if plugins.exists() and (plugins.is_symlink() or not plugins.is_dir()):
+        raise RuntimeError(f"unsafe Hermes plugin directory: {plugins}")
+    if target.is_symlink():
+        raise RuntimeError(f"refusing symlinked Hermes provider path: {target}")
+    plugins.mkdir(parents=True, exist_ok=True)
+
+    package = resources.files("memleaf.hermes_provider")
+    required = ("__init__.py", "plugin.yaml", "README.md")
+    with tempfile.TemporaryDirectory(prefix=".memleaf-provider-", dir=plugins) as temp_name:
+        staging = Path(temp_name)
+        for name in required:
+            item = package.joinpath(name)
+            if not item.is_file():
+                raise RuntimeError(f"packaged Hermes provider resource is missing: {name}")
+            staging.joinpath(name).write_bytes(item.read_bytes())
+
+        if target.exists():
+            if not target.is_dir():
+                raise RuntimeError(f"refusing to overwrite non-directory Hermes provider path: {target}")
+            manifest = target / "plugin.yaml"
+            if manifest.exists():
+                try:
+                    text = manifest.read_text(encoding="utf-8")
+                except (OSError, UnicodeError) as error:
+                    raise RuntimeError("existing Hermes provider manifest cannot be read") from error
+                if "name: memleaf" not in text:
+                    raise RuntimeError(f"existing Hermes plugin is not memleaf: {target}")
+            for name in required:
+                destination = target / name
+                if destination.is_symlink():
+                    raise RuntimeError(f"refusing to overwrite symlinked Hermes provider file: {destination}")
+                temporary = target / f".{name}.{os.getpid()}.tmp"
+                temporary.write_bytes(staging.joinpath(name).read_bytes())
+                os.replace(temporary, destination)
+        else:
+            os.replace(staging, target)
+    return target
+
+
+def _write_provider_config(path: Path, command: Path) -> None:
+    if path.is_symlink():
+        raise RuntimeError(f"refusing to write symlinked Hermes config: {path}")
+    value: dict[str, Any] = {}
+    if path.exists():
+        if not path.is_file():
+            raise RuntimeError(f"Hermes memleaf config is not a regular file: {path}")
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError) as error:
+            raise RuntimeError(f"invalid Hermes memleaf config: {path}") from error
+        if not isinstance(parsed, dict):
+            raise RuntimeError(f"Hermes memleaf config must be an object: {path}")
+        value.update(parsed)
+    value.update(
+        {
+            "vault": "~/.memleaf",
+            "command": str(command),
+            "timeout": 5,
+            "process_timeout": 300,
+            "auto_process": True,
+        }
+    )
+    atomic_write_json(path, value, mode=0o600)
+    try:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+
+
+def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _verify_provider(hermes: str) -> bool:
+    result = _run([hermes, "memory", "status"])
+    if result.returncode != 0:
+        return False
+    text = (result.stdout + "\n" + result.stderr).casefold()
+    return (
+        "memleaf" in text
+        and "provider" in text
+        and ("available" in text or "active" in text)
+    )
+
+
+def install_hermes(*, vault_path: Path | None = None) -> dict[str, Any]:
+    """Install and configure memleaf for Hermes from the PyPI package."""
+
+    home = _home_from_environment()
+    vault = Vault.initialize(vault_path or home / ".memleaf")
+    model = _prepare_model_route(
+        vault.root,
+        home=home,
+        dry_run=False,
+        non_interactive=not sys.stdin.isatty(),
+        skip_discovery=False,
+    )
+    if model.get("status") == "failure":
+        return {
+            "status": "failure",
+            "reason": "model route is not configured",
+            "vault": str(vault.root),
+            "model": model,
+        }
+
+    hermes_home = _hermes_home(home)
+    adapter = HermesAdapter(home=home, env=os.environ, hermes_home=hermes_home)
+    detection = adapter.detect()
+    if not detection.detected or detection.confidence != "high" or not detection.executable:
+        return {
+            "status": "failure",
+            "reason": "Hermes executable was not found",
+            "vault": str(vault.root),
+            "model": model,
+        }
+
+    command = _memleaf_mcp_command()
+    provider_path = _copy_provider(hermes_home)
+    _write_provider_config(hermes_home / "memleaf.json", command)
+
+    activated = _run([detection.executable, "config", "set", "memory.provider", "memleaf"])
+    if activated.returncode != 0 or not _verify_provider(detection.executable):
+        return {
+            "status": "failure",
+            "reason": "Hermes MemoryProvider could not be activated",
+            "vault": str(vault.root),
+            "provider": str(provider_path),
+            "model": model,
+        }
+
+    adapter = HermesAdapter(
+        home=home,
+        env=os.environ,
+        hermes_home=hermes_home,
+        memleaf_command=command,
+    )
+    detection = adapter.detect()
+    configured = adapter.configure(detection, vault.root, attempt=True)
+    if configured.status not in {"configured", "already_configured"}:
+        return {
+            "status": "failure",
+            "reason": "Hermes MCP entry could not be configured",
+            "vault": str(vault.root),
+            "provider": str(provider_path),
+            "model": model,
+            "mcp": configured.to_dict(),
+        }
+    if not adapter.configure_mcp_lifecycle(detection, idle_timeout_seconds=60):
+        return {
+            "status": "failure",
+            "reason": "Hermes MCP lifecycle could not be configured",
+            "vault": str(vault.root),
+            "provider": str(provider_path),
+            "model": model,
+        }
+    if not adapter.test_mcp(detection, expected_tools=_EXPECTED_TOOLS):
+        update_agents_index(
+            vault.agents_index_path,
+            {"hermes": {"mcp_status": "failed", "mcp_availability": "unavailable"}},
+        )
+        return {
+            "status": "failure",
+            "reason": "Hermes MCP test did not confirm 11 tools",
+            "vault": str(vault.root),
+            "provider": str(provider_path),
+            "model": model,
+        }
+
+    update_agents_index(
+        vault.agents_index_path,
+        {
+            "hermes": {
+                "agent": "hermes",
+                "detected": True,
+                "confidence": "high",
+                "reason": "PyPI-installed memleaf provider is active and MCP test passed",
+                "executable": str(Path(detection.executable).resolve()),
+                "config_path": str((hermes_home / "memleaf.json").resolve()),
+                "status": "configured",
+                "provider_status": "active",
+                "mcp_status": "active",
+                "mcp_availability": "available",
+                "user_action_required": False,
+            }
+        },
+    )
+    return {
+        "status": "configured",
+        "reason": "memleaf is fully configured for Hermes",
+        "vault": str(vault.root),
+        "provider": str(provider_path),
+        "mcp_command": str(command),
+        "model": model,
+    }
+
+
+__all__ = ["install_hermes"]
