@@ -47,7 +47,10 @@ def atomic_write_bytes(path: Path, data: bytes, mode: int = 0o600) -> None:
             prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
         )
         temporary = Path(temporary_name)
-        os.fchmod(descriptor, mode)
+        try:
+            os.fchmod(descriptor, mode)
+        except (AttributeError, OSError):
+            pass
         with os.fdopen(descriptor, "wb") as stream:
             descriptor = None
             stream.write(data)

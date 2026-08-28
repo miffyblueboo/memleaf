@@ -1,6 +1,7 @@
 include CHANGELOG.md
 include LICENSE
 include install.sh
+include install.ps1
 include README.md
 include README.en.md
 include RELEASE_CHECKLIST.md

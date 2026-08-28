@@ -151,7 +151,15 @@ def resolve_executable(
     candidates.extend(Path(candidate).expanduser() for candidate in known_paths)
     for candidate in candidates:
         try:
-            if candidate.is_file() and os.access(candidate, os.X_OK):
+            if not candidate.is_file():
+                continue
+            windows_launcher = os.name == "nt" and candidate.suffix.casefold() in {
+                ".exe",
+                ".cmd",
+                ".bat",
+                ".com",
+            }
+            if windows_launcher or os.access(candidate, os.X_OK):
                 return str(candidate.resolve())
         except OSError:
             continue
@@ -511,7 +519,10 @@ def atomic_replace_bytes(path: Path | str, data: bytes, *, mode: int = 0o600) ->
             prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent)
         )
         temporary = Path(temporary_name)
-        os.fchmod(descriptor, mode)
+        try:
+            os.fchmod(descriptor, mode)
+        except (AttributeError, OSError):
+            pass
         with os.fdopen(descriptor, "wb") as stream:
             descriptor = None
             stream.write(data)
