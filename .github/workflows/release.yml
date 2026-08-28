@@ -6,11 +6,12 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - chore/pypi-publish-v0.1
+      - main
+    paths:
+      - ".github/workflows/release.yml"
 
 jobs:
   build:
-    if: github.event_name != 'push' || github.event.head_commit.message == 'chore: bootstrap PyPI publishing'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -35,7 +36,6 @@ jobs:
           path: dist/
 
   publish:
-    if: github.event_name != 'push' || github.event.head_commit.message == 'chore: bootstrap PyPI publishing'
     needs: build
     runs-on: ubuntu-latest
     environment:
