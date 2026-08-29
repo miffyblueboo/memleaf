@@ -112,31 +112,65 @@ jobs:
   release:
     needs: [test, windows-test, build]
     if: >-
-      github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release: v0.1.5')
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      startsWith(github.event.head_commit.message, 'release: v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Check out the verified release commit
         uses: actions/checkout@v4
+
       - name: Download verified distributions
         uses: actions/download-artifact@v4
         with:
           name: memleaf-distributions
           path: dist/
-      - name: Publish v0.1.5 without replacing any existing release
+
+      - name: Prepare release metadata from pyproject and CHANGELOG
+        id: release_meta
+        shell: bash
+        run: |
+          VERSION="$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(data["project"]["version"])
+          PY
+          )"
+          SUBJECT="$(git log -1 --pretty=%s)"
+          test "$SUBJECT" = "release: v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          python - "$VERSION" <<'PY'
+          from pathlib import Path
+          import sys
+
+          version = sys.argv[1]
+          lines = Path("CHANGELOG.md").read_text(encoding="utf-8").splitlines()
+          prefix = f"## {version}"
+          start = next((i for i, line in enumerate(lines) if line.startswith(prefix)), None)
+          if start is None:
+              raise SystemExit(f"CHANGELOG.md has no section for {version}")
+          end = next(
+              (i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")),
+              len(lines),
+          )
+          notes = "\n".join(lines[start:end]).strip() + "\n"
+          Path("/tmp/memleaf-release-notes.md").write_text(notes, encoding="utf-8")
+          PY
+
+      - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release_meta.outputs.version }}
+        shell: bash
         run: |
-          test -f dist/memleaf-0.1.5-py3-none-any.whl
-          test -f dist/memleaf-0.1.5.tar.gz
-          (cd dist && sha256sum memleaf-0.1.5-py3-none-any.whl memleaf-0.1.5.tar.gz > SHA256SUMS)
-          gh release create v0.1.5 \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "memleaf 0.1.5 — Windows Hermes stdio transport" \
-            --notes-file RELEASE_NOTES_0.1.5.md \
-            --latest \
-            dist/memleaf-0.1.5-py3-none-any.whl \
-            dist/memleaf-0.1.5.tar.gz \
-            dist/SHA256SUMS
+          test -f "dist/memleaf-${VERSION}-py3-none-any.whl"
+          test -f "dist/memleaf-${VERSION}.tar.gz"
+          (
+            cd dist
+            sha256sum "memleaf-${VERSION}-py3-none-any.whl" "memleaf-${VERSION}.tar.gz" > SHA256SUMS
+          )
+          gh release create "v${VERSION}"             --repo "$GITHUB_REPOSITORY"             --target "$GITHUB_SHA"             --title "memleaf ${VERSION}"             --notes-file /tmp/memleaf-release-notes.md             --latest             "dist/memleaf-${VERSION}-py3-none-any.whl"             "dist/memleaf-${VERSION}.tar.gz"             dist/SHA256SUMS

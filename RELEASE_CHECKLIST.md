@@ -1,37 +1,78 @@
-# v0.1 发布检查
+# 发布检查清单
 
-检查日期：2026-08-28。发布版本：`0.1.0`，GitHub 标签 `v0.1`。
+本文件是 memleaf 的长期发布 SOP，不记录某个具体版本的发布说明。
 
-本文件记录发布前检查快照；实际发布状态和远端测试结果以 GitHub Release / Actions 为准。
+版本历史统一维护在 `CHANGELOG.md`；GitHub Release 从对应版本的 CHANGELOG
+段落生成。不要再新增 `RELEASE_NOTES_*.md` 文件。
 
-## 发布范围
+## 1. 版本准备
 
-- 仅支持 Hermes：原生 MemoryProvider 与主动 MCP 是两条独立链路。
-- 安装、`init --all` 和默认模型发现均不接入 Codex/反重力；不卸载已有接入。
-- 默认源码目录 `$HOME/memleaf`，数据目录 `$HOME/.memleaf`。
-- 内部历史兼容代码保留，不代表本版承诺支持相应宿主。
+- [ ] 明确本次版本号与变更范围。
+- [ ] 更新 `pyproject.toml` 的项目版本。
+- [ ] 更新 `src/memleaf/__init__.py` 的 `__version__`。
+- [ ] 同步两个 Hermes Provider manifest 的版本：
+  - `src/memleaf/hermes_provider/plugin.yaml`
+  - `integrations/hermes/memleaf/plugin.yaml`
+- [ ] 更新所有依赖具体版本号的测试。
+- [ ] 在 `CHANGELOG.md` 顶部新增本版本段落。
+- [ ] 同步 `README.md` 与 `README.en.md` 的当前版本信息。
+- [ ] 不新增单独的版本发布说明 Markdown 文件。
 
-## 已完成的本地检查
+## 2. 自动化验证
 
-| 项目 | 结果 |
-| --- | --- |
-| Hermes-only 安装、初始化、模型发现和 MCP 定向测试 | 59 项通过 |
-| 完整源码测试（Python 3.11） | 373 项通过 |
-| 解包后的 source distribution 完整测试 | 373 项通过 |
-| 隔离安装 | 含空格路径、无 pip/setuptools、重复安装、缺少模型失败、其他宿主配置不变等回归通过 |
-| wheel 安装 | 全新虚拟环境离线安装；import 来自 site-packages；两个 CLI 版本一致 |
-| 构建与静态检查 | wheel/sdist 构建、compileall、bash 语法、Git diff 空白检查通过 |
-| 发行内容 | 包含安装脚本、两份 README、Hermes 插件、测试与计划文档；无第三方运行时依赖 |
-| 隐私检查 | 本地验收/历史清理报告被排除；源码包未发现个人绝对路径、真实会话标识及已知业务名称；测试使用合成数据 |
+- [ ] Linux Python 3.11 / 3.12 / 3.13 完整 unittest 通过。
+- [ ] Windows Python 3.11 / 3.12 / 3.13 安装与集成验收通过。
+- [ ] Windows 真实 Provider → `memleaf-mcp` stdio 回归通过：
+  `stats`、`scope_catalog`、user/assistant capture、inbox 落盘。
+- [ ] wheel 与 sdist 构建通过。
+- [ ] 从 wheel 安装后 `memleaf` / `memleaf-mcp` 入口正常。
+- [ ] 从 sdist 解包后的测试通过。
+- [ ] PowerShell 安装器语法验证通过。
+- [ ] `git diff --check` / compileall 等静态检查无异常。
 
-安装测试使用隔离 HOME 和模拟 Hermes CLI；MCP 测试包含真实 stdio 子进程，但这些不等于真实 Hermes 对话/真实模型验收。隐私检查也不等于完整安全审计。
+## 3. Hermes 真实环境重点
 
-## 发布前仍需完成
+- [ ] Hermes 实际 Python 环境加载的是目标 memleaf 版本。
+- [ ] Hermes `plugins/memleaf` Provider 副本也是目标版本。
+- [ ] MemoryProvider 可正常加载；`registered (0 tools)` 属于预期。
+- [ ] 独立 memleaf MCP 注册 11 个工具。
+- [ ] `stats` / `scope_catalog` 无 OSError、WinError 10093、TimeoutError。
+- [ ] 可见轮次能 capture 到 inbox。
+- [ ] process 能将有长期价值的内容提炼到 knowledge。
+- [ ] UPDATE 能复用 active memory ID，并将旧版归档到 history。
+- [ ] 新 Hermes 会话能召回旧会话中的已保存信息。
 
-- [ ] 最终候选版真实 Hermes 会话验收：自动绑定当前轮 `retrieval_id`；FOUND 后 read 预算入账；随机无匹配返回 NO_MATCH；纯查询不写知识；自然状态更新复用 ID 并保留 history；MCP 首次与闲置回收后调用成功。不得使用文件工具兜底冒充 MCP 成功。
-- [x] 确认发布仓库为公开的 `miffyblueboo/memleaf`，当前 GitHub 插件账号具有管理与推送权限。旧 `Ahhry/memleaf` 地址不再用于安装。
-- [x] 用户已明确授权正式发布 v0.1，并要求预告 v0.2 支持 Codex、后续逐步支持更多 Agent。
-- [ ] 远端 GitHub Actions 的 Python 3.11/3.12/3.13 与构建任务通过后，由本次发布提交触发 Release；CI 配置本身不算通过证据。
-- [ ] 对实际发布的 commit/tag 做干净 clone 安装并核对发行附件。
+## 4. 安全与兼容
 
-结论：本地自动化与打包检查通过，按用户授权发布；不能将其表述为真实 Hermes 场景全部验收通过。发布说明明确保留该验证边界。本次发布不覆盖现有运行目录或修改真实 Vault。
+- [ ] Hermes 脱敏 credential（如 `***`、头尾掩码）不会被当成真实 API key。
+- [ ] 日志与状态输出不泄露真实 API key。
+- [ ] Windows 路径仍支持 `%LOCALAPPDATA%\hermes` 及官方 launcher 布局。
+- [ ] Provider 的 Windows stdio 实现不重新引入 `select.select(pipe)`。
+- [ ] `src/memleaf/hermes_provider/__init__.py` 与
+  `integrations/hermes/memleaf/__init__.py` 保持同步。
+
+## 5. 正式发布
+
+正式 release commit 的 subject 必须严格为：
+
+```text
+release: vX.Y.Z
+```
+
+然后：
+
+- [ ] push 到 `main`。
+- [ ] CI 全部通过。
+- [ ] CI 从 `pyproject.toml` 读取版本，并确认 commit subject 与版本一致。
+- [ ] CI 从 `CHANGELOG.md` 提取本版本段落创建 GitHub Release。
+- [ ] GitHub Release tag、标题、wheel、sdist、SHA256SUMS 均对应目标版本。
+- [ ] `Publish to PyPI` workflow 使用 Trusted Publishing / OIDC 成功。
+- [ ] PyPI 页面显示目标版本。
+- [ ] 安装命令实际可升级到目标版本。
+
+## 6. 发布后
+
+- [ ] 检查 GitHub Release 显示标题、tag 与正文版本一致。
+- [ ] 检查 PyPI 与 GitHub Release 的版本一致。
+- [ ] 如有真实宿主验收结果，更新 `MAINTAINER_HANDOFF.md` 中的维护证据或注意事项。
+- [ ] 不修改或覆盖已发布的 PyPI 版本；有修复时递增新版本。

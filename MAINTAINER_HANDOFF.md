@@ -1,6 +1,6 @@
 # Maintainer Handoff
 
-Current release target: **0.1.5**  
+Current release: **0.1.5**  
 License: **MIT**
 
 This file is for maintainers and is intentionally not linked from the user-facing README.
@@ -75,8 +75,19 @@ CI must pass Linux tests, Windows acceptance, and packaging before GitHub Releas
 creation. The separate `Publish to PyPI` workflow then publishes with PyPI
 Trusted Publishing / OIDC.
 
+Release documentation policy:
+
+- Keep version history in `CHANGELOG.md`.
+- Do not add per-version `RELEASE_NOTES_*.md` files to the repository.
+- GitHub Release notes are generated from the matching `CHANGELOG.md` section.
+- Keep `README.md` and `README.en.md` on the current public version only.
+- Keep `RELEASE_CHECKLIST.md` as the reusable release SOP.
+
 Before the next release, update the version in package metadata, both provider
-manifests, tests, CI release filenames/tag/title, release notes, CHANGELOG, and
-both READMEs.
+manifests, version-sensitive tests, CHANGELOG, and both READMEs. The release
+commit subject must be exactly `release: v<version>`; CI reads the version from
+`pyproject.toml`, validates that subject, extracts the matching CHANGELOG
+section, creates the GitHub Release, and then the separate OIDC workflow
+publishes to PyPI.
 
 PyPI versions are immutable. Never attempt to overwrite a published version.
