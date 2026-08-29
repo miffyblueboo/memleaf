@@ -52,6 +52,7 @@ jobs:
       - name: Run Windows installation tests
         run: |
           python -m unittest discover -s tests -p 'test_pypi_install.py' -v
+          python -m unittest discover -s tests -p 'test_upgrade_preserves_vault.py' -v
           python -m unittest discover -s tests -p 'test_credential_safety.py' -v
           python -m unittest discover -s tests -p 'test_hermes_stdio_transport.py' -v
           python -m unittest discover -s tests -p 'test_stage_c3_packaging.py' -v

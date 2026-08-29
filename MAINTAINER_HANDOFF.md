@@ -1,6 +1,6 @@
 # Maintainer Handoff
 
-Current release: **0.1.5**  
+Current release: **0.1.6**  
 License: **MIT**
 
 This file is for maintainers and is intentionally not linked from the user-facing README.
@@ -56,6 +56,27 @@ the resulting inbox file.
 
 Windows CI currently runs this acceptance test on Python 3.11, 3.12, and 3.13.
 Linux continues to run the full test suite.
+
+## 0.1.6 upgrade invariant
+
+The normal install command is also the upgrade command. Do not require users to
+uninstall first, and do not move or recreate their memory data during a routine
+upgrade.
+
+Vault selection order is intentionally:
+
+1. explicit `--vault`;
+2. existing Hermes `memleaf.json` Vault;
+3. `MEMLEAF_VAULT`;
+4. default `~/.memleaf`.
+
+The existing Hermes config is read before `Vault.initialize()`. If that config
+exists but is malformed or contains an invalid Vault value, fail closed instead
+of falling through to another path. This prevents an upgrade from appearing to
+"lose" memories merely because Hermes was silently repointed to a fresh Vault.
+
+`tests/test_upgrade_preserves_vault.py` is part of the Windows acceptance
+matrix and must remain covered.
 
 ## Other Windows invariants
 

@@ -38,6 +38,73 @@ def _hermes_home(
     )
 
 
+def _resolve_vault_path(value: str, home: Path) -> Path:
+    raw = os.path.expandvars(value.strip())
+    if raw == "~":
+        candidate = home
+    elif raw.startswith("~/") or raw.startswith("~\\"):
+        candidate = home / raw[2:]
+    else:
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = home / candidate
+    return candidate.resolve()
+
+
+def _existing_hermes_vault(hermes_home: Path, home: Path) -> Path | None:
+    """Read the Vault used by an existing Hermes memleaf installation.
+
+    Existing configuration is authoritative during upgrades. If it exists but
+    is unsafe or malformed, fail instead of silently switching the user to a
+    new default Vault.
+    """
+
+    path = hermes_home / "memleaf.json"
+    if not path.exists():
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError(f"unsafe existing Hermes memleaf config: {path}")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as error:
+        raise RuntimeError(f"invalid existing Hermes memleaf config: {path}") from error
+    if not isinstance(value, dict):
+        raise RuntimeError(f"existing Hermes memleaf config must be an object: {path}")
+    raw_vault = value.get("vault")
+    if raw_vault is None:
+        return None
+    if not isinstance(raw_vault, str) or not raw_vault.strip():
+        raise RuntimeError(f"existing Hermes memleaf Vault path is invalid: {path}")
+    return _resolve_vault_path(raw_vault, home)
+
+
+def _select_vault_path(
+    *,
+    home: Path,
+    hermes_home: Path,
+    vault_path: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[Path, str]:
+    """Select the installation Vault without losing an existing custom path."""
+
+    if vault_path is not None:
+        candidate = vault_path.expanduser()
+        if not candidate.is_absolute():
+            candidate = home / candidate
+        return candidate.resolve(), "explicit"
+
+    existing = _existing_hermes_vault(hermes_home, home)
+    if existing is not None:
+        return existing, "hermes_config"
+
+    environment = os.environ if env is None else env
+    configured = environment.get("MEMLEAF_VAULT")
+    if isinstance(configured, str) and configured.strip():
+        return _resolve_vault_path(configured, home), "environment"
+
+    return (home / ".memleaf").resolve(), "default"
+
+
 def _memleaf_mcp_command() -> Path:
     name = "memleaf-mcp.exe" if os.name == "nt" else "memleaf-mcp"
     user_scripts = Path(site.USER_BASE) / ("Scripts" if os.name == "nt" else "bin")
@@ -166,7 +233,13 @@ def install_hermes(*, vault_path: Path | None = None) -> dict[str, Any]:
     """Install and configure memleaf for Hermes from the PyPI package."""
 
     home = _home_from_environment()
-    vault = Vault.initialize(vault_path or home / ".memleaf")
+    hermes_home = _hermes_home(home)
+    selected_vault, vault_source = _select_vault_path(
+        home=home,
+        hermes_home=hermes_home,
+        vault_path=vault_path,
+    )
+    vault = Vault.initialize(selected_vault)
     model = _prepare_model_route(
         vault.root,
         home=home,
@@ -182,7 +255,6 @@ def install_hermes(*, vault_path: Path | None = None) -> dict[str, Any]:
             "model": model,
         }
 
-    hermes_home = _hermes_home(home)
     adapter = HermesAdapter(home=home, env=os.environ, hermes_home=hermes_home)
     detection = adapter.detect()
     if not detection.detected or detection.confidence != "high" or not detection.executable:
@@ -267,6 +339,7 @@ def install_hermes(*, vault_path: Path | None = None) -> dict[str, Any]:
         "status": "configured",
         "reason": "memleaf is fully configured for Hermes",
         "vault": str(vault.root),
+        "vault_source": vault_source,
         "provider": str(provider_path),
         "mcp_command": str(command),
         "model": model,

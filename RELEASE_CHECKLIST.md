@@ -47,6 +47,7 @@
 - [ ] Hermes 脱敏 credential（如 `***`、头尾掩码）不会被当成真实 API key。
 - [ ] 日志与状态输出不泄露真实 API key。
 - [ ] Windows 路径仍支持 `%LOCALAPPDATA%\hermes` 及官方 launcher 布局。
+- [ ] 从旧版本升级时保留已有 Hermes `memleaf.json` 中的自定义 Vault，不静默切换到默认 Vault。
 - [ ] Provider 的 Windows stdio 实现不重新引入 `select.select(pipe)`。
 - [ ] `src/memleaf/hermes_provider/__init__.py` 与
   `integrations/hermes/memleaf/__init__.py` 保持同步。

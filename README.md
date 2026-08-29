@@ -4,8 +4,8 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **当前版本：0.1.5。**
-> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.1.5 通过 PyPI 分发。
+> **当前版本：0.1.6。**
+> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.1.6 通过 PyPI 分发。
 > **当前版本仅支持 Hermes。** Codex 与反重力不检测、不安装、不配置，也不扫描其模型配置。
 
 ## 项目定位
@@ -110,6 +110,19 @@ Windows 安装器会优先使用 Hermes 自带的 Python 环境，因此不要�
 ```bash
 python -m pip install -U memleaf && python -m memleaf install
 ```
+
+### 更新 memleaf
+
+安装命令同时也是升级命令，不需要先卸载旧版本。Windows 用户重新执行上面的 PowerShell 一行命令；macOS / Linux 用户重新执行上面的 `pip install -U` 命令即可。
+
+升级时不会迁移或删除现有记忆。Vault 选择顺序固定为：
+
+1. 用户本次明确传入的 `--vault`；
+2. 已有 Hermes `memleaf.json` 中正在使用的 Vault；
+3. `MEMLEAF_VAULT` 环境变量；
+4. 默认 `~/.memleaf`。
+
+因此从早期版本升级时，即使原来使用的是自定义 Vault，也会继续使用原目录。若已有 `memleaf.json` 损坏或其中的 Vault 路径无效，升级会明确失败，而不会静默切换到一个新的默认 Vault。
 
 两种安装方式最终都会自动：
 

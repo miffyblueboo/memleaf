@@ -104,6 +104,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(output, ensure_ascii=False, sort_keys=True))
         elif output.get("status") == "configured":
             print(f"memleaf installed for Hermes: {output['vault']}")
+            if output.get("vault_source") == "hermes_config":
+                print("Preserved the Vault from the existing Hermes memleaf configuration.")
             print("Restart Hermes to use memleaf.")
         else:
             print(f"memleaf install failed: {output.get('reason', 'unknown error')}", file=sys.stderr)

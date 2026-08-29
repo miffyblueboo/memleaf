@@ -2,6 +2,15 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.1.6 — 2026-08-29
+
+- Made the normal install command the supported upgrade path for existing memleaf installations.
+- Preserve the Vault already configured in Hermes `memleaf.json` during upgrades, including custom Vault locations used by early releases.
+- Added deterministic Vault precedence: explicit `--vault` → existing Hermes config → `MEMLEAF_VAULT` → default `~/.memleaf`.
+- Fail safely when an existing Hermes memleaf configuration is malformed instead of silently switching the user to a new default Vault.
+- Added Linux and Windows regression coverage for upgrade Vault selection.
+
+
 ## 0.1.5 — 2026-08-29
 
 - Fixed the Hermes MemoryProvider stdio client on Windows by replacing

@@ -4,8 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.1.5.**
-> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.1.5 is distributed through PyPI.
+> **Version: 0.1.6.**
+> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.1.6 is distributed through PyPI.
 > **The current release supports only Hermes.** Codex and Antigravity are not detected, installed, configured, or scanned for models.
 
 ## Project scope
@@ -110,6 +110,19 @@ If `HERMES_HOME` is set, memleaf uses it instead.
 ```bash
 python -m pip install -U memleaf && python -m memleaf install
 ```
+
+### Updating memleaf
+
+The install command is also the upgrade command; an old version does not need to be uninstalled first. Windows users can rerun the PowerShell one-liner above, while macOS / Linux users can rerun the `pip install -U` command.
+
+Upgrades do not migrate or delete existing memories. Vault selection has a fixed precedence:
+
+1. an explicit `--vault` supplied for this run;
+2. the Vault already stored in Hermes `memleaf.json`;
+3. the `MEMLEAF_VAULT` environment variable;
+4. the default `~/.memleaf`.
+
+This preserves a custom Vault used by an older installation. If an existing `memleaf.json` is malformed or contains an invalid Vault path, the upgrade fails explicitly instead of silently switching to a new default Vault.
 
 Both installation paths automatically:
 

@@ -47,7 +47,7 @@ $oldHermesHome = $env:HERMES_HOME
 try {
     $env:HERMES_HOME = $hermesHome
 
-    Write-Host "Installing memleaf from PyPI..."
+    Write-Host "Installing or upgrading memleaf from PyPI..."
 
     $managedUv = Join-Path $hermesHome "bin\uv.exe"
     $uvCommand = $null
@@ -77,7 +77,7 @@ try {
     Invoke-MemleafPython -PythonArgs @("-m", "memleaf", "install")
 
     Write-Host ""
-    Write-Host "memleaf is installed and configured for Hermes."
+    Write-Host "memleaf is installed or upgraded and configured for Hermes."
     Write-Host "Restart Hermes to use memleaf."
 } finally {
     if ($null -eq $oldHermesHome) {
