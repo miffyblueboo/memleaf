@@ -63,6 +63,23 @@ class HermesStdioTransportTests(unittest.TestCase):
             try:
                 stats = client.call_tool("stats", {})
                 catalog = client.call_tool("scope_catalog", {"limit": 20})
+                managed_catalog = client.call_tool(
+                    "scope_catalog",
+                    {
+                        "limit": 20,
+                        "source": "hermes",
+                        "session_id": "stdio-session",
+                        "turn_id": "turn-000001",
+                    },
+                )
+                retrieval_id = managed_catalog.get("retrieval_id")
+                managed_search = client.call_tool(
+                    "search",
+                    {
+                        "query": "Windows provider transport no-match probe",
+                        "retrieval_id": retrieval_id,
+                    },
+                )
                 user = client.call_tool(
                     "capture",
                     {
@@ -92,6 +109,10 @@ class HermesStdioTransportTests(unittest.TestCase):
 
             self.assertIsInstance(stats, dict)
             self.assertIn("scopes", catalog)
+            self.assertIn("scopes", managed_catalog)
+            self.assertIsInstance(retrieval_id, str)
+            self.assertTrue(retrieval_id.startswith("rtv-"))
+            self.assertEqual("no_match", managed_search.get("status"))
             self.assertTrue(user.get("stored") or user.get("duplicate"))
             self.assertTrue(assistant.get("stored") or assistant.get("duplicate"))
 
