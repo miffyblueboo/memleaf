@@ -35,13 +35,14 @@ from .retrieval_gate import (
     request_gate_retry,
     validate_turn,
 )
+from .host_runtime import HostRuntime
 from .service import Memleaf
 from .vault import Vault, safe_component
 
 
 _MAX_TRANSCRIPT_CHUNK = 8 * 1024 * 1024
 _MAX_TRANSCRIPT_LINE = 2 * 1024 * 1024
-_EMPTY_INGEST = {"version": 1, "codex": {}, "transcripts": {}}
+_EMPTY_INGEST = {"version": 2, "hosts": {}, "codex": {}, "transcripts": {}}
 _ANTIGRAVITY_STOP_RESPONSE = {"decision": "stop"}
 _CODEX_SCOPE_ITEMS = 20
 _CODEX_SCOPE_CHARS = 2000
@@ -182,6 +183,8 @@ def _handle_codex(
     *,
     event_name: str | None,
 ) -> dict[str, Any]:
+    """Translate Codex hook events into the shared host lifecycle runtime."""
+
     if _is_subagent(event):
         return {}
     name = _normalize_event_name(event_name or _field(event, "hook_event_name", "hookEventName"))
@@ -190,39 +193,29 @@ def _handle_codex(
     session_id, turn_id = _codex_identity(event)
     if session_id is None:
         return {}
-    service = Memleaf(vault)
+
+    runtime = HostRuntime(Memleaf(vault), "codex")
 
     if name == "UserPromptSubmit":
         prompt = _field(event, "prompt")
         if not isinstance(prompt, str) or not prompt.strip() or turn_id is None:
             return {}
-        # A Stop block may be delivered as a new UserPromptSubmit with a new
-        # turn_id.  Correlate only the opaque marker we put in that block's
-        # reason; never consume an ordinary user prompt merely because its
-        # session or old turn id happens to match.
-        continuation_id = find_pending_continuation(vault, "codex", session_id, prompt)
-        if continuation_id is not None:
-            bind_turn_alias(vault, continuation_id, turn_id)
-            consume_continuation(vault, continuation_id)
+        opened = runtime.open_turn(
+            session_id=session_id,
+            turn_id=turn_id,
+            user_content=prompt,
+            allow_continuation=True,
+        )
+        if opened.continuation or opened.injection_delivered:
             return {}
-        retrieval_id = find_turn(vault, "codex", session_id, turn_id)
-        if retrieval_id is None:
-            retrieval_id = begin_turn(vault, "codex", session_id, turn_id)
-        service.capture("codex", session_id, turn_id, "user", prompt)
-        if _codex_injection_consumed(vault, session_id, turn_id):
-            return {}
-        # v2 injects a Scope Map only.  The host agent already owns the full
-        # conversation and must choose the search query itself.  There is no
-        # context/search fallback here because that would reintroduce memory
-        # titles, IDs, or bodies into every prompt.
-        catalog = service.scope_catalog(limit=_CODEX_SCOPE_ITEMS)
+
+        # Automatic injection remains scope-only.  HostRuntime owns the turn
+        # lifecycle; this bridge only renders the existing Codex wire format.
+        catalog = runtime.scope_catalog(limit=_CODEX_SCOPE_ITEMS)
         if not _valid_scope_catalog(catalog):
             return {"systemMessage": _CODEX_SCOPE_MAP_UNAVAILABLE_MESSAGE}
         context = _format_scope_catalog(catalog)
-        # Consume the injection after a successful context call, even when no
-        # memory matched.  A replayed hook must not repeatedly query context;
-        # an exception above deliberately leaves the turn retryable.
-        if not _consume_codex_injection(vault, session_id, turn_id):
+        if not runtime.mark_injection_delivered(session_id, turn_id):
             return {}
         mark_hook_active(vault.root, "codex")
         if not context:
@@ -235,102 +228,41 @@ def _handle_codex(
         }
 
     if name == "PreToolUse":
-        return _handle_codex_pre_tool(vault, event, session_id, turn_id)
+        return _handle_codex_pre_tool(runtime, event, session_id, turn_id)
 
     if name == "PostToolUse":
-        return _handle_codex_post_tool(vault, event, session_id, turn_id)
+        return _handle_codex_post_tool(runtime, event, session_id, turn_id)
 
     if name != "Stop" or turn_id is None:
         return {}
 
-    retrieval_id = find_turn(vault, "codex", session_id, turn_id)
-    degraded = retrieval_id is None
-    capture_turn_id = turn_id
-    if retrieval_id is not None:
-        try:
-            gate_state = validate_turn(vault, retrieval_id)
-        except RetrievalGateError:
-            gate_state = None
-            degraded = True
-        else:
-            original_turn_id = gate_state.get("turn_id")
-            if isinstance(original_turn_id, str) and original_turn_id:
-                # A blocked Stop may resume through UserPromptSubmit with a
-                # fresh host turn id.  Keep the business transcript on the
-                # original turn while the alias remains gate-only state.
-                capture_turn_id = original_turn_id
-            if gate_state.get("status") == "DEGRADED":
-                degraded = True
-        if gate_state is not None and gate_state.get("status") in {"NOT_SEARCHED", "ERROR"}:
-            retries = int(gate_state.get("gate_retries", 0) or 0)
-            if retries < MAX_GATE_RETRIES:
-                try:
-                    request_gate_retry(vault, retrieval_id)
-                except RetrievalGateError:
-                    # The hook remains fail-open if its small ledger is
-                    # unavailable; it must not claim that search succeeded.
-                    pass
-                else:
-                    reason = (
-                        _CODEX_GATE_ERROR_REASON
-                        if gate_state.get("status") == "ERROR"
-                        else _CODEX_GATE_RETRY_REASON
-                    )
-                    marker = continuation_marker(vault, retrieval_id)
-                    if marker:
-                        reason = f"{reason} [memleaf continuation {marker}]"
-                    return {"decision": "block", "reason": reason}
-            try:
-                mark_degraded(vault, retrieval_id)
-            except RetrievalGateError:
-                pass
-            degraded = True
+    retrieval_present = _codex_event_retrieval_id(vault, session_id, turn_id) is not None
+    completion = runtime.complete_turn(
+        session_id=session_id,
+        turn_id=turn_id,
+        assistant_content=_field(event, "last_assistant_message", "lastAssistantMessage"),
+        auto_process=True,
+    )
+    if completion.retry_required and completion.retry_reason:
+        return {"decision": "block", "reason": completion.retry_reason}
 
-    assistant = _field(event, "last_assistant_message", "lastAssistantMessage")
-    hook_succeeded = False
-    hook_failed = False
-    process_deferred = False
-    captured = False
-    if isinstance(assistant, str) and assistant.strip():
-        result = service.capture("codex", session_id, capture_turn_id, "assistant", assistant)
-        hook_succeeded = True
-        captured = not getattr(result, "duplicate", False)
-    pending = _codex_pending(vault, session_id)
-    if captured:
-        pending = True
-    if pending:
-        try:
-            process_result = service.process(source="codex", session_id=session_id)
-        except Exception:
-            hook_failed = True
-            _set_codex_pending(vault, session_id, True)
-        else:
-            if isinstance(process_result, Mapping):
-                process_deferred = any(
-                    isinstance(process_result.get(key), int)
-                    and not isinstance(process_result.get(key), bool)
-                    and process_result.get(key, 0) > 0
-                    for key in ("deferred_candidates", "deferred_inbox_turns")
-                )
-            _set_codex_pending(vault, session_id, False)
-            hook_succeeded = True
-    if hook_succeeded and not hook_failed:
+    if completion.captured and not completion.process_failed:
         mark_hook_active(vault.root, "codex")
+
     notices = []
-    if degraded:
+    if completion.degraded:
         notices.append(
             _CODEX_GATE_DEGRADED_MESSAGE
-            if retrieval_id is not None
+            if retrieval_present
             else _CODEX_GATE_UNVERIFIED_MESSAGE
         )
-    if hook_failed:
+    if completion.process_failed:
         notices.append(_CODEX_PROCESS_FAILED_MESSAGE)
-    if process_deferred:
+    if completion.process_deferred:
         notices.append(_CODEX_PROCESS_DEFERRED_MESSAGE)
     if notices:
         return {"systemMessage": " ".join(notices)}
     return {}
-
 
 def _codex_memleaf_tool(tool_name: Any, suffix: str) -> bool:
     return isinstance(tool_name, str) and tool_name == f"mcp__memleaf__{suffix}"
@@ -350,7 +282,7 @@ def _codex_event_retrieval_id(
 
 
 def _handle_codex_pre_tool(
-    vault: Vault,
+    runtime: HostRuntime,
     event: Mapping[str, Any],
     session_id: str | None,
     turn_id: str | None,
@@ -358,41 +290,27 @@ def _handle_codex_pre_tool(
     tool_name = _field(event, "tool_name", "toolName")
     if not (_codex_memleaf_tool(tool_name, "search") or _codex_memleaf_tool(tool_name, "read")):
         return {}
-    retrieval_id = _codex_event_retrieval_id(vault, session_id, turn_id)
-    tool_input = _field(event, "tool_input", "toolInput")
-    if retrieval_id is None:
+    if session_id is None or turn_id is None:
+        return {}
+    prepared = runtime.prepare_memory_tool(
+        session_id=session_id,
+        turn_id=turn_id,
+        arguments=_field(event, "tool_input", "toolInput"),
+    )
+    if not prepared.allowed or prepared.arguments is None:
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": (
-                    "The memleaf retrieval turn is unavailable or expired. "
-                    "Start a new user turn before using this memory tool."
-                ),
+                "permissionDecisionReason": prepared.reason or "memleaf retrieval unavailable",
             }
         }
-    if not isinstance(tool_input, Mapping):
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": (
-                    "The memleaf tool input is unavailable; the memory request "
-                    "cannot be authorized for this turn."
-                ),
-            }
-        }
-    updated_input = dict(tool_input)
-    # The lifecycle hook is authoritative for the current session/turn.  Do
-    # not allow a model-supplied or stale token to cross that boundary.
-    updated_input["retrieval_id"] = retrieval_id
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
-            "updatedInput": updated_input,
+            "updatedInput": prepared.arguments,
         }
     }
-
 
 def _json_tool_result(value: Any) -> Mapping[str, Any] | None:
     if not isinstance(value, Mapping):
@@ -448,29 +366,27 @@ def _codex_search_status(value: Any) -> str:
 
 
 def _handle_codex_post_tool(
-    vault: Vault,
+    runtime: HostRuntime,
     event: Mapping[str, Any],
     session_id: str | None,
     turn_id: str | None,
 ) -> dict[str, Any]:
     if not _codex_memleaf_tool(_field(event, "tool_name", "toolName"), "search"):
         return {}
-    retrieval_id = _codex_event_retrieval_id(vault, session_id, turn_id)
+    if session_id is None or turn_id is None:
+        return {}
     tool_input = _field(event, "tool_input", "toolInput")
     call_id = _field(event, "tool_use_id", "toolUseId")
-    if retrieval_id is None or not isinstance(tool_input, Mapping) or not isinstance(call_id, str):
+    if not isinstance(tool_input, Mapping) or not isinstance(call_id, str):
         return {}
-    if tool_input.get("retrieval_id") != retrieval_id:
-        return {}
-    status = _codex_search_status(_field(event, "tool_response", "toolResponse"))
-    try:
-        observe_search(vault, retrieval_id, status, call_id)
-    except RetrievalGateError:
-        # A missing/expired ledger is a visible gate failure at Stop; never
-        # manufacture a successful search observation here.
-        return {}
+    runtime.observe_search(
+        session_id=session_id,
+        turn_id=turn_id,
+        status=_codex_search_status(_field(event, "tool_response", "toolResponse")),
+        call_id=call_id,
+        supplied_retrieval_id=tool_input.get("retrieval_id"),
+    )
     return {}
-
 
 @dataclass(frozen=True)
 class _TranscriptRecord:
@@ -503,6 +419,7 @@ def _handle_antigravity(
     state = _read_ingest_state(vault)
     entry = _transcript_state(state, key, transcript)
     service = Memleaf(vault)
+    runtime = HostRuntime(service, "antigravity")
 
     if name == "PreInvocation":
         first_read = not entry.get("initialized", False)
@@ -535,14 +452,16 @@ def _handle_antigravity(
                 None,
             )
             try:
-                service.capture(
-                    "antigravity",
-                    session_id,
-                    group["turn_id"]
-                    if group is not None
-                    else _antigravity_turn_id(session_id, record.step_index),
-                    "user",
-                    record.content,
+                runtime.capture(
+                    source="antigravity",
+                    session_id=session_id,
+                    turn_id=(
+                        group["turn_id"]
+                        if group is not None
+                        else _antigravity_turn_id(session_id, record.step_index)
+                    ),
+                    role="user",
+                    content=record.content,
                     event_id=_antigravity_event_id(session_id, record.step_index, "user"),
                 )
             except Exception:
@@ -609,12 +528,12 @@ def _handle_antigravity(
             if record is None:
                 continue
             try:
-                service.capture(
-                    "antigravity",
-                    session_id,
-                    turn_id,
-                    "user",
-                    record.content,
+                runtime.capture(
+                    source="antigravity",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    role="user",
+                    content=record.content,
                     event_id=_antigravity_event_id(session_id, step_index, "user"),
                 )
             except Exception:
@@ -636,12 +555,12 @@ def _handle_antigravity(
             remaining.append(group)
             continue
         try:
-            service.capture(
-                "antigravity",
-                session_id,
-                group["turn_id"],
-                "assistant",
-                assistant.content,
+            runtime.capture(
+                source="antigravity",
+                session_id=session_id,
+                turn_id=group["turn_id"],
+                role="assistant",
+                content=assistant.content,
                 event_id=_antigravity_event_id(session_id, assistant.step_index, "assistant"),
             )
         except Exception:
@@ -667,7 +586,7 @@ def _handle_antigravity(
 
     if entry.get("process_pending") is True:
         try:
-            service.process(source="antigravity", session_id=session_id)
+            runtime.process(source="antigravity", session_id=session_id)
         except Exception:
             return _antigravity_stop_response()
         entry["process_pending"] = False
@@ -928,7 +847,7 @@ def _read_ingest_file(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         return json.loads(json.dumps(_EMPTY_INGEST))
     state = json.loads(json.dumps(_EMPTY_INGEST))
-    for key in ("codex", "transcripts"):
+    for key in ("hosts", "codex", "transcripts"):
         if isinstance(value.get(key), dict):
             state[key] = dict(value[key])
     return state
@@ -968,7 +887,7 @@ def _write_ingest_state(
                     bucket[transcript_key] = incoming_transcripts[transcript_key]
                     merged["transcripts"] = bucket
             else:
-                for key in ("codex", "transcripts"):
+                for key in ("hosts", "codex", "transcripts"):
                     incoming = state.get(key)
                     if not isinstance(incoming, Mapping):
                         continue

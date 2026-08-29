@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from . import __version__
+from .host_runtime import HostRuntime
 from .llm import MODEL_ERROR_CODES, MODEL_VALIDATION_REASONS, ModelError, ModelUnavailable
 from .models import CaptureResult, ForgetAboutResult, Memory, MemoryVersionError
 from .retrieval import RetrievalError
@@ -700,7 +701,9 @@ def _invoke_tool(
         )
     try:
         if name == "capture":
-            value = service.capture(**args)
+            source = args.get("source")
+            runtime = HostRuntime(service, source if isinstance(source, str) and source else "mcp")
+            value = runtime.capture(**args)
         elif name == "context":
             value = service.context(**args)
             value = _directory_result(value)
@@ -708,11 +711,16 @@ def _invoke_tool(
             identity = {key: args.pop(key) for key in ("source", "session_id", "turn_id") if key in args}
             if identity and len(identity) != 3:
                 raise ValueError("scope catalog host identity must be supplied together")
-            value = _catalog_result(service.scope_catalog(**args))
             if identity:
-                # Hermes is an independent plugin runtime: it obtains a
-                # budget token over MCP, never by importing or writing Core.
-                value["retrieval_id"] = begin_turn(service.vault, **identity)
+                runtime = HostRuntime(service, identity["source"])
+                value = _catalog_result(runtime.scope_catalog(**args))
+                # Independent host plugins obtain the same shared-runtime turn
+                # binding over MCP instead of importing Core internals.
+                value["retrieval_id"] = runtime.open_retrieval_turn(
+                    identity["session_id"], identity["turn_id"]
+                )
+            else:
+                value = _catalog_result(service.scope_catalog(**args))
         elif name == "search":
             view = args.pop("view", "directory")
             retrieval_id = args.pop("retrieval_id", None)
@@ -765,7 +773,11 @@ def _invoke_tool(
                 current_source=current_source,
             )
         elif name == "process":
-            value = service.process(**args)
+            source = args.get("source")
+            if isinstance(source, str) and source:
+                value = HostRuntime(service, source).process(**args)
+            else:
+                value = service.process(**args)
         elif name == "remember":
             value = service.remember(**args)
         elif name == "forget_memory":

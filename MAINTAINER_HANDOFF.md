@@ -5,6 +5,34 @@ License: **MIT**
 
 This file is for maintainers and is intentionally not linked from the user-facing README.
 
+## Shared host runtime
+
+Host integration now has a shared lifecycle layer in `src/memleaf/host_runtime.py`.
+Adapters translate native host events into this runtime; memory semantics remain
+in the existing Core.
+
+The shared runtime owns host-neutral orchestration only:
+
+- visible user/assistant capture;
+- retrieval-turn creation and binding;
+- search observation and retry/degraded state;
+- process triggering and pending state;
+- host-ingest lifecycle state.
+
+It must not implement separate extraction, CREATE/UPDATE/NO_CHANGE, Scope,
+search/read ranking, history, or Vault semantics. Those remain authoritative in
+the existing Core.
+
+Codex hook events call `HostRuntime` in-process. Hermes remains an independent
+plugin runtime and reaches the same lifecycle layer through `memleaf-mcp`:
+the MCP `capture`, host-bound `scope_catalog`, and host-bound `process`
+paths delegate to `HostRuntime`. Do not make the Hermes plugin import private
+memleaf Core modules merely to share code.
+
+`tests/test_host_runtime_contract.py` is the host-neutral regression contract.
+A future host should satisfy that contract without adding another copy of the
+memory lifecycle.
+
 ## Current integration model
 
 Hermes has two separate memleaf integration surfaces:
