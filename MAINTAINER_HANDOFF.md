@@ -34,6 +34,14 @@ The installer registers MCP through the Codex CLI and merges lifecycle hooks
 into `~/.codex/hooks.json`; users must still review and trust those hooks in
 Codex with `/hooks`. Do not report pending hooks as active.
 
+Codex host integration and the process model are deliberately decoupled.
+Automatic extraction uses an independent memleaf Model Route from the selected
+Vault. Never copy credentials from Codex, change `model`/`model_provider`, or
+fallback through the active Codex session. If no route exists, installation may
+configure MCP/hooks but must report `processing_status=model_route_required`
+and require an explicit memleaf model-route setup before automatic extraction is
+considered ready. This keeps DeepSeek and other custom Codex providers untouched.
+
 `tests/test_host_runtime_contract.py` is the host-neutral regression contract.
 A future host should satisfy that contract without adding another copy of the
 memory lifecycle.
