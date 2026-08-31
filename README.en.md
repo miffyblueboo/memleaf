@@ -153,6 +153,14 @@ This command reuses the one Vault already configured for Hermes or Codex, or cre
 
 After installation, open Codex, run `/hooks`, and review and trust the memleaf hooks. Until that approval is complete, an available MCP server does not mean that automatic capture, retrieval gating, and processing are active. The installer reports `pending_user_review` instead of claiming that unreviewed hooks are enabled.
 
+Codex is a host, not memleaf's extraction-model source. An existing independent memleaf Model Route is reused. If the selected Vault has no complete Model Route yet, Codex MCP/hooks can still be configured, but installation explicitly returns `processing_status=model_route_required`; automatic memory extraction is not ready until that route is configured. memleaf does not read, copy, or modify Codex `model`, `model_provider`, `base_url`, or credentials, and it does not silently spend Codex session quota for extraction. A Codex-only user can configure the same Vault with:
+
+```bash
+python -m memleaf init --no-hermes --vault /path/to/the/same/vault
+```
+
+After the independent Model Route is ready, Codex automatic extraction can use it. DeepSeek, OpenRouter, and other custom Codex providers therefore remain untouched.
+
 Antigravity is not currently supported; the installer does not detect, install, or modify its configuration.
 
 ### Advanced initialization commands (optional)
