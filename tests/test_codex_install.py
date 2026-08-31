@@ -89,6 +89,15 @@ class CodexInstallTests(unittest.TestCase):
         self.assertFalse(invalid.detected)
         self.assertEqual("diagnostic", invalid.status)
 
+    def test_windows_path_detection_accepts_official_npm_command_launcher(self):
+        launcher = self._executable(self.bin / "codex.cmd")
+        adapter = CodexAdapter(
+            home=self.home,
+            env=self.env(),
+            platform="nt",
+        )
+        self.assertEqual(str(launcher.resolve()), adapter.detect().executable)
+
     def test_windows_known_runtime_and_hook_command_support_spaces_and_unicode(self):
         local = self.root / "Local App Data"
         runtime = self._executable(local / "Programs" / "Codex" / "codex.exe")
