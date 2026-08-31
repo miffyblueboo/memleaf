@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument(
         "--no-antigravity",
         action="store_true",
-        help="accepted for compatibility; Antigravity is disabled in v0.1",
+        help="accepted for compatibility; Antigravity is currently unsupported",
     )
     init.add_argument(
         "--no-model-discovery",
@@ -212,13 +212,22 @@ def _init(args: argparse.Namespace) -> dict:
             attempt=args.all,
         )
 
-    # Retain legacy APIs, but never inspect or configure unsupported hosts.
-    # Clear stale activation claims in our own index, not the user's hosts.
-    for name, config_path in (
-        ("codex", home / ".codex" / "config.toml"),
-        ("antigravity", home / ".gemini" / "config" / "mcp_config.json"),
-    ):
-        reason = f"{name} is disabled in v0.1; no detection or configuration performed"
+    # Retain legacy init result slots without implicitly configuring hosts.
+    # Codex is supported only through the explicit install command; Antigravity
+    # remains unsupported. Clear stale activation claims in our own index only.
+    legacy_slots = (
+        (
+            "codex",
+            home / ".codex" / "config.toml",
+            "Codex is not configured by init; use install --host codex",
+        ),
+        (
+            "antigravity",
+            home / ".gemini" / "config" / "mcp_config.json",
+            "Antigravity is currently unsupported; no detection or configuration performed",
+        ),
+    )
+    for name, config_path, reason in legacy_slots:
         results[name] = result_from_detection(
             Detection(
                 agent=name, detected=False, confidence="none", reason=reason,
