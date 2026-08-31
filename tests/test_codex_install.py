@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import tempfile
 import unittest
 
@@ -115,9 +116,10 @@ class CodexInstallTests(unittest.TestCase):
             interpreter=self.interpreter,
             platform="nt",
         )
-        self.assertIn('"', command)
-        self.assertIn("项目 Vault", command)
-        self.assertIn("Python Runtime", command)
+        self.assertNotIn('"', command)
+        self.assertIn("^ ", command)
+        self.assertIn("项目^ Vault", command)
+        self.assertIn("Python^ Runtime", command)
 
     def test_custom_codex_home_keeps_config_and_hooks_together(self):
         codex_home = self.root / "自定义 Codex Home"
@@ -133,6 +135,34 @@ class CodexInstallTests(unittest.TestCase):
         self.assertEqual("configured", result.status)
         self.assertTrue((codex_home / "hooks.json").is_file())
         self.assertFalse((self.home / ".codex" / "hooks.json").exists())
+
+    @unittest.skipUnless(os.name == "nt", "requires native cmd.exe parsing")
+    def test_windows_quote_free_hook_command_executes_with_space_and_unicode_paths(self):
+        probe = self.root / "Python Runtime" / "python-probe.cmd"
+        probe.parent.mkdir(parents=True, exist_ok=True)
+        probe.write_text(
+            "@echo off\r\n"
+            "echo %7\r\n",
+            encoding="utf-8",
+        )
+        command = host_event_command(
+            "codex",
+            "Stop",
+            self.vault,
+            interpreter=probe,
+            platform="nt",
+        )
+        self.assertNotIn('"', command)
+        completed = subprocess.run(
+            ["cmd.exe", "/D", "/S", "/C", command],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="strict",
+            check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(str(self.vault.resolve()), completed.stdout.strip())
 
     def test_hook_definition_has_compact_restore_and_platform_commands(self):
         hooks = _codex_hook_definition(self.vault, interpreter=self.interpreter)
