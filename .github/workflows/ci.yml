@@ -61,7 +61,7 @@ jobs:
         run: |
           python -m unittest tests.test_hermes_provider tests.test_hermes_stdio_transport -v
           python -m unittest tests.test_codex_install tests.test_host_events tests.test_v2_host_flow tests.test_v2_mcp_flow -v
-          python -m unittest tests.test_maintenance_v2 tests.test_retrieval_v2 tests.test_session_lineage -v
+          python -m unittest tests.test_cross_host_acceptance tests.test_maintenance_v2 tests.test_retrieval_v2 tests.test_session_lineage -v
       - name: Smoke-test installed commands and Vault
         shell: pwsh
         run: |
@@ -104,7 +104,7 @@ jobs:
         run: |
           python -m unittest tests.test_pypi_install tests.test_hermes_provider tests.test_hermes_stdio_transport -v
           python -m unittest tests.test_codex_install tests.test_host_events tests.test_v2_host_flow tests.test_v2_mcp_flow -v
-          python -m unittest tests.test_maintenance_v2 tests.test_retrieval_v2 tests.test_session_lineage -v
+          python -m unittest tests.test_cross_host_acceptance tests.test_maintenance_v2 tests.test_retrieval_v2 tests.test_session_lineage -v
 
   build:
     runs-on: ubuntu-latest
