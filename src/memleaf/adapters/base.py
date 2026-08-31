@@ -7,6 +7,7 @@ contents and possible secrets cannot accidentally end up in ``agents.json``.
 
 from __future__ import annotations
 
+import base64
 import datetime as _datetime
 import hashlib
 import inspect
@@ -356,31 +357,25 @@ def host_event_command(
     )
     if (os.name if platform is None else platform) == "nt":
         # Codex currently wraps commandWindows in an outer cmd.exe /C quoted
-        # string. Embedded quotes then break paths with spaces. Use cmd caret
-        # escaping instead so the handler itself contains no double quotes.
-        return " ".join(_cmd_unquoted_token(argument) for argument in args)
+        # string. Embedded quotes can break that wrapper. Put the real argv in
+        # a UTF-16LE PowerShell EncodedCommand payload instead: commandWindows
+        # itself stays quote-free while paths with spaces/Unicode remain exact.
+        script = "& " + " ".join(_powershell_single_quoted(argument) for argument in args)
+        script += "; exit $LASTEXITCODE"
+        payload = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+        return (
+            "powershell.exe -NoLogo -NoProfile -NonInteractive "
+            "-ExecutionPolicy Bypass -EncodedCommand " + payload
+        )
     return " ".join(shlex.quote(argument) for argument in args)
 
 
-def _cmd_unquoted_token(value: str) -> str:
-    """Escape one Windows cmd token without introducing double quotes.
-
-    This targets Codex's commandWindows execution path. Windows paths cannot
-    contain < > : " / \\ | ? * as filename characters, but individual
-    arguments can still contain cmd metacharacters. Caret-escape the
-    metacharacters and whitespace that matter to cmd.exe while keeping Unicode
-    intact.
-    """
+def _powershell_single_quoted(value: str) -> str:
+    """Return one literal PowerShell string for an encoded Windows hook."""
 
     if not isinstance(value, str) or not value or any(char in value for char in "\r\n\x00"):
         raise ValueError("invalid Windows command argument")
-    escaped: list[str] = []
-    for char in value:
-        if char in "^&|<>() ":
-            escaped.append("^" + char)
-        else:
-            escaped.append(char)
-    return "".join(escaped)
+    return "'" + value.replace("'", "''") + "'"
 
 
 def run_argv(
