@@ -599,6 +599,22 @@ def _entry_vault(entry: Mapping[str, Any]) -> Path | None:
     return Path(raw_vault).expanduser().resolve()
 
 
+def _path_equivalent(left: str, right: str) -> bool:
+    """Compare host paths without weakening the expected command structure."""
+
+    try:
+        if Path(left).exists() and Path(right).exists():
+            return os.path.samefile(left, right)
+    except OSError:
+        pass
+    try:
+        left_value = os.path.normcase(str(Path(left).expanduser().resolve()))
+        right_value = os.path.normcase(str(Path(right).expanduser().resolve()))
+    except (OSError, RuntimeError):
+        return False
+    return left_value == right_value
+
+
 def _entry_matches(
     entry: Mapping[str, Any],
     vault: Path | str,
@@ -608,8 +624,17 @@ def _entry_matches(
     candidate = _entry_candidate(entry)
     if candidate is None:
         return False
+    command = candidate.get("command")
+    args = candidate.get("args")
+    if not isinstance(command, str) or not isinstance(args, list) or len(args) != 4:
+        return False
+    if args[:3] != ["-m", "memleaf.mcp_server", "--vault"]:
+        return False
+    raw_vault = args[3]
+    if not isinstance(raw_vault, str) or not raw_vault:
+        return False
     expected = mcp_command(vault, interpreter=interpreter)
-    return candidate.get("command") == expected[0] and candidate.get("args") == expected[1:]
+    return _path_equivalent(command, expected[0]) and _path_equivalent(raw_vault, expected[4])
 
 
 def _inline_hooks_diagnostic(path: Path) -> str | None:
