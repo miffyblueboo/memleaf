@@ -911,6 +911,8 @@ class _MCPClient:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
+            errors="strict",
             bufsize=1,
         )
         self._start_stdout_reader_locked(self._process)
