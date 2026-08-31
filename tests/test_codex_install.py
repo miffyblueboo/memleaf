@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 from memleaf.adapters.base import CommandResult, host_event_command, mcp_command, merge_hook_config
-from memleaf.adapters.codex import CodexAdapter, _codex_hook_definition
+from memleaf.adapters.codex import CodexAdapter, _codex_hook_definition, _entry_matches
 from memleaf.installer import _select_codex_vault_path
 
 
@@ -243,6 +243,30 @@ class CodexInstallTests(unittest.TestCase):
         self.assertEqual(2, len(document["hooks"]["Stop"]))
         add_call = next(call for call in runner.calls if "add" in call)
         self.assertEqual(mcp_command(self.vault, interpreter=self.interpreter), add_call[5:])
+
+    def test_existing_entry_allows_equivalent_interpreter_and_vault_paths_only(self):
+        entry = {
+            "name": "memleaf",
+            "transport": {
+                "type": "stdio",
+                "command": str(self.interpreter.parent / "." / self.interpreter.name),
+                "args": [
+                    "-m",
+                    "memleaf.mcp_server",
+                    "--vault",
+                    str(self.vault.parent / "." / self.vault.name),
+                ],
+            },
+        }
+        self.assertTrue(_entry_matches(entry, self.vault, interpreter=self.interpreter))
+
+        wrong_module = json.loads(json.dumps(entry))
+        wrong_module["transport"]["args"][1] = "other.server"
+        self.assertFalse(_entry_matches(wrong_module, self.vault, interpreter=self.interpreter))
+
+        wrong_vault = json.loads(json.dumps(entry))
+        wrong_vault["transport"]["args"][3] = str(self.root / "other-vault")
+        self.assertFalse(_entry_matches(wrong_vault, self.vault, interpreter=self.interpreter))
 
     def test_inline_hooks_are_diagnostic_and_unchanged(self):
         codex_home = self.home / ".codex"
