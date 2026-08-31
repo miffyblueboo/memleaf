@@ -2,6 +2,12 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.1.8 — 2026-08-31
+
+- Fixed Windows UTF-8 stdio handling across the MCP server, Hermes MemoryProvider, and Codex host-event entry point so Chinese and other non-ASCII memory content can be captured, searched, read, and injected without depending on the system code page.
+- Added native Windows coverage for Codex executable discovery and Hermes MCP subprocess execution, including Unicode paths and payloads.
+- Strengthened Windows and macOS release gates to exercise Hermes and Codex installation, host lifecycle, bounded Scope Map injection, controlled `search` → `read`, retrieval budgets, memory extraction/update semantics, and session-lineage behavior before release.
+
 ## 0.1.7 — 2026-08-31
 
 - Added supported Codex integration through the explicit
