@@ -165,7 +165,7 @@ jobs:
           path: dist/
 
   release:
-    needs: [test, windows-test, macos-test, build]
+    needs: [test, windows-test, macos-test, codex-native, build]
     if: >-
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
