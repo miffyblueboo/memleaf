@@ -46,7 +46,7 @@ memleaf 不会把整个 Vault 或整段历史对话自动塞进模型上下文�
 
 1. Agent 使用当前完整会话和 Scope Map 选择检索范围与查询词；
 2. 至少调用一次 `search`；
-3. `search` 只返回候选的 `memory_id`、标题和 Scope，不直接返回正文；
+3. `search` 候选默认只返回 `memory_id` 和标题；Scope 已由 Scope Map 与本次搜索参数确定，不随每条候选重复返回，也不直接返回正文；
 4. 只有需要引用事实时，才使用同一轮返回的 `retrieval_id` 调用 `read`；
 5. 根据读取到的关键记忆回答，不把所有候选全部读完。
 
