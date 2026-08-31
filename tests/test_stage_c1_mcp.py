@@ -495,7 +495,7 @@ class StageC1MCPTest(unittest.TestCase):
             if tool == "search":
                 self.assertEqual(payload["status"], "found")
             self.assertEqual(len(entries), 1)
-            self.assertEqual(set(entries[0]), {"memory_id", "title", "scopes"})
+            self.assertEqual(set(entries[0]), {"memory_id", "title"})
             self.assertNotIn("PRIVATE_", json.dumps(response))
         self.assertEqual(service.read(memory.memory_id).to_dict(), original)
         # The Python API keeps its explicit full-result compatibility; the MCP
