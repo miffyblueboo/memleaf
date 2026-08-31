@@ -21,8 +21,18 @@
 
 - [ ] Linux Python 3.11 / 3.12 / 3.13 完整 unittest 通过。
 - [ ] Windows Python 3.11 / 3.12 / 3.13 安装与集成验收通过。
+- [ ] macOS Python 3.11 / 3.13 Hermes/Codex 宿主与记忆语义验收通过。
 - [ ] Windows 真实 Provider → `memleaf-mcp` stdio 回归通过：
   `stats`、`scope_catalog`、user/assistant capture、inbox 落盘。
+- [ ] Windows 与 macOS 使用当前受支持 Codex CLI 做真实 `codex mcp add/get` 验收，
+  Unicode/空格路径正常，重复安装为 `already_configured` 且 `changed=false`。
+- [ ] Codex `PreToolUse` 参数重写符合当前 Hook 合同：
+  `permissionDecision=allow` 与 `updatedInput` 同时存在，当前轮 `retrieval_id` 不丢失。
+- [ ] Codex → Codex、Hermes → Codex、Codex → Hermes 三条共享 Vault 持久记忆闭环全部通过。
+- [ ] Scope Map 仍只注入 Scope/alias/检索协议；`search` 只返回候选目录，
+  `read` 才读取选中正文，检索预算与 retrieval gate 保持。
+- [ ] CREATE / UPDATE / NO_CHANGE、history、去重、process 继续由 Core 统一实现，
+  Codex/Hermes Adapter 不复制记忆语义。
 - [ ] wheel 与 sdist 构建通过。
 - [ ] 从 wheel 安装后 `memleaf` / `memleaf-mcp` 入口正常。
 - [ ] 从 sdist 解包后的测试通过。
@@ -48,6 +58,13 @@
 - [ ] Windows 路径仍支持 `%LOCALAPPDATA%\hermes` 及官方 launcher 布局。
 - [ ] 从旧版本升级时保留已有 Hermes `memleaf.json` 中的自定义 Vault，不静默切换到默认 Vault。
 - [ ] Provider 的 Windows stdio 实现不重新引入 `select.select(pipe)`。
+- [ ] 普通升级/`memleaf install` 不自动配置 Codex；只有显式
+  `memleaf install --host codex` 才修改 Codex memleaf 接入。
+- [ ] Codex 安装前后的 model/model_provider/base_url、sandbox、approval、
+  profiles、已有 MCP 与已有 Hooks 保持；DeepSeek/OpenRouter/自定义 provider 不被改写。
+- [ ] Hermes/Codex 已有 Vault 唯一一致时复用；冲突时 `vault_conflict` fail closed。
+- [ ] Codex 自动提炼只使用独立 memleaf Model Route；没有 Route 时明确返回
+  `processing_status=model_route_required`，不复制 Codex credential、不隐式消耗 Codex 会话模型。
 - [ ] shell、Python 与 PowerShell 安装路径都使用
   `src/memleaf/hermes_provider` 这一份权威 Provider 源码。
 
