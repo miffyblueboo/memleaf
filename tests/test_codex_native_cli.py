@@ -12,35 +12,6 @@ from memleaf.adapters.base import mcp_command
 from memleaf.adapters.codex import CodexAdapter
 
 
-class _RecordingSubprocessRunner:
-    def __init__(self) -> None:
-        self.successful_gets: list[dict] = []
-
-    def __call__(self, argv, env=None):
-        completed = subprocess.run(
-            list(argv),
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="strict",
-            check=False,
-        )
-        command = list(argv)
-        if (
-            completed.returncode == 0
-            and len(command) >= 5
-            and command[1:4] == ["mcp", "get", "memleaf"]
-        ):
-            try:
-                payload = json.loads(completed.stdout)
-            except (TypeError, ValueError):
-                payload = None
-            if isinstance(payload, dict):
-                self.successful_gets.append(payload)
-        return completed
-
-
 @unittest.skipUnless(
     os.environ.get("MEMLEAF_REAL_CODEX_ACCEPTANCE") == "1",
     "real Codex CLI acceptance is enabled only in the dedicated CI gate",
@@ -63,11 +34,9 @@ class RealCodexCliAcceptanceTests(unittest.TestCase):
             env["USERPROFILE"] = str(home)
             env["CODEX_HOME"] = str(codex_home)
 
-            runner = _RecordingSubprocessRunner()
             adapter = CodexAdapter(
                 home=home,
                 env=env,
-                runner=runner,
                 interpreter=sys.executable,
             )
             detection = adapter.detect()
@@ -113,18 +82,7 @@ class RealCodexCliAcceptanceTests(unittest.TestCase):
             self.assertIn("Stop", hooks["hooks"])
 
             second = adapter.configure(adapter.detect(), vault, attempt=True)
-            if second.status != "already_configured":
-                observed = (
-                    runner.successful_gets[-1].get("transport")
-                    if runner.successful_gets
-                    else None
-                )
-                self.fail(
-                    "second Codex configure was not idempotent: "
-                    f"status={second.status!r} reason={second.reason!r} "
-                    f"observed_transport={json.dumps(observed, ensure_ascii=True, sort_keys=True)} "
-                    f"expected_command={expected[0]!r} expected_args={expected[1:]!r}"
-                )
+            self.assertEqual("already_configured", second.status, second.reason)
             self.assertFalse(second.changed)
 
 
