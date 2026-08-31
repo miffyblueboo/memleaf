@@ -153,6 +153,14 @@ python -m pip install -U memleaf && python -m memleaf install --host codex
 
 安装后打开 Codex，运行 `/hooks`，审核并信任 memleaf Hook。完成授权前，MCP 可用不等于自动捕获、检索门控和提炼已经激活；安装结果会明确显示 `pending_user_review`，不会把待审核状态报告为已启用。
 
+Codex 只作为宿主，不作为 memleaf 的提炼模型来源。已有的独立 memleaf Model Route 会继续复用；如果当前 Vault 还没有完整 Model Route，Codex 安装仍可完成 MCP/Hook 配置，但结果会明确返回 `processing_status=model_route_required`，在配置模型前不能把“自动记忆提炼”视为已就绪。memleaf 不读取、不复制也不修改 Codex 的 `model`、`model_provider`、`base_url` 或认证信息，也不会为了提炼偷偷消耗 Codex 会话额度。Codex-only 用户可针对同一个 Vault 运行：
+
+```bash
+python -m memleaf init --no-hermes --vault /path/to/the/same/vault
+```
+
+完成独立 Model Route 配置后，再使用 Codex 自动提炼。DeepSeek、OpenRouter 或其他自定义 Codex provider 因此保持原样。
+
 Antigravity（反重力）当前不支持，安装流程不会检测、安装或修改其配置。
 
 ### 高级初始化命令（可选）
