@@ -68,6 +68,12 @@ class CodexAdapter:
         self.env = adapter_environment(env)
         effective_home = home if home is not None else self.env.get("HOME")
         self.home = adapter_home(effective_home)
+        codex_home_value = self.env.get("CODEX_HOME")
+        self.codex_home = (
+            Path(codex_home_value).expanduser().resolve()
+            if isinstance(codex_home_value, str) and codex_home_value.strip()
+            else self.home / ".codex"
+        )
         self.platform = os.name if platform is None else platform
         self.interpreter = interpreter if interpreter is not None else sys.executable
         if known_paths is None:
@@ -101,11 +107,11 @@ class CodexAdapter:
 
     @property
     def config_path(self) -> Path:
-        return self.home / ".codex" / "config.toml"
+        return self.codex_home / "config.toml"
 
     @property
     def hooks_path(self) -> Path:
-        return self.home / ".codex" / "hooks.json"
+        return self.codex_home / "hooks.json"
 
     def detect(self) -> Detection:
         config = self.config_path
