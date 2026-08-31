@@ -86,16 +86,22 @@ class SessionLineageTests(unittest.TestCase):
     def _real_hermes_provider(self):
         hermes_home = self.root / "hermes"
         hermes_home.mkdir()
-        command = self.root / "memleaf-mcp-wrapper"
-        command.write_text(
-            f"#!{sys.executable}\n"
-            "import sys\n"
-            f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1] / 'src')!r})\n"
-            "from memleaf.mcp_server import main\n"
-            "raise SystemExit(main())\n",
-            encoding="utf-8",
-        )
-        command.chmod(0o755)
+        if os.name == "nt":
+            installed = shutil.which("memleaf-mcp")
+            if not installed:
+                raise AssertionError("installed memleaf-mcp entry point is required on Windows")
+            command = Path(installed)
+        else:
+            command = self.root / "memleaf-mcp-wrapper"
+            command.write_text(
+                f"#!{sys.executable}\n"
+                "import sys\n"
+                f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1] / 'src')!r})\n"
+                "from memleaf.mcp_server import main\n"
+                "raise SystemExit(main())\n",
+                encoding="utf-8",
+            )
+            command.chmod(0o755)
         (hermes_home / "memleaf.json").write_text(
             json.dumps(
                 {
