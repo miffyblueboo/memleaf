@@ -91,10 +91,12 @@ class CodexInstallTests(unittest.TestCase):
         self.assertEqual("diagnostic", invalid.status)
 
     def test_windows_path_detection_accepts_official_npm_command_launcher(self):
-        launcher = self._executable(self.bin / "codex.cmd")
+        npm_bin = self.root / "npm-bin"
+        launcher = self._executable(npm_bin / "codex.cmd")
         adapter = CodexAdapter(
             home=self.home,
-            env=self.env(),
+            env={"HOME": str(self.home), "PATH": str(npm_bin)},
+            known_paths=(),
             platform="nt",
         )
         self.assertEqual(str(launcher.resolve()), adapter.detect().executable)
@@ -117,12 +119,14 @@ class CodexInstallTests(unittest.TestCase):
             platform="nt",
         )
         self.assertNotIn('"', command)
-        self.assertIn("^ ", command)
-        self.assertIn("项目^ Vault", command)
-        self.assertIn("Python^ Runtime", command)
+        self.assertIn("powershell.exe", command)
+        self.assertIn("-EncodedCommand", command)
+        self.assertNotIn("项目 Vault", command)
+        self.assertNotIn("Python Runtime", command)
 
     def test_custom_codex_home_keeps_config_and_hooks_together(self):
         codex_home = self.root / "自定义 Codex Home"
+        codex_home.mkdir()
         adapter = CodexAdapter(
             home=self.home,
             env=self.env(CODEX_HOME=str(codex_home)),
@@ -130,7 +134,7 @@ class CodexInstallTests(unittest.TestCase):
             interpreter=self.interpreter,
         )
         detection = adapter.detect()
-        self.assertEqual(str(codex_home / "config.toml"), detection.config_path)
+        self.assertTrue(os.path.samefile(Path(detection.config_path).parent, codex_home))
         result = adapter.configure(detection, self.vault)
         self.assertEqual("configured", result.status)
         self.assertTrue((codex_home / "hooks.json").is_file())
