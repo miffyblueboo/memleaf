@@ -953,9 +953,22 @@ def _write_message(output: TextIO, message: Mapping[str, Any]) -> bool:
     try:
         output.write(_json_text(message) + "\n")
         output.flush()
-    except (BrokenPipeError, OSError):
+    except (BrokenPipeError, OSError, UnicodeError):
         return False
     return True
+
+
+def _configure_stdio_utf8() -> None:
+    """Force the stdio protocol channel to UTF-8 on every supported platform."""
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="strict")
+        except (OSError, ValueError):
+            continue
 
 
 def serve(service: Memleaf, *, input_stream: Any = None, output_stream: TextIO = sys.stdout) -> int:
@@ -992,6 +1005,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_stdio_utf8()
     args = _parser().parse_args(argv)
     vault = args.vault if args.vault is not None else os.environ.get("MEMLEAF_VAULT") or None
     try:
