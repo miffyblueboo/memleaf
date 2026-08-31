@@ -29,8 +29,8 @@
 - [ ] Codex `PreToolUse` 参数重写符合当前 Hook 合同：
   `permissionDecision=allow` 与 `updatedInput` 同时存在，当前轮 `retrieval_id` 不丢失。
 - [ ] Codex → Codex、Hermes → Codex、Codex → Hermes 三条共享 Vault 持久记忆闭环全部通过。
-- [ ] Scope Map 仍只注入 Scope/alias/检索协议；`search` 只返回候选目录，
-  `read` 才读取选中正文，检索预算与 retrieval gate 保持。
+- [ ] Scope Map 仍只注入 Scope/alias/检索协议；`search` 候选严格只返回
+  `memory_id + title`，`read` 才读取选中正文，检索预算与 retrieval gate 保持。
 - [ ] CREATE / UPDATE / NO_CHANGE、history、去重、process 继续由 Core 统一实现，
   Codex/Hermes Adapter 不复制记忆语义。
 - [ ] wheel 与 sdist 构建通过。
