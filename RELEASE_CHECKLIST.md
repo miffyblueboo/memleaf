@@ -28,6 +28,8 @@
   Unicode/空格路径正常，重复安装为 `already_configured` 且 `changed=false`。
 - [ ] Codex `PreToolUse` 参数重写符合当前 Hook 合同：
   `permissionDecision=allow` 与 `updatedInput` 同时存在，当前轮 `retrieval_id` 不丢失。
+- [ ] Windows `commandWindows` 不含会触发 Codex 当前 cmd 外层引号缺陷的内嵌双引号；
+  Python/Vault 含空格和中文时，quote-free 命令在原生 `cmd.exe` 执行回归通过。
 - [ ] Codex → Codex、Hermes → Codex、Codex → Hermes 三条共享 Vault 持久记忆闭环全部通过。
 - [ ] Scope Map 仍只注入 Scope/alias/检索协议；`search` 候选严格只返回
   `memory_id + title`，`read` 才读取选中正文，检索预算与 retrieval gate 保持。
