@@ -146,7 +146,7 @@ class CodexInstallTests(unittest.TestCase):
         probe.parent.mkdir(parents=True, exist_ok=True)
         probe.write_text(
             "@echo off\r\n"
-            "echo %7\r\n",
+            "echo %~7\r\n",
             encoding="utf-8",
         )
         command = host_event_command(
