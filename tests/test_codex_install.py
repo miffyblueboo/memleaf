@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import stat
 import tempfile
@@ -61,7 +62,8 @@ class CodexInstallTests(unittest.TestCase):
         self.home.mkdir()
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        self.codex = self._executable(self.bin / "codex")
+        self.codex_name = "codex.exe" if os.name == "nt" else "codex"
+        self.codex = self._executable(self.bin / self.codex_name)
         self.interpreter = self._executable(self.root / "Python Runtime" / "python")
         self.vault = self.root / "项目 Vault"
 
@@ -76,7 +78,7 @@ class CodexInstallTests(unittest.TestCase):
         return {"HOME": str(self.home), "PATH": str(self.bin), **extra}
 
     def test_explicit_cli_path_wins_and_invalid_explicit_path_fails_closed(self):
-        explicit = self._executable(self.root / "Codex App" / "codex")
+        explicit = self._executable(self.root / "Codex App" / self.codex_name)
         adapter = CodexAdapter(home=self.home, env=self.env(CODEX_CLI_PATH=str(explicit)))
         self.assertEqual(str(explicit.resolve()), adapter.detect().executable)
 
