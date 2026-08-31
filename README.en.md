@@ -46,7 +46,7 @@ For a normal user message, the intended flow is:
 
 1. The Agent uses the full current conversation and the Scope Map to choose a scope and query.
 2. It calls `search` at least once.
-3. `search` returns only candidate `memory_id`, title, and Scope metadata; it does not return the body.
+3. `search` candidates return only `memory_id` and title by default. Scope is already selected through the Scope Map and the search input, so it is not repeated per candidate; bodies are never returned by search.
 4. If a business fact is needed, the Agent calls `read` with the `retrieval_id` from the same turn.
 5. The Agent answers from the selected bodies instead of reading every candidate.
 
