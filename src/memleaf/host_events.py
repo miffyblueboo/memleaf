@@ -326,6 +326,10 @@ def _handle_codex_pre_tool(
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
+            # Codex only applies updatedInput when the hook explicitly allows
+            # the call.  Omitting this field makes the rewrite invalid and
+            # would drop memleaf's current-turn retrieval_id binding.
+            "permissionDecision": "allow",
             "updatedInput": prepared.arguments,
         }
     }
