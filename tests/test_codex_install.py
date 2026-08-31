@@ -119,6 +119,21 @@ class CodexInstallTests(unittest.TestCase):
         self.assertIn("项目 Vault", command)
         self.assertIn("Python Runtime", command)
 
+    def test_custom_codex_home_keeps_config_and_hooks_together(self):
+        codex_home = self.root / "自定义 Codex Home"
+        adapter = CodexAdapter(
+            home=self.home,
+            env=self.env(CODEX_HOME=str(codex_home)),
+            runner=CodexRunner(self.vault, self.interpreter),
+            interpreter=self.interpreter,
+        )
+        detection = adapter.detect()
+        self.assertEqual(str(codex_home / "config.toml"), detection.config_path)
+        result = adapter.configure(detection, self.vault)
+        self.assertEqual("configured", result.status)
+        self.assertTrue((codex_home / "hooks.json").is_file())
+        self.assertFalse((self.home / ".codex" / "hooks.json").exists())
+
     def test_hook_definition_has_compact_restore_and_platform_commands(self):
         hooks = _codex_hook_definition(self.vault, interpreter=self.interpreter)
         self.assertEqual("compact", hooks["SessionStart"][0]["matcher"])
