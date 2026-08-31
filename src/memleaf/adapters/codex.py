@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import sys
+import tomllib
 from typing import Any, Mapping, Sequence
 
 try:
@@ -57,6 +59,8 @@ class CodexAdapter:
         command_runner: CommandRunner | None = None,
         path: str | Sequence[str] | None = None,
         known_paths: Sequence[Path | str] | None = None,
+        platform: str | None = None,
+        interpreter: str | Path | None = None,
     ) -> None:
         if runner is not None and command_runner is not None:
             raise ValueError("provide runner or command_runner, not both")
@@ -64,6 +68,8 @@ class CodexAdapter:
         self.env = adapter_environment(env)
         effective_home = home if home is not None else self.env.get("HOME")
         self.home = adapter_home(effective_home)
+        self.platform = os.name if platform is None else platform
+        self.interpreter = interpreter if interpreter is not None else sys.executable
         if known_paths is None:
             # An explicit home marks an injected/sandbox boundary.  Do not let
             # a system installation escape that boundary when init is tested
@@ -75,9 +81,14 @@ class CodexAdapter:
                 login_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
             except (KeyError, OSError, RuntimeError):
                 login_home = None
+            allow_system_paths = (
+                self.platform == "nt"
+                or not home_was_explicit
+                or self.home == login_home
+            )
             self.known_paths = (
-                (CODEX_EXECUTABLE,)
-                if not home_was_explicit or self.home == login_home
+                _known_codex_paths(self.home, self.env, self.platform)
+                if allow_system_paths
                 else ()
             )
         else:
@@ -98,9 +109,26 @@ class CodexAdapter:
 
     def detect(self) -> Detection:
         config = self.config_path
-        executable = resolve_executable(
-            "codex", env=self.env, known_paths=self.known_paths
-        )
+        executable = None
+        explicit = self.env.get("CODEX_CLI_PATH")
+        if isinstance(explicit, str) and explicit.strip():
+            executable = resolve_executable(explicit.strip(), env=self.env)
+            if executable is None:
+                return Detection(
+                    agent=self.agent,
+                    detected=False,
+                    confidence="low",
+                    reason="CODEX_CLI_PATH does not point to an executable file",
+                    executable=None,
+                    config_path=str(config),
+                    status="diagnostic",
+                )
+        if executable is None:
+            executable = resolve_executable(
+                "codex.exe" if self.platform == "nt" else "codex",
+                env=self.env,
+                known_paths=self.known_paths,
+            )
         config_value = str(config)
         if executable is not None:
             return Detection(
@@ -183,9 +211,9 @@ class CodexAdapter:
             "add",
             "memleaf",
             "--",
-            *mcp_command(vault),
+            *mcp_command(vault, interpreter=self.interpreter),
         ]
-        hook_definition = _codex_hook_definition(vault)
+        hook_definition = _codex_hook_definition(vault, interpreter=self.interpreter)
         hook_hash = hook_definition_fingerprint(hook_definition)
         activation_status = persisted_hook_activation_status(
             vault,
@@ -195,7 +223,26 @@ class CodexAdapter:
         )
         hook_trust_status = "trusted" if activation_status == "active" else _CODEX_HOOK_TRUST_STATUS
         if dry_run:
-            hook_result = _configure_codex_hooks(self.hooks_path, vault, dry_run=True)
+            inline_reason = _inline_hooks_diagnostic(self.config_path)
+            if inline_reason is not None:
+                return result_from_detection(
+                    detection,
+                    status="diagnostic",
+                    reason=inline_reason,
+                    command=add_command,
+                    dry_run=True,
+                    hook_trust_status=_CODEX_HOOK_TRUST_STATUS,
+                    hook_activation_status=_CODEX_HOOK_TRUST_STATUS,
+                    hook_definition_hash=hook_hash,
+                    user_action_required=True,
+                    user_action="Move or review inline Codex hooks before installing memleaf hooks.",
+                )
+            hook_result = _configure_codex_hooks(
+                self.hooks_path,
+                vault,
+                dry_run=True,
+                interpreter=self.interpreter,
+            )
             if hook_result.status == "diagnostic":
                 return result_from_detection(
                     detection,
@@ -222,7 +269,25 @@ class CodexAdapter:
                 user_action=_CODEX_HOOK_USER_ACTION if activation_status != "active" else None,
             )
 
-        hook_preflight = _configure_codex_hooks(self.hooks_path, vault, dry_run=True)
+        inline_reason = _inline_hooks_diagnostic(self.config_path)
+        if inline_reason is not None:
+            return result_from_detection(
+                detection,
+                status="diagnostic",
+                reason=inline_reason,
+                command=get_command,
+                hook_trust_status=_CODEX_HOOK_TRUST_STATUS,
+                hook_activation_status=_CODEX_HOOK_TRUST_STATUS,
+                hook_definition_hash=hook_hash,
+                user_action_required=True,
+                user_action="Move or review inline Codex hooks before installing memleaf hooks.",
+            )
+        hook_preflight = _configure_codex_hooks(
+            self.hooks_path,
+            vault,
+            dry_run=True,
+            interpreter=self.interpreter,
+        )
         if hook_preflight.status == "diagnostic":
             return result_from_detection(
                 detection,
@@ -263,7 +328,11 @@ class CodexAdapter:
             )
         if queried.returncode == 0:
             entry = _entry_from_json(queried.stdout)
-            if entry is not None and _entry_matches(entry, vault):
+            if entry is not None and _entry_matches(
+                entry,
+                vault,
+                interpreter=self.interpreter,
+            ):
                 mcp_changed = False
                 backup = None
                 mcp_reason = "existing memleaf entry is correct"
@@ -313,7 +382,11 @@ class CodexAdapter:
                 command=get_command,
             )
 
-        hook_result = _configure_codex_hooks(self.hooks_path, vault)
+        hook_result = _configure_codex_hooks(
+            self.hooks_path,
+            vault,
+            interpreter=self.interpreter,
+        )
         if hook_result.status in ("diagnostic", "failure"):
             return result_from_detection(
                 detection,
@@ -361,6 +434,24 @@ class CodexAdapter:
             return self.detect()
         return self.detect()
 
+    def configured_vault(self, detection: Detection | None = None) -> Path | None:
+        """Return the Vault from a supported existing memleaf MCP entry."""
+
+        current = detection or self.detect()
+        if not current.executable:
+            return None
+        command = [current.executable, "mcp", "get", "memleaf", "--json"]
+        result = run_argv(self.runner, command, env=self.env)
+        if command_is_missing(result):
+            return None
+        if result.returncode != 0:
+            raise RuntimeError("could not query existing Codex memleaf MCP entry")
+        entry = _entry_from_json(result.stdout)
+        vault = _entry_vault(entry) if entry is not None else None
+        if vault is None:
+            raise RuntimeError("existing Codex memleaf MCP entry is unsupported or conflicting")
+        return vault
+
 
 Codex = CodexAdapter
 
@@ -386,25 +477,38 @@ def _codex_hook_definition(
     *,
     interpreter: str | Path | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    command = host_event_command("codex", "UserPromptSubmit", vault, interpreter=interpreter)
-    pre_tool_command = host_event_command("codex", "PreToolUse", vault, interpreter=interpreter)
-    post_tool_command = host_event_command("codex", "PostToolUse", vault, interpreter=interpreter)
-    stop_command = host_event_command("codex", "Stop", vault, interpreter=interpreter)
+    def command(event: str) -> dict[str, Any]:
+        return {
+            "type": "command",
+            "command": host_event_command(
+                "codex", event, vault, interpreter=interpreter, platform="posix"
+            ),
+            "commandWindows": host_event_command(
+                "codex", event, vault, interpreter=interpreter, platform="nt"
+            ),
+        }
+
+    session_start = {**command("SessionStart"), "timeout": 30}
+    user_prompt = {**command("UserPromptSubmit"), "timeout": 600}
+    pre_tool = {**command("PreToolUse"), "timeout": 30}
+    post_tool = {**command("PostToolUse"), "timeout": 30}
+    stop = {**command("Stop"), "timeout": 600}
     return {
-        "UserPromptSubmit": [{"hooks": [{"type": "command", "command": command, "timeout": 600}]}],
+        "SessionStart": [{"matcher": "compact", "hooks": [session_start]}],
+        "UserPromptSubmit": [{"hooks": [user_prompt]}],
         "PreToolUse": [
             {
                 "matcher": r"^mcp__memleaf__(search|read)$",
-                "hooks": [{"type": "command", "command": pre_tool_command, "timeout": 30}],
+                "hooks": [pre_tool],
             }
         ],
         "PostToolUse": [
             {
                 "matcher": r"^mcp__memleaf__search$",
-                "hooks": [{"type": "command", "command": post_tool_command, "timeout": 30}],
+                "hooks": [post_tool],
             }
         ],
-        "Stop": [{"hooks": [{"type": "command", "command": stop_command, "timeout": 600}]}],
+        "Stop": [{"hooks": [stop]}],
     }
 
 
@@ -445,16 +549,83 @@ def _find_named_entry(value: Any, name: str) -> dict[str, Any] | None:
     return None
 
 
-def _entry_matches(entry: Mapping[str, Any], vault: Path | str) -> bool:
+def _entry_candidate(entry: Mapping[str, Any]) -> Mapping[str, Any] | None:
     candidate: Mapping[str, Any] = entry
     transport = entry.get("transport")
     if transport is not None:
         if not isinstance(transport, Mapping) or transport.get("type") != "stdio":
-            return False
+            return None
         candidate = transport
     elif candidate.get("type") not in (None, "stdio"):
+        return None
+    return candidate
+
+
+def _entry_vault(entry: Mapping[str, Any]) -> Path | None:
+    candidate = _entry_candidate(entry)
+    if candidate is None:
+        return None
+    command = candidate.get("command")
+    args = candidate.get("args")
+    if not isinstance(command, str) or not isinstance(args, list):
+        return None
+    if command == "memleaf-mcp" and len(args) == 2 and args[0] == "--vault":
+        raw_vault = args[1]
+    elif (
+        len(args) == 4
+        and args[:3] == ["-m", "memleaf.mcp_server", "--vault"]
+        and Path(command).expanduser().is_absolute()
+    ):
+        raw_vault = args[3]
+    else:
+        return None
+    if not isinstance(raw_vault, str) or not raw_vault.strip():
+        return None
+    return Path(raw_vault).expanduser().resolve()
+
+
+def _entry_matches(
+    entry: Mapping[str, Any],
+    vault: Path | str,
+    *,
+    interpreter: str | Path | None = None,
+) -> bool:
+    candidate = _entry_candidate(entry)
+    if candidate is None:
         return False
-    return candidate.get("command") == "memleaf-mcp" and candidate.get("args") == [
-        "--vault",
-        str(Path(vault).expanduser().resolve()),
-    ]
+    expected = mcp_command(vault, interpreter=interpreter)
+    return candidate.get("command") == expected[0] and candidate.get("args") == expected[1:]
+
+
+def _inline_hooks_diagnostic(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        value = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        return "Codex config.toml could not be checked for inline hooks; unchanged"
+    if isinstance(value.get("hooks"), Mapping):
+        return "inline Codex hooks were found in config.toml; unchanged"
+    return None
+
+
+def _known_codex_paths(
+    home: Path,
+    env: Mapping[str, str],
+    platform: str,
+) -> tuple[Path, ...]:
+    if platform != "nt":
+        return (CODEX_EXECUTABLE,)
+    local = env.get("LOCALAPPDATA")
+    if not isinstance(local, str) or not local.strip():
+        local_root = home / "AppData" / "Local"
+    else:
+        local_root = Path(local).expanduser()
+    return (
+        local_root / "Programs" / "Codex" / "codex.exe",
+        local_root / "Programs" / "ChatGPT" / "resources" / "codex.exe",
+        local_root / "Codex" / "bin" / "codex.exe",
+        home / ".codex" / "bin" / "codex.exe",
+    )

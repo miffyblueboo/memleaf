@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from memleaf import Memleaf
 from memleaf.host_events import handle_event
+from memleaf.host_runtime import HostRuntime
 from memleaf.inbox import parse_inbox
 from memleaf.retrieval_gate import find_turn, validate_turn
 from tests.test_stage_c1_mcp import MCPProcess
@@ -154,6 +155,28 @@ class V2HostFlowTest(unittest.TestCase):
         self.assertNotIn("decision", result)
         self.assertIn("scope", result["systemMessage"].lower())
         self.assertIn("deferred", result["systemMessage"].lower())
+
+    def test_compact_session_start_reinjects_scope_map_without_memory_body(self):
+        catalog = {
+            "scopes": [
+                {
+                    "scope": "project:华安财保",
+                    "parent": None,
+                    "aliases": ["华安"],
+                    "body": "SHOULD_NOT_BE_INJECTED",
+                }
+            ],
+            "has_more": False,
+            "next_cursor": None,
+        }
+        with patch.object(HostRuntime, "scope_catalog", return_value=catalog):
+            compact = self.event("SessionStart", turn_id="compact-turn", source="compact")
+            ordinary = self.event("SessionStart", turn_id="start-turn", source="startup")
+        context = compact["hookSpecificOutput"]["additionalContext"]
+        self.assertEqual("SessionStart", compact["hookSpecificOutput"]["hookEventName"])
+        self.assertIn("project:华安财保", context)
+        self.assertNotIn("SHOULD_NOT_BE_INJECTED", context)
+        self.assertEqual({}, ordinary)
 
 
 if __name__ == "__main__":

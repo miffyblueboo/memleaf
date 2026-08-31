@@ -13,7 +13,7 @@ from memleaf import Memleaf
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROVIDER_PATH = ROOT / "integrations" / "hermes" / "memleaf" / "__init__.py"
+PROVIDER_PATH = ROOT / "src" / "memleaf" / "hermes_provider" / "__init__.py"
 
 
 def load_provider_module():

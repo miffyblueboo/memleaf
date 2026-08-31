@@ -15,7 +15,7 @@ from memleaf.llm import ModelError
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROVIDER_PATH = ROOT / "integrations" / "hermes" / "memleaf" / "__init__.py"
+PROVIDER_PATH = ROOT / "src" / "memleaf" / "hermes_provider" / "__init__.py"
 
 
 def load_provider_module():
@@ -162,6 +162,27 @@ class HermesProviderTests(unittest.TestCase):
         provider._auto_process = auto_process
         provider._client = FakeClient(responses)
         return provider
+
+    def lineage_provider(self, client=None, *, auto_process: bool = True, responses=None):
+        provider = self.provider(auto_process=auto_process, responses=responses)
+        if client is not None:
+            provider._client = client
+        provider._gate_enabled = True
+        return provider
+
+    @staticmethod
+    def lineage_link(session_id, parent_session_id):
+        return {
+            "linked": True,
+            "source": "hermes",
+            "session_id": session_id,
+            "parent_session_id": parent_session_id,
+        }
+
+    @staticmethod
+    def pending_lineage_head(provider):
+        queue = provider._pending_lineage
+        return queue[0] if queue else None
 
     def test_native_provider_registration_and_auto_process_config_boolean(self) -> None:
         context = types.SimpleNamespace(register_memory_provider=lambda provider: setattr(context, "provider", provider))
@@ -363,9 +384,7 @@ class HermesProviderTests(unittest.TestCase):
                 }
             ]
         )
-        provider = self.provider(responses=[])
-        provider._client = client
-        provider._gate_enabled = True
+        provider = self.lineage_provider(client)
         provider.on_session_switch("token-session")
         provider.on_turn_start(7, {"role": "user", "content": "What changed in Phoenix?"})
 
@@ -388,6 +407,758 @@ class HermesProviderTests(unittest.TestCase):
                     + provider_module._visible_fingerprint("What changed in Phoenix?"),
                 },
             ),
+        )
+
+    def test_prefetch_hints_unique_project_scope_without_injecting_memory_data(self) -> None:
+        provider = self.provider(
+            responses=[
+                {
+                    "scopes": [
+                        {"scope": "project:alpha", "parent": "project", "aliases": ["Alpha"]},
+                        {"scope": "project:beta", "parent": "project", "aliases": ["Beta"]},
+                    ],
+                    "has_more": False,
+                    "next_cursor": None,
+                }
+            ]
+        )
+
+        rendered = provider.prefetch("请查询 Alpha 项目部署进展", session_id="scope-hint-session")
+
+        self.assertIn("scope=project:alpha", rendered)
+        self.assertIn("unique project scope", rendered)
+        self.assertIn("business subject words", rendered)
+        self.assertNotIn("memory_id", rendered)
+        self.assertNotIn("title", rendered)
+        self.assertNotIn("body", rendered.casefold())
+
+    def test_prefetch_does_not_guess_ambiguous_project_scope(self) -> None:
+        provider = self.provider(
+            responses=[
+                {
+                    "scopes": [
+                        {"scope": "project:alpha", "parent": "project", "aliases": ["shared"]},
+                        {"scope": "project:beta", "parent": "project", "aliases": ["shared"]},
+                    ],
+                    "has_more": False,
+                    "next_cursor": None,
+                }
+            ]
+        )
+
+        rendered = provider.prefetch("查询 shared 项目", session_id="ambiguous-scope-session")
+
+        self.assertNotIn("scope=project:alpha", rendered)
+        self.assertNotIn("scope=project:beta", rendered)
+
+    def test_compression_rotation_migrates_pending_turn_and_retrieval_token(self) -> None:
+        token = "rtv-compression-continuity"
+        client = FakeClient(
+            responses=[
+                {
+                    "scopes": [
+                        {"scope": "project:alpha", "parent": "project", "aliases": ["alpha"]}
+                    ],
+                    "has_more": False,
+                    "next_cursor": None,
+                    "retrieval_id": token,
+                },
+                {
+                    "linked": True,
+                    "source": "hermes",
+                    "session_id": "new-compression-session",
+                    "parent_session_id": "old-compression-session",
+                },
+                {"stored": True},
+                {"stored": True},
+                {"processed_turns": 1},
+            ]
+        )
+        provider = self.lineage_provider(client)
+        provider.on_session_switch("old-compression-session")
+        provider.on_turn_start(4, {"role": "user", "content": "What changed in alpha?"})
+        provider.prefetch("What changed in alpha?", session_id="old-compression-session")
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "search-after-compression",
+                        "function": {
+                            "name": "mcp__memleaf__search",
+                            "arguments": json.dumps(
+                                {"query": "alpha changes", "scope": "project:alpha", "retrieval_id": token}
+                            ),
+                        },
+                    },
+                    {
+                        "id": "read-after-compression",
+                        "function": {
+                            "name": "mcp__memleaf__read",
+                            "arguments": json.dumps(
+                                {"memory_id": "mem-alpha", "retrieval_id": token}
+                            ),
+                        },
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "search-after-compression",
+                "content": json.dumps(
+                    {
+                        "status": "found",
+                        "results": [
+                            {"memory_id": "mem-alpha", "title": "Alpha", "scopes": ["project:alpha"]}
+                        ],
+                    }
+                ),
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "read-after-compression",
+                "content": json.dumps({"memory_id": "mem-alpha", "body": "Alpha details"}),
+            },
+        ]
+
+        provider.on_session_switch(
+            "new-compression-session",
+            parent_session_id="old-compression-session",
+            reset=False,
+            reason="compression",
+        )
+        with patch.object(provider_module.logger, "info") as info:
+            provider.sync_turn(
+                "What changed in alpha?",
+                "The latest Alpha update is recorded.",
+                session_id="new-compression-session",
+                messages=messages,
+            )
+
+        self.assertEqual(
+            provider._canonical_session_id("old-compression-session"),
+            "new-compression-session",
+        )
+        self.assertEqual(provider._last_retrieval_observation, "found")
+        capture_calls = [
+            arguments for name, arguments in client.calls if name == "capture"
+        ]
+        self.assertEqual(len(capture_calls), 2)
+        self.assertTrue(all(item["session_id"] == "new-compression-session" for item in capture_calls))
+        self.assertTrue(all(item["turn_id"].startswith("turn-000004-") for item in capture_calls))
+        lineage_calls = [
+            arguments for name, arguments in client.calls if name == "session_lineage"
+        ]
+        self.assertEqual(
+            lineage_calls,
+            [{
+                "source": "hermes",
+                "session_id": "new-compression-session",
+                "parent_session_id": "old-compression-session",
+            }],
+        )
+        process_calls = [
+            arguments for name, arguments in client.calls if name == "process"
+        ]
+        self.assertEqual(process_calls, [{"source": "hermes", "session_id": "new-compression-session"}])
+        self.assertEqual(provider._active_retrieval_ids["new-compression-session"], token)
+        self.assertNotIn(("old-compression-session", 4), provider._retrieval_ids_by_turn)
+        self.assertEqual(provider._retrieval_ids_by_turn[("new-compression-session", 4)], token)
+        output = "\n".join(call.args[0] % call.args[1:] for call in info.call_args_list)
+        self.assertIn(
+            "retrieval_present=True retrieval_match=True result=ok",
+            output,
+        )
+
+    def test_failed_compression_lineage_defers_process_until_bounded_retry_succeeds(self) -> None:
+        linked = {
+            "linked": True,
+            "source": "hermes",
+            "session_id": "child-session",
+            "parent_session_id": "parent-session",
+        }
+        client = FakeClient(
+            responses=[
+                RuntimeError("initial lineage failure"),
+                RuntimeError("retry lineage failure"),
+                {"stored": True},
+                {"stored": True},
+                linked,
+                {"stored": True},
+                {"stored": True},
+                {"processed_turns": 1},
+            ]
+        )
+        provider = self.lineage_provider(client)
+        provider.on_session_switch("parent-session")
+        provider.on_session_switch(
+            "child-session",
+            parent_session_id="parent-session",
+            reset=False,
+            reason="compression",
+        )
+
+        self.assertEqual(self.pending_lineage_head(provider)["attempts"], 1)
+        provider.sync_turn("child fact one", "child answer one", session_id="child-session")
+
+        self.assertEqual(self.pending_lineage_head(provider)["attempts"], 2)
+        self.assertFalse(any(name == "process" for name, _ in client.calls))
+        self.assertEqual(
+            [name for name, _ in client.calls if name == "capture"],
+            ["capture", "capture"],
+        )
+
+        provider.sync_turn("child fact two", "child answer two", session_id="child-session")
+
+        self.assertFalse(provider._pending_lineage)
+        self.assertEqual(
+            [name for name, _ in client.calls if name == "process"],
+            ["process"],
+        )
+        self.assertEqual(
+            [arguments for name, arguments in client.calls if name == "session_lineage"],
+            [
+                {
+                    "source": "hermes",
+                    "session_id": "child-session",
+                    "parent_session_id": "parent-session",
+                }
+            ]
+            * 3,
+        )
+
+    def test_failed_compression_lineage_stops_after_two_retries(self) -> None:
+        client = FakeClient(
+            responses=[
+                RuntimeError("initial lineage failure"),
+                RuntimeError("retry one failure"),
+                {"stored": True},
+                {"stored": True},
+                RuntimeError("retry two failure"),
+                {"stored": True},
+                {"stored": True},
+                {"stored": True},
+                {"stored": True},
+            ]
+        )
+        provider = self.lineage_provider(client)
+        provider.on_session_switch("parent-session")
+        provider.on_session_switch(
+            "child-session",
+            parent_session_id="parent-session",
+            reset=False,
+            reason="compression",
+        )
+
+        for index in range(3):
+            provider.sync_turn(
+                f"child fact {index}",
+                f"child answer {index}",
+                session_id="child-session",
+            )
+
+        self.assertEqual(
+            len([name for name, _ in client.calls if name == "session_lineage"]),
+            3,
+        )
+        self.assertFalse(any(name == "process" for name, _ in client.calls))
+        self.assertEqual(self.pending_lineage_head(provider)["attempts"], 3)
+
+    def test_lineage_queue_capacity_preserves_old_links_and_fails_closed(self) -> None:
+        provider = self.lineage_provider(auto_process=False)
+        for index in range(provider_module._MAX_SESSION_ALIASES):
+            self.assertTrue(
+                provider._remember_pending_lineage(
+                    {
+                        "source": "hermes",
+                        "session_id": f"child-{index}",
+                        "parent_session_id": f"parent-{index}",
+                    },
+                    1,
+                )
+            )
+        oldest = dict(provider._pending_lineage[0])
+
+        self.assertFalse(
+            provider._remember_pending_lineage(
+                {
+                    "source": "hermes",
+                    "session_id": "child-overflow",
+                    "parent_session_id": "parent-overflow",
+                },
+                1,
+            )
+        )
+        self.assertEqual(len(provider._pending_lineage), provider_module._MAX_SESSION_ALIASES)
+        self.assertEqual(dict(provider._pending_lineage[0]), oldest)
+        self.assertFalse(provider._retry_pending_lineage("child-overflow"))
+        self.assertEqual(provider._client.calls, [])
+
+    def test_compression_lineage_chain_retries_parent_before_child_and_processes_after_all_links(self) -> None:
+        child_link = self.lineage_link("child-session", "parent-session")
+        grandchild_link = self.lineage_link("grandchild-session", "child-session")
+        client = FakeClient(
+            responses=[
+                RuntimeError("initial child lineage failure"),
+                child_link,
+                RuntimeError("initial grandchild lineage failure"),
+                {"stored": True},
+                {"stored": True},
+                grandchild_link,
+                {"stored": True},
+                {"stored": True},
+                {"processed_turns": 1},
+            ]
+        )
+        provider = self.lineage_provider(client)
+        provider.on_session_switch("parent-session")
+        provider.on_session_switch(
+            "child-session",
+            parent_session_id="parent-session",
+            reset=False,
+            reason="compression",
+        )
+        provider.on_session_switch(
+            "grandchild-session",
+            parent_session_id="child-session",
+            reset=False,
+            reason="compression",
+        )
+
+        self.assertEqual(len(provider._pending_lineage), 2)
+        self.assertEqual(provider._pending_lineage[0]["session_id"], "child-session")
+        self.assertEqual(provider._pending_lineage[1]["session_id"], "grandchild-session")
+        self.assertEqual(
+            [arguments for name, arguments in client.calls if name == "session_lineage"],
+            [
+                {
+                    "source": "hermes",
+                    "session_id": "child-session",
+                    "parent_session_id": "parent-session",
+                }
+            ],
+        )
+
+        provider.sync_turn(
+            "grandchild fact one",
+            "grandchild answer one",
+            session_id="grandchild-session",
+        )
+        self.assertEqual(
+            [arguments for name, arguments in client.calls if name == "session_lineage"],
+            [
+                {
+                    "source": "hermes",
+                    "session_id": "child-session",
+                    "parent_session_id": "parent-session",
+                },
+                {
+                    "source": "hermes",
+                    "session_id": "child-session",
+                    "parent_session_id": "parent-session",
+                },
+                {
+                    "source": "hermes",
+                    "session_id": "grandchild-session",
+                    "parent_session_id": "child-session",
+                },
+            ],
+        )
+        self.assertEqual(
+            [name for name, _ in client.calls if name == "process"],
+            [],
+        )
+        self.assertEqual(provider._pending_lineage[0]["session_id"], "grandchild-session")
+
+        provider.sync_turn(
+            "grandchild fact two",
+            "grandchild answer two",
+            session_id="grandchild-session",
+        )
+        self.assertFalse(provider._pending_lineage)
+        self.assertEqual(
+            [arguments for name, arguments in client.calls if name == "session_lineage"],
+            [
+                {
+                    "source": "hermes",
+                    "session_id": "child-session",
+                    "parent_session_id": "parent-session",
+                },
+                {
+                    "source": "hermes",
+                    "session_id": "child-session",
+                    "parent_session_id": "parent-session",
+                },
+                {
+                    "source": "hermes",
+                    "session_id": "grandchild-session",
+                    "parent_session_id": "child-session",
+                },
+                {
+                    "source": "hermes",
+                    "session_id": "grandchild-session",
+                    "parent_session_id": "child-session",
+                },
+            ],
+        )
+        self.assertEqual(
+            [name for name, _ in client.calls if name == "process"],
+            ["process"],
+        )
+
+    def test_incomplete_parent_lineage_never_allows_grandchild_link_or_process(self) -> None:
+        client = FakeClient(
+            responses=[
+                RuntimeError("initial child lineage failure"),
+                RuntimeError("child retry failure"),
+                {"stored": True},
+                {"stored": True},
+                RuntimeError("child retry failure after capture"),
+                {"stored": True},
+                {"stored": True},
+            ]
+        )
+        provider = self.lineage_provider(client)
+        provider.on_session_switch("parent-session")
+        provider.on_session_switch(
+            "child-session",
+            parent_session_id="parent-session",
+            reset=False,
+            reason="compression",
+        )
+        provider.on_session_switch(
+            "grandchild-session",
+            parent_session_id="child-session",
+            reset=False,
+            reason="compression",
+        )
+
+        provider.sync_turn(
+            "grandchild fact one",
+            "grandchild answer one",
+            session_id="grandchild-session",
+        )
+        provider.sync_turn(
+            "grandchild fact two",
+            "grandchild answer two",
+            session_id="grandchild-session",
+        )
+
+        lineage_calls = [
+            arguments for name, arguments in client.calls if name == "session_lineage"
+        ]
+        self.assertEqual(
+            lineage_calls,
+            [
+                {
+                    "source": "hermes",
+                    "session_id": "child-session",
+                    "parent_session_id": "parent-session",
+                }
+            ]
+            * 3,
+        )
+        self.assertEqual(provider._pending_lineage[0]["session_id"], "child-session")
+        self.assertEqual(provider._pending_lineage[1]["session_id"], "grandchild-session")
+        self.assertFalse(any(name == "process" for name, _ in client.calls))
+
+    def test_lineage_pending_capture_replays_physical_sessions_in_order(self) -> None:
+        child_link = self.lineage_link("child-session", "parent-session")
+        grandchild_link = self.lineage_link("grandchild-session", "child-session")
+        client = FakeClient(
+            responses=[
+                RuntimeError("initial child lineage failure"),
+                RuntimeError("child retry failure"),
+                {"stored": True},
+                {"stored": True},
+                child_link,
+                grandchild_link,
+                {"stored": True},
+                {"stored": True},
+                {"processed_turns": 1},
+                {"processed_turns": 1},
+            ]
+        )
+        provider = self.lineage_provider(client)
+        provider.on_session_switch("parent-session")
+        provider.on_session_switch(
+            "child-session",
+            parent_session_id="parent-session",
+            reset=False,
+            reason="compression",
+        )
+
+        provider.sync_turn(
+            "child fact",
+            "child answer",
+            session_id="child-session",
+        )
+        self.assertEqual(
+            list(provider._deferred_process_sessions),
+            ["child-session"],
+        )
+        self.assertFalse(any(name == "process" for name, _ in client.calls))
+
+        provider.on_session_switch(
+            "grandchild-session",
+            parent_session_id="child-session",
+            reset=False,
+            reason="compression",
+        )
+        provider.sync_turn(
+            "grandchild fact",
+            "grandchild answer",
+            session_id="grandchild-session",
+        )
+
+        capture_sessions = [
+            arguments["session_id"]
+            for name, arguments in client.calls
+            if name == "capture"
+        ]
+        self.assertEqual(
+            capture_sessions,
+            ["child-session", "child-session", "grandchild-session", "grandchild-session"],
+        )
+        self.assertEqual(
+            [arguments for name, arguments in client.calls if name == "process"],
+            [
+                {"source": "hermes", "session_id": "child-session"},
+                {"source": "hermes", "session_id": "grandchild-session"},
+            ],
+        )
+        self.assertEqual(provider._deferred_process_sessions, {})
+
+    def test_failed_deferred_process_retains_physical_queue_for_retry(self) -> None:
+        child_link = self.lineage_link("child-session", "parent-session")
+        grandchild_link = self.lineage_link("grandchild-session", "child-session")
+        client = FakeClient(
+            responses=[
+                RuntimeError("initial child lineage failure"),
+                RuntimeError("child retry failure"),
+                {"stored": True},
+                {"stored": True},
+                child_link,
+                grandchild_link,
+                {"stored": True},
+                {"stored": True},
+                RuntimeError("child process failure"),
+                {"stored": True},
+                {"stored": True},
+                {"processed_turns": 1},
+                {"processed_turns": 1},
+            ]
+        )
+        provider = self.lineage_provider(client)
+        provider.on_session_switch("parent-session")
+        provider.on_session_switch(
+            "child-session",
+            parent_session_id="parent-session",
+            reset=False,
+            reason="compression",
+        )
+        provider.sync_turn("child fact", "child answer", session_id="child-session")
+        provider.on_session_switch(
+            "grandchild-session",
+            parent_session_id="child-session",
+            reset=False,
+            reason="compression",
+        )
+        provider.sync_turn(
+            "grandchild fact",
+            "grandchild answer",
+            session_id="grandchild-session",
+        )
+
+        self.assertEqual(
+            list(provider._deferred_process_sessions),
+            ["child-session"],
+        )
+        self.assertEqual(
+            [arguments for name, arguments in client.calls if name == "process"],
+            [{"source": "hermes", "session_id": "child-session"}],
+        )
+        self.assertEqual(
+            provider._last_auto_process_failure["session_id"],
+            "child-session",
+        )
+
+        provider.sync_turn(
+            "grandchild retry fact",
+            "grandchild retry answer",
+            session_id="grandchild-session",
+        )
+        self.assertEqual(
+            [arguments for name, arguments in client.calls if name == "process"],
+            [
+                {"source": "hermes", "session_id": "child-session"},
+                {"source": "hermes", "session_id": "child-session"},
+                {"source": "hermes", "session_id": "grandchild-session"},
+            ],
+        )
+        self.assertEqual(provider._deferred_process_sessions, {})
+
+    def test_multi_level_reset_or_rewind_clears_the_entire_alias_component(self) -> None:
+        for switch_kwargs in ({"reset": True}, {"rewound": True}):
+            with self.subTest(switch_kwargs=switch_kwargs):
+                client = FakeClient(
+                    responses=[
+                        {
+                            "linked": True,
+                            "source": "hermes",
+                            "session_id": "child-session",
+                            "parent_session_id": "parent-session",
+                        },
+                        {
+                            "linked": True,
+                            "source": "hermes",
+                            "session_id": "grandchild-session",
+                            "parent_session_id": "child-session",
+                        },
+                        {
+                            "session_id": "grandchild-session",
+                            "parent_session_id": None,
+                            "cleared": True,
+                        },
+                    ]
+                )
+                provider = self.lineage_provider(client, auto_process=False)
+                provider.on_session_switch("parent-session")
+                provider.on_session_switch(
+                    "child-session",
+                    parent_session_id="parent-session",
+                    reset=False,
+                    reason="compression",
+                )
+                provider.on_session_switch(
+                    "grandchild-session",
+                    parent_session_id="child-session",
+                    reset=False,
+                    reason="compression",
+                )
+                self.assertEqual(
+                    provider._canonical_session_id("parent-session"),
+                    "grandchild-session",
+                )
+                self.assertEqual(
+                    provider._canonical_session_id("child-session"),
+                    "grandchild-session",
+                )
+                provider._defer_process_session("parent-session")
+                provider._defer_process_session("parent-session")
+                provider._defer_process_session("child-session")
+
+                provider.on_session_switch("grandchild-session", **switch_kwargs)
+
+                self.assertEqual(provider._session_aliases, {})
+                self.assertEqual(provider._deferred_process_sessions, {})
+                for session_id in (
+                    "parent-session",
+                    "child-session",
+                    "grandchild-session",
+                ):
+                    self.assertEqual(provider._canonical_session_id(session_id), session_id)
+
+    def test_pending_compression_lineage_is_cleared_by_new_independent_session(self) -> None:
+        for switch_kwargs in (
+            {"reset": True},
+            {"rewound": True},
+            {"reset": False, "rewound": False},
+        ):
+            with self.subTest(switch_kwargs=switch_kwargs):
+                provider = self.lineage_provider(
+                    auto_process=False,
+                    responses=[RuntimeError("lineage failure")],
+                )
+                provider.on_session_switch("parent-session")
+                provider.on_session_switch(
+                    "child-session",
+                    parent_session_id="parent-session",
+                    reset=False,
+                    reason="compression",
+                )
+                self.assertTrue(provider._pending_lineage)
+
+                provider.on_session_switch("fresh-session", **switch_kwargs)
+
+                if switch_kwargs.get("reset") or switch_kwargs.get("rewound"):
+                    pending = self.pending_lineage_head(provider)
+                    self.assertEqual(pending["session_id"], "fresh-session")
+                    self.assertTrue(pending["reset"])
+                else:
+                    self.assertFalse(provider._pending_lineage)
+
+    def test_reset_after_compression_drops_lineage_and_retrieval_state(self) -> None:
+        provider = self.lineage_provider(
+            auto_process=False,
+            responses=[
+                RuntimeError("compression lineage failure"),
+                {"session_id": "fresh-session", "parent_session_id": None, "cleared": False},
+            ],
+        )
+        provider.on_session_switch("old-compression-session")
+        provider.on_turn_start(4, {"role": "user", "content": "continuing"})
+        provider._retrieval_ids_by_turn[("old-compression-session", 4)] = "rtv-old"
+        provider._active_retrieval_ids["old-compression-session"] = "rtv-old"
+
+        provider.on_session_switch(
+            "new-compression-session",
+            parent_session_id="old-compression-session",
+            reset=False,
+            reason="compression",
+        )
+        self.assertEqual(
+            provider._canonical_session_id("old-compression-session"),
+            "new-compression-session",
+        )
+        self.assertEqual(len(provider._pending_lineage), 1)
+
+        provider.on_session_switch("fresh-session", reset=True)
+
+        self.assertFalse(provider._pending_lineage)
+        self.assertEqual(
+            provider._canonical_session_id("old-compression-session"),
+            "old-compression-session",
+        )
+        self.assertEqual(provider._pending_turn_count, 0)
+        self.assertNotIn("new-compression-session", provider._active_turn_numbers)
+        self.assertNotIn("new-compression-session", provider._active_retrieval_ids)
+        self.assertNotIn(("new-compression-session", 4), provider._retrieval_ids_by_turn)
+        self.assertNotIn(("new-compression-session", 4), provider._gate_turn_ids)
+        self.assertNotIn("old-compression-session", provider._session_aliases)
+
+    def test_failed_reset_lineage_defers_process_until_reset_retry_succeeds(self) -> None:
+        client = FakeClient(
+            responses=[
+                RuntimeError("compression lineage failure"),
+                RuntimeError("reset lineage failure"),
+                {"session_id": "fresh-session", "parent_session_id": None, "cleared": True},
+                {"stored": True},
+                {"stored": True},
+                {"processed_turns": 1},
+            ]
+        )
+        provider = self.lineage_provider(client)
+        provider.on_session_switch("parent-session")
+        provider.on_session_switch(
+            "child-session",
+            parent_session_id="parent-session",
+            reset=False,
+            reason="compression",
+        )
+        provider.on_session_switch("fresh-session", reset=True)
+
+        pending = self.pending_lineage_head(provider)
+        self.assertEqual(pending["session_id"], "fresh-session")
+        self.assertTrue(pending["reset"])
+
+        provider.sync_turn("fresh fact", "fresh answer", session_id="fresh-session")
+
+        self.assertFalse(provider._pending_lineage)
+        self.assertEqual(
+            [arguments for name, arguments in client.calls if name == "process"],
+            [{"source": "hermes", "session_id": "fresh-session"}],
         )
 
     def test_soft_observer_ignores_previous_turn_and_requires_current_token(self) -> None:

@@ -110,7 +110,7 @@ def handle_event(
             )
             if codex_event_name == "Stop":
                 return {"systemMessage": _CODEX_GATE_UNVERIFIED_MESSAGE}
-            if codex_event_name == "UserPromptSubmit":
+            if codex_event_name in {"UserPromptSubmit", "SessionStart"}:
                 return {"systemMessage": _CODEX_SCOPE_MAP_UNAVAILABLE_MESSAGE}
         return {}
     return {}
@@ -195,6 +195,24 @@ def _handle_codex(
         return {}
 
     runtime = HostRuntime(Memleaf(vault), "codex")
+
+    if name == "SessionStart":
+        source = _field(event, "source")
+        if source != "compact":
+            return {}
+        catalog = runtime.scope_catalog(limit=_CODEX_SCOPE_ITEMS)
+        if not _valid_scope_catalog(catalog):
+            return {"systemMessage": _CODEX_SCOPE_MAP_UNAVAILABLE_MESSAGE}
+        context = _format_scope_catalog(catalog)
+        if not context:
+            return {}
+        mark_hook_active(vault.root, "codex")
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": context,
+            }
+        }
 
     if name == "UserPromptSubmit":
         prompt = _field(event, "prompt")
@@ -614,6 +632,9 @@ def _normalize_event_name(value: Any) -> str | None:
         "user-prompt": "UserPromptSubmit",
         "user_prompt_submit": "UserPromptSubmit",
         "userpromptsubmit": "UserPromptSubmit",
+        "session-start": "SessionStart",
+        "session_start": "SessionStart",
+        "sessionstart": "SessionStart",
         "pre-invocation": "PreInvocation",
         "pre_invocation": "PreInvocation",
         "preinvocation": "PreInvocation",

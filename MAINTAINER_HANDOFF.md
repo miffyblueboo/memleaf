@@ -1,6 +1,6 @@
 # Maintainer Handoff
 
-Current release: **0.1.6**  
+Current release: **0.1.7**
 License: **MIT**
 
 This file is for maintainers and is intentionally not linked from the user-facing README.
@@ -28,6 +28,11 @@ plugin runtime and reaches the same lifecycle layer through `memleaf-mcp`:
 the MCP `capture`, host-bound `scope_catalog`, and host-bound `process`
 paths delegate to `HostRuntime`. Do not make the Hermes plugin import private
 memleaf Core modules merely to share code.
+
+Codex support is installed explicitly with `memleaf install --host codex`.
+The installer registers MCP through the Codex CLI and merges lifecycle hooks
+into `~/.codex/hooks.json`; users must still review and trust those hooks in
+Codex with `/hooks`. Do not report pending hooks as active.
 
 `tests/test_host_runtime_contract.py` is the host-neutral regression contract.
 A future host should satisfy that contract without adding another copy of the
@@ -68,10 +73,12 @@ memleaf-mcp stdout
 
 This preserves timeouts without using Windows-incompatible pipe polling.
 
-Keep these two provider copies synchronized:
+The only maintained provider implementation is:
 
 - `src/memleaf/hermes_provider/__init__.py`
-- `integrations/hermes/memleaf/__init__.py`
+
+All installers and provider tests must use this packaged source directly; do
+not add a second checked-in Python implementation under `integrations/`.
 
 ## Required Windows regression gate
 

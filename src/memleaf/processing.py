@@ -32,7 +32,7 @@ from .models import Memory, utc_now
 from .native_index import NativeIndexer
 from .prompts import JSON_CORRECTION, GATE_SYSTEM, SUMMARIZE_SYSTEM, gate_prompt, summarize_prompt
 from .redaction import redact_text
-from .retrieval import normalize_term
+from .retrieval import candidate_matches_query, filter_by_scope, normalize_term
 from .scope_state import ScopeError, normalize_scopes, register_scope_nodes
 from .scope_maintenance import ScopeMaintainer, ScopeMaintenanceError, scope_registry_projection
 from .validation import (
@@ -80,6 +80,17 @@ _DIAGNOSTIC_SUMMARY_ALLOWED = frozenset(
         "scope_operations",
     )
 )
+# Automatic model calls need more context than the host's Scope Map, but they
+# still receive a bounded slice.  These limits are intentionally local to the
+# processing prompts; they do not change the host's directory-only budget.
+_RELATED_MAX_ITEMS = 6
+_RELATED_MAX_BODY_CHARS = 1600
+_RELATED_MAX_CHARS = 6000
+_SCOPE_DIRECTORY_MAX_ITEMS = 8
+_SCOPE_DIRECTORY_MAX_TITLE_CHARS = 180
+_SCOPE_DIRECTORY_MAX_CHARS = 2400
+_MAX_SESSION_LINEAGE_DEPTH = 32
+_UNSET = object()
 
 
 class ProcessingError(RuntimeError):
@@ -1071,33 +1082,103 @@ class Processor:
         explicit_scope: Any = None,
         *,
         overlay: Iterable[Mapping[str, Any]] = (),
-    ) -> tuple[list[dict[str, Any]], Any, list[dict[str, str]]]:
+        strict_relevance: bool = False,
+        priority_memory_ids: Iterable[str] = (),
+        priority_only: bool = False,
+        scope_records: Optional[list[Any]] = None,
+    ) -> tuple[
+        list[dict[str, Any]],
+        Any,
+        list[dict[str, str]],
+        Optional[tuple[list[Any], bool]],
+    ]:
         visible = query.strip() if isinstance(query, str) else ""
         scope = _safe_scope_background(state, explicit_scope)
         local: list[dict[str, Any]] = []
         indexed_native: list[dict[str, Any]] = []
+        scope_fallback: Optional[tuple[list[Any], bool]] = None
         with self.service.vault.lock():
-            records = self.service._search_unlocked(
-                visible,
-                scope=scope if scope else None,
-                include_history=False,
-                todo_status="all",
-                limit=None,
-            ) if visible else []
+            priority_wanted = [
+                value.casefold()
+                for value in priority_memory_ids
+                if isinstance(value, str) and value
+            ]
+            priority_records: list[Any] = []
+            if priority_wanted:
+                available = scope_records
+                if available is None:
+                    available, _ = self._scope_records_unlocked(scope)
+                by_id = {
+                    record.memory.memory_id.casefold(): record
+                    for record in available
+                }
+                priority_records = [
+                    by_id[value] for value in priority_wanted if value in by_id
+                ]
+            if priority_only:
+                # A candidate already selected an active target from the
+                # directory.  Reading that target is sufficient; a second
+                # full-text search cannot change the candidate and only adds
+                # cost (and unrelated context).
+                records = priority_records
+            else:
+                records = self.service._search_unlocked(
+                    visible,
+                    scope=scope if scope else None,
+                    include_history=False,
+                    todo_status="all",
+                    limit=None,
+                    # Processing needs the same candidate relevance boundary as
+                    # the public directory search.  The legacy indexed-first
+                    # lookup can return no record for an elliptical follow-up
+                    # such as “this project's tasks”, even when the session scope
+                    # identifies the project and its active memory is the only
+                    # plausible maintenance target.
+                    strict_candidates=True,
+                ) if visible else []
+                if visible and strict_relevance and self._has_specific_scope(scope):
+                    records = [
+                        record
+                        for record in records
+                        if candidate_matches_query(record.memory, visible)
+                    ]
+                if visible and not records and not priority_records and self._has_specific_scope(scope):
+                    scoped_records, ambiguous = self._scope_records_unlocked(scope)
+                    scope_fallback = (scoped_records, ambiguous)
+                    records = [] if ambiguous else scoped_records
+                if priority_records:
+                    priority_ids = {
+                        record.memory.memory_id.casefold()
+                        for record in priority_records
+                    }
+                    records = priority_records + [
+                        record
+                        for record in records
+                        if record.memory.memory_id.casefold() not in priority_ids
+                    ]
             local = _native_result([record.memory for record in records])
             if visible:
-                indexed_native = NativeIndexer(self.service.vault).search_unlocked(
-                    visible,
-                    target_agent=turn.source,
-                    for_context=False,
-                    limit=None,
-                )
-        native = _invoke_native(getattr(self.service, "native_memory_reader", None), visible, scope) if visible else []
+                if not priority_only:
+                    indexed_native = NativeIndexer(self.service.vault).search_unlocked(
+                        visible,
+                        target_agent=turn.source,
+                        for_context=False,
+                        limit=None,
+                    )
+        native = (
+            _invoke_native(getattr(self.service, "native_memory_reader", None), visible, scope)
+            if visible and not priority_only
+            else []
+        )
         related = self._overlay_related(
             _merge_related(local + indexed_native + native),
             overlay,
             query=visible,
             scope=scope,
+        )
+        related = self._bound_related(
+            related,
+            priority_memory_ids=priority_memory_ids,
         )
         native_refs = [
             {
@@ -1109,7 +1190,168 @@ class Processor:
             and isinstance(item.get("native_source_id"), str)
             and isinstance(item.get("native_id"), str)
         ]
-        return related, scope, native_refs
+        return related, scope, native_refs, scope_fallback
+
+    @staticmethod
+    def _has_specific_scope(scope: Any) -> bool:
+        values = [scope] if isinstance(scope, str) else scope if isinstance(scope, (list, tuple, set)) else []
+        return any(isinstance(value, str) and value not in {"", "global", "unscoped"} for value in values)
+
+    @staticmethod
+    def _single_specific_scope(scope: Any) -> bool:
+        values = [scope] if isinstance(scope, str) else list(scope) if isinstance(scope, (list, tuple, set)) else []
+        return len(values) == 1 and isinstance(values[0], str) and values[0] not in {"", "global", "unscoped"}
+
+    @staticmethod
+    def _related_payload_size(value: Mapping[str, Any]) -> int:
+        try:
+            return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+        except (TypeError, ValueError, OverflowError):
+            return -1
+
+    @classmethod
+    def _bound_related(
+        cls,
+        related: Iterable[Mapping[str, Any]],
+        *,
+        priority_memory_ids: Iterable[str] = (),
+    ) -> list[dict[str, Any]]:
+        """Keep model related-memory context within the processing budget.
+
+        Update/duplicate targets are placed first, but every body is still
+        bounded.  The serialized payload limit also covers metadata, so a
+        large tag/alias list cannot bypass the body budget.
+        """
+
+        priority = {
+            value.casefold()
+            for value in priority_memory_ids
+            if isinstance(value, str) and value
+        }
+        values: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for item in related:
+            if not isinstance(item, Mapping):
+                continue
+            value = dict(item)
+            memory_id = value.get("memory_id")
+            if isinstance(memory_id, str):
+                key = memory_id.casefold()
+                if key in seen_ids:
+                    continue
+                seen_ids.add(key)
+            values.append(value)
+        values.sort(
+            key=lambda value: (
+                isinstance(value.get("memory_id"), str)
+                and value["memory_id"].casefold() in priority,
+            ),
+            reverse=True,
+        )
+        selected: list[dict[str, Any]] = []
+        used = 2  # The surrounding JSON array brackets.
+        for value in values:
+            if len(selected) >= _RELATED_MAX_ITEMS:
+                break
+            body = value.get("body")
+            if isinstance(body, str) and len(body) > _RELATED_MAX_BODY_CHARS:
+                value["body"] = body[: _RELATED_MAX_BODY_CHARS - 1].rstrip() + "…"
+            size = cls._related_payload_size(value)
+            if size < 0:
+                continue
+            additional = size + (1 if selected else 0)
+            if used + additional > _RELATED_MAX_CHARS:
+                # A priority target still gets a minimal, bounded view when
+                # oversized metadata leaves no room for its normal payload.
+                memory_id = value.get("memory_id")
+                if not (
+                    isinstance(memory_id, str)
+                    and memory_id.casefold() in priority
+                ):
+                    continue
+                minimal = {
+                    key: value[key]
+                    for key in ("memory_id", "title", "body", "type", "scopes")
+                    if key in value
+                }
+                size = cls._related_payload_size(minimal)
+                if size < 0 or used + size + (1 if selected else 0) > _RELATED_MAX_CHARS:
+                    continue
+                value = minimal
+                additional = size + (1 if selected else 0)
+            selected.append(value)
+            used += additional
+        return selected
+
+    def _scope_records_unlocked(self, scope: Any) -> tuple[list[Any], bool]:
+        """Read and rank active records once for a scoped fallback."""
+
+        active_records = self.service._read_memories_unlocked("knowledge")
+        scoped = filter_by_scope(
+            [record.memory for record in active_records],
+            scope,
+            self.service.vault.config(),
+        )
+        ranks = {memory.memory_id.casefold(): rank for memory, rank in scoped}
+        records = [
+            record
+            for record in active_records
+            if record.memory.memory_id.casefold() in ranks
+        ]
+        records.sort(
+            key=lambda record: (
+                ranks[record.memory.memory_id.casefold()],
+                record.memory.updated,
+                record.memory.memory_id,
+            ),
+            reverse=True,
+        )
+        return records, len(records) > 1
+
+    @classmethod
+    def _scope_directory_entry(cls, memory: Memory) -> tuple[dict[str, Any], bool]:
+        title = memory.title
+        title_truncated = len(title) > _SCOPE_DIRECTORY_MAX_TITLE_CHARS
+        if title_truncated:
+            title = title[: _SCOPE_DIRECTORY_MAX_TITLE_CHARS - 1].rstrip() + "…"
+        return (
+            {
+                "memory_id": memory.memory_id,
+                "title": title,
+                "type": memory.type,
+                "scopes": list(memory.scopes),
+            },
+            title_truncated,
+        )
+
+    @classmethod
+    def _scope_directory(
+        cls,
+        records: Iterable[Any],
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Return a bounded metadata-only directory from scoped records."""
+
+        records = list(records)
+        complete = len(records) <= _SCOPE_DIRECTORY_MAX_ITEMS
+        directory: list[dict[str, Any]] = []
+        used = 2
+        for record in records[:_SCOPE_DIRECTORY_MAX_ITEMS]:
+            entry, title_truncated = cls._scope_directory_entry(record.memory)
+            complete = complete and not title_truncated
+            try:
+                size = len(json.dumps(entry, ensure_ascii=False, separators=(",", ":")))
+            except (TypeError, ValueError, OverflowError):
+                complete = False
+                continue
+            additional = size + (1 if directory else 0)
+            if used + additional > _SCOPE_DIRECTORY_MAX_CHARS:
+                complete = False
+                break
+            directory.append(entry)
+            used += additional
+        if len(records) > _SCOPE_DIRECTORY_MAX_ITEMS:
+            complete = False
+        return directory, complete
 
     def _related(
         self,
@@ -1118,7 +1360,12 @@ class Processor:
         explicit_scope: Any = None,
         *,
         overlay: Iterable[Mapping[str, Any]] = (),
-    ) -> tuple[list[dict[str, Any]], Any, list[dict[str, str]]]:
+    ) -> tuple[
+        list[dict[str, Any]],
+        Any,
+        list[dict[str, str]],
+        Optional[tuple[list[Any], bool]],
+    ]:
         visible = " ".join(event.content for event in turn.events if isinstance(event.content, str)).strip()
         return self._related_query(
             turn,
@@ -1126,6 +1373,29 @@ class Processor:
             visible,
             explicit_scope,
             overlay=overlay,
+            strict_relevance=True,
+        )
+
+    def _defer_candidate(
+        self,
+        turn_ref: tuple[str, str, str],
+        candidate: Mapping[str, Any],
+        reason: str,
+        *,
+        scopes: Optional[Iterable[str]] = None,
+        scope_source: Any = _UNSET,
+    ) -> None:
+        self._deferred_by_turn[turn_ref].append(
+            {
+                "candidate_id": str(candidate["candidate_id"]),
+                "scopes": list(scopes if scopes is not None else candidate["scopes"]),
+                "scope_source": (
+                    candidate.get("scope_source")
+                    if scope_source is _UNSET
+                    else scope_source
+                ),
+                "reason": reason,
+            }
         )
 
     @staticmethod
@@ -1239,18 +1509,39 @@ class Processor:
         events = _event_payload(turn)
         turn_ref = (turn.source, turn.session_id, turn.turn_key)
         self._deferred_by_turn.setdefault(turn_ref, [])
-        related, scope_background, native_refs = self._related(
+        related, scope_background, native_refs, scope_fallback = self._related(
             turn,
             state,
             scope,
             overlay=self._planned_related,
         )
+        # When a compressed turn has no lexical hit but inherits one concrete
+        # scope containing several active memories, expose only a bounded
+        # metadata directory to the gate.  Bodies stay out of this first
+        # decision; the selected ID is re-read for summarize below.
+        scope_directory: Optional[list[dict[str, Any]]] = None
+        scope_directory_complete = True
+        scope_ambiguous = False
+        scoped_records: Optional[list[Any]] = None
+        gate_related = related
         related_native_ids = [item["native_id"] for item in native_refs]
         related_memory_ids = [
             item["memory_id"]
             for item in related
             if item.get("native") is not True and isinstance(item.get("memory_id"), str)
         ]
+        gate_related_memory_ids = list(related_memory_ids)
+        if scope_fallback is not None:
+            scoped_records, scope_ambiguous = scope_fallback
+            if scope_ambiguous and self._single_specific_scope(scope_background):
+                scope_directory, scope_directory_complete = self._scope_directory(scoped_records)
+                gate_related = []
+                for entry in scope_directory:
+                    memory_id = entry.get("memory_id")
+                    if isinstance(memory_id, str) and memory_id.casefold() not in {
+                        value.casefold() for value in gate_related_memory_ids
+                    }:
+                        gate_related_memory_ids.append(memory_id)
         scope_registry = self._scope_registry_projection()
         with self.service.vault.lock():
             validation_scope_registry = self.service.vault.config().get("scopes", {})
@@ -1300,7 +1591,9 @@ class Processor:
             backend,
             gate_prompt(
                 events,
-                related_memories=related,
+                related_memories=gate_related,
+                scope_directory=scope_directory,
+                scope_directory_complete=scope_directory_complete,
                 scope_background=scope_background,
                 scope_registry=scope_registry,
             ),
@@ -1309,7 +1602,7 @@ class Processor:
             parser=lambda raw: parse_gate_output(
                 raw,
                 current_event_keys=turn.event_keys,
-                related_memory_ids=related_memory_ids,
+                related_memory_ids=gate_related_memory_ids,
             ),
             diagnostic_context={
                 "source": turn.source,
@@ -1336,17 +1629,34 @@ class Processor:
                 candidate_scopes == ["unscoped"]
                 or candidate.get("scope_source") == "insufficient_context"
             ):
-                self._deferred_by_turn[turn_ref].append(
-                    {
-                        "candidate_id": str(candidate["candidate_id"]),
-                        "scopes": candidate_scopes,
-                        "scope_source": candidate.get("scope_source"),
-                        "reason": "scope_required",
-                    }
+                self._defer_candidate(turn_ref, candidate, "scope_required", scopes=candidate_scopes)
+                continue
+
+            has_target = any(
+                isinstance(candidate.get(field), str) and candidate.get(field)
+                for field in ("duplicate_memory_id", "update_memory_id")
+            )
+            if scope_directory is not None and not scope_directory_complete and (
+                candidate["worth"] or has_target
+            ):
+                self._defer_candidate(
+                    turn_ref,
+                    candidate,
+                    "scope_directory_incomplete",
+                    scopes=candidate_scopes,
                 )
                 continue
 
-            candidate_related, candidate_scope_background, candidate_native_refs = self._related_query(
+            if candidate["worth"] and scope_ambiguous and not has_target:
+                self._defer_candidate(
+                    turn_ref,
+                    candidate,
+                    "related_ambiguous",
+                    scopes=candidate_scopes,
+                )
+                continue
+
+            candidate_related, candidate_scope_background, candidate_native_refs, _ = self._related_query(
                 turn,
                 state,
                 (
@@ -1360,6 +1670,12 @@ class Processor:
                 ).strip(),
                 candidate_scopes,
                 overlay=self._planned_related,
+                priority_memory_ids=[
+                    candidate.get("duplicate_memory_id"),
+                    candidate.get("update_memory_id"),
+                ],
+                priority_only=scope_directory is not None,
+                scope_records=scoped_records if scope_directory is not None else None,
             )
             candidate_native_ids = [item["native_id"] for item in candidate_native_refs]
             candidate_memory_ids = [
@@ -1434,13 +1750,12 @@ class Processor:
                         validation_detail="invalid_update_target",
                     )
             if summary["scopes"] == ["unscoped"] or summary.get("scope_source") == "insufficient_context":
-                self._deferred_by_turn[turn_ref].append(
-                    {
-                        "candidate_id": str(candidate["candidate_id"]),
-                        "scopes": list(summary["scopes"]),
-                        "scope_source": summary.get("scope_source"),
-                        "reason": "scope_required",
-                    }
+                self._defer_candidate(
+                    turn_ref,
+                    candidate,
+                    "scope_required",
+                    scopes=summary["scopes"],
+                    scope_source=summary.get("scope_source"),
                 )
                 continue
             for observed_scope in summary["scopes"]:
@@ -1460,7 +1775,39 @@ class Processor:
     def _state_for_snapshot_unlocked(self, snapshot: _Snapshot, processed: Mapping[str, Any]) -> Mapping[str, Any]:
         sessions = processed.get("sessions", {})
         state = sessions.get(snapshot.state_key) if isinstance(sessions, Mapping) else None
-        return state if isinstance(state, Mapping) else {}
+        if not isinstance(state, Mapping):
+            return {}
+
+        # Compression rotates the physical session before the next visible
+        # turn.  Resolve only a missing child scope through the persisted
+        # parent chain; an explicit child scope remains authoritative.
+        child_scope = _safe_scope_background(state)
+        if child_scope:
+            return state
+        current = state
+        visited = {snapshot.state_key}
+        for _ in range(_MAX_SESSION_LINEAGE_DEPTH):
+            parent_session_id = current.get("lineage_parent_session_id")
+            if not isinstance(parent_session_id, str) or not parent_session_id:
+                break
+            try:
+                parent_session_id = safe_component(parent_session_id, "parent session id")
+            except ValueError:
+                break
+            parent_key = _session_key(snapshot.turn.source, parent_session_id)
+            if parent_key in visited:
+                break
+            visited.add(parent_key)
+            parent_state = sessions.get(parent_key) if isinstance(sessions, Mapping) else None
+            if not isinstance(parent_state, Mapping):
+                break
+            parent_scope = _safe_scope_background(parent_state)
+            if parent_scope:
+                inherited = dict(state)
+                inherited["scopes"] = list(parent_scope) if isinstance(parent_scope, list) else parent_scope
+                return inherited
+            current = parent_state
+        return state
 
     @staticmethod
     def _processed_memory_ids(processed: Mapping[str, Any], event_key_value: str) -> Optional[list[str]]:

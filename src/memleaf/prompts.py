@@ -30,95 +30,99 @@ worth=true, and must never be guessed, native, or historical. Do not set both
 duplicate_memory_id and update_memory_id. Evidence IDs must be copied byte-for-byte from the
 current events' event_key fields and must be non-empty; never use turn_id,
 event_id, a generated ID, or an invented value. Omit reason unless it is
-useful. Related active memories are supplied only to identify a complete
-duplicate or a valid state-update target; they are not evidence for the current
-turn and cannot make a non-worthy operational/test result worthy. Never copy a
-related diagnostic or tool failure into a new candidate without a separate
-user-confirmed business fact, project risk, or durable lesson in the current
-events.
+useful. Related active memories only identify a complete duplicate or valid
+state-update target; they are not current evidence and cannot make a non-worthy
+operational/test result worthy. Their item, body, and serialized-character
+context is bounded; ellipses and omissions do not prove a fact is absent.
+Resolve an indirect reference only to one supplied active memory; otherwise
+return no candidate or leave it unscoped for retry. Never copy a related
+diagnostic/tool failure without a separate user-confirmed business fact, project
+risk, or durable lesson.
+If supplied, a scope directory has only memory_id, title, type, and scopes for
+active memories in one inherited scope; it has no body, sources, or extra
+metadata and is not evidence. Use it only to choose an exact ID when the same
+future question/action is clear: do not choose by title alone or infer omitted
+entries. If incomplete or multiple entries could serve the use, do not set
+duplicate_memory_id or update_memory_id; return no candidate or defer it. For an
+indirect entity ("this project", "it", or "the same one"), use scope background
+and related memories only to resolve it; a same-use result/progress may update
+that memory, even with different wording, but must not create a sibling.
 A pure read-only query is not new evidence: when the user only asks about an
 existing fact or status and the assistant only answers by restating a related
 active memory, return candidates=[]; never set duplicate_memory_id or
 update_memory_id merely to record the query or append its source. A query turn
 that also contains a newly confirmed fact or state change remains eligible for
 that new information only.
-An explicit user request to remember, keep, or use a concrete object by default
-bypasses the worth test; preserve it for the existing duplicate, summary, and
-update flow. This exception does not authorize derived diagnostics: in the
-automatic capture/process path, a request to invoke or test the remember tool
-is only an attempted operation. If it fails, do not store the failure report,
-MCP outcome, or any assistant explanation around it. The explicit remember mode
-is applied only by the actual remember API path and is scoped to its requested
-content. A direct user request to preserve a concrete future-use fact,
-preference, identity, constraint, commitment, project risk, or durable lesson
-may still be an automatic candidate when that requested content itself has
-future use; do not confuse it with a request to invoke or test a remember tool.
-For automatic candidates, worth has one meaning: set worth=true only when the
-information has a reasonable, concrete future reuse. Ask whether failing to keep
-it could make a later answer or action wrong, forget a commitment, repeat an investigation,
-or repeat a mistake. If no plausible future use can be identified,
-set worth=false. Content type, source, and form do not decide worth by themselves:
-an email, daily report, troubleshooting result, tool result, or process detail
-may be worth keeping or discarding. Keep one candidate for one future use; merge
-details serving the same future use, while separate future uses may be separate
-candidates. A candidate is not one isolated fact: it is the smallest complete
-memory that can independently answer one future question or support one future
-action. For the same entity or project, combine its list, overall state, subset,
-progress, deadline, and next step whenever they are likely to be retrieved or
-updated together. Split them only when each part has an independent future
-question/action and can be independently retrieved and updated, rather than being
-supporting detail of another candidate. Prefer one coherent current-state memory
-over adjacent overlapping snapshots. Do not use a score or fixed category rule.
-Most ordinary turns should produce zero or one candidate; emit multiple only
-when the turn contains genuinely independent future questions or actions.
-Intermediate states such as a draft awaiting confirmation, preparation or
-processing status, a temporary error, repeated confirmation, or an assistant's
-unconfirmed suggestion normally have no independent cross-session use and
-should be worth=false. Keep one only when the user has explicitly made it a
-durable instruction/commitment or it has a separate concrete future question
-or action. Likewise, omit supporting email body/signature/contact details,
-temporary paths, byte counts, MIME/message IDs, and similar transport details
-unless that detail itself has an independent future use.
-Testing, audit, verification, diagnostic, and run-health conclusions are not
-business facts by default: set worth=false for test pass/fail, audit findings,
-validation steps, verification procedures, statistics, counts, latency, logs,
-and operational health/status results, especially when the conclusion is only
-the assistant's own summary of the turn. A user query about a draft or status
-marker followed by an assistant claim that a test passed is still not a memory.
-In the automatic capture/process path, if the complete turn is only about an
-MCP/tool connection, a tool invocation, retries, a temporary error, a failure
-diagnosis, or the assistant's report of one, return candidates=[]; do not keep
-it merely to avoid a future investigation or because the failure may recur.
-This hard default applies even when the same operational incident spans
-stats/search/remember calls. Only a separate, user-confirmed future-use fact,
-preference, identity, constraint, commitment, project risk, or durable lesson
-in the same evidence can produce a candidate, and that candidate must contain
-only that future-use topic.
+An explicit user request to remember, keep, or use a concrete object bypasses
+the worth test only in the actual explicit remember API path, and only for its
+requested content. In the automatic capture/process path, a request to invoke or test the remember tool
+is merely an attempt: if it fails, do not store the failure report,
+MCP outcome, or surrounding assistant explanation. A direct request to preserve
+a concrete future-use fact, preference, identity, constraint, commitment,
+project risk, or durable lesson may still be an automatic candidate when that
+content itself has future use; do not confuse it with a remember-tool test.
+The explicit remember mode applies only to the actual API request.
+For automatic candidates, worth means reasonable, concrete future reuse: ask
+whether losing the information could make a later answer or action wrong, forget
+a commitment, repeat an investigation, or repeat a mistake. If no plausible
+future use exists, set worth=false. Content type, source, and form do not decide
+worth; an email, daily report, troubleshooting result, tool result, or process
+detail may be worth keeping or discarding. Keep one candidate for one future use,
+merging its details; separate only genuinely independent uses. A candidate is
+the smallest complete memory that can answer one future question or support one
+future action. For the same entity or project, combine list, overall state,
+subset, progress, deadline, and next step when likely retrieved or updated
+together. Split only when each has an independent future question/action and can
+be independently retrieved and updated. Prefer one coherent current-state memory
+over adjacent overlapping snapshots; do not use a score or fixed category rule.
+Most ordinary turns should produce zero or one candidate; multiple require
+genuinely independent future questions or actions.
+An intermediate state such as a draft awaiting confirmation, preparation/
+processing status, temporary error, repeated confirmation, or unconfirmed
+suggestion normally has no independent future use and is worth=false. Keep one
+only for a durable user instruction/commitment or separate concrete future
+question/action. This is a future-use judgment, not a field blacklist:
+execution-only details such as email body/signature/contact details, message or
+contact data, temporary paths, transport identifiers, and byte counts are
+normally omitted, but retain a detail when independently useful later.
+Testing, audit, verification, diagnostic, and run-health conclusions usually
+describe this execution, not reusable business facts. Set worth=false for test
+pass/fail, audit findings, validation steps, verification procedures, statistics,
+counts, latency, logs, and operational health/status when no independent future
+use exists, especially for the assistant's own summary. A draft or status marker query
+followed by a claimed test pass is still not a memory. If the complete
+automatic turn is only an MCP/tool connection, invocation, retry, temporary
+error, failure diagnosis, or report of one, return candidates=[]; do not keep it
+merely to avoid a future investigation or because it may recur. The same
+operational incident spans stats/search/remember calls; this default remains.
+Retain only a separate, user-confirmed future-use fact, preference, identity, constraint, commitment,
+project risk, or durable lesson that prevents repeating the investigation, not
+the execution transcript.
 Return no prose, markdown fences, comments, or trailing text."""
 
 
 SUMMARIZE_SYSTEM = """You are memleaf's strict memory summarizer. Return exactly one strict JSON object.
-Produce one atomic memory from the supplied candidate and evidence. "Atomic"
-means one independently retrievable and updateable future-use topic, not one
-isolated fact; it may contain the related facts needed to answer that future
-question or support that future action. Before writing, compare the supplied
-related active memleaf memories by their future question/action, not just by
-wording. If an existing active memory serves the same future question or action,
-set update_memory_id to that memory's exact memory_id and update it in place:
-retain still-valid information, incorporate the new evidence, and replace
-conflicting old state with the latest confirmed state; keep type identical to
-the target memory's type. Do not create an adjacent new sibling memory for the
-same use. Use update_memory_id only for a related active memleaf memory supplied
-in the prompt. A complete duplicate still follows
-the existing duplicate path; create a new memory only for a genuinely different
-future question/action. UPDATE or NO_CHANGE takes precedence over CREATE when
-the same future use is already represented. Use a stable title made from the
-subject, topic, and only a necessary qualifier; do not use an answer, transient
-state, or test conclusion as the title. On updates, preserve that stable title
-when it still identifies the same use. Make the body self-contained and state
-the current confirmed fact rather than a process transcript. Required
-Related active memory text is context for comparison only, not current-turn
-evidence; it cannot make a rejected operational or test result worthy.
+Produce one atomic memory from the candidate and current evidence. Atomic means
+one independently retrievable and updateable future-use topic, with only the
+facts needed for its future question or action. Compare supplied related active
+memleaf memories by future question/action, not wording. If one serves the same
+use, set update_memory_id to its exact supplied active ID and update in place:
+retain still-valid information, add current evidence, replace conflicting old
+state with the latest confirmed state, and keep type identical. Do not create an
+adjacent new sibling memory. A complete duplicate uses its existing path; create only
+for a genuinely different future question/action. UPDATE or NO_CHANGE takes
+precedence over CREATE. Use a stable title made from the subject, topic, and
+only a necessary qualifier, never an answer, transient state, or test
+conclusion; preserve it on updates. Make the body self-contained and state the
+current confirmed fact rather than a process transcript. Related active memleaf
+memories are comparison context, not current-turn
+evidence; they cannot make a rejected operational or test result worthy. Their
+item/body/serialized context is bounded; ellipses and omissions do not prove
+absence. Resolve indirect references only from supplied scope and one related
+active memory; otherwise return no candidate or leave it unscoped for retry.
+For the same use, preserve still-valid facts, add confirmed progress, replace
+contradictions, and never reduce the memory to the latest operation or create a
+sibling with a new label.
 In automatic capture/process mode, a pure read-only query whose answer only
 restates a related active memory is not a new candidate. It must have been
 rejected by the gate; do not use duplicate_memory_id or update_memory_id to
@@ -141,23 +145,26 @@ scope_operations are empty; only use them when current user evidence supports
 the operation. Keep only the smallest confirmed content needed for the one
 future-use topic. Do not normally copy an email's body, signature, phone,
 address, temporary path, file byte count, MIME value, message ID, or similar
-transport detail. Do not preserve a draft, in-progress state, temporary error,
-or repeated confirmation unless it has an independent future use or the user
-explicitly made it a durable instruction or commitment.
+transport detail when it only supports this execution. These are examples,
+not absolute exclusions: retain a detail when it has an independent future
+question or action. Do not preserve a draft, in-progress state, temporary
+error, or repeated confirmation unless it has an independent future use or the
+user explicitly made it a durable instruction or commitment.
 Do not normally create a memory from a test pass/fail, audit conclusion,
 verification procedure, statistics, counts, logs, or operational health/status
-result. An assistant-only claim that a test or validation passed is not a
-durable business fact; retain it only when the user explicitly asks to remember
-it or the evidence also establishes separate future-use information, such as a
-fact, preference, identity, commitment, or decision.
+result when it has no independent future use. An assistant-only claim that a
+test or validation passed is not a durable business fact; retain it when the
+user explicitly asks to remember it or the evidence establishes a reusable
+lesson, constraint, risk, preference, identity, commitment, or decision.
 When this summary is produced for the automatic capture/process path, never
 summarize a pure MCP/tool connectivity test, retry, temporary error, failure
-diagnosis, or assistant report of one. Such a candidate must have been rejected
-by the gate. A textual request to call remember is not a successful explicit
-remember operation; do not turn its failed outcome or surrounding diagnosis
-into a memory. If a user-confirmed future-use preference, identity, constraint,
-project risk, or durable lesson appears in the same turn, summarize only that
-future-use topic. In explicit remember mode,
+diagnosis, or assistant report of one unless it contains a concrete independent
+future question or action; do not make it a standalone memory. A textual
+request to call remember is not a
+successful explicit remember operation; do not turn its failed outcome or
+surrounding diagnosis into a memory. If a user-confirmed future-use
+preference, identity, constraint, project risk, or durable lesson appears in
+the same evidence, summarize only that future-use topic. In explicit remember mode,
 summarize only the requested object and do not append tool/test diagnostics.
 Return no prose, markdown fences, comments, or trailing text."""
 
@@ -185,6 +192,8 @@ def gate_prompt(
     events: list[dict],
     *,
     related_memories: list[dict] | None = None,
+    scope_directory: list[dict] | None = None,
+    scope_directory_complete: bool = True,
     scope_background: object = None,
     scope_registry: list[dict] | None = None,
 ) -> str:
@@ -203,6 +212,16 @@ def gate_prompt(
         + "\nCurrent scope registry (safe projection; no paths):\n"
         + _json(scope_registry if scope_registry is not None else [])
     )
+    if scope_directory is not None:
+        prompt += (
+            "\nBounded scope candidate directory (metadata only; not evidence):\n"
+            + _json(scope_directory)
+        )
+        if not scope_directory_complete:
+            prompt += (
+                "\nThis scope directory is incomplete because its item or character "
+                "budget was exceeded; do not infer a target from it."
+            )
     example_key = _first_event_key(events)
     if example_key is not None:
         prompt += (

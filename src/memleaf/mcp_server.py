@@ -281,7 +281,24 @@ _TOOLS: tuple[dict[str, Any], ...] = (
         "inputSchema": _object_schema({}),
     },
 )
-_TOOL_BY_NAME = {tool["name"]: tool for tool in _TOOLS}
+
+_INTERNAL_TOOLS: tuple[dict[str, Any], ...] = (
+    {
+        "name": "session_lineage",
+        "description": "Persist or clear host compression lineage without exposing a model tool.",
+        "inputSchema": _object_schema(
+            {
+                "source": {"type": "string", "enum": ["hermes"]},
+                "session_id": {"type": "string"},
+                "parent_session_id": {"type": "string"},
+                "reset": {"type": "boolean"},
+            },
+            required=["source", "session_id"],
+        ),
+    },
+)
+
+_TOOL_BY_NAME = {tool["name"]: tool for tool in (*_TOOLS, *_INTERNAL_TOOLS)}
 
 
 def _json_type_matches(value: Any, expected: str) -> bool:
@@ -721,6 +738,8 @@ def _invoke_tool(
                 )
             else:
                 value = _catalog_result(service.scope_catalog(**args))
+        elif name == "session_lineage":
+            value = service.session_lineage(**args)
         elif name == "search":
             view = args.pop("view", "directory")
             retrieval_id = args.pop("retrieval_id", None)

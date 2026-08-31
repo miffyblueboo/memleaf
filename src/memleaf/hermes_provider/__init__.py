@@ -45,7 +45,11 @@ _SCOPE_MAP_INVALID_NOTICE = (
     "</memleaf-scope-status>"
 )
 _MAX_PENDING_TURN_NUMBERS = 128
+_MAX_SESSION_ALIASES = 128
+_MAX_LINEAGE_RETRIES = 2
+_MAX_DEFERRED_PROCESS_SESSIONS = 128
 _SAFE_COMPONENT_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+_ASCII_QUERY_TERM_RE = re.compile(r"[a-z0-9]+(?:[ ._-][a-z0-9]+)*")
 _DISABLED_PLATFORMS = frozenset({"cron"})
 _DISABLED_AGENT_CONTEXTS = frozenset({"cron", "flush", "subagent"})
 _MODEL_ERROR_CODES = frozenset(
@@ -190,7 +194,46 @@ def _scope_catalog_is_valid(value: Any) -> bool:
     return True
 
 
-def _scope_context(value: Any, *, retrieval_id: Optional[str] = None) -> tuple[str, int]:
+def _query_term_matches(query: str, term: str) -> bool:
+    normalized_term = " ".join(term.casefold().strip().split())
+    if not normalized_term:
+        return False
+    if _ASCII_QUERY_TERM_RE.fullmatch(normalized_term):
+        return bool(
+            re.search(
+                r"(?<![a-z0-9])" + re.escape(normalized_term) + r"(?![a-z0-9])",
+                query,
+            )
+        )
+    return normalized_term in query
+
+
+def _unique_query_scope(query: Any, catalog: Any) -> Optional[str]:
+    """Find one unambiguous project scope named by the visible user text."""
+
+    if not isinstance(query, str) or not query.strip() or not _scope_catalog_is_valid(catalog):
+        return None
+    query_text = " ".join(query.casefold().strip().split())
+    matches: set[str] = set()
+    for item in catalog.get("scopes", []):
+        scope = item.get("scope")
+        if not isinstance(scope, str) or not scope.startswith("project:"):
+            continue
+        terms = [scope, scope.split(":", 1)[1]]
+        aliases = item.get("aliases", [])
+        if isinstance(aliases, list):
+            terms.extend(alias for alias in aliases if isinstance(alias, str))
+        if any(_query_term_matches(query_text, term) for term in terms):
+            matches.add(scope)
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def _scope_context(
+    value: Any,
+    *,
+    retrieval_id: Optional[str] = None,
+    scope_hint: Optional[str] = None,
+) -> tuple[str, int]:
     """Render a bounded Scope Map without per-memory identifiers or text."""
 
     is_mapping = isinstance(value, Mapping)
@@ -223,6 +266,13 @@ def _scope_context(value: Any, *, retrieval_id: Optional[str] = None) -> tuple[s
             + f"For this turn, pass retrieval_id={retrieval_id} to memleaf "
             "search/read exactly as supplied; do not invent or reuse another "
             "turn's token.\n"
+        )
+    if isinstance(scope_hint, str) and scope_hint:
+        prefix += (
+            "The visible user text names one unique project scope; pass "
+            f"scope={scope_hint} to search. Build the query from the user's "
+            "business subject words, omitting MCP/tool/function names and "
+            "generic workflow words.\n"
         )
     incomplete = bool(has_more)
     if has_more:
@@ -1034,6 +1084,19 @@ class MemleafMemoryProvider(MemoryProvider):
         self._gate_turn_ids: "OrderedDict[Tuple[str, int], str]" = OrderedDict()
         self._active_turn_numbers: "OrderedDict[str, int]" = OrderedDict()
         self._active_retrieval_ids: "OrderedDict[str, Optional[str]]" = OrderedDict()
+        # Hermes keeps one provider instance alive while compression rotates
+        # the physical session id.  Keep only a bounded alias chain so a
+        # callback already queued for the parent can still resolve to the
+        # live continuation.
+        self._session_aliases: "OrderedDict[str, str]" = OrderedDict()
+        # A compression child may be visible before the control RPC can be
+        # persisted.  Keep that child captureable, but never process it until
+        # its parent link is confirmed.
+        self._pending_lineage: Deque[dict[str, Any]] = deque()
+        # A physical session can be captured while lineage is pending.  Keep
+        # those sessions separate from aliases so their inbox is processed
+        # under the original session id after the chain is restored.
+        self._deferred_process_sessions: "OrderedDict[str, None]" = OrderedDict()
         self._last_retrieval_observation = "unknown"
 
     @property
@@ -1046,6 +1109,7 @@ class MemleafMemoryProvider(MemoryProvider):
     def _gate_id_for_turn(self, session_id: str, turn_number: Any) -> Optional[str]:
         if not self._gate_enabled:
             return None
+        session_id = self._canonical_session_id(session_id)
         if isinstance(turn_number, bool) or not isinstance(turn_number, int) or turn_number <= 0:
             return None
         return self._retrieval_ids_by_turn.get((session_id, turn_number))
@@ -1053,19 +1117,276 @@ class MemleafMemoryProvider(MemoryProvider):
     def _current_gate_id(self, session_id: str) -> Optional[str]:
         if not self._gate_enabled:
             return None
+        session_id = self._canonical_session_id(session_id)
         return self._active_retrieval_ids.get(session_id)
 
     def _current_turn_number(self, session_id: str) -> Optional[int]:
         if not self._gate_enabled:
             return None
+        session_id = self._canonical_session_id(session_id)
         return self._active_turn_numbers.get(session_id)
 
     def _gate_turn_id(self, session_id: str, turn_number: Any) -> Optional[str]:
         if not self._gate_enabled:
             return None
+        session_id = self._canonical_session_id(session_id)
         if isinstance(turn_number, bool) or not isinstance(turn_number, int) or turn_number <= 0:
             return None
         return self._gate_turn_ids.get((session_id, turn_number))
+
+    def _canonical_session_id(self, session_id: Any) -> str:
+        """Resolve a compression continuation to its current session id."""
+
+        candidate = _safe_component(str(session_id or ""), "hermes-session")
+        with self._sync_lock:
+            seen: set[str] = set()
+            while candidate not in seen:
+                seen.add(candidate)
+                successor = self._session_aliases.get(candidate)
+                if not isinstance(successor, str) or not successor:
+                    break
+                candidate = successor
+            return candidate
+
+    def _migrate_session_state(self, old_session_id: str, new_session_id: str) -> None:
+        """Move in-flight turn state across a non-reset Hermes rotation."""
+
+        if not old_session_id or not new_session_id or old_session_id == new_session_id:
+            return
+        self._session_aliases[old_session_id] = new_session_id
+        self._session_aliases.move_to_end(old_session_id)
+        while len(self._session_aliases) > _MAX_SESSION_ALIASES:
+            self._session_aliases.popitem(last=False)
+
+        for fingerprint, queue in list(self._pending_turn_numbers.items()):
+            migrated: deque[Tuple[str, int]] = deque()
+            seen: set[Tuple[str, int]] = set()
+            for queued_session, queued_number in queue:
+                target_session = new_session_id if queued_session == old_session_id else queued_session
+                item = (target_session, queued_number)
+                if item not in seen:
+                    migrated.append(item)
+                    seen.add(item)
+            if migrated:
+                self._pending_turn_numbers[fingerprint] = migrated
+            else:
+                del self._pending_turn_numbers[fingerprint]
+        self._pending_turn_count = sum(len(queue) for queue in self._pending_turn_numbers.values())
+
+        for pair_key in list(self._turn_ids_by_pair):
+            if pair_key[0] != old_session_id:
+                continue
+            target_key = (new_session_id, pair_key[1])
+            value = self._turn_ids_by_pair.pop(pair_key)
+            self._turn_ids_by_pair.setdefault(target_key, value)
+            self._turn_ids_by_pair.move_to_end(target_key)
+
+        for state_map in (self._retrieval_ids_by_turn, self._gate_turn_ids):
+            for key in list(state_map):
+                if key[0] != old_session_id:
+                    continue
+                target_key = (new_session_id, key[1])
+                value = state_map.pop(key)
+                state_map.setdefault(target_key, value)
+                state_map.move_to_end(target_key)
+
+        turn_number = self._active_turn_numbers.pop(old_session_id, None)
+        if turn_number is not None:
+            self._active_turn_numbers.setdefault(new_session_id, turn_number)
+        retrieval_id = self._active_retrieval_ids.pop(old_session_id, None)
+        if retrieval_id is not None:
+            if self._active_retrieval_ids.get(new_session_id) is None:
+                self._active_retrieval_ids[new_session_id] = retrieval_id
+        if new_session_id in self._active_turn_numbers:
+            self._active_turn_numbers.move_to_end(new_session_id)
+        if new_session_id in self._active_retrieval_ids:
+            self._active_retrieval_ids.move_to_end(new_session_id)
+
+        for attribute in ("_last_auto_process_failure", "_last_auto_process_deferred"):
+            value = getattr(self, attribute)
+            if isinstance(value, Mapping) and value.get("session_id") == old_session_id:
+                updated = dict(value)
+                updated["session_id"] = new_session_id
+                setattr(self, attribute, updated)
+
+    def _drop_session_aliases(self, *session_ids: str) -> None:
+        targets = {value for value in session_ids if value}
+        changed = True
+        while changed:
+            changed = False
+            for key, value in self._session_aliases.items():
+                if key in targets or value in targets:
+                    before = len(targets)
+                    targets.update((key, value))
+                    changed = len(targets) != before
+        for key, value in list(self._session_aliases.items()):
+            if key in targets or value in targets:
+                del self._session_aliases[key]
+
+    @staticmethod
+    def _lineage_result_valid(result: Any, arguments: Mapping[str, Any]) -> bool:
+        if not isinstance(result, Mapping):
+            return False
+        if arguments.get("reset") is True:
+            return (
+                result.get("session_id") == arguments.get("session_id")
+                and isinstance(result.get("cleared"), bool)
+            )
+        return (
+            result.get("linked") is True
+            and result.get("session_id") == arguments.get("session_id")
+            and result.get("parent_session_id") == arguments.get("parent_session_id")
+        )
+
+    def _remember_pending_lineage(self, arguments: Mapping[str, Any], attempts: int) -> bool:
+        pending = dict(arguments)
+        pending["attempts"] = attempts
+        with self._sync_lock:
+            if len(self._pending_lineage) >= _MAX_SESSION_ALIASES:
+                logger.warning(
+                    "memleaf provider session lineage queue is full; automatic process remains deferred",
+                )
+                return False
+            self._pending_lineage.append(pending)
+            return True
+
+    def _defer_process_session(self, session_id: str) -> None:
+        if not session_id:
+            return
+        with self._sync_lock:
+            if session_id in self._deferred_process_sessions:
+                return
+            if len(self._deferred_process_sessions) >= _MAX_DEFERRED_PROCESS_SESSIONS:
+                logger.warning(
+                    "memleaf provider deferred process queue is full; session remains retryable in inbox",
+                )
+                return
+            self._deferred_process_sessions[session_id] = None
+
+    def _record_auto_process_failure(self, session_id: str) -> None:
+        with self._sync_lock:
+            error = self._last_call_error or {}
+            self._last_auto_process_failure = {
+                "session_id": session_id,
+                "error_code": str(error.get("error_code") or "model_failed"),
+                "error_stage": str(error.get("error_stage") or "process"),
+            }
+            self._last_auto_process_deferred = None
+
+    def _process_session(self, session_id: str, *, turn_id: str = "") -> Any:
+        """Process one physical session and keep failed work retryable."""
+
+        processed = self._call(
+            "process",
+            {"source": "hermes", "session_id": session_id},
+            stage="process",
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+        if processed is _CALL_FAILED:
+            if turn_id:
+                self._defer_process_session(session_id)
+            self._record_auto_process_failure(session_id)
+            logger.warning(
+                "memleaf provider auto-process failed for hermes/%s; queue retained",
+                session_id,
+            )
+            return _CALL_FAILED
+        with self._sync_lock:
+            self._deferred_process_sessions.pop(session_id, None)
+        return processed
+
+    def _process_deferred_sessions(self, current_session: str, turn_id: str) -> None:
+        """Process deferred physical sessions before the current continuation."""
+
+        with self._sync_lock:
+            queued_sessions = [
+                session_id
+                for session_id in self._deferred_process_sessions
+                if session_id != current_session
+            ]
+        for physical_session in queued_sessions:
+            if self._process_session(physical_session) is _CALL_FAILED:
+                return
+
+        processed = self._process_session(current_session, turn_id=turn_id)
+        if processed is _CALL_FAILED:
+            return
+        with self._sync_lock:
+            deferred = self._process_deferred_counts(processed)
+            self._last_auto_process_failure = None
+            if deferred is None or (deferred[0] <= 0 and deferred[1] <= 0):
+                self._last_auto_process_deferred = None
+            else:
+                self._last_auto_process_deferred = {
+                    "session_id": current_session,
+                    "deferred_candidates": deferred[0],
+                    "deferred_inbox_turns": deferred[1],
+                }
+        if deferred is not None and (deferred[0] > 0 or deferred[1] > 0):
+            logger.info(
+                "memleaf provider auto-process deferred scope work for hermes/%s: candidates=%d inbox_turns=%d",
+                current_session,
+                deferred[0],
+                deferred[1],
+            )
+
+    def _retry_pending_lineage(self, session_id: str) -> bool:
+        while True:
+            with self._sync_lock:
+                pending_queue = self._pending_lineage
+                if not pending_queue:
+                    return True
+                # The tail is always the current compression continuation.
+                # A non-continuous session switch clears the queue before this
+                # point.  If it does not match, fail closed rather than letting
+                # any unresolved link reach automatic process.
+                if pending_queue[-1].get("session_id") != session_id:
+                    logger.warning(
+                        "memleaf provider session lineage belongs to another hermes session; automatic process deferred",
+                    )
+                    return False
+                pending = dict(pending_queue[0])
+                attempts = pending.get("attempts", 0)
+                if isinstance(attempts, bool) or not isinstance(attempts, int):
+                    attempts = 0
+                if attempts > _MAX_LINEAGE_RETRIES:
+                    logger.warning(
+                        "memleaf provider session lineage retries exhausted for hermes/%s; automatic process deferred",
+                        pending.get("session_id", session_id),
+                    )
+                    return False
+                arguments = {
+                    key: value
+                    for key, value in pending.items()
+                    if key in {"source", "session_id", "parent_session_id", "reset"}
+                }
+                next_attempt = attempts + 1
+
+            result = self._call(
+                "session_lineage",
+                arguments,
+                stage="session_lineage_retry",
+                session_id=str(arguments.get("session_id") or session_id),
+            )
+            succeeded = result is not _CALL_FAILED and self._lineage_result_valid(result, arguments)
+            with self._sync_lock:
+                current = self._pending_lineage
+                if not current or not all(
+                    current[0].get(key) == value for key, value in arguments.items()
+                ) or current[0].get("attempts") != attempts:
+                    return False
+                if succeeded:
+                    current.popleft()
+                    if not current:
+                        return True
+                    continue
+                current[0]["attempts"] = next_attempt
+            logger.warning(
+                "memleaf provider session lineage pending for hermes/%s; automatic process deferred",
+                arguments.get("session_id", session_id),
+            )
+            return False
 
     def is_available(self) -> bool:
         config = _load_config(_default_hermes_home())
@@ -1185,7 +1506,7 @@ class MemleafMemoryProvider(MemoryProvider):
         if not visible_user.strip():
             return
         fingerprint = _visible_fingerprint(visible_user)
-        session_id = self._session_id
+        session_id = self._canonical_session_id(self._session_id)
         with self._sync_lock:
             queue = self._pending_turn_numbers.get(fingerprint)
             if queue is None:
@@ -1199,6 +1520,7 @@ class MemleafMemoryProvider(MemoryProvider):
                 self._pending_turn_count -= len(removed)
 
     def _take_turn_number(self, session_id: str, user_content: str) -> Optional[int]:
+        session_id = self._canonical_session_id(session_id)
         fingerprint = _visible_fingerprint(user_content)
         with self._sync_lock:
             queue = self._pending_turn_numbers.get(fingerprint)
@@ -1224,6 +1546,7 @@ class MemleafMemoryProvider(MemoryProvider):
             return selected_number
 
     def _discard_turn_number(self, session_id: str, user_content: str, turn_number: int) -> None:
+        session_id = self._canonical_session_id(session_id)
         fingerprint = _visible_fingerprint(user_content)
         with self._sync_lock:
             queue = self._pending_turn_numbers.get(fingerprint)
@@ -1319,11 +1642,32 @@ class MemleafMemoryProvider(MemoryProvider):
     ) -> None:
         """Update session identity and discard state only for reset/rewind."""
 
-        del kwargs
+        reason = kwargs.get("reason")
+        parent_session_id = kwargs.get("parent_session_id")
         old_session_id = self._session_id
         next_session_id = _safe_component(str(new_session_id or ""), "hermes-session")
+        parent_session = (
+            _safe_component(str(parent_session_id), "hermes-session")
+            if parent_session_id
+            else ""
+        )
+        lineage_args: Optional[dict[str, Any]] = None
         with self._sync_lock:
+            continuous = (
+                not _as_bool(reset, False)
+                and not _as_bool(rewound, False)
+                and next_session_id != old_session_id
+                and (
+                    parent_session == old_session_id
+                    or (reason == "compression" and not parent_session)
+                )
+            )
+            if continuous:
+                self._migrate_session_state(parent_session or old_session_id, next_session_id)
             self._session_id = next_session_id
+            if not continuous:
+                self._pending_lineage.clear()
+                self._deferred_process_sessions.clear()
             if _as_bool(reset, False) or _as_bool(rewound, False):
                 self._clear_session_turn_state(old_session_id or next_session_id)
                 for key in list(self._retrieval_ids_by_turn):
@@ -1334,12 +1678,52 @@ class MemleafMemoryProvider(MemoryProvider):
                         del self._gate_turn_ids[key]
                 self._active_turn_numbers.pop(old_session_id or next_session_id, None)
                 self._active_retrieval_ids.pop(old_session_id or next_session_id, None)
+                self._drop_session_aliases(old_session_id, next_session_id)
             if self._gate_enabled:
-                self._active_turn_numbers.pop(next_session_id, None)
-                self._active_retrieval_ids.pop(next_session_id, None)
-                for key in list(self._gate_turn_ids):
-                    if key[0] == next_session_id:
-                        del self._gate_turn_ids[key]
+                if not continuous:
+                    self._active_turn_numbers.pop(next_session_id, None)
+                    self._active_retrieval_ids.pop(next_session_id, None)
+                    for key in list(self._gate_turn_ids):
+                        if key[0] == next_session_id:
+                            del self._gate_turn_ids[key]
+            if self._gate_enabled and continuous and (parent_session or old_session_id):
+                lineage_args = {
+                    "source": "hermes",
+                    "session_id": next_session_id,
+                    "parent_session_id": parent_session or old_session_id,
+                }
+            elif self._gate_enabled and (_as_bool(reset, False) or _as_bool(rewound, False)):
+                lineage_args = {
+                    "source": "hermes",
+                    "session_id": next_session_id,
+                    "reset": True,
+                }
+        if lineage_args is not None:
+            with self._sync_lock:
+                has_pending = bool(self._pending_lineage)
+            if has_pending:
+                # Preserve the ordered parent link.  A grandchild must not
+                # overwrite a failed child link or bypass it on the next sync.
+                queued = self._remember_pending_lineage(lineage_args, 0)
+                logger.warning(
+                    "memleaf provider session lineage %s for hermes/%s; parent link is pending",
+                    "queued" if queued else "not queued because the queue is full",
+                    next_session_id,
+                )
+            else:
+                linked = self._call(
+                    "session_lineage",
+                    lineage_args,
+                    stage="session_lineage",
+                    session_id=next_session_id,
+                )
+                if linked is not _CALL_FAILED and self._lineage_result_valid(linked, lineage_args):
+                    return
+                self._remember_pending_lineage(lineage_args, 1)
+                logger.warning(
+                    "memleaf provider session lineage update failed for hermes/%s; automatic process deferred",
+                    next_session_id,
+                )
 
     def initialize(self, session_id: str, **kwargs) -> None:
         started_at = time.monotonic()
@@ -1358,6 +1742,9 @@ class MemleafMemoryProvider(MemoryProvider):
         self._gate_turn_ids.clear()
         self._active_turn_numbers.clear()
         self._active_retrieval_ids.clear()
+        self._session_aliases.clear()
+        self._pending_lineage.clear()
+        self._deferred_process_sessions.clear()
         self._last_retrieval_observation = "unknown"
         if self._client is not None:
             self._client.close()
@@ -1701,7 +2088,7 @@ class MemleafMemoryProvider(MemoryProvider):
         self._last_recall = None
         if not self._write_enabled or not query:
             return ""
-        safe_session = _safe_component(session_id or self._session_id, "hermes-session")
+        safe_session = self._canonical_session_id(session_id or self._session_id)
         failure_notice = self._auto_process_failure_notice(safe_session)
         deferred_notice = self._auto_process_deferred_notice(safe_session)
         turn_number = self._current_turn_number(safe_session)
@@ -1744,7 +2131,11 @@ class MemleafMemoryProvider(MemoryProvider):
                 self._retrieval_ids_by_turn.popitem(last=False)
             self._active_retrieval_ids[safe_session] = retrieval_id
             self._active_retrieval_ids.move_to_end(safe_session)
-        context, _ = _scope_context(catalog, retrieval_id=retrieval_id)
+        context, _ = _scope_context(
+            catalog,
+            retrieval_id=retrieval_id,
+            scope_hint=_unique_query_scope(query, catalog),
+        )
         if not context:
             notices = [notice for notice in (failure_notice, deferred_notice) if notice]
             return "\n\n".join(notices)
@@ -1782,7 +2173,7 @@ class MemleafMemoryProvider(MemoryProvider):
         if any(not isinstance(content, str) or not content.strip() for _, content in visible_events):
             return
 
-        effective_session = _safe_component(session_id or self._session_id, "hermes-session")
+        effective_session = self._canonical_session_id(session_id or self._session_id)
         # Hermes serializes provider sync work, but this lock also protects
         # direct/plugin-level concurrent calls and makes process one-shot per
         # captured turn within this provider instance.
@@ -1811,6 +2202,7 @@ class MemleafMemoryProvider(MemoryProvider):
                         vault_root=_resolve_vault(self._config()),
                     )
                     self._last_retrieval_observation = observation
+                lineage_ready = self._retry_pending_lineage(effective_session)
                 for role, content in visible_events:
                     if not self._capture_visible(
                         session_id=effective_session,
@@ -1821,45 +2213,14 @@ class MemleafMemoryProvider(MemoryProvider):
                         return
                 if not self._auto_process:
                     return
-                processed = self._call(
-                    "process",
-                    {"source": "hermes", "session_id": effective_session},
-                    stage="process",
-                    session_id=effective_session,
-                    turn_id=turn_id,
-                )
-                if processed is _CALL_FAILED:
-                    with self._sync_lock:
-                        error = self._last_call_error or {}
-                        self._last_auto_process_failure = {
-                            "session_id": effective_session,
-                            "error_code": str(error.get("error_code") or "model_failed"),
-                            "error_stage": str(error.get("error_stage") or "process"),
-                        }
-                        self._last_auto_process_deferred = None
+                if not lineage_ready:
+                    self._defer_process_session(effective_session)
                     logger.warning(
-                        "memleaf provider auto-process failed for hermes/%s; inbox retained for retry",
+                        "memleaf provider automatic process deferred for hermes/%s; session lineage is pending",
                         effective_session,
                     )
-                else:
-                    deferred = self._process_deferred_counts(processed)
-                    with self._sync_lock:
-                        self._last_auto_process_failure = None
-                        if deferred is None or (deferred[0] <= 0 and deferred[1] <= 0):
-                            self._last_auto_process_deferred = None
-                        else:
-                            self._last_auto_process_deferred = {
-                                "session_id": effective_session,
-                                "deferred_candidates": deferred[0],
-                                "deferred_inbox_turns": deferred[1],
-                            }
-                    if deferred is not None and (deferred[0] > 0 or deferred[1] > 0):
-                        logger.info(
-                            "memleaf provider auto-process deferred scope work for hermes/%s: candidates=%d inbox_turns=%d",
-                            effective_session,
-                            deferred[0],
-                            deferred[1],
-                        )
+                    return
+                self._process_deferred_sessions(effective_session, turn_id)
             except Exception as error:
                 # A provider failure must not fail the user's Hermes turn.
                 # Core process owns the transaction and leaves inbox/state
@@ -1877,6 +2238,9 @@ class MemleafMemoryProvider(MemoryProvider):
         return []
 
     def shutdown(self) -> None:
+        with self._sync_lock:
+            self._pending_lineage.clear()
+            self._deferred_process_sessions.clear()
         if self._client is not None:
             self._client.close()
         self._client = None

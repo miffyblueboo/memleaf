@@ -38,7 +38,7 @@ class PyPIInstallTests(unittest.TestCase):
 
             self.assertTrue(target.is_dir())
             self.assertFalse(target.is_symlink())
-            self.assertIn("version: 0.1.6", (target / "plugin.yaml").read_text(encoding="utf-8"))
+            self.assertIn("version: 0.1.7", (target / "plugin.yaml").read_text(encoding="utf-8"))
 
     def test_windows_hermes_paths_follow_official_native_layout(self) -> None:
         with tempfile.TemporaryDirectory(prefix="memleaf-win-paths-") as temporary:
@@ -104,8 +104,24 @@ class PyPIInstallTests(unittest.TestCase):
             "vault": "/tmp/memleaf-vault",
             "model": {"status": "configured"},
         }
-        with mock.patch("memleaf.installer.install_hermes", return_value=result):
-            self.assertEqual(cli.main(["install", "--json"]), 0)
+        with mock.patch("memleaf.installer.install_hermes", return_value=result) as hermes:
+            with mock.patch("memleaf.installer.install_codex") as codex:
+                self.assertEqual(cli.main(["install", "--json"]), 0)
+        hermes.assert_called_once_with(vault_path=None)
+        codex.assert_not_called()
+
+    def test_cli_codex_install_requires_explicit_host(self) -> None:
+        result = {
+            "status": "already_configured",
+            "reason": "ok",
+            "vault": "/tmp/memleaf-vault",
+            "model": {"status": "already_configured"},
+        }
+        with mock.patch("memleaf.installer.install_codex", return_value=result) as codex:
+            with mock.patch("memleaf.installer.install_hermes") as hermes:
+                self.assertEqual(cli.main(["install", "--host", "codex", "--json"]), 0)
+        codex.assert_called_once_with(vault_path=None)
+        hermes.assert_not_called()
 
 
 if __name__ == "__main__":

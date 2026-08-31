@@ -13,6 +13,7 @@ from memleaf.adapters.antigravity import AntigravityAdapter
 from memleaf.adapters.base import (
     CommandResult,
     mark_hook_active,
+    mcp_command,
     run_argv,
     update_agents_index,
 )
@@ -43,8 +44,8 @@ class FakeRunner:
                     json.dumps(
                         {
                             "name": "memleaf",
-                            "command": "memleaf-mcp",
-                            "args": ["--vault", str(self.vault.resolve())],
+                            "command": mcp_command(self.vault)[0],
+                            "args": mcp_command(self.vault)[1:],
                         }
                     ),
                 )
@@ -151,7 +152,7 @@ class StageC2InitTests(unittest.TestCase):
         self.assertIn("/hooks", result.user_action)
         self.assertEqual(["mcp", "get", "memleaf", "--json"], runner.calls[0][1:])
         self.assertEqual(
-            ["mcp", "add", "memleaf", "--", "memleaf-mcp", "--vault", str(self.vault.resolve())],
+            ["mcp", "add", "memleaf", "--", *mcp_command(self.vault)],
             runner.calls[1][1:],
         )
         self.assertIsNotNone(result.backup_path)
@@ -223,8 +224,8 @@ class StageC2InitTests(unittest.TestCase):
                 "enabled": True,
                 "transport": {
                     "type": "stdio",
-                    "command": "memleaf-mcp",
-                    "args": ["--vault", str(self.vault.resolve())],
+                    "command": mcp_command(self.vault)[0],
+                    "args": mcp_command(self.vault)[1:],
                     "env": None,
                 },
             }
@@ -242,12 +243,13 @@ class StageC2InitTests(unittest.TestCase):
 
     def test_codex_nested_transport_requires_stdio_and_exact_command_args(self):
         self.make_executable("codex")
-        valid_args = ["--vault", str(self.vault.resolve())]
+        expected = mcp_command(self.vault)
+        valid_args = expected[1:]
         invalid_transports = (
-            {"command": "memleaf-mcp", "args": valid_args},
-            {"type": "http", "command": "memleaf-mcp", "args": valid_args},
+            {"command": expected[0], "args": valid_args},
+            {"type": "http", "command": expected[0], "args": valid_args},
             {"type": "stdio", "command": "other", "args": valid_args},
-            {"type": "stdio", "command": "memleaf-mcp", "args": valid_args + ["extra"]},
+            {"type": "stdio", "command": expected[0], "args": valid_args + ["extra"]},
         )
         for transport in invalid_transports:
             with self.subTest(transport=transport):

@@ -5,9 +5,6 @@ include install.ps1
 include README.md
 include README.en.md
 include RELEASE_CHECKLIST.md
-include RELEASE_NOTES_v0.1.md
 include IMPLEMENTATION_PLAN.md
-include V2_IMPLEMENTATION_PLAN.md
 recursive-include tests *.py
 recursive-include examples *.md *.ndjson *.py
-recursive-include integrations/hermes/memleaf *.md *.py *.yaml

@@ -4,9 +4,9 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **当前版本：0.1.6。**
-> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.1.6 通过 PyPI 分发。
-> **当前版本仅支持 Hermes。** Codex 与反重力不检测、不安装、不配置，也不扫描其模型配置。
+> **当前版本：0.1.7。**
+> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.1.7 通过 PyPI 分发。
+> **当前版本支持 Hermes 和 Codex。** Antigravity（反重力）不检测、不安装、不配置。
 
 ## 项目定位
 
@@ -82,7 +82,7 @@ memleaf 不把每句话都保存为记忆。处理一轮完整的 user + assista
 
 ## 安装
 
-要求 Python 3.11+；当前版本的完整自动接入支持 Hermes。
+要求 Python 3.11+；当前版本支持 Hermes 和 Codex。Hermes 是默认安装目标，Codex 使用明确的独立安装命令。
 
 ### Windows
 
@@ -141,7 +141,19 @@ python -m pip install -U memleaf && python -m memleaf install
 
 仓库中的 `install.sh` 保留给源码开发、离线源码安装和故障排查；普通 PyPI 用户不需要执行它。
 
-Codex 和 Antigravity（反重力）当前暂不支持：安装流程不会检测、安装或修改它们的 MCP、Hook 或模型配置。
+### Codex
+
+先安装或升级 memleaf，再明确选择 Codex：
+
+```bash
+python -m pip install -U memleaf && python -m memleaf install --host codex
+```
+
+该命令会复用已有 Hermes/Codex memleaf 配置中的唯一 Vault，或创建默认的 `~/.memleaf`；通过 Codex CLI 注册 memleaf MCP，并安全合并生命周期 Hook。它不会修改 Codex 的模型配置，也不会在两个宿主已指向不同 Vault 时擅自选边。
+
+安装后打开 Codex，运行 `/hooks`，审核并信任 memleaf Hook。完成授权前，MCP 可用不等于自动捕获、检索门控和提炼已经激活；安装结果会明确显示 `pending_user_review`，不会把待审核状态报告为已启用。
+
+Antigravity（反重力）当前不支持，安装流程不会检测、安装或修改其配置。
 
 ### 高级初始化命令（可选）
 
@@ -166,7 +178,17 @@ memleaf init --no-model-discovery
 memleaf init --json
 ```
 
-`--no-codex` 和 `--no-antigravity` 为兼容保留的无操作参数。宿主配置只会在检测证据可靠、结构可识别且没有冲突时修改；修改前会创建备份，未知或冲突配置保持不变。
+`init` 下的 `--no-codex` 和 `--no-antigravity` 为兼容保留的无操作参数；Codex 必须通过 `install --host codex` 明确安装。宿主配置只会在检测证据可靠、结构可识别且没有冲突时修改；修改前会创建备份，未知或冲突配置保持不变。
+
+## Codex 使用方式
+
+- `UserPromptSubmit` 只注入有界 Scope Map 和当前轮次的检索协议，不注入记忆标题或正文；
+- `PreToolUse` / `PostToolUse` 将 memleaf `search` 和 `read` 绑定到当前 `retrieval_id`，记录真实检索结果与读取预算；
+- `Stop` 捕获可见的 assistant 内容并触发处理；未检索时最多进行有限续跑，最终会如实降级，不伪造检索成功；
+- 压缩后的 `SessionStart` 恢复当前轮次检索上下文，但不会把 Vault 全量重新注入；
+- 主动 `remember`、`forget`、`stats` 等操作继续通过同一个 memleaf MCP 完成。
+
+Codex Hook 必须经过用户审核和信任。若 Hook 未激活、被禁用或 Codex 版本不支持对应生命周期事件，自动捕获和自动提炼不会生效；MCP 主动工具与 Hook 生命周期是两个独立状态。
 
 ## Hermes 使用方式
 
@@ -202,7 +224,7 @@ memleaf-mcp --vault "$HOME/.memleaf"
 python -m memleaf.mcp_server --vault "$HOME/.memleaf"
 ```
 
-不传 `--vault` 时默认使用 `~/.memleaf`；也可以设置 `MEMLEAF_VAULT`。正常情况下不需要手工常驻，Hermes 会按需启动它。stdout 只输出 JSON-RPC，日志不会污染协议通道。
+不传 `--vault` 时默认使用 `~/.memleaf`；也可以设置 `MEMLEAF_VAULT`。正常情况下不需要手工常驻，Hermes 或 Codex 会按需启动它。stdout 只输出 JSON-RPC，日志不会污染协议通道。
 
 当前提供 11 个工具：
 
@@ -393,8 +415,9 @@ python -m build --wheel --sdist
 
 以下内容不应被 README 或安装结果误解为已交付能力：
 
-- Windows、macOS 和 Linux 都提供一行安装入口完成 Hermes 自动接入；源码 `install.sh` 仅保留给开发、离线源码安装和故障排查；
-- 当前仅支持 Hermes；Codex 和 Antigravity（反重力）不检测、不安装、不配置；
+- Windows、macOS 和 Linux 都提供 Hermes 安装入口；Codex 通过 `memleaf install --host codex` 明确接入；源码 `install.sh` 仅保留给开发、离线源码安装和故障排查；
+- 当前支持 Hermes 和 Codex；Antigravity（反重力）不检测、不安装、不配置；
+- Codex 生命周期 Hook 需要用户在 `/hooks` 中审核并信任，安装程序不能代替用户完成授权；
 - Hermes 的检索门控是 Soft Gate，不保证阻止所有未检索回答；
 - 没有模型路由时只能捕获和检索，不能完成自动提炼、显式记忆或压缩；
 - 真实宿主长期运行效果仍取决于本机 Agent 版本、配置、重启和模型可用性；

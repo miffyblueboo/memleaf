@@ -229,6 +229,75 @@ class Memleaf:
             visible=visible,
         )
 
+    def session_lineage(
+        self,
+        source: str,
+        session_id: str,
+        *,
+        parent_session_id: str | None = None,
+        reset: bool = False,
+    ) -> dict[str, Any]:
+        """Persist or clear one host session's compression parent.
+
+        This is control metadata only.  It never changes inbox events or
+        memory sources; processing may use the parent solely when the child
+        session has not recorded a scope of its own.
+        """
+
+        source = safe_component(source, "source")
+        session_id = safe_component(session_id, "session id")
+        if type(reset) is not bool:
+            raise ValueError("reset must be a boolean")
+        if reset:
+            if parent_session_id is not None:
+                raise ValueError("reset cannot include a parent session")
+        else:
+            if parent_session_id is None:
+                raise ValueError("parent session is required")
+            parent_session_id = safe_component(parent_session_id, "parent session id")
+            if parent_session_id == session_id:
+                raise ValueError("session cannot be its own parent")
+
+        state_key = f"{source}/{session_id}"
+        with self.vault.lock():
+            self._recover_compaction_unlocked()
+            try:
+                processed = read_json(self.vault.processed_index_path)
+            except (OSError, UnicodeError, TypeError, ValueError):
+                processed = {}
+            if not isinstance(processed, dict):
+                processed = {}
+            sessions = processed.setdefault("sessions", {})
+            if not isinstance(sessions, dict):
+                raise ValueError("processed sessions are invalid")
+            state = sessions.get(state_key)
+            if not isinstance(state, dict):
+                state = {}
+
+            if reset:
+                changed = "lineage_parent_session_id" in state
+                state.pop("lineage_parent_session_id", None)
+                if changed:
+                    sessions[state_key] = state
+                    atomic_write_json(self.vault.processed_index_path, processed)
+                return {
+                    "session_id": session_id,
+                    "parent_session_id": None,
+                    "cleared": changed,
+                }
+
+            existing = state.get("lineage_parent_session_id")
+            if existing is not None and existing != parent_session_id:
+                raise ValueError("session lineage parent is already bound")
+            state["lineage_parent_session_id"] = parent_session_id
+            sessions[state_key] = state
+            atomic_write_json(self.vault.processed_index_path, processed)
+            return {
+                "session_id": session_id,
+                "parent_session_id": parent_session_id,
+                "linked": True,
+            }
+
     def process(
         self,
         *,

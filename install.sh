@@ -37,13 +37,13 @@ if [ "$project_root" != "$physical_install_root" ]; then
 fi
 
 [ -f "$project_root/pyproject.toml" ] || die "pyproject.toml is missing from $project_root"
-[ -d "$project_root/integrations/hermes/memleaf" ] || die "Hermes provider is missing from $project_root/integrations/hermes/memleaf"
+[ -d "$project_root/src/memleaf/hermes_provider" ] || die "Hermes provider is missing from $project_root/src/memleaf/hermes_provider"
 
 venv_path="$install_root/.venv"
 user_bin="$home_root/.local/bin"
 command_path="$venv_path/bin/memleaf-mcp"
 vault_path="$home_root/.memleaf"
-plugin_source="$project_root/integrations/hermes/memleaf"
+plugin_source="$project_root/src/memleaf/hermes_provider"
 
 case "$hermes_home" in
   /*) ;;

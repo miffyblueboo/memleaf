@@ -4,9 +4,9 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.1.6.**
-> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.1.6 is distributed through PyPI.
-> **The current release supports only Hermes.** Codex and Antigravity are not detected, installed, configured, or scanned for models.
+> **Version: 0.1.7.**
+> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.1.7 is distributed through PyPI.
+> **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.
 
 ## Project scope
 
@@ -82,7 +82,7 @@ Additional rules:
 
 ## Installation
 
-Python 3.11+ is required. Full automatic host setup currently supports Hermes.
+Python 3.11+ is required. The current release supports Hermes and Codex. Hermes is the default install target; Codex uses an explicit, separate install command.
 
 ### Windows
 
@@ -141,7 +141,19 @@ If Hermes cannot be detected, no complete model route can be configured, Provide
 
 The repository `install.sh` remains for source development, offline source installation, and troubleshooting. Normal PyPI users do not need to run it.
 
-Codex and Antigravity are not currently supported. The install flow does not detect, install, or modify their MCP, hook, or model configuration.
+### Codex
+
+Install or upgrade memleaf, then explicitly select Codex:
+
+```bash
+python -m pip install -U memleaf && python -m memleaf install --host codex
+```
+
+This command reuses the one Vault already configured for Hermes or Codex, or creates the default `~/.memleaf` Vault. It registers the memleaf MCP server through the Codex CLI and safely merges lifecycle hooks. It does not change Codex model settings or silently choose between conflicting host Vaults.
+
+After installation, open Codex, run `/hooks`, and review and trust the memleaf hooks. Until that approval is complete, an available MCP server does not mean that automatic capture, retrieval gating, and processing are active. The installer reports `pending_user_review` instead of claiming that unreviewed hooks are enabled.
+
+Antigravity is not currently supported; the installer does not detect, install, or modify its configuration.
 
 ### Advanced initialization commands (optional)
 
@@ -166,7 +178,17 @@ memleaf init --no-model-discovery
 memleaf init --json
 ```
 
-`--no-codex` and `--no-antigravity` are compatibility no-ops. Host configuration is changed only when detection evidence is reliable, the structure is understood, and there is no conflict. Backups are created before changes; unknown or conflicting configuration is left unchanged.
+Under `init`, `--no-codex` and `--no-antigravity` remain compatibility no-ops; Codex must be installed explicitly with `install --host codex`. Host configuration is changed only when detection evidence is reliable, the structure is understood, and there is no conflict. Backups are created before changes; unknown or conflicting configuration is left unchanged.
+
+## Codex integration
+
+- `UserPromptSubmit` injects only a bounded Scope Map and the current-turn retrieval protocol, never memory titles or bodies.
+- `PreToolUse` / `PostToolUse` bind memleaf `search` and `read` to the current `retrieval_id` and record the real search result and read budget.
+- `Stop` captures visible assistant content and triggers processing. A missed search can request only a bounded continuation before degrading transparently; it never fabricates retrieval success.
+- A compact-session `SessionStart` restores the current retrieval turn without reinjecting the entire Vault.
+- Deliberate `remember`, `forget`, `stats`, and maintenance operations continue through the same memleaf MCP server.
+
+Codex hooks require user review and trust. If the hooks are pending, disabled, or unsupported by the installed Codex version, automatic capture and processing are inactive; MCP tool availability and hook lifecycle activation are separate states.
 
 ## Hermes integration
 
@@ -202,7 +224,7 @@ Or use the module entry point:
 python -m memleaf.mcp_server --vault "$HOME/.memleaf"
 ```
 
-Without `--vault`, the server uses `~/.memleaf`; `MEMLEAF_VAULT` can also specify the Vault. In normal use the server does not need to be kept running manually: Hermes starts it on demand. stdout contains only JSON-RPC messages so logs do not corrupt the protocol stream.
+Without `--vault`, the server uses `~/.memleaf`; `MEMLEAF_VAULT` can also specify the Vault. In normal use the server does not need to be kept running manually: Hermes or Codex starts it on demand. stdout contains only JSON-RPC messages so logs do not corrupt the protocol stream.
 
 The server currently exposes 11 tools:
 
@@ -393,8 +415,9 @@ python -m build --wheel --sdist
 
 The following should not be interpreted as delivered capabilities:
 
-- Windows, macOS, and Linux each provide a one-line Hermes integration entry point; the source `install.sh` remains only for development, offline source installation, and troubleshooting.
-- The current release supports only Hermes. Codex and Antigravity are not detected, installed, or configured.
+- Windows, macOS, and Linux provide a Hermes installation entry point; Codex is explicitly configured with `memleaf install --host codex`. The source `install.sh` remains only for development, offline source installation, and troubleshooting.
+- The current release supports Hermes and Codex. Antigravity is not detected, installed, or configured.
+- Codex lifecycle hooks require user review and trust through `/hooks`; the installer cannot approve them on the user's behalf.
 - Hermes retrieval gating is a Soft Gate and does not guarantee that every answer performed retrieval.
 - Without a model route, memleaf can capture and retrieve but cannot perform automatic extraction, explicit model-backed memory, or compaction.
 - Long-running real-host behavior still depends on the local Agent version, configuration, restart, and model availability.

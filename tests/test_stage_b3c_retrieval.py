@@ -56,7 +56,7 @@ class StageB3CRetrievalTest(unittest.TestCase):
         self.assertEqual(len(indexer.search("native-many")), 40)
         self.assertEqual(len(indexer.search("native-many", limit=37)), 37)
 
-    def test_process_prompt_contains_all_related_hits_but_no_unrelated_body(self):
+    def test_process_prompt_bounds_related_hits_and_excludes_unrelated_body(self):
         for index in range(10):
             self.service.create_memory(
                 memory_id=f"local-{index:02d}",
@@ -92,9 +92,12 @@ class StageB3CRetrievalTest(unittest.TestCase):
         self.assertEqual(result["processed_turns"], 1)
         self.assertEqual(len(backend.calls), 1)
         prompt = backend.calls[0]["prompt"]
-        for index in range(10):
+        for index in range(4, 10):
             self.assertIn(f"local-marker-{index:02d}", prompt)
-            self.assertIn(f"native-marker-{index:02d}", prompt)
+        for index in range(4):
+            self.assertNotIn(f"local-marker-{index:02d}", prompt)
+        for index in range(10):
+            self.assertNotIn(f"native-marker-{index:02d}", prompt)
         self.assertNotIn("unrelated-local-sentinel", prompt)
         self.assertNotIn("unrelated-native-sentinel", prompt)
 

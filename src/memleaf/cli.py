@@ -38,7 +38,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     init.add_argument("--dry-run", action="store_true", help="show planned changes without writing")
     init.add_argument("--json", action="store_true", help="emit one JSON result")
-    init.add_argument("--no-codex", action="store_true", help="compatibility no-op; Codex is disabled in v0.1")
+    init.add_argument(
+        "--no-codex",
+        action="store_true",
+        help="compatibility no-op; use install --host codex for explicit Codex setup",
+    )
     init.add_argument("--no-hermes", action="store_true", help="disable Hermes setup")
     init.add_argument(
         "--no-antigravity",
@@ -52,13 +56,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     install = commands.add_parser(
         "install",
-        help="fully install and configure memleaf for Hermes",
+        help="install memleaf for Hermes (default) or an explicitly selected host",
+    )
+    install.add_argument(
+        "--host",
+        choices=("hermes", "codex"),
+        default="hermes",
+        help="host to configure (default: hermes)",
     )
     install.add_argument("--vault", type=Path, default=None, help="vault directory")
     install.add_argument("--json", action="store_true", help="emit one JSON result")
     host_event = commands.add_parser(
         "host-event",
-        help="legacy lifecycle compatibility entry (not installed in v0.1)",
+        help="host lifecycle hook entry",
     )
     host_event.add_argument("host", choices=("codex", "antigravity"))
     host_event.add_argument("event", nargs="?", default=None)
@@ -73,8 +83,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "init":
             output = _init(args)
         elif args.command == "install":
-            from .installer import install_hermes
-            output = install_hermes(vault_path=args.vault)
+            from .installer import install_codex, install_hermes
+            installer = install_codex if args.host == "codex" else install_hermes
+            output = installer(vault_path=args.vault)
         elif args.command == "host-event":
             output = _host_event(args)
         else:  # pragma: no cover - argparse requires a known subcommand.
@@ -102,14 +113,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "install":
         if args.json:
             print(json.dumps(output, ensure_ascii=False, sort_keys=True))
-        elif output.get("status") == "configured":
-            print(f"memleaf installed for Hermes: {output['vault']}")
+        elif output.get("status") in {"configured", "already_configured"}:
+            print(f"memleaf installed for {args.host}: {output['vault']}")
             if output.get("vault_source") == "hermes_config":
                 print("Preserved the Vault from the existing Hermes memleaf configuration.")
-            print("Restart Hermes to use memleaf.")
+            if args.host == "hermes":
+                print("Restart Hermes to use memleaf.")
+            elif output.get("user_action_required"):
+                print(f"Codex action required: {output.get('user_action')}")
+            if output.get("model", {}).get("status") == "not_configured":
+                print("Configure a memleaf model route before using automatic processing.")
         else:
             print(f"memleaf install failed: {output.get('reason', 'unknown error')}", file=sys.stderr)
-        return 0 if output.get("status") == "configured" else 2
+        return 0 if output.get("status") in {"configured", "already_configured"} else 2
     if args.json:
         print(json.dumps(output, ensure_ascii=False, sort_keys=True))
     else:

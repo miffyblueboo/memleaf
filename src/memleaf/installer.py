@@ -1,4 +1,4 @@
-"""One-line PyPI installer for the Hermes integration."""
+"""Explicit, conservative host installers for the PyPI package."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ import tempfile
 from typing import Any
 
 from .adapters.base import update_agents_index
+from .adapters.codex import CodexAdapter
 from .adapters.hermes import HermesAdapter, hermes_home_for_platform
 from .cli import _home_from_environment, _prepare_model_route
 from .locking import atomic_write_json
@@ -102,6 +103,44 @@ def _select_vault_path(
     if isinstance(configured, str) and configured.strip():
         return _resolve_vault_path(configured, home), "environment"
 
+    return (home / ".memleaf").resolve(), "default"
+
+
+def _select_codex_vault_path(
+    *,
+    home: Path,
+    hermes_home: Path,
+    adapter: CodexAdapter,
+    detection: Any,
+    vault_path: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[Path, str]:
+    """Select one shared Vault for an explicit Codex installation."""
+
+    if vault_path is not None:
+        candidate = vault_path.expanduser()
+        if not candidate.is_absolute():
+            candidate = home / candidate
+        return candidate.resolve(), "explicit"
+
+    existing: list[tuple[str, Path]] = []
+    hermes_vault = _existing_hermes_vault(hermes_home, home)
+    if hermes_vault is not None:
+        existing.append(("hermes_config", hermes_vault))
+    codex_vault = adapter.configured_vault(detection)
+    if codex_vault is not None:
+        existing.append(("codex_config", codex_vault))
+    unique = {str(path): path for _, path in existing}
+    if len(unique) > 1:
+        raise RuntimeError("vault_conflict: existing memleaf hosts use different Vaults")
+    if existing:
+        sources = "+".join(source for source, _ in existing)
+        return existing[0][1], sources
+
+    environment = os.environ if env is None else env
+    configured = environment.get("MEMLEAF_VAULT")
+    if isinstance(configured, str) and configured.strip():
+        return _resolve_vault_path(configured, home), "environment"
     return (home / ".memleaf").resolve(), "default"
 
 
@@ -346,4 +385,73 @@ def install_hermes(*, vault_path: Path | None = None) -> dict[str, Any]:
     }
 
 
-__all__ = ["install_hermes"]
+def install_codex(*, vault_path: Path | None = None) -> dict[str, Any]:
+    """Explicitly configure the Codex host without changing Codex model settings."""
+
+    home = _home_from_environment()
+    adapter = CodexAdapter(home=home, env=os.environ)
+    detection = adapter.detect()
+    if not detection.detected or detection.confidence != "high" or not detection.executable:
+        return {
+            "status": "failure",
+            "reason": "Codex executable was not found",
+            "vault": None,
+        }
+
+    try:
+        selected_vault, vault_source = _select_codex_vault_path(
+            home=home,
+            hermes_home=_hermes_home(home),
+            adapter=adapter,
+            detection=detection,
+            vault_path=vault_path,
+        )
+    except RuntimeError as error:
+        conflict = str(error).startswith("vault_conflict:")
+        return {
+            "status": "diagnostic" if conflict else "failure",
+            "reason": "vault_conflict" if conflict else "existing host configuration is invalid",
+            "vault": None,
+        }
+    preflight = adapter.configure(detection, selected_vault, dry_run=True)
+    if preflight.status == "diagnostic":
+        return {
+            "status": "diagnostic",
+            "reason": preflight.reason,
+            "vault": str(selected_vault),
+            "vault_source": vault_source,
+            "codex": preflight.to_dict(),
+        }
+
+    vault = Vault.initialize(selected_vault)
+    model = _prepare_model_route(
+        vault.root,
+        home=home,
+        dry_run=False,
+        non_interactive=True,
+        skip_discovery=True,
+    )
+    configured = adapter.configure(detection, vault.root, attempt=True)
+    update_agents_index(vault.agents_index_path, {"codex": configured.to_dict()})
+    if configured.status not in {"configured", "already_configured"}:
+        return {
+            "status": configured.status,
+            "reason": configured.reason,
+            "vault": str(vault.root),
+            "vault_source": vault_source,
+            "model": model,
+            "codex": configured.to_dict(),
+        }
+    return {
+        "status": configured.status,
+        "reason": configured.reason,
+        "vault": str(vault.root),
+        "vault_source": vault_source,
+        "model": model,
+        "codex": configured.to_dict(),
+        "user_action_required": configured.user_action_required,
+        "user_action": configured.user_action,
+    }
+
+
+__all__ = ["install_codex", "install_hermes"]

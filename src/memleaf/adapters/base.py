@@ -172,8 +172,28 @@ def absolute_vault(vault: Path | str) -> str:
     return str(Path(vault).expanduser().resolve())
 
 
-def mcp_command(vault: Path | str) -> list[str]:
-    return ["memleaf-mcp", "--vault", absolute_vault(vault)]
+def absolute_interpreter(interpreter: str | Path | None = None) -> str:
+    """Return the installed Python used by GUI-launched host commands."""
+
+    value = str(interpreter if interpreter is not None else sys.executable)
+    executable = Path(value).expanduser()
+    if not executable.is_absolute():
+        executable = Path.cwd() / executable
+    return str(executable)
+
+
+def mcp_command(
+    vault: Path | str,
+    *,
+    interpreter: str | Path | None = None,
+) -> list[str]:
+    return [
+        absolute_interpreter(interpreter),
+        "-m",
+        "memleaf.mcp_server",
+        "--vault",
+        absolute_vault(vault),
+    ]
 
 
 def hook_definition_fingerprint(definition: Mapping[str, Any]) -> str:
@@ -314,6 +334,7 @@ def host_event_command(
     vault: Path | str,
     *,
     interpreter: str | Path | None = None,
+    platform: str | None = None,
 ) -> str:
     """Return a shell-safe hook command using the installed interpreter.
 
@@ -323,12 +344,8 @@ def host_event_command(
     argument is quoted for the host's command runner.
     """
 
-    value = str(interpreter if interpreter is not None else sys.executable)
-    executable = Path(value).expanduser()
-    if not executable.is_absolute():
-        executable = Path.cwd() / executable
     args = (
-        str(executable),
+        absolute_interpreter(interpreter),
         "-m",
         "memleaf.cli",
         "host-event",
@@ -337,6 +354,8 @@ def host_event_command(
         "--vault",
         absolute_vault(vault),
     )
+    if (os.name if platform is None else platform) == "nt":
+        return subprocess.list2cmdline(args)
     return " ".join(shlex.quote(argument) for argument in args)
 
 
@@ -617,6 +636,20 @@ def merge_hook_config(
                 matching, conflict = _hook_command_state(existing_items, command, event, container_key)
                 if conflict:
                     return HookMergeResult("diagnostic", "existing memleaf hook conflicts; unchanged")
+                command_windows = requested_handler.get("commandWindows")
+                if matching and isinstance(command_windows, str) and command_windows:
+                    windows_changed, windows_conflict = _merge_command_windows(
+                        existing_items,
+                        command,
+                        command_windows,
+                        container_key,
+                    )
+                    if windows_conflict:
+                        return HookMergeResult(
+                            "diagnostic",
+                            "existing memleaf Windows hook conflicts; unchanged",
+                        )
+                    updated = updated or windows_changed
                 if not matching:
                     group_has_new = True
             if group_has_new:
@@ -672,6 +705,33 @@ def _hook_command_state(
                 return True, False
             if requested_identity is not None and _host_event_identity(current) == requested_identity:
                 return False, True
+    return False, False
+
+
+def _merge_command_windows(
+    existing_items: Sequence[Any],
+    command: str,
+    command_windows: str,
+    container_key: str | None,
+) -> tuple[bool, bool]:
+    """Add only the missing Windows form to an exact memleaf command hook."""
+
+    for item in existing_items:
+        handlers: Any = (
+            item.get("hooks")
+            if isinstance(item, Mapping) and container_key == "hooks"
+            else [item]
+        )
+        if not isinstance(handlers, list):
+            continue
+        for handler in handlers:
+            if not isinstance(handler, dict) or handler.get("command") != command:
+                continue
+            current = handler.get("commandWindows")
+            if current is None:
+                handler["commandWindows"] = command_windows
+                return True, False
+            return False, current != command_windows
     return False, False
 
 

@@ -323,7 +323,10 @@ class InstallScriptTests(unittest.TestCase):
 
         plugin = self.home / ".hermes" / "plugins" / "memleaf"
         self.assertTrue(plugin.is_symlink())
-        self.assertEqual(os.path.realpath(plugin), str((self.install_root / "integrations" / "hermes" / "memleaf").resolve()))
+        self.assertEqual(
+            os.path.realpath(plugin),
+            str((self.install_root / "src" / "memleaf" / "hermes_provider").resolve()),
+        )
         config_path = self.home / ".hermes" / "memleaf.json"
         config = json.loads(config_path.read_text(encoding="utf-8"))
         self.assertEqual(config["command"], str(self.install_root / ".venv" / "bin" / "memleaf-mcp"))

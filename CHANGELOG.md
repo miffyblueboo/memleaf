@@ -2,6 +2,26 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.1.7 — 2026-08-31
+
+- Added supported Codex integration through the explicit
+  `memleaf install --host codex` command, including MCP registration through
+  the Codex CLI and merge-safe lifecycle hooks that remain subject to Codex's
+  user review and trust flow.
+- Added the Codex V2 memory lifecycle: bounded Scope Map injection, controlled
+  `search` → `read` retrieval, visible-turn capture, automatic processing, and
+  compact-session restoration without injecting memory bodies up front.
+- Preserved Hermes conversation lineage across context compaction so complete
+  source turns remain available to extraction instead of summarizing only the
+  post-compaction fragment.
+- Improved memory maintenance to keep durable business facts and constraints,
+  discard incidental execution details, and apply sequential state updates to
+  one stable memory with prior versions in history.
+- Consolidated the Hermes MemoryProvider into one packaged implementation and
+  made every installer and test consume that source.
+- Added macOS Codex lifecycle CI and expanded Linux/Windows packaging and host
+  regression coverage.
+
 ## 0.1.6 — 2026-08-29
 
 - Made the normal install command the supported upgrade path for existing memleaf installations.

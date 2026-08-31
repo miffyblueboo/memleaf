@@ -11,6 +11,14 @@ from unittest.mock import patch
 from memleaf import Memleaf
 from memleaf.index import event_key, turn_key
 from memleaf.memory_writer import MemoryWriter
+from memleaf.processing import (
+    _RELATED_MAX_BODY_CHARS,
+    _RELATED_MAX_CHARS,
+    _RELATED_MAX_ITEMS,
+    _SCOPE_DIRECTORY_MAX_CHARS,
+    _SCOPE_DIRECTORY_MAX_ITEMS,
+    Processor,
+)
 from memleaf.prompts import SUMMARIZE_SYSTEM
 
 
@@ -37,14 +45,23 @@ def gate(candidates):
     return json.dumps({"candidates": candidates}, ensure_ascii=False)
 
 
-def candidate(candidate_id, evidence, memory, *, scopes=None, scope_source="model", update_memory_id=None):
+def candidate(
+    candidate_id,
+    evidence,
+    memory,
+    *,
+    scopes=None,
+    scope_source="model",
+    update_memory_id=None,
+    type="identity",
+):
     value = {
         "candidate_id": candidate_id,
         "memory": memory,
         "evidence_event_ids": list(evidence),
         "duplicate": False,
         "worth": True,
-        "type": "identity",
+        "type": type,
         "scopes": list(scopes or ["global"]),
         "scope_source": scope_source,
     }
@@ -53,12 +70,21 @@ def candidate(candidate_id, evidence, memory, *, scopes=None, scope_source="mode
     return value
 
 
-def summary(event, body, *, title="项目负责人", scopes=None, scope_source="model", update_memory_id=None):
+def summary(
+    event,
+    body,
+    *,
+    title="项目负责人",
+    scopes=None,
+    scope_source="model",
+    update_memory_id=None,
+    type="identity",
+):
     value = {
         "title": title,
         "body": body,
         "tags": ["maintenance-v2"],
-        "type": "identity",
+        "type": type,
         "scopes": list(scopes or ["global"]),
         "scope_source": scope_source,
         "sources": [{"event_key": event}],
@@ -86,11 +112,518 @@ class MaintenanceV2Tests(unittest.TestCase):
     def processed(self):
         return json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
 
+    @staticmethod
+    def related_payload(prompt):
+        start_marker = "Relevant existing memleaf/native memories:\n"
+        end_marker = "\nSession scope background:\n"
+        start = prompt.index(start_marker) + len(start_marker)
+        end = prompt.index(end_marker, start)
+        return json.loads(prompt[start:end])
+
     def test_summarizer_prompt_requires_stable_title_and_update_precedence(self):
         prompt = " ".join(SUMMARIZE_SYSTEM.split())
         self.assertIn("UPDATE or NO_CHANGE takes precedence over CREATE", prompt)
         self.assertIn("stable title made from the subject, topic, and only a necessary qualifier", prompt)
         self.assertIn("Make the body self-contained", prompt)
+
+    def test_scoped_elliptical_followup_reuses_existing_project_memory(self):
+        first_user, first_assistant = self.capture(
+            "project-lineage",
+            "turn-1",
+            "alpha 项目采用达梦数据库，Tomcat 改造为东方通，负责人是吴江波，38 个工作日完成。",
+            "已确认 alpha 项目的技术路线、负责人和期限。",
+        )
+        backend = QueueBackend(
+            [
+                gate(
+                    [
+                        candidate(
+                            "alpha-plan",
+                            [first_user, first_assistant],
+                            "alpha 项目的技术路线、负责人和期限。",
+                            scopes=["project:alpha"],
+                            type="project",
+                        )
+                    ]
+                ),
+                summary(
+                    first_user,
+                    "alpha 项目采用达梦数据库，Tomcat 改造为东方通；负责人吴江波，计划 2026-10-27 完成。",
+                    title="alpha 项目技术路线与实施计划",
+                    scopes=["project:alpha"],
+                    type="project",
+                ),
+            ]
+        )
+        self.service.process(source="hermes", session_id="project-lineage", model=backend)
+        old = self.service._read_memories_unlocked("knowledge")[0].memory
+        self.assertEqual(
+            self.processed()["sessions"]["hermes/project-lineage"]["scopes"],
+            ["project:alpha"],
+        )
+
+        new_user, new_assistant = self.capture(
+            "project-lineage",
+            "turn-2",
+            "这个项目的任务已同步到系统。",
+            "任务同步完成，后续按项目继续跟进。",
+        )
+        backend.responses.extend(
+            [
+                gate(
+                    [
+                        candidate(
+                            "alpha-sync",
+                            [new_user, new_assistant],
+                            "alpha 项目任务已同步到系统。",
+                            scopes=["project:alpha"],
+                            type="project",
+                            update_memory_id=old.memory_id,
+                        )
+                    ]
+                ),
+                summary(
+                    new_user,
+                    "alpha 项目采用达梦数据库，Tomcat 改造为东方通；负责人吴江波，计划 2026-10-27 完成。任务已同步到系统。",
+                    title="alpha 项目技术路线与实施计划",
+                    scopes=["project:alpha"],
+                    type="project",
+                    update_memory_id=old.memory_id,
+                ),
+            ]
+        )
+
+        result = self.service.process(source="hermes", session_id="project-lineage", model=backend)
+
+        self.assertEqual(result["memory_ids"], [old.memory_id])
+        active = self.service._read_memories_unlocked("knowledge")
+        self.assertEqual([record.memory.memory_id for record in active], [old.memory_id])
+        self.assertIn("达梦数据库", active[0].memory.body)
+        self.assertIn("东方通", active[0].memory.body)
+        self.assertIn("吴江波", active[0].memory.body)
+        self.assertIn("任务已同步到系统", active[0].memory.body)
+        self.assertNotIn("内部", active[0].memory.body)
+        history = self.service._read_memories_unlocked("history")
+        self.assertEqual(len(history), 1)
+        self.assertNotEqual(history[0].memory.memory_id, old.memory_id)
+        self.assertEqual(history[0].memory.body, old.body)
+        gate_prompts = [call["prompt"] for call in backend.calls if call["purpose"] == "gate"]
+        self.assertEqual(len(gate_prompts), 2)
+        self.assertIn(old.body, gate_prompts[1])
+
+    def test_specific_scope_fallback_supplies_context_for_lexically_sparse_turn(self):
+        first_user, first_assistant = self.capture(
+            "project-lineage-sparse",
+            "turn-1",
+            "alpha 项目采用达梦数据库，负责人吴江波。",
+            "已确认 alpha 项目的技术路线和负责人。",
+        )
+        backend = QueueBackend(
+            [
+                gate(
+                    [
+                        candidate(
+                            "alpha-plan",
+                            [first_user, first_assistant],
+                            "alpha 项目的技术路线和负责人。",
+                            scopes=["project:alpha"],
+                            type="project",
+                        )
+                    ]
+                ),
+                summary(
+                    first_user,
+                    "alpha 项目采用达梦数据库；负责人吴江波。",
+                    title="alpha 项目技术路线与负责人",
+                    scopes=["project:alpha"],
+                    type="project",
+                ),
+            ]
+        )
+        self.service.process(
+            source="hermes", session_id="project-lineage-sparse", model=backend
+        )
+        old = self.service._read_memories_unlocked("knowledge")[0].memory
+        self.capture(
+            "project-lineage-sparse",
+            "turn-2",
+            "已同步。",
+            "已完成。",
+        )
+        backend.responses.append(gate([]))
+
+        result = self.service.process(
+            source="hermes",
+            session_id="project-lineage-sparse",
+            model=backend,
+        )
+
+        self.assertEqual(result["memories_written"], 0)
+        gate_prompts = [call["prompt"] for call in backend.calls if call["purpose"] == "gate"]
+        self.assertEqual(len(gate_prompts), 2)
+        self.assertIn(old.body, gate_prompts[1])
+
+    def test_related_context_has_independent_budget_for_many_long_memories(self):
+        tails = []
+        for index in range(10):
+            tail = f"UNIQUE-RELATED-TAIL-{index}"
+            tails.append(tail)
+            self.service.create_memory(
+                memory_id=f"mem-related-{index}",
+                title=f"budgeted project item {index}",
+                body=f"body-{index}-" + "x" * 5000 + tail,
+                type="project",
+                scopes=["project:budgeted"],
+            )
+        self.capture(
+            "related-budget",
+            "turn-1",
+            "budgeted 项目需要继续确认相关事项。",
+            "已确认预算项目的后续安排。",
+        )
+        backend = QueueBackend([gate([])])
+
+        result = self.service.process(
+            source="hermes",
+            session_id="related-budget",
+            model=backend,
+            scope=["project:budgeted"],
+        )
+
+        related = self.related_payload(backend.calls[0]["prompt"])
+        encoded = json.dumps(related, ensure_ascii=False, separators=(",", ":"))
+        self.assertEqual(result["memories_written"], 0)
+        self.assertLessEqual(len(related), _RELATED_MAX_ITEMS)
+        self.assertLessEqual(len(encoded), _RELATED_MAX_CHARS)
+        self.assertTrue(all(len(item.get("body", "")) <= _RELATED_MAX_BODY_CHARS for item in related))
+        self.assertTrue(all(tail not in encoded for tail in tails))
+
+    def test_related_context_prioritizes_update_target_before_budget(self):
+        target = self.service.create_memory(
+            memory_id="mem-priority-target",
+            title="priority project plan",
+            body="TARGET-BODY " + "a" * 2200,
+            type="project",
+            scopes=["project:priority"],
+        )
+        self.service.create_memory(
+            memory_id="mem-priority-decoy",
+            title="priority project decoy",
+            body="DECOY-BODY " + "b" * 2200,
+            type="project",
+            scopes=["project:priority"],
+        )
+        user_event, assistant_event = self.capture(
+            "related-priority",
+            "turn-1",
+            "priority project status needs an update.",
+            "Confirmed that the project entered the next stage.",
+        )
+        backend = QueueBackend(
+            [
+                gate(
+                    [
+                        candidate(
+                            "priority-update",
+                            [user_event, assistant_event],
+                            "priority project 状态更新",
+                            scopes=["project:priority"],
+                            type="project",
+                            update_memory_id=target.memory_id,
+                        )
+                    ]
+                ),
+                summary(
+                    user_event,
+                    "priority project 进入下一阶段。",
+                    title="priority project plan",
+                    scopes=["project:priority"],
+                    type="project",
+                    update_memory_id=target.memory_id,
+                ),
+            ]
+        )
+
+        result = self.service.process(
+            source="hermes",
+            session_id="related-priority",
+            model=backend,
+            scope=["project:priority"],
+        )
+
+        self.assertEqual(result["memory_ids"], [target.memory_id])
+        summarize_prompt = next(
+            call["prompt"] for call in backend.calls if call["purpose"] == "summarize"
+        )
+        related = self.related_payload(summarize_prompt)
+        self.assertEqual(related[0]["memory_id"], target.memory_id)
+        self.assertIn("TARGET-BODY", related[0]["body"])
+        self.assertLessEqual(len(related[0]["body"]), _RELATED_MAX_BODY_CHARS)
+
+    def test_summary_related_context_uses_same_budget_and_keeps_target(self):
+        memory_ids = []
+        tails = []
+        for index in range(10):
+            tail = f"SUMMARY-RELATED-TAIL-{index}"
+            tails.append(tail)
+            memory_ids.append(f"mem-summary-related-{index}")
+            self.service.create_memory(
+                memory_id=memory_ids[-1],
+                title=f"summary budgeted project item {index}",
+                body=f"summary-body-{index}-" + "y" * 5000 + tail,
+                type="project",
+                scopes=["project:summary-budget"],
+            )
+        # The target is visible in the bounded gate context, but not the first
+        # result; the summarize call must promote it before applying its own
+        # budget.
+        target_id = memory_ids[7]
+        user_event, assistant_event = self.capture(
+            "summary-related-budget",
+            "turn-1",
+            "summary budgeted project plan needs an update.",
+            "Confirmed the project entered the next stage.",
+        )
+        backend = QueueBackend(
+            [
+                gate(
+                    [
+                        candidate(
+                            "summary-budget-update",
+                            [user_event, assistant_event],
+                            "summary budgeted project plan update",
+                            scopes=["project:summary-budget"],
+                            type="project",
+                            update_memory_id=target_id,
+                        )
+                    ]
+                ),
+                summary(
+                    user_event,
+                    "summary budgeted project entered the next stage.",
+                    title="summary budgeted project item 0",
+                    scopes=["project:summary-budget"],
+                    type="project",
+                    update_memory_id=target_id,
+                ),
+            ]
+        )
+
+        result = self.service.process(
+            source="hermes",
+            session_id="summary-related-budget",
+            model=backend,
+            scope=["project:summary-budget"],
+        )
+
+        self.assertEqual(result["memory_ids"], [target_id])
+        summarize_prompt = next(
+            call["prompt"] for call in backend.calls if call["purpose"] == "summarize"
+        )
+        related = self.related_payload(summarize_prompt)
+        encoded = json.dumps(related, ensure_ascii=False, separators=(",", ":"))
+        self.assertLessEqual(len(related), _RELATED_MAX_ITEMS)
+        self.assertLessEqual(len(encoded), _RELATED_MAX_CHARS)
+        self.assertEqual(related[0]["memory_id"], target_id)
+        self.assertTrue(all(len(item.get("body", "")) <= _RELATED_MAX_BODY_CHARS for item in related))
+        self.assertTrue(all(tail not in encoded for tail in tails))
+
+    def test_ambiguous_sparse_scope_fallback_defers_without_full_scope_dump(self):
+        bodies = []
+        for index in range(2):
+            body = f"AMBIGUOUS-BODY-{index} " + "z" * 2000
+            bodies.append(body)
+            self.service.create_memory(
+                memory_id=f"mem-ambiguous-{index}",
+                title=f"ambiguous project topic {index}",
+                body=body,
+                type="project",
+                scopes=["project:ambiguous"],
+            )
+        user_event, assistant_event = self.capture(
+            "related-ambiguous",
+            "turn-1",
+            "已同步。",
+            "已完成。",
+        )
+        backend = QueueBackend(
+            [
+                gate(
+                    [
+                        candidate(
+                            "ambiguous-update",
+                            [user_event, assistant_event],
+                            "项目任务已同步",
+                            scopes=["project:ambiguous"],
+                            type="project",
+                        )
+                    ]
+                )
+            ]
+        )
+
+        result = self.service.process(
+            source="hermes",
+            session_id="related-ambiguous",
+            model=backend,
+            scope=["project:ambiguous"],
+        )
+
+        related = self.related_payload(backend.calls[0]["prompt"])
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["deferred_candidates"], 1)
+        self.assertEqual(related, [])
+        self.assertTrue(all(body not in backend.calls[0]["prompt"] for body in bodies))
+        self.assertEqual(len(self.service._read_memories_unlocked("knowledge")), 2)
+        self.assertEqual(self.service._read_memories_unlocked("history"), [])
+
+    def test_sparse_inherited_scope_uses_metadata_directory_then_selected_body(self):
+        target_body = "技术路线：达梦数据库与东方通；负责人吴江波；期限为2026-10-27；约束是按既定信创方案推进。"
+        contact_body = "CONTACT-ONLY-BODY"
+        email_body = "EMAIL-ONLY-BODY"
+        target = self.service.create_memory(
+            memory_id="mem-orion-plan",
+            title="信创改造实施计划",
+            body=target_body,
+            type="project",
+            scopes=["project:orion"],
+        )
+        self.service.create_memory(
+            memory_id="mem-orion-contact",
+            title="项目联系人",
+            body=contact_body,
+            type="fact",
+            scopes=["project:orion"],
+        )
+        self.service.create_memory(
+            memory_id="mem-orion-email",
+            title="项目邮件",
+            body=email_body,
+            type="fact",
+            scopes=["project:orion"],
+        )
+
+        # Establish the inherited scope without adding a memory.  The next
+        # sparse turn must resolve it from the directory rather than a body
+        # dump or a recency guess.
+        context_user, context_assistant = self.capture(
+            "orion-directory",
+            "turn-1",
+            "准备继续处理这个项目。",
+            "已确认当前工作范围。",
+        )
+        context_gate = gate(
+            [
+                {
+                    "candidate_id": "scope-context",
+                    "memory": "项目工作范围",
+                    "evidence_event_ids": [context_user, context_assistant],
+                    "duplicate": False,
+                    "worth": False,
+                    "type": None,
+                    "scopes": ["project:orion"],
+                    "scope_source": "model",
+                }
+            ]
+        )
+        self.service.process(
+            source="hermes",
+            session_id="orion-directory",
+            model=QueueBackend([context_gate]),
+        )
+
+        user_event, assistant_event = self.capture(
+            "orion-directory",
+            "turn-2",
+            "这个项目任务已同步到 Orion。",
+            "已完成。",
+        )
+        backend = QueueBackend(
+            [
+                gate(
+                    [
+                        candidate(
+                            "orion-sync",
+                            [user_event, assistant_event],
+                            "项目任务已同步到 Orion。",
+                            scopes=["project:orion"],
+                            type="project",
+                            update_memory_id=target.memory_id,
+                        )
+                    ]
+                ),
+                summary(
+                    user_event,
+                    target_body + " 当前进展：项目任务已同步到 Orion。",
+                    title="信创改造实施计划",
+                    scopes=["project:orion"],
+                    type="project",
+                    update_memory_id=target.memory_id,
+                ),
+            ]
+        )
+
+        with patch.object(
+            self.service,
+            "_search_unlocked",
+            wraps=self.service._search_unlocked,
+        ) as search, patch.object(
+            Processor,
+            "_scope_records_unlocked",
+            autospec=True,
+            side_effect=Processor._scope_records_unlocked,
+        ) as scope_scan:
+            result = self.service.process(
+                source="hermes",
+                session_id="orion-directory",
+                model=backend,
+            )
+
+        self.assertEqual(result["memory_ids"], [target.memory_id])
+        self.assertEqual(search.call_count, 1)
+        self.assertEqual(scope_scan.call_count, 1)
+        active = self.service._read_memories_unlocked("knowledge")
+        self.assertEqual(
+            {record.memory.memory_id for record in active},
+            {target.memory_id, "mem-orion-contact", "mem-orion-email"},
+        )
+        updated = next(record.memory for record in active if record.memory.memory_id == target.memory_id)
+        self.assertIn("达梦数据库", updated.body)
+        self.assertIn("东方通", updated.body)
+        self.assertIn("项目任务已同步到 Orion", updated.body)
+        self.assertEqual(len(self.service._read_memories_unlocked("history")), 1)
+
+        gate_call = next(call for call in backend.calls if call["purpose"] == "gate")
+        gate_prompt_text = gate_call["prompt"]
+        directory_marker = "Bounded scope candidate directory (metadata only; not evidence):\n"
+        self.assertIn(directory_marker, gate_prompt_text)
+        directory_start = gate_prompt_text.index(directory_marker) + len(directory_marker)
+        directory_end = gate_prompt_text.index(
+            "\nMinimal valid JSON example", directory_start
+        )
+        directory = json.loads(gate_prompt_text[directory_start:directory_end])
+        self.assertLessEqual(len(directory), _SCOPE_DIRECTORY_MAX_ITEMS)
+        self.assertLessEqual(
+            len(json.dumps(directory, ensure_ascii=False, separators=(",", ":"))),
+            _SCOPE_DIRECTORY_MAX_CHARS,
+        )
+        self.assertEqual(
+            {entry["memory_id"] for entry in directory},
+            {target.memory_id, "mem-orion-contact", "mem-orion-email"},
+        )
+        self.assertTrue(
+            all(set(entry) == {"memory_id", "title", "type", "scopes"} for entry in directory)
+        )
+        self.assertNotIn(target_body, gate_prompt_text)
+        self.assertNotIn(contact_body, gate_prompt_text)
+        self.assertNotIn(email_body, gate_prompt_text)
+
+        summarize_call = next(call for call in backend.calls if call["purpose"] == "summarize")
+        summarize_related = self.related_payload(summarize_call["prompt"])
+        self.assertEqual([item["memory_id"] for item in summarize_related], [target.memory_id])
+        self.assertIn(target_body, summarize_call["prompt"])
+        self.assertNotIn(contact_body, summarize_call["prompt"])
+        self.assertNotIn(email_body, summarize_call["prompt"])
 
     def test_same_process_state_change_uses_first_turn_overlay(self):
         first_user, first_assistant = self.capture(
