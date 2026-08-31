@@ -2,6 +2,16 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.0 — 2026-08-31
+
+- Hardened the supported Codex integration against the official Codex CLI 0.151.0 on Windows and macOS, including `CODEX_HOME`, npm `codex.cmd` discovery, UTF-8 CLI output, idempotent `mcp add/get`, and quote-free Windows lifecycle commands carried through a UTF-16LE PowerShell `EncodedCommand` payload.
+- Aligned Codex `PreToolUse` argument rewriting with the current hook contract by returning `permissionDecision=allow` together with `updatedInput`, preserving the current-turn `retrieval_id` binding.
+- Restored the finalized automatic retrieval contract: the bounded Scope Map exposes only Scope metadata, `search` candidates expose only `memory_id + title`, and selected memory bodies enter context only through bounded `read` calls under the existing retrieval gate and budgets.
+- Added durable shared-Vault acceptance for Codex → Codex, Hermes → Codex, and Codex → Hermes so cross-session and cross-host memory reuse is verified without duplicating CREATE/UPDATE/NO_CHANGE, history, deduplication, or processing semantics outside the Core.
+- Kept Codex installation explicitly opt-in and fail-closed: existing Codex model/provider, profiles, sandbox/approval settings, MCP entries, hooks, and custom providers remain untouched; conflicting host Vaults are rejected rather than guessed.
+- Decoupled the Codex host from the extraction model. Automatic processing uses an independent memleaf Model Route, reports `processing_status=model_route_required` when no complete route exists, and never copies Codex credentials or silently consumes the active Codex session model.
+- Promoted native Codex Windows/macOS acceptance, cross-host memory roundtrips, Linux/Windows/macOS host tests, and packaging checks into release-blocking CI gates.
+
 ## 0.1.8 — 2026-08-31
 
 - Fixed Windows UTF-8 stdio handling across the MCP server, Hermes MemoryProvider, and Codex host-event entry point so Chinese and other non-ASCII memory content can be captured, searched, read, and injected without depending on the system code page.
