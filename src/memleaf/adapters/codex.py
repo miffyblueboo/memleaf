@@ -124,11 +124,20 @@ class CodexAdapter:
                     status="diagnostic",
                 )
         if executable is None:
-            executable = resolve_executable(
-                "codex.exe" if self.platform == "nt" else "codex",
-                env=self.env,
-                known_paths=self.known_paths,
-            )
+            # Native Windows installs commonly expose codex.exe, while the
+            # official npm package exposes codex.cmd on PATH.  Accept both
+            # before falling back to documented bundled/runtime locations.
+            path_names = ("codex.exe", "codex.cmd", "codex") if self.platform == "nt" else ("codex",)
+            for name in path_names:
+                executable = resolve_executable(name, env=self.env)
+                if executable is not None:
+                    break
+            if executable is None:
+                executable = resolve_executable(
+                    "codex.exe" if self.platform == "nt" else "codex",
+                    env={**self.env, "PATH": ""},
+                    known_paths=self.known_paths,
+                )
         config_value = str(config)
         if executable is not None:
             return Detection(
