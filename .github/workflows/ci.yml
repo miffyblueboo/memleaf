@@ -57,6 +57,11 @@ jobs:
           python -m unittest discover -s tests -p 'test_hermes_stdio_transport.py' -v
           python -m unittest discover -s tests -p 'test_stage_c3_packaging.py' -v
           python -m unittest discover -s tests -p 'test_codex_install.py' -v
+      - name: Run Windows host lifecycle and memory semantics acceptance
+        run: |
+          python -m unittest tests.test_hermes_provider tests.test_hermes_stdio_transport -v
+          python -m unittest tests.test_codex_install tests.test_host_events tests.test_v2_host_flow tests.test_v2_mcp_flow -v
+          python -m unittest tests.test_maintenance_v2 tests.test_retrieval_v2 tests.test_session_lineage -v
       - name: Smoke-test installed commands and Vault
         shell: pwsh
         run: |
@@ -95,10 +100,11 @@ jobs:
         run: python -m pip install .
       - name: Compile source and tests
         run: python -m compileall -q src tests examples
-      - name: Run Codex adapter and host lifecycle tests
+      - name: Run macOS Hermes and Codex host acceptance
         run: |
-          python -m unittest tests.test_codex_install -v
-          python -m unittest tests.test_host_events tests.test_v2_host_flow -v
+          python -m unittest tests.test_pypi_install tests.test_hermes_provider tests.test_hermes_stdio_transport -v
+          python -m unittest tests.test_codex_install tests.test_host_events tests.test_v2_host_flow tests.test_v2_mcp_flow -v
+          python -m unittest tests.test_maintenance_v2 tests.test_retrieval_v2 tests.test_session_lineage -v
 
   build:
     runs-on: ubuntu-latest
