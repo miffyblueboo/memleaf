@@ -144,6 +144,59 @@ class V2HostFlowTest(unittest.TestCase):
         self.assertEqual(state["status"], "NO_MATCH")
         self.assertEqual(state["search_attempts"], 4)
 
+    def test_found_search_uses_finalized_directory_shape_and_allows_read(self):
+        memory = self.service.create_memory(
+            memory_id="found-contract",
+            title="Found contract",
+            body="FOUND_PRIVATE_BODY",
+        )
+        self.event("UserPromptSubmit", prompt="Found contract")
+        retrieval_id = find_turn(
+            self.service.vault, "codex", "isolated-session", "user-turn"
+        )
+
+        search_pre = self.event(
+            "PreToolUse",
+            tool_name="mcp__memleaf__search",
+            tool_input={"query": "Found contract"},
+        )
+        search_args = search_pre["hookSpecificOutput"]["updatedInput"]
+        actual = self.process.send({
+            "jsonrpc": "2.0",
+            "id": 91,
+            "method": "tools/call",
+            "params": {"name": "search", "arguments": search_args},
+        })["result"]
+        self.assertFalse(actual["isError"], actual)
+        results = actual["structuredContent"]["results"]
+        self.assertTrue(results)
+        self.assertEqual(set(results[0]), {"memory_id", "title"})
+        self.assertNotIn("FOUND_PRIVATE_BODY", json.dumps(actual))
+
+        self.event(
+            "PostToolUse",
+            tool_name="mcp__memleaf__search",
+            tool_use_id="found-call",
+            tool_input=search_args,
+            tool_response=actual,
+        )
+        self.assertEqual(validate_turn(self.service.vault, retrieval_id)["status"], "FOUND")
+
+        read_pre = self.event(
+            "PreToolUse",
+            tool_name="mcp__memleaf__read",
+            tool_input={"memory_id": memory.memory_id},
+        )
+        read_args = read_pre["hookSpecificOutput"]["updatedInput"]
+        read = self.process.send({
+            "jsonrpc": "2.0",
+            "id": 92,
+            "method": "tools/call",
+            "params": {"name": "read", "arguments": read_args},
+        })["result"]
+        self.assertFalse(read["isError"], read)
+        self.assertEqual(read["structuredContent"]["body"], "FOUND_PRIVATE_BODY")
+
     def test_scope_deferred_processing_is_reported_as_incomplete(self):
         self.event("UserPromptSubmit", prompt="你好")
         retrieval_id = find_turn(self.service.vault, "codex", "isolated-session", "user-turn")

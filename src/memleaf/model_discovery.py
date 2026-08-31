@@ -19,7 +19,6 @@ import os
 from pathlib import Path
 import re
 import shutil
-import tomllib
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import urlsplit
 
@@ -158,18 +157,6 @@ def _safe_text(value: Any) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
-
-
-def _configured_directory(home: Path, value: Any, default_name: str) -> Path:
-    configured = _safe_text(value)
-    if configured is None:
-        return (home / default_name).resolve()
-    if configured == "~":
-        return home.resolve()
-    if configured.startswith("~/"):
-        return (home / configured[2:]).resolve()
-    path = Path(configured)
-    return (path if path.is_absolute() else home / path).resolve()
 
 
 def _valid_base_url(value: Any) -> str | None:
@@ -568,96 +555,23 @@ def discover_hermes(
     return candidates, diagnostics
 
 
-def _codex_env_values(document: Mapping[str, Any]) -> Mapping[str, Any]:
-    policy = document.get("shell_environment_policy")
-    if not isinstance(policy, Mapping):
-        return {}
-    values = policy.get("set")
-    return values if isinstance(values, Mapping) else {}
-
-
 def discover_codex(
     *,
     home: Path | str | None = None,
     env: Mapping[str, str] | None = None,
     config_path: Path | str | None = None,
 ) -> tuple[list[ModelCandidate], list[str]]:
-    """Discover only Codex providers with a chat-completions route.
+    """Keep the legacy API fail-closed without reading Codex model settings.
 
-    Codex's documented ``responses`` wire API is not silently treated as
-    OpenAI chat completions.  Until memleaf has a tested Responses backend,
-    those routes are reported as unsupported and skipped.
+    Codex is a memleaf host, never an extraction-model source.  Retaining this
+    callable avoids breaking imports from early 0.x builds while ensuring an
+    accidental caller cannot read or reuse Codex provider/auth configuration.
     """
 
-    effective_home = adapter_home(home)
-    environment = adapter_environment(env)
-    if config_path is not None:
-        path = Path(config_path).expanduser()
-    else:
-        codex_home = _configured_directory(effective_home, environment.get("CODEX_HOME"), ".codex")
-        path = codex_home / "config.toml"
-    if path.is_symlink() or not path.is_file():
-        return [], ["codex: user config.toml was not found"]
-    try:
-        document = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
-        return [], ["codex: config.toml could not be parsed"]
-    providers = document.get("model_providers")
-    if not isinstance(providers, Mapping):
-        return [], ["codex: no reusable model provider configuration found"]
-    selected_name = _safe_text(document.get("model_provider"))
-    top_model = _safe_text(document.get("model"))
-    shell_values = _codex_env_values(document)
-    candidates: list[ModelCandidate] = []
-    diagnostics: list[str] = []
-    for name, raw_item in providers.items():
-        if not isinstance(name, str) or not isinstance(raw_item, Mapping):
-            continue
-        wire_api = (_safe_text(raw_item.get("wire_api")) or "").casefold().replace("-", "_")
-        if wire_api != "chat_completions":
-            if wire_api == "responses":
-                diagnostics.append(f"codex: provider {name} uses unsupported responses wire API")
-            else:
-                diagnostics.append(f"codex: provider {name} has no supported chat wire API")
-            continue
-        provider = _safe_text(raw_item.get("name")) or name
-        model_ids: list[str] = []
-        for key in ("model", "default_model"):
-            value = _safe_text(raw_item.get(key))
-            if value:
-                model_ids.append(value)
-        if selected_name == name and top_model:
-            model_ids.append(top_model)
-        if isinstance(raw_item.get("models"), list):
-            model_ids.extend(item for item in raw_item["models"] if isinstance(item, str) and item.strip())
-        if not model_ids:
-            diagnostics.append(f"codex: provider {name} has no model name")
-            continue
-        seen: set[str] = set()
-        for model_id in model_ids:
-            if model_id.casefold() in seen:
-                continue
-            seen.add(model_id.casefold())
-            item = dict(raw_item)
-            found, reason = _candidate(
-                source="codex",
-                provider=provider,
-                protocol="openai",
-                base_url=raw_item.get("base_url"),
-                model=model_id,
-                item=item,
-                env=environment,
-                extra_env=shell_values,
-                source_detail="selected provider" if selected_name == name else "model provider",
-            )
-            if found:
-                candidates.append(found)
-            elif reason != "non-chat model":
-                diagnostics.append(f"codex: provider {name} unavailable ({reason})")
-    if top_model and not selected_name:
-        diagnostics.append("codex: top-level model has no selected reusable provider")
-    return candidates, diagnostics
-
+    del home, env, config_path
+    return [], [
+        "codex: model discovery is disabled; configure an independent memleaf Model Route"
+    ]
 
 def discover_models(
     *,
@@ -682,8 +596,8 @@ def discover_models(
         candidates.extend(found)
         diagnostics.extend(messages)
     if include_codex:
-        found, messages = discover_codex(home=home, env=env)
-        candidates.extend(found)
+        # Compatibility flag only.  Codex is a host, not a model source.
+        _, messages = discover_codex(home=home, env=env)
         diagnostics.extend(messages)
     selected = select_lightest(candidates)
     if selected is None:

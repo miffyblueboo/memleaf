@@ -668,14 +668,19 @@ def _managed_search_state(
     service: Memleaf,
     retrieval_id: str | None,
 ) -> dict[str, Any] | None:
-    """Return validated Hermes state; Codex observation remains in hooks."""
+    """Validate the current host turn; Hermes additionally records MCP results."""
 
     if retrieval_id is None:
         return None
     state = validate_turn(service.vault, retrieval_id)
-    if state.get("source") != "hermes":
-        return None
-    return validate_current_turn(service.vault, retrieval_id, "hermes")
+    source = state.get("source")
+    if not isinstance(source, str) or not source:
+        raise RetrievalGateError("retrieval_identity_invalid")
+    current = validate_current_turn(service.vault, retrieval_id, source)
+    # Codex records real search outcomes from PostToolUse so the stdio server
+    # must not double-count them. Current-turn validation is authoritative for
+    # every host token before the search itself is allowed to run.
+    return current if source == "hermes" else None
 
 
 def _observe_mcp_search(
@@ -785,7 +790,9 @@ def _invoke_tool(
                 return _read_page_result(service.read_page(**page_args))
 
             state = validate_turn(service.vault, retrieval_id)
-            current_source = "hermes" if state.get("source") == "hermes" else None
+            current_source = state.get("source")
+            if not isinstance(current_source, str) or not current_source:
+                raise RetrievalGateError("retrieval_identity_invalid")
             value = guarded_read(
                 service.vault,
                 retrieval_id,

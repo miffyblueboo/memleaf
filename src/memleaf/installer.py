@@ -106,6 +106,22 @@ def _select_vault_path(
     return (home / ".memleaf").resolve(), "default"
 
 
+def _vault_paths_equivalent(left: Path, right: Path) -> bool:
+    """Return whether two host Vault paths identify the same location."""
+
+    try:
+        if left.exists() and right.exists():
+            return os.path.samefile(left, right)
+    except OSError:
+        pass
+    try:
+        left_value = os.path.normcase(str(left.expanduser().resolve()))
+        right_value = os.path.normcase(str(right.expanduser().resolve()))
+    except (OSError, RuntimeError):
+        return False
+    return left_value == right_value
+
+
 def _select_codex_vault_path(
     *,
     home: Path,
@@ -130,12 +146,12 @@ def _select_codex_vault_path(
     codex_vault = adapter.configured_vault(detection)
     if codex_vault is not None:
         existing.append(("codex_config", codex_vault))
-    unique = {str(path): path for _, path in existing}
-    if len(unique) > 1:
-        raise RuntimeError("vault_conflict: existing memleaf hosts use different Vaults")
     if existing:
+        reference = existing[0][1]
+        if any(not _vault_paths_equivalent(reference, path) for _, path in existing[1:]):
+            raise RuntimeError("vault_conflict: existing memleaf hosts use different Vaults")
         sources = "+".join(source for source, _ in existing)
-        return existing[0][1], sources
+        return reference, sources
 
     environment = os.environ if env is None else env
     configured = environment.get("MEMLEAF_VAULT")
@@ -252,6 +268,8 @@ def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
         env=os.environ.copy(),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="strict",
         check=False,
     )
 

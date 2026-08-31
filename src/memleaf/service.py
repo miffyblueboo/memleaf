@@ -1348,7 +1348,9 @@ class Memleaf:
             return fit_directory_items(entries, limit=bounded_limit)
 
     def _delete_records_unlocked(self, records: Iterable[_Record]) -> list[str]:
-        deleted: list[str] = []
+        # Preflight every target before mutating anything, then keep active
+        # knowledge as the retry anchor until all linked history is gone.
+        unique: list[_Record] = []
         seen_paths: set[Path] = set()
         for record in records:
             if record.path in seen_paths:
@@ -1356,11 +1358,27 @@ class Memleaf:
             seen_paths.add(record.path)
             if record.path.is_symlink():
                 raise ValueError("unsafe memory path")
-            try:
-                record.path.unlink()
-            except FileNotFoundError:
-                continue
-            deleted.append(record.memory.memory_id)
+            unique.append(record)
+        unique.sort(key=lambda record: (record.area == "knowledge", str(record.path)))
+
+        deleted: list[str] = []
+        try:
+            for record in unique:
+                try:
+                    record.path.unlink()
+                except FileNotFoundError:
+                    continue
+                deleted.append(record.memory.memory_id)
+        except Exception:
+            if deleted:
+                # The Markdown files are source of truth.  Keep derived indexes
+                # synchronized after a partial filesystem mutation before the
+                # original deletion error is surfaced to the caller.
+                try:
+                    self._rebuild_index_unlocked()
+                except Exception:
+                    pass
+            raise
         if deleted:
             self._rebuild_index_unlocked()
         return sorted(set(deleted))

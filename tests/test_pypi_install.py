@@ -9,7 +9,7 @@ from unittest import mock
 
 from memleaf import cli
 from memleaf.adapters.hermes import HermesAdapter
-from memleaf.installer import _copy_provider, _hermes_home, _write_provider_config, install_codex
+from memleaf.installer import _copy_provider, _hermes_home, _run, _write_provider_config, install_codex
 
 
 class PyPIInstallTests(unittest.TestCase):
@@ -39,7 +39,7 @@ class PyPIInstallTests(unittest.TestCase):
 
             self.assertTrue(target.is_dir())
             self.assertFalse(target.is_symlink())
-            self.assertIn("version: 0.2.0", (target / "plugin.yaml").read_text(encoding="utf-8"))
+            self.assertIn("version: 0.2.1", (target / "plugin.yaml").read_text(encoding="utf-8"))
 
     def test_windows_hermes_paths_follow_official_native_layout(self) -> None:
         with tempfile.TemporaryDirectory(prefix="memleaf-win-paths-") as temporary:
@@ -82,6 +82,15 @@ class PyPIInstallTests(unittest.TestCase):
             self.assertTrue(detection.detected)
             self.assertEqual("high", detection.confidence)
             self.assertEqual(str(launcher.resolve()), detection.executable)
+
+    def test_installer_host_cli_output_is_decoded_as_utf8(self) -> None:
+        completed = SimpleNamespace(returncode=0, stdout="中文", stderr="")
+        with mock.patch("memleaf.installer.subprocess.run", return_value=completed) as run:
+            result = _run(["hermes", "memory", "status"])
+        self.assertIs(result, completed)
+        self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run.call_args.kwargs["errors"], "strict")
+        self.assertTrue(run.call_args.kwargs["text"])
 
     def test_provider_config_uses_absolute_vault_on_all_platforms(self) -> None:
         with tempfile.TemporaryDirectory(prefix="memleaf-provider-config-") as temporary:

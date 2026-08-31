@@ -197,54 +197,39 @@ class ModelDiscoveryTests(unittest.TestCase):
             router = ModelRouter.from_config(load_config(path, vault=root))
             self.assertIsNone(router.api)
 
-    def test_codex_responses_route_is_skipped_and_chat_route_is_callable(self):
-        with tempfile.TemporaryDirectory() as temporary:
+    def test_codex_model_discovery_is_fail_closed_and_does_not_read_config(self):
+        with tempfile.TemporaryDirectory(prefix="memleaf-codex-model-disabled-") as temporary:
             home = Path(temporary)
-            config = home / ".codex" / "config.toml"
-            config.parent.mkdir()
-            config.write_text(
-                'model = "codex-mini"\n'
-                'model_provider = "chat"\n'
-                '[model_providers.responses]\n'
-                'base_url = "https://responses.example.test"\n'
-                'wire_api = "responses"\n'
-                'model = "codex-mini"\n'
-                'experimental_bearer_token = "responses-secret"\n'
-                '[model_providers.chat]\n'
-                'base_url = "https://chat.example.test/v1"\n'
-                'wire_api = "chat_completions"\n'
-                'model = "codex-mini"\n'
-                'env_key = "CODEX_CHAT_KEY"\n',
-                encoding="utf-8",
-            )
-            candidates, diagnostics = discover_codex(home=home, env={"CODEX_CHAT_KEY": "chat-secret"})
-            self.assertEqual(len(candidates), 1)
-            self.assertEqual(candidates[0].model, "codex-mini")
-            self.assertTrue(any("responses" in item for item in diagnostics))
-            self.assertNotIn("chat-secret", " ".join(diagnostics))
-            self.assertNotIn("responses-secret", " ".join(diagnostics))
-
-    def test_codex_home_is_respected(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            home = Path(temporary)
-            codex_home = home / "custom-codex"
+            codex_home = home / ".codex"
             codex_home.mkdir()
-            (codex_home / "config.toml").write_text(
-                'model = "custom-mini"\n'
-                'model_provider = "custom"\n'
-                '[model_providers.custom]\n'
-                'base_url = "https://chat.example.test/v1"\n'
-                'wire_api = "chat_completions"\n'
-                'model = "custom-mini"\n'
-                'experimental_bearer_token = "custom-secret"\n',
+            config = codex_home / "config.toml"
+            config.write_text(
+                'model = "sensitive-model"\nmodel_provider = "private"\n',
                 encoding="utf-8",
             )
-            candidates, diagnostics = discover_codex(
-                home=home,
-                env={"CODEX_HOME": str(codex_home)},
+            with patch.object(Path, "read_text", side_effect=AssertionError("must not read Codex config")):
+                candidates, diagnostics = discover_codex(
+                    home=home,
+                    env={"CODEX_HOME": str(codex_home), "PRIVATE_KEY": "SECRET"},
+                )
+        self.assertEqual([], candidates)
+        self.assertTrue(any("disabled" in item for item in diagnostics))
+        self.assertNotIn("SECRET", repr(diagnostics))
+
+    def test_include_codex_flag_is_compatibility_noop(self):
+        with patch(
+            "memleaf.model_discovery.discover_codex",
+            return_value=([], ["codex: model discovery is disabled"]),
+        ) as codex:
+            result = discover_models(
+                home=Path("/tmp/isolated-home"),
+                env={},
+                include_hermes=False,
+                include_codex=True,
             )
-            self.assertEqual([item.model for item in candidates], ["custom-mini"])
-            self.assertNotIn("custom-secret", " ".join(diagnostics))
+        codex.assert_called_once()
+        self.assertIsNone(result.selected)
+        self.assertTrue(any("disabled" in item for item in result.diagnostics))
 
     def test_direct_key_is_written_with_restricted_permissions_and_router_uses_it(self):
         with tempfile.TemporaryDirectory() as temporary:

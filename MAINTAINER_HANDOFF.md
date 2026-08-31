@@ -1,6 +1,6 @@
 # Maintainer Handoff
 
-Current release: **0.2.0**
+Current release: **0.2.1**
 License: **MIT**
 
 This file is for maintainers and is intentionally not linked from the user-facing README.

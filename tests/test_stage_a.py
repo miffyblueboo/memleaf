@@ -3,6 +3,7 @@ import hashlib
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -279,6 +280,59 @@ class StageATest(unittest.TestCase):
         self.assertIsNone(self.service.read("m-two-versions", include_history=True))
         self.assertFalse((self.vault_path / "knowledge" / "m-two-versions.md").exists())
         self.assertFalse((self.vault_path / "history" / "m-two-versions.md").exists())
+
+    def test_forget_partial_failure_keeps_active_retry_anchor_and_rebuilds_index(self):
+        active = self.service.create_memory(
+            memory_id="m-retry-anchor",
+            title="Retry anchor",
+            body="current",
+            tags=["retry-delete"],
+        )
+        first_history = self.service.create_memory(
+            memory_id="hist-retry-a",
+            title="Old A",
+            body="old-a",
+            tags=["retry-delete"],
+            area="history",
+            active_memory_id=active.memory_id,
+        )
+        second_history = self.service.create_memory(
+            memory_id="hist-retry-b",
+            title="Old B",
+            body="old-b",
+            tags=["retry-delete"],
+            area="history",
+            active_memory_id=active.memory_id,
+        )
+        active_path = self.vault_path / "knowledge" / f"{active.memory_id}.md"
+        first_path = self.vault_path / "history" / f"{first_history.memory_id}.md"
+        second_path = self.vault_path / "history" / f"{second_history.memory_id}.md"
+        original_unlink = Path.unlink
+        attempted: list[str] = []
+
+        def flaky_unlink(path, *args, **kwargs):
+            attempted.append(path.name)
+            if path == second_path:
+                raise PermissionError("simulated history delete failure")
+            return original_unlink(path, *args, **kwargs)
+
+        with mock.patch.object(
+            self.service,
+            "_rebuild_index_unlocked",
+            wraps=self.service._rebuild_index_unlocked,
+        ) as rebuild, mock.patch.object(Path, "unlink", new=flaky_unlink):
+            with self.assertRaises(PermissionError):
+                self.service.forget_memory(active.memory_id)
+            self.assertGreaterEqual(rebuild.call_count, 1)
+
+        self.assertFalse(first_path.exists())
+        self.assertTrue(second_path.exists())
+        self.assertTrue(active_path.exists())
+        self.assertNotIn(active_path.name, attempted)
+
+        self.assertTrue(self.service.forget_memory(active.memory_id))
+        self.assertFalse(second_path.exists())
+        self.assertFalse(active_path.exists())
 
     def test_sensitive_event_id_uses_stable_digest_after_rebuild(self):
         raw_event_id = "session/password=top-secret-token"

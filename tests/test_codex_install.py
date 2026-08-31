@@ -7,6 +7,7 @@ import stat
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from memleaf.adapters.base import CommandResult, host_event_command, mcp_command, merge_hook_config
 from memleaf.adapters.codex import CodexAdapter, _codex_hook_definition, _entry_matches
@@ -304,6 +305,25 @@ class CodexInstallTests(unittest.TestCase):
         )
         self.assertEqual(hermes_vault.resolve(), selected)
         self.assertEqual("hermes_config+codex_config", source)
+
+        alias = self.root / "same-physical-alias"
+        with mock.patch(
+            "memleaf.installer._existing_hermes_vault",
+            return_value=hermes_vault.resolve(),
+        ), mock.patch(
+            "memleaf.installer._vault_paths_equivalent",
+            return_value=True,
+        ) as equivalent:
+            selected, source = _select_codex_vault_path(
+                home=self.home,
+                hermes_home=hermes_home,
+                adapter=ExistingVaultAdapter(alias),
+                detection=object(),
+                env={},
+            )
+        self.assertEqual(hermes_vault.resolve(), selected)
+        self.assertEqual("hermes_config+codex_config", source)
+        equivalent.assert_called_once()
 
         with self.assertRaisesRegex(RuntimeError, "vault_conflict"):
             _select_codex_vault_path(

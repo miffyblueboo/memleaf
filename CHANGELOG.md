@@ -2,6 +2,17 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.1 — 2026-08-31
+
+- Fixed the finalized `search → read` contract in both supported hosts: Codex `PostToolUse` and Hermes diagnostics now accept only `memory_id + title` search candidates, so a real `found` result no longer degrades to an error before `read`.
+- Enforced current-turn `retrieval_id` validation at the MCP boundary for both Codex and Hermes, preventing a still-present historical token from being reused for managed search/read after a newer turn begins.
+- Made Codex model discovery fail closed. Codex remains a host only; memleaf no longer reads or reuses Codex provider/model/auth configuration even if legacy discovery APIs are called explicitly.
+- Made multi-host Vault reuse compare physical paths rather than raw path strings, reducing false conflicts from equivalent host paths on Windows/macOS while still rejecting genuinely different Vaults.
+- Hardened forget failure recovery: linked history is deleted before active knowledge, partial filesystem failures rebuild derived indexes, and the active memory remains a retry anchor until linked history deletion succeeds.
+- Standardized Hermes installer subprocess decoding on UTF-8, matching the provider/Codex host boundaries and preventing non-ASCII CLI output from being corrupted by a Windows default code page.
+- Removed dead Codex-discovery helpers after the host/model boundary was made fail closed.
+- Re-ran the full Linux 3.11/3.12/3.13, Windows 3.11/3.12/3.13, macOS 3.11/3.13, native Codex Windows/macOS, package-build, wheel-install, and sdist-test release gates.
+
 ## 0.2.0 — 2026-08-31
 
 - Hardened the supported Codex integration against the official Codex CLI 0.151.0 on Windows and macOS, including `CODEX_HOME`, npm `codex.cmd` discovery, UTF-8 CLI output, idempotent `mcp add/get`, and quote-free Windows lifecycle commands carried through a UTF-16LE PowerShell `EncodedCommand` payload.

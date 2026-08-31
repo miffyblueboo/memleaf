@@ -284,6 +284,43 @@ class V2MCPFlowTest(unittest.TestCase):
         )
         self.assertEqual(ledger["entries"][retrieval_id]["seen_call_hashes"], [])
 
+    def test_old_codex_token_is_rejected_for_search_and_read(self):
+        memory = self.service.create_memory(
+            memory_id="old-codex-memory",
+            title="Old Codex",
+            body="OLD_CODEX_BODY",
+        )
+        old_id = begin_turn(self.service.vault, "codex", "same-codex-session", "turn-1")
+        observe_search(self.service.vault, old_id, "found", "old-codex-search")
+        current_id = begin_turn(
+            self.service.vault, "codex", "same-codex-session", "turn-2"
+        )
+        self.assertNotEqual(old_id, current_id)
+
+        stale_search = self.call(
+            "search",
+            query="Old Codex",
+            retrieval_id=old_id,
+        )
+        self.assertTrue(stale_search["isError"], stale_search)
+        self.assertEqual(
+            stale_search["structuredContent"]["error"]["code"],
+            "retrieval_turn_mismatch",
+        )
+
+        stale_read = self.call(
+            "read",
+            memory_id=memory.memory_id,
+            retrieval_id=old_id,
+        )
+        self.assertTrue(stale_read["isError"], stale_read)
+        self.assertEqual(
+            stale_read["structuredContent"]["error"]["code"],
+            "retrieval_turn_mismatch",
+        )
+        self.assertEqual(validate_turn(self.service.vault, old_id)["read_count"], 0)
+        self.assertEqual(self.service.read(memory.memory_id).hit_count, 0)
+
     def test_hermes_search_observation_failure_cannot_return_success(self):
         retrieval_id = begin_turn(self.service.vault, "hermes", "session", "turn")
         with patch(

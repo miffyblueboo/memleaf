@@ -388,8 +388,9 @@ def validate_current_turn(
 ) -> dict[str, Any]:
     """Validate a token belongs to the newest live turn for its host session.
 
-    This is used only for Hermes' managed MCP path.  Ordinary ``validate_turn``
-    remains available for Codex Stop continuation and historical inspection.
+    MCP uses this for every host token before search/read.  Ordinary
+    ``validate_turn`` remains available for Stop continuation and historical
+    inspection where "current turn" is not the question.
     """
 
     retrieval_id = _retrieval_id(retrieval_id)

@@ -404,13 +404,11 @@ def _hermes_search_status(value: Any) -> str:
         return "error"
     valid_results = all(
         isinstance(item, Mapping)
+        and set(item) == {"memory_id", "title"}
         and isinstance(item.get("memory_id"), str)
         and bool(item.get("memory_id"))
         and isinstance(item.get("title"), str)
         and bool(item.get("title"))
-        and isinstance(item.get("scopes"), list)
-        and bool(item.get("scopes"))
-        and all(isinstance(scope, str) and bool(scope) for scope in item["scopes"])
         for item in results
     )
     if not valid_results:

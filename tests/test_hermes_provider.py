@@ -510,7 +510,7 @@ class HermesProviderTests(unittest.TestCase):
                     {
                         "status": "found",
                         "results": [
-                            {"memory_id": "mem-alpha", "title": "Alpha", "scopes": ["project:alpha"]}
+                            {"memory_id": "mem-alpha", "title": "Alpha"}
                         ],
                     }
                 ),
@@ -1201,11 +1201,17 @@ class HermesProviderTests(unittest.TestCase):
         )
 
     def test_search_status_rejects_malformed_v2_envelopes(self) -> None:
-        valid = {"memory_id": "mem-1", "title": "Memory", "scopes": ["global"]}
+        valid = {"memory_id": "mem-1", "title": "Memory"}
         cases = [
             ({"status": "found", "results": []}, "error"),
             ({"status": "no_match", "results": [valid]}, "error"),
-            ({"status": "found", "results": [dict(valid, scopes=[])]}, "error"),
+            (
+                {
+                    "status": "found",
+                    "results": [dict(valid, scopes=["global"])],
+                },
+                "error",
+            ),
             ({"status": "found", "results": [valid], "error": {"code": "failed"}}, "error"),
             ({"status": "found", "results": [valid]}, "found"),
             ({"status": "no_match", "results": []}, "no_match"),
