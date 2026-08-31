@@ -446,6 +446,11 @@ def _subprocess_runner(
         "check": False,
         "capture_output": True,
         "text": True,
+        # Codex and the supported host CLIs emit UTF-8.  Relying on the
+        # Windows process default code page corrupts non-ASCII JSON paths
+        # before adapters can validate them.
+        "encoding": "utf-8",
+        "errors": "strict",
         "env": dict(env),
     }
     if input_text is not None:
