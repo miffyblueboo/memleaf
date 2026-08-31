@@ -4,8 +4,8 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **当前版本：0.1.8。**
-> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.1.8 通过 PyPI 分发。
+> **当前版本：0.2.0。**
+> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.2.0 通过 PyPI 分发。
 > **当前版本支持 Hermes 和 Codex。** Antigravity（反重力）不检测、不安装、不配置。
 
 ## 项目定位
@@ -46,7 +46,7 @@ memleaf 不会把整个 Vault 或整段历史对话自动塞进模型上下文�
 
 1. Agent 使用当前完整会话和 Scope Map 选择检索范围与查询词；
 2. 至少调用一次 `search`；
-3. `search` 只返回候选的 `memory_id`、标题和 Scope，不直接返回正文；
+3. `search` 候选默认只返回 `memory_id` 和标题；Scope 已由 Scope Map 与本次搜索参数确定，不随每条候选重复返回，也不直接返回正文；
 4. 只有需要引用事实时，才使用同一轮返回的 `retrieval_id` 调用 `read`；
 5. 根据读取到的关键记忆回答，不把所有候选全部读完。
 
@@ -152,6 +152,14 @@ python -m pip install -U memleaf && python -m memleaf install --host codex
 该命令会复用已有 Hermes/Codex memleaf 配置中的唯一 Vault，或创建默认的 `~/.memleaf`；通过 Codex CLI 注册 memleaf MCP，并安全合并生命周期 Hook。它不会修改 Codex 的模型配置，也不会在两个宿主已指向不同 Vault 时擅自选边。
 
 安装后打开 Codex，运行 `/hooks`，审核并信任 memleaf Hook。完成授权前，MCP 可用不等于自动捕获、检索门控和提炼已经激活；安装结果会明确显示 `pending_user_review`，不会把待审核状态报告为已启用。
+
+Codex 只作为宿主，不作为 memleaf 的提炼模型来源。已有的独立 memleaf Model Route 会继续复用；如果当前 Vault 还没有完整 Model Route，Codex 安装仍可完成 MCP/Hook 配置，但结果会明确返回 `processing_status=model_route_required`，在配置模型前不能把“自动记忆提炼”视为已就绪。memleaf 不读取、不复制也不修改 Codex 的 `model`、`model_provider`、`base_url` 或认证信息，也不会为了提炼偷偷消耗 Codex 会话额度。Codex-only 用户可针对同一个 Vault 运行：
+
+```bash
+python -m memleaf init --no-hermes --vault /path/to/the/same/vault
+```
+
+完成独立 Model Route 配置后，再使用 Codex 自动提炼。DeepSeek、OpenRouter 或其他自定义 Codex provider 因此保持原样。
 
 Antigravity（反重力）当前不支持，安装流程不会检测、安装或修改其配置。
 

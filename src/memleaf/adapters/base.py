@@ -7,6 +7,7 @@ contents and possible secrets cannot accidentally end up in ``agents.json``.
 
 from __future__ import annotations
 
+import base64
 import datetime as _datetime
 import hashlib
 import inspect
@@ -355,8 +356,26 @@ def host_event_command(
         absolute_vault(vault),
     )
     if (os.name if platform is None else platform) == "nt":
-        return subprocess.list2cmdline(args)
+        # Codex currently wraps commandWindows in an outer cmd.exe /C quoted
+        # string. Embedded quotes can break that wrapper. Put the real argv in
+        # a UTF-16LE PowerShell EncodedCommand payload instead: commandWindows
+        # itself stays quote-free while paths with spaces/Unicode remain exact.
+        script = "& " + " ".join(_powershell_single_quoted(argument) for argument in args)
+        script += "; exit $LASTEXITCODE"
+        payload = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+        return (
+            "powershell.exe -NoLogo -NoProfile -NonInteractive "
+            "-ExecutionPolicy Bypass -EncodedCommand " + payload
+        )
     return " ".join(shlex.quote(argument) for argument in args)
+
+
+def _powershell_single_quoted(value: str) -> str:
+    """Return one literal PowerShell string for an encoded Windows hook."""
+
+    if not isinstance(value, str) or not value or any(char in value for char in "\r\n\x00"):
+        raise ValueError("invalid Windows command argument")
+    return "'" + value.replace("'", "''") + "'"
 
 
 def run_argv(
@@ -427,6 +446,11 @@ def _subprocess_runner(
         "check": False,
         "capture_output": True,
         "text": True,
+        # Codex and the supported host CLIs emit UTF-8.  Relying on the
+        # Windows process default code page corrupts non-ASCII JSON paths
+        # before adapters can validate them.
+        "encoding": "utf-8",
+        "errors": "strict",
         "env": dict(env),
     }
     if input_text is not None:

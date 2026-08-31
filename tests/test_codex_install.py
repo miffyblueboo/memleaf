@@ -4,11 +4,12 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import tempfile
 import unittest
 
 from memleaf.adapters.base import CommandResult, host_event_command, mcp_command, merge_hook_config
-from memleaf.adapters.codex import CodexAdapter, _codex_hook_definition
+from memleaf.adapters.codex import CodexAdapter, _codex_hook_definition, _entry_matches
 from memleaf.installer import _select_codex_vault_path
 
 
@@ -89,6 +90,17 @@ class CodexInstallTests(unittest.TestCase):
         self.assertFalse(invalid.detected)
         self.assertEqual("diagnostic", invalid.status)
 
+    def test_windows_path_detection_accepts_official_npm_command_launcher(self):
+        npm_bin = self.root / "npm-bin"
+        launcher = self._executable(npm_bin / "codex.cmd")
+        adapter = CodexAdapter(
+            home=self.home,
+            env={"HOME": str(self.home), "PATH": str(npm_bin)},
+            known_paths=(),
+            platform="nt",
+        )
+        self.assertEqual(str(launcher.resolve()), adapter.detect().executable)
+
     def test_windows_known_runtime_and_hook_command_support_spaces_and_unicode(self):
         local = self.root / "Local App Data"
         runtime = self._executable(local / "Programs" / "Codex" / "codex.exe")
@@ -106,9 +118,55 @@ class CodexInstallTests(unittest.TestCase):
             interpreter=self.interpreter,
             platform="nt",
         )
-        self.assertIn('"', command)
-        self.assertIn("项目 Vault", command)
-        self.assertIn("Python Runtime", command)
+        self.assertNotIn('"', command)
+        self.assertIn("powershell.exe", command)
+        self.assertIn("-EncodedCommand", command)
+        self.assertNotIn("项目 Vault", command)
+        self.assertNotIn("Python Runtime", command)
+
+    def test_custom_codex_home_keeps_config_and_hooks_together(self):
+        codex_home = self.root / "自定义 Codex Home"
+        codex_home.mkdir()
+        adapter = CodexAdapter(
+            home=self.home,
+            env=self.env(CODEX_HOME=str(codex_home)),
+            runner=CodexRunner(self.vault, self.interpreter),
+            interpreter=self.interpreter,
+        )
+        detection = adapter.detect()
+        self.assertTrue(os.path.samefile(Path(detection.config_path).parent, codex_home))
+        result = adapter.configure(detection, self.vault)
+        self.assertEqual("configured", result.status)
+        self.assertTrue((codex_home / "hooks.json").is_file())
+        self.assertFalse((self.home / ".codex" / "hooks.json").exists())
+
+    @unittest.skipUnless(os.name == "nt", "requires native cmd.exe parsing")
+    def test_windows_quote_free_hook_command_executes_with_space_and_unicode_paths(self):
+        probe = self.root / "Python Runtime" / "python-probe.cmd"
+        probe.parent.mkdir(parents=True, exist_ok=True)
+        probe.write_text(
+            "@echo off\r\n"
+            "echo %~7\r\n",
+            encoding="utf-8",
+        )
+        command = host_event_command(
+            "codex",
+            "Stop",
+            self.vault,
+            interpreter=probe,
+            platform="nt",
+        )
+        self.assertNotIn('"', command)
+        completed = subprocess.run(
+            ["cmd.exe", "/D", "/S", "/C", command],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="strict",
+            check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(str(self.vault.resolve()), completed.stdout.strip())
 
     def test_hook_definition_has_compact_restore_and_platform_commands(self):
         hooks = _codex_hook_definition(self.vault, interpreter=self.interpreter)
@@ -185,6 +243,30 @@ class CodexInstallTests(unittest.TestCase):
         self.assertEqual(2, len(document["hooks"]["Stop"]))
         add_call = next(call for call in runner.calls if "add" in call)
         self.assertEqual(mcp_command(self.vault, interpreter=self.interpreter), add_call[5:])
+
+    def test_existing_entry_allows_equivalent_interpreter_and_vault_paths_only(self):
+        entry = {
+            "name": "memleaf",
+            "transport": {
+                "type": "stdio",
+                "command": str(self.interpreter.parent / "." / self.interpreter.name),
+                "args": [
+                    "-m",
+                    "memleaf.mcp_server",
+                    "--vault",
+                    str(self.vault.parent / "." / self.vault.name),
+                ],
+            },
+        }
+        self.assertTrue(_entry_matches(entry, self.vault, interpreter=self.interpreter))
+
+        wrong_module = json.loads(json.dumps(entry))
+        wrong_module["transport"]["args"][1] = "other.server"
+        self.assertFalse(_entry_matches(wrong_module, self.vault, interpreter=self.interpreter))
+
+        wrong_vault = json.loads(json.dumps(entry))
+        wrong_vault["transport"]["args"][3] = str(self.root / "other-vault")
+        self.assertFalse(_entry_matches(wrong_vault, self.vault, interpreter=self.interpreter))
 
     def test_inline_hooks_are_diagnostic_and_unchanged(self):
         codex_home = self.home / ".codex"

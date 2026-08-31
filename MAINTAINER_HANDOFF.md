@@ -1,6 +1,6 @@
 # Maintainer Handoff
 
-Current release: **0.1.8**
+Current release: **0.2.0**
 License: **MIT**
 
 This file is for maintainers and is intentionally not linked from the user-facing README.
@@ -31,8 +31,16 @@ memleaf Core modules merely to share code.
 
 Codex support is installed explicitly with `memleaf install --host codex`.
 The installer registers MCP through the Codex CLI and merges lifecycle hooks
-into `~/.codex/hooks.json`; users must still review and trust those hooks in
+into `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`); users must still review and trust those hooks in
 Codex with `/hooks`. Do not report pending hooks as active.
+
+Codex host integration and the process model are deliberately decoupled.
+Automatic extraction uses an independent memleaf Model Route from the selected
+Vault. Never copy credentials from Codex, change `model`/`model_provider`, or
+fallback through the active Codex session. If no route exists, installation may
+configure MCP/hooks but must report `processing_status=model_route_required`
+and require an explicit memleaf model-route setup before automatic extraction is
+considered ready. This keeps DeepSeek and other custom Codex providers untouched.
 
 `tests/test_host_runtime_contract.py` is the host-neutral regression contract.
 A future host should satisfy that contract without adding another copy of the

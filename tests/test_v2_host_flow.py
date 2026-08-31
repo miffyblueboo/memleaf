@@ -111,8 +111,8 @@ class V2HostFlowTest(unittest.TestCase):
         for tool in ("search", "read"):
             before = self.event("PreToolUse", tool_name=f"mcp__memleaf__{tool}",
                                 tool_input={"retrieval_id": "model-supplied-token"})["hookSpecificOutput"]
+            self.assertEqual(before["permissionDecision"], "allow")
             self.assertEqual(before["updatedInput"]["retrieval_id"], retrieval_id)
-            self.assertNotIn("permissionDecision", before)
         self.assertEqual({}, self.event("PreToolUse", tool_name="mcp__other__search", tool_input={}))
         ledger_path = self.service.vault.index_path / "retrieval_gate.json"
         ledger = json.loads(ledger_path.read_text())

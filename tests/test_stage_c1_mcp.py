@@ -104,7 +104,7 @@ class StageC1MCPTest(unittest.TestCase):
         testcase.assertEqual(result["resultType"], "complete")
         testcase.assertEqual(
             result["_meta"]["io.modelcontextprotocol/serverInfo"],
-            {"name": "memleaf", "version": "0.1.8"},
+            {"name": "memleaf", "version": "0.2.0"},
         )
         return result
 
@@ -495,7 +495,10 @@ class StageC1MCPTest(unittest.TestCase):
             if tool == "search":
                 self.assertEqual(payload["status"], "found")
             self.assertEqual(len(entries), 1)
-            self.assertEqual(set(entries[0]), {"memory_id", "title", "scopes"})
+            self.assertEqual(
+                set(entries[0]),
+                {"memory_id", "title"} if tool == "search" else {"memory_id", "title", "scopes"},
+            )
             self.assertNotIn("PRIVATE_", json.dumps(response))
         self.assertEqual(service.read(memory.memory_id).to_dict(), original)
         # The Python API keeps its explicit full-result compatibility; the MCP

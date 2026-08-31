@@ -88,7 +88,7 @@ class RetrievalV2Test(unittest.TestCase):
         self.assertEqual("found", page["status"])
         self.assertEqual(10, len(page["results"]))
         self.assertTrue(page["has_more"])
-        self.assertTrue(all(set(item) == {"memory_id", "title", "scopes"} for item in page["results"]))
+        self.assertTrue(all(set(item) == {"memory_id", "title"} for item in page["results"]))
         first_ids = [item["memory_id"] for item in page["results"]]
         self.assertNotIn("private body", json.dumps(page))
         self.assertLessEqual(len(json.dumps(page, ensure_ascii=False, separators=(",", ":"))), 4000)
@@ -194,7 +194,8 @@ class RetrievalV2Test(unittest.TestCase):
         catalog = self.service.scope_catalog()
         self.assertIn(long_scope, {item["scope"] for item in catalog["scopes"]})
         result = self.service.search_candidates("long-scope-query")
-        self.assertEqual([long_scope], result["results"][0]["scopes"])
+        self.assertEqual({"memory_id", "title"}, set(result["results"][0]))
+        self.assertNotIn("scopes", result["results"][0])
         self.assertLessEqual(len(json.dumps(result, ensure_ascii=False, separators=(",", ":"))), 4000)
 
 

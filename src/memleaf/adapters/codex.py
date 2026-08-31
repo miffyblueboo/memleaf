@@ -68,6 +68,12 @@ class CodexAdapter:
         self.env = adapter_environment(env)
         effective_home = home if home is not None else self.env.get("HOME")
         self.home = adapter_home(effective_home)
+        codex_home_value = self.env.get("CODEX_HOME")
+        self.codex_home = (
+            Path(codex_home_value).expanduser().resolve()
+            if isinstance(codex_home_value, str) and codex_home_value.strip()
+            else self.home / ".codex"
+        )
         self.platform = os.name if platform is None else platform
         self.interpreter = interpreter if interpreter is not None else sys.executable
         if known_paths is None:
@@ -101,11 +107,11 @@ class CodexAdapter:
 
     @property
     def config_path(self) -> Path:
-        return self.home / ".codex" / "config.toml"
+        return self.codex_home / "config.toml"
 
     @property
     def hooks_path(self) -> Path:
-        return self.home / ".codex" / "hooks.json"
+        return self.codex_home / "hooks.json"
 
     def detect(self) -> Detection:
         config = self.config_path
@@ -124,11 +130,20 @@ class CodexAdapter:
                     status="diagnostic",
                 )
         if executable is None:
-            executable = resolve_executable(
-                "codex.exe" if self.platform == "nt" else "codex",
-                env=self.env,
-                known_paths=self.known_paths,
-            )
+            # Native Windows installs commonly expose codex.exe, while the
+            # official npm package exposes codex.cmd on PATH.  Accept both
+            # before falling back to documented bundled/runtime locations.
+            path_names = ("codex.exe", "codex.cmd", "codex") if self.platform == "nt" else ("codex",)
+            for name in path_names:
+                executable = resolve_executable(name, env=self.env)
+                if executable is not None:
+                    break
+            if executable is None:
+                executable = resolve_executable(
+                    "codex.exe" if self.platform == "nt" else "codex",
+                    env={**self.env, "PATH": ""},
+                    known_paths=self.known_paths,
+                )
         config_value = str(config)
         if executable is not None:
             return Detection(
@@ -584,6 +599,22 @@ def _entry_vault(entry: Mapping[str, Any]) -> Path | None:
     return Path(raw_vault).expanduser().resolve()
 
 
+def _path_equivalent(left: str, right: str) -> bool:
+    """Compare host paths without weakening the expected command structure."""
+
+    try:
+        if Path(left).exists() and Path(right).exists():
+            return os.path.samefile(left, right)
+    except OSError:
+        pass
+    try:
+        left_value = os.path.normcase(str(Path(left).expanduser().resolve()))
+        right_value = os.path.normcase(str(Path(right).expanduser().resolve()))
+    except (OSError, RuntimeError):
+        return False
+    return left_value == right_value
+
+
 def _entry_matches(
     entry: Mapping[str, Any],
     vault: Path | str,
@@ -593,8 +624,17 @@ def _entry_matches(
     candidate = _entry_candidate(entry)
     if candidate is None:
         return False
+    command = candidate.get("command")
+    args = candidate.get("args")
+    if not isinstance(command, str) or not isinstance(args, list) or len(args) != 4:
+        return False
+    if args[:3] != ["-m", "memleaf.mcp_server", "--vault"]:
+        return False
+    raw_vault = args[3]
+    if not isinstance(raw_vault, str) or not raw_vault:
+        return False
     expected = mcp_command(vault, interpreter=interpreter)
-    return candidate.get("command") == expected[0] and candidate.get("args") == expected[1:]
+    return _path_equivalent(command, expected[0]) and _path_equivalent(raw_vault, expected[4])
 
 
 def _inline_hooks_diagnostic(path: Path) -> str | None:

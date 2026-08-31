@@ -830,13 +830,13 @@ class Memleaf:
 
     @staticmethod
     def _candidate_directory(record: _Record) -> dict[str, Any]:
-        # Keep the exact memory id and scope IDs usable by the next search;
-        # only the human-facing title is shortened for a directory response.
+        # The finalized retrieval contract deliberately keeps candidate
+        # entries to memory_id + title. Scope selection already happened
+        # before search via the bounded Scope Map and search input.
         display = directory_entry(record.memory)
         return {
             "memory_id": record.memory.memory_id,
             "title": display.title,
-            "scopes": list(record.memory.scopes),
         }
 
     @staticmethod

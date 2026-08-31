@@ -442,15 +442,26 @@ def install_codex(*, vault_path: Path | None = None) -> dict[str, Any]:
             "model": model,
             "codex": configured.to_dict(),
         }
+    model_ready = model.get("status") in {"configured", "already_configured"}
+    actions: list[str] = []
+    if configured.user_action_required and configured.user_action:
+        actions.append(configured.user_action)
+    if not model_ready:
+        actions.append(
+            "Configure an independent memleaf Model Route for this Vault before "
+            "relying on automatic memory extraction. Codex model/provider settings "
+            "are intentionally not used or modified."
+        )
     return {
         "status": configured.status,
         "reason": configured.reason,
         "vault": str(vault.root),
         "vault_source": vault_source,
         "model": model,
+        "processing_status": "ready" if model_ready else "model_route_required",
         "codex": configured.to_dict(),
-        "user_action_required": configured.user_action_required,
-        "user_action": configured.user_action,
+        "user_action_required": bool(actions),
+        "user_action": " ".join(actions) if actions else None,
     }
 
 

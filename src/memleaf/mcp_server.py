@@ -53,7 +53,7 @@ INSTRUCTIONS = (
     "user turn, including greetings, call memleaf search at least once before answering. Use your "
     "complete conversation context to select scope and query; do not add a needs-memory gate. "
     "Fetch further scope_catalog pages when the map has_more; never assume an omitted scope is absent. "
-    "Search returns status=found or no_match and lightweight results (memory_id, title, scopes), "
+    "Search returns status=found or no_match and lightweight results (memory_id, title), "
     "not bodies. Errors are not no_match: correct scope_mismatch or retry a failed search at most "
     "twice, then honestly report degraded retrieval; do not claim memory was checked successfully. "
     "Treat directory entries as leads, never as verified facts; do not infer facts from a title. "
@@ -68,7 +68,7 @@ INSTRUCTIONS = (
     "scope/search/read flow. Managed MCP search is directory-only and rejects view=full; "
     "Python full-result search remains compatible. Without host integration, tools remain an explicit fallback only; "
     "do not claim automatic recall, recording or final-answer enforcement succeeded. "
-    "Hermes is the only supported host in v0.1 and uses a Soft Gate, not a hard guarantee. "
+    "Hermes and Codex are supported hosts; Hermes uses a Soft Gate, not a hard guarantee. "
     "When explicitly calling legacy context, pass source and session_id together and avoid "
     "duplicating native memory that the target host already loads. "
     "Capture only user-visible and assistant-visible text. Never capture system or developer "
@@ -183,7 +183,7 @@ _TOOLS: tuple[dict[str, Any], ...] = (
         "name": "search",
         "description": (
             "Search once per ordinary user turn. Return found/no_match and paged lightweight "
-            "results (memory_id, title, scopes), at most 20/4000 characters, without changing hits. "
+            "results (memory_id, title), at most 20/4000 characters, without changing hits. "
             "retrieval_id is required and must be the host-provided current-turn token. Errors are "
             "failures, never no_match. Managed MCP search is directory-only; view=full is rejected. "
             "Python search(view='full') remains the compatibility interface."
@@ -475,16 +475,18 @@ def _search_result(value: Any) -> dict[str, Any]:
     entries = value.get("results")
     if not isinstance(entries, list):
         raise ValueError("invalid search results")
+    results: list[dict[str, str]] = []
     for entry in entries:
         if not isinstance(entry, Mapping):
             raise ValueError("invalid search entry")
-        if any(not isinstance(entry.get(name), str) or not entry[name] for name in ("memory_id", "title")):
+        memory_id = entry.get("memory_id")
+        title = entry.get("title")
+        if not isinstance(memory_id, str) or not memory_id or not isinstance(title, str) or not title:
             raise ValueError("invalid search identifiers")
-        scopes = entry.get("scopes")
-        if not isinstance(scopes, list) or not scopes or not all(isinstance(scope, str) and scope for scope in scopes):
-            raise ValueError("invalid search scopes")
-    results = [_directory_item(entry) for entry in entries]
-    if any(entry is None for entry in results) or bool(results) != (value["status"] == "found"):
+        # Search is intentionally narrower than the legacy directory helper:
+        # do not leak per-memory scope/tags/aliases/keywords into candidates.
+        results.append({"memory_id": memory_id, "title": title})
+    if bool(results) != (value["status"] == "found"):
         raise ValueError("inconsistent search results")
     paging = _paging_fields(value)
     if not results and paging["has_more"]:

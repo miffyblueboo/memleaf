@@ -4,8 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.1.8.**
-> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.1.8 is distributed through PyPI.
+> **Version: 0.2.0.**
+> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.2.0 is distributed through PyPI.
 > **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.
 
 ## Project scope
@@ -46,7 +46,7 @@ For a normal user message, the intended flow is:
 
 1. The Agent uses the full current conversation and the Scope Map to choose a scope and query.
 2. It calls `search` at least once.
-3. `search` returns only candidate `memory_id`, title, and Scope metadata; it does not return the body.
+3. `search` candidates return only `memory_id` and title by default. Scope is already selected through the Scope Map and the search input, so it is not repeated per candidate; bodies are never returned by search.
 4. If a business fact is needed, the Agent calls `read` with the `retrieval_id` from the same turn.
 5. The Agent answers from the selected bodies instead of reading every candidate.
 
@@ -152,6 +152,14 @@ python -m pip install -U memleaf && python -m memleaf install --host codex
 This command reuses the one Vault already configured for Hermes or Codex, or creates the default `~/.memleaf` Vault. It registers the memleaf MCP server through the Codex CLI and safely merges lifecycle hooks. It does not change Codex model settings or silently choose between conflicting host Vaults.
 
 After installation, open Codex, run `/hooks`, and review and trust the memleaf hooks. Until that approval is complete, an available MCP server does not mean that automatic capture, retrieval gating, and processing are active. The installer reports `pending_user_review` instead of claiming that unreviewed hooks are enabled.
+
+Codex is a host, not memleaf's extraction-model source. An existing independent memleaf Model Route is reused. If the selected Vault has no complete Model Route yet, Codex MCP/hooks can still be configured, but installation explicitly returns `processing_status=model_route_required`; automatic memory extraction is not ready until that route is configured. memleaf does not read, copy, or modify Codex `model`, `model_provider`, `base_url`, or credentials, and it does not silently spend Codex session quota for extraction. A Codex-only user can configure the same Vault with:
+
+```bash
+python -m memleaf init --no-hermes --vault /path/to/the/same/vault
+```
+
+After the independent Model Route is ready, Codex automatic extraction can use it. DeepSeek, OpenRouter, and other custom Codex providers therefore remain untouched.
 
 Antigravity is not currently supported; the installer does not detect, install, or modify its configuration.
 

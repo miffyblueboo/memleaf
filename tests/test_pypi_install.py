@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 import os
 import tempfile
 import unittest
@@ -8,7 +9,7 @@ from unittest import mock
 
 from memleaf import cli
 from memleaf.adapters.hermes import HermesAdapter
-from memleaf.installer import _copy_provider, _hermes_home, _write_provider_config
+from memleaf.installer import _copy_provider, _hermes_home, _write_provider_config, install_codex
 
 
 class PyPIInstallTests(unittest.TestCase):
@@ -38,7 +39,7 @@ class PyPIInstallTests(unittest.TestCase):
 
             self.assertTrue(target.is_dir())
             self.assertFalse(target.is_symlink())
-            self.assertIn("version: 0.1.8", (target / "plugin.yaml").read_text(encoding="utf-8"))
+            self.assertIn("version: 0.2.0", (target / "plugin.yaml").read_text(encoding="utf-8"))
 
     def test_windows_hermes_paths_follow_official_native_layout(self) -> None:
         with tempfile.TemporaryDirectory(prefix="memleaf-win-paths-") as temporary:
@@ -96,6 +97,51 @@ class PyPIInstallTests(unittest.TestCase):
             value = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(value["vault"], str(vault.resolve()))
             self.assertEqual(value["command"], str(command))
+
+    def test_codex_install_reports_independent_model_route_requirement(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="memleaf-codex-model-route-") as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            vault_path = root / "vault"
+            detection = SimpleNamespace(
+                detected=True,
+                confidence="high",
+                executable="codex",
+            )
+            preflight = SimpleNamespace(status="would_configure", reason="ok")
+            configured = SimpleNamespace(
+                status="configured",
+                reason="configured",
+                user_action_required=False,
+                user_action=None,
+                to_dict=lambda: {"status": "configured"},
+            )
+            adapter = mock.Mock()
+            adapter.detect.return_value = detection
+            adapter.configure.side_effect = [preflight, configured]
+            initialized = SimpleNamespace(
+                root=vault_path,
+                agents_index_path=vault_path / "index" / "agents.json",
+            )
+            model = {
+                "status": "not_configured",
+                "reason": "model discovery disabled and no complete memleaf route exists",
+                "selected": None,
+            }
+
+            with mock.patch("memleaf.installer._home_from_environment", return_value=home), \
+                 mock.patch("memleaf.installer.CodexAdapter", return_value=adapter), \
+                 mock.patch("memleaf.installer._select_codex_vault_path", return_value=(vault_path, "default")), \
+                 mock.patch("memleaf.installer.Vault.initialize", return_value=initialized), \
+                 mock.patch("memleaf.installer._prepare_model_route", return_value=model), \
+                 mock.patch("memleaf.installer.update_agents_index"):
+                result = install_codex()
+
+            self.assertEqual("configured", result["status"])
+            self.assertEqual("model_route_required", result["processing_status"])
+            self.assertTrue(result["user_action_required"])
+            self.assertIn("independent memleaf Model Route", result["user_action"])
+            self.assertIn("not used or modified", result["user_action"])
 
     def test_cli_install_is_a_first_class_command(self) -> None:
         result = {

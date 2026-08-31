@@ -61,7 +61,7 @@ class V2MCPFlowTest(unittest.TestCase):
             self.assertLessEqual(len(json.dumps(page, ensure_ascii=False, separators=(",", ":"))), 4000)
             self.assertNotIn("PRIVATE", json.dumps(page))
             for entry in page["results"]:
-                self.assertEqual(set(entry), {"memory_id", "title", "scopes"})
+                self.assertEqual(set(entry), {"memory_id", "title"})
                 self.assertNotIn(entry["memory_id"], seen)
                 seen.add(entry["memory_id"])
             if not page["has_more"]:
@@ -334,9 +334,9 @@ class V2MCPFlowTest(unittest.TestCase):
 
     def test_real_errors_and_malformed_core_results_never_become_no_match(self):
         malformed_entries = [
-            {"memory_id": "a", "title": 4, "scopes": ["global"]},
-            {"memory_id": "a", "title": "A", "scopes": "global"},
-            {"memory_id": "a", "title": "A", "scopes": []},
+            {"memory_id": "a", "title": 4},
+            {"memory_id": "", "title": "A"},
+            {"memory_id": 7, "title": "A"},
         ]
         values = [[], None, {"status": "found", "results": []}, {"status": "error", "results": []}]
         values.extend({"status": "found", "results": [entry], "has_more": False, "next_cursor": None}

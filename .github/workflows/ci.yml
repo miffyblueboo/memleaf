@@ -61,7 +61,7 @@ jobs:
         run: |
           python -m unittest tests.test_hermes_provider tests.test_hermes_stdio_transport -v
           python -m unittest tests.test_codex_install tests.test_host_events tests.test_v2_host_flow tests.test_v2_mcp_flow -v
-          python -m unittest tests.test_maintenance_v2 tests.test_retrieval_v2 tests.test_session_lineage -v
+          python -m unittest tests.test_cross_host_acceptance tests.test_maintenance_v2 tests.test_retrieval_v2 tests.test_session_lineage -v
       - name: Smoke-test installed commands and Vault
         shell: pwsh
         run: |
@@ -104,7 +104,32 @@ jobs:
         run: |
           python -m unittest tests.test_pypi_install tests.test_hermes_provider tests.test_hermes_stdio_transport -v
           python -m unittest tests.test_codex_install tests.test_host_events tests.test_v2_host_flow tests.test_v2_mcp_flow -v
-          python -m unittest tests.test_maintenance_v2 tests.test_retrieval_v2 tests.test_session_lineage -v
+          python -m unittest tests.test_cross_host_acceptance tests.test_maintenance_v2 tests.test_retrieval_v2 tests.test_session_lineage -v
+
+
+  codex-native:
+    name: codex-native-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install current supported Codex CLI
+        run: npm install -g @openai/codex@0.151.0
+      - name: Install memleaf
+        run: python -m pip install -e .
+      - name: Real Codex CLI registration acceptance
+        env:
+          MEMLEAF_REAL_CODEX_ACCEPTANCE: "1"
+        run: python -m unittest tests.test_codex_native_cli -v
 
   build:
     runs-on: ubuntu-latest
@@ -140,7 +165,7 @@ jobs:
           path: dist/
 
   release:
-    needs: [test, windows-test, macos-test, build]
+    needs: [test, windows-test, macos-test, codex-native, build]
     if: >-
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
