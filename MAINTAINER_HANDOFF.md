@@ -31,7 +31,7 @@ memleaf Core modules merely to share code.
 
 Codex support is installed explicitly with `memleaf install --host codex`.
 The installer registers MCP through the Codex CLI and merges lifecycle hooks
-into `~/.codex/hooks.json`; users must still review and trust those hooks in
+into `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`); users must still review and trust those hooks in
 Codex with `/hooks`. Do not report pending hooks as active.
 
 Codex host integration and the process model are deliberately decoupled.
