@@ -23,6 +23,10 @@ class RealCodexCliAcceptanceTests(unittest.TestCase):
             home = root / "用户 Home"
             home.mkdir()
             codex_home = home / ".codex"
+            # CODEX_HOME is an existing application state directory in normal
+            # Codex installations.  Keep the native acceptance isolated while
+            # matching that real precondition.
+            codex_home.mkdir()
             vault = root / "共享 Vault"
 
             env = os.environ.copy()
