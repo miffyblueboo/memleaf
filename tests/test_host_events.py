@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import shlex
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -100,6 +102,44 @@ class HostEventTests(unittest.TestCase):
         retrieval_id = find_turn(self.vault, "codex", session, turn)
         self.assertIsNotNone(retrieval_id)
         observe_search(self.vault, retrieval_id, "no_match", f"call-{turn}")
+
+    def test_codex_host_event_cli_roundtrips_utf8_scope_map(self) -> None:
+        service = Memleaf(self.vault.root)
+        service.create_memory(
+            memory_id="unicode-scope-memory",
+            title="中文项目",
+            body="中文正文不应直接注入。",
+            scopes=["project:中文项目"],
+            tags=["unicode"],
+        )
+        payload = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "unicode-session",
+            "turn_id": "unicode-turn",
+            "prompt": "继续中文项目。",
+            "cwd": str(self.root),
+        }
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "memleaf",
+                "host-event",
+                "codex",
+                "UserPromptSubmit",
+                "--vault",
+                str(self.vault.root),
+            ],
+            input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr.decode("utf-8", errors="replace"))
+        output = json.loads(completed.stdout.decode("utf-8"))
+        rendered = output["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("project:中文项目", rendered)
+        self.assertNotIn("中文正文不应直接注入", rendered)
 
     def test_codex_captures_injects_and_deduplicates(self) -> None:
         catalog = {"scopes": [{"scope": "project:alpha", "parent": None, "aliases": ["Alpha"],
