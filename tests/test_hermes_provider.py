@@ -1751,6 +1751,23 @@ class HermesProviderTests(unittest.TestCase):
         self.assertIsNotNone(fields)
         self.assertEqual(fields[4], "mixed_project_scopes")
 
+    def test_update_target_type_validation_detail_is_preserved(self) -> None:
+        value = {
+            "isError": True,
+            "structuredContent": {
+                "error": {
+                    "code": "model_invalid_response",
+                    "stage": "gate",
+                    "validation_reason": "schema_violation",
+                    "validation_detail": "update_target_type_mismatch",
+                    "attempt_count": 3,
+                }
+            },
+        }
+        fields = provider_module._mcp_error_fields(value)
+        self.assertIsNotNone(fields)
+        self.assertEqual(fields[4], "update_target_type_mismatch")
+
     def test_relative_time_validation_detail_is_preserved_and_logged(self) -> None:
         value = {
             "isError": True,

@@ -725,10 +725,101 @@ class StageB2ATest(unittest.TestCase):
         self.assertEqual(result["processed_turns"], 1)
         self.assertEqual(result["memories_written"], 1)
         self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "summarize", "summarize"])
-        self.assertIn("Previous output violated: invalid_type.", backend.calls[1]["prompt"])
+        self.assertIn("Previous output violated: update_target_type_mismatch.", backend.calls[1]["prompt"])
+        self.assertIn("existing active update target's type is immutable", backend.calls[1]["prompt"])
         self.assertIn("Previous output violated: invalid_type.", backend.calls[3]["prompt"])
         self.assertEqual(service.read(existing.memory_id).body, "The fact is updated.")
         self.assertEqual(len(service.vault.list_markdown("history")), 1)
+
+    def test_different_future_use_omits_update_target_and_creates_independent_memory(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="independent-future-use")
+        existing = service.create_memory(
+            memory_id="mem-existing-fact",
+            title="Existing fact",
+            body="The existing fact remains unchanged.",
+            type="fact",
+            scopes=["global"],
+        )
+        user_key, _ = self.capture_turn(
+            service,
+            turn="independent-future-use",
+            user_event="independent-future-use-user",
+            assistant_event="independent-future-use-assistant",
+            user="A separate project needs a deployment checklist.",
+            assistant="The checklist is a new future action.",
+        )
+        candidate = self.candidate(
+            "independent-project-todo",
+            [user_key],
+            memory="Prepare a deployment checklist for a separate project.",
+            type="todo",
+        )
+        candidate["scopes"] = ["project:separate"]
+        backend.responses.extend(
+            [
+                self.gate([candidate]),
+                self.summary(
+                    user_key,
+                    title="Deployment checklist",
+                    body="Prepare a deployment checklist for a separate project.",
+                    type="todo",
+                    scopes=["project:separate"],
+                    status="active",
+                ),
+            ]
+        )
+
+        result = service.process()
+
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual(service.read(existing.memory_id).body, existing.body)
+        self.assertEqual(len(service.vault.list_markdown("history")), 0)
+        active = self.knowledge(service)
+        self.assertEqual(len(active), 2)
+        independent = next(record.memory for record in active if record.memory.memory_id != existing.memory_id)
+        self.assertEqual(independent.type, "todo")
+        self.assertEqual(independent.scopes, ["project:separate"])
+
+    def test_three_gate_update_target_type_mismatches_keep_queue_and_write_nothing(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="update-target-type-failure")
+        existing = service.create_memory(
+            memory_id="mem-fact-target",
+            title="Existing fact",
+            body="The existing fact.",
+            type="fact",
+            scopes=["global"],
+        )
+        user_key, _ = self.capture_turn(
+            service,
+            turn="update-target-type-failure",
+            user_event="update-target-type-failure-user",
+            assistant_event="update-target-type-failure-assistant",
+        )
+        wrong_gate = self.candidate(
+            "wrong-target-type",
+            [user_key],
+            memory="A project update forced onto a fact target.",
+            type="project",
+            update_memory_id=existing.memory_id,
+        )
+        backend.responses.extend([self.gate([wrong_gate])] * 3)
+
+        with self.assertRaises(ModelOutputError) as raised:
+            service.process()
+
+        self.assertEqual(raised.exception.validation_detail, "update_target_type_mismatch")
+        self.assertEqual(raised.exception.stage, "gate")
+        self.assertEqual(raised.exception.attempt_count, 3)
+        marker = self.processed(service)["sessions"]["codex/s"]["processing"]
+        self.assertEqual(marker["failure_stage"], "gate")
+        self.assertEqual(marker["validation_detail"], "update_target_type_mismatch")
+        self.assertEqual(marker["attempt_count"], 3)
+        self.assertEqual(self.processed(service)["sessions"]["codex/s"].get("watermark", 0), 0)
+        self.assertTrue((service.vault.inbox_path / "codex" / "s.md").is_file())
+        self.assertEqual(service.read(existing.memory_id).body, existing.body)
+        self.assertEqual(service._read_memories_unlocked("history"), [])
 
     def test_mixed_project_summary_retries_before_writing(self):
         backend = QueueBackend()
@@ -1184,6 +1275,7 @@ class StageB2ATest(unittest.TestCase):
 
         self.assertEqual(result["processed_turns"], 1)
         self.assertIn("Previous output violated: invalid_type.", backend.calls[1]["prompt"])
+        self.assertIn("whenever type is non-null", backend.calls[1]["prompt"])
         self.assertNotIn(secret, backend.calls[1]["prompt"])
 
     def test_empty_fenced_and_missing_gate_shapes_retry_once(self):

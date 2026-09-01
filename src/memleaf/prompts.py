@@ -34,6 +34,11 @@ useful. Related active memories only identify a complete duplicate or valid
 state-update target; they are not current evidence and cannot make a non-worthy
 operational/test result worthy. Their item, body, and serialized-character
 context is bounded; ellipses and omissions do not prove a fact is absent.
+An update target's existing type is immutable: when the same future use is being
+updated, candidate type must exactly equal the related active target type. If a
+fact serves a different future use, do not force it onto that target; omit
+update_memory_id and emit a separate atomic candidate, or use worth=false when
+it is already covered or only temporary.
 Within one gate response, each active memory target may appear at most once
 across all candidates, whether it is named by duplicate_memory_id or
 update_memory_id. If multiple facts share one future-use/update target, merge
@@ -238,6 +243,27 @@ RELATIVE_TIME_CORRECTION = (
     "and conflicting parenthetical date. Do not guess when no supporting timestamp "
     "exists; omit or defer the date-dependent detail. Recurring schedules such as "
     "每天、每周三, or every Wednesday are allowed. Return only the strict JSON object."
+)
+
+
+GATE_TYPE_CORRECTION = (
+    "Previous output violated: invalid_type. In gate output, whenever type is "
+    "non-null it must be exactly one of preference, fact, project, todo, event, "
+    "identity, or other. worth=true requires a non-null legal type; worth=false "
+    "may use null or any of those legal types (for example, a duplicate candidate "
+    "may retain its type). Do not invent enum values such as requirement, "
+    "decision, or task. Return only the strict gate JSON object."
+)
+
+
+UPDATE_TARGET_TYPE_CORRECTION = (
+    "Previous output violated: update_target_type_mismatch. An existing active "
+    "update target's type is immutable. For the same future-use topic, set the "
+    "candidate type exactly equal to the supplied related target type. For a "
+    "different future use, remove update_memory_id and emit a separate atomic "
+    "candidate, or set worth=false if it is already covered or only temporary. "
+    "Use only a supplied related active ID; never guess, use native/history IDs, "
+    "or force a cross-purpose update. Return only the strict gate JSON object."
 )
 
 

@@ -53,6 +53,7 @@ MODEL_VALIDATION_DETAILS = frozenset(
         "duplicate_candidate_id",
         "duplicate_update_target",
         "mixed_project_scopes",
+        "update_target_type_mismatch",
         "invalid_evidence",
         "invalid_flags",
         "invalid_type",
@@ -540,7 +541,7 @@ def validate_gate_output(
             if target_type is not None and candidate_type != target_type:
                 raise ModelOutputError(
                     "candidate type does not match update target",
-                    validation_detail="invalid_type",
+                    validation_detail="update_target_type_mismatch",
                 )
             item["update_memory_id"] = update_id
         for target_field in ("duplicate_memory_id", "update_memory_id"):

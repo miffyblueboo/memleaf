@@ -2,6 +2,18 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.7 — 2026-09-01
+
+- Distinguish an invalid gate type enum from a candidate type that conflicts
+  with its selected active update target, while preserving the strict,
+  immutable target-type constraint.
+- Give each gate failure a bounded, actionable retry instruction: use a legal
+  memory type, preserve the target type for the same future use, or split a
+  genuinely different future use into an independent atomic candidate.
+- Preserve the dedicated `update_target_type_mismatch` diagnostic across Core,
+  MCP, and Hermes; repeated failures still write nothing and retain the inbox
+  for a later retry.
+
 ## 0.2.6 — 2026-09-01
 
 - Reject one worthy memory that spans multiple independent project scopes and

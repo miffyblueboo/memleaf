@@ -32,6 +32,7 @@ from .models import Memory, utc_now
 from .native_index import NativeIndexer
 from .prompts import (
     DUPLICATE_TARGET_CORRECTION,
+    GATE_TYPE_CORRECTION,
     JSON_CORRECTION,
     MIXED_PROJECT_SCOPES_CORRECTION,
     RELATIVE_TIME_CORRECTION,
@@ -39,6 +40,7 @@ from .prompts import (
     SUMMARY_TARGET_CORRECTION,
     SUMMARY_TYPE_CORRECTION,
     SUMMARIZE_SYSTEM,
+    UPDATE_TARGET_TYPE_CORRECTION,
     gate_prompt,
     summarize_prompt,
 )
@@ -482,6 +484,10 @@ class Processor:
             return DUPLICATE_TARGET_CORRECTION
         if hint == "mixed_project_scopes":
             return MIXED_PROJECT_SCOPES_CORRECTION
+        if stage == "gate" and hint == "update_target_type_mismatch":
+            return UPDATE_TARGET_TYPE_CORRECTION
+        if stage == "gate" and hint == "invalid_type":
+            return GATE_TYPE_CORRECTION
         if hint == "relative_time":
             return RELATIVE_TIME_CORRECTION
         if stage == "summarize" and hint == "invalid_update_target":

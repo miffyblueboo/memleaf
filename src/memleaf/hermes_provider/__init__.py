@@ -77,6 +77,7 @@ _MODEL_VALIDATION_DETAILS = frozenset(
         "duplicate_candidate_id",
         "duplicate_update_target",
         "mixed_project_scopes",
+        "update_target_type_mismatch",
         "invalid_evidence",
         "invalid_flags",
         "invalid_type",

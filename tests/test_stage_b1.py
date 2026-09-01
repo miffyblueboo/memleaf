@@ -11,12 +11,14 @@ from memleaf.config import default_config, load_config, save_config
 from memleaf.inbox import complete_turns, parse_inbox
 from memleaf.prompts import (
     DUPLICATE_TARGET_CORRECTION,
+    GATE_TYPE_CORRECTION,
     GATE_SYSTEM,
     MIXED_PROJECT_SCOPES_CORRECTION,
     RELATIVE_TIME_CORRECTION,
     SUMMARY_TARGET_CORRECTION,
     SUMMARY_TYPE_CORRECTION,
     SUMMARIZE_SYSTEM,
+    UPDATE_TARGET_TYPE_CORRECTION,
     gate_prompt,
     summarize_prompt,
 )
@@ -1100,6 +1102,20 @@ class ValidationTest(unittest.TestCase):
             ]
         }
         self.assertEqual(len(parse_gate_output(json.dumps(valid), ["event-a"])["candidates"]), 3)
+        nonworthy_with_type = dict(
+            base,
+            candidate_id="duplicate-observation",
+            duplicate=True,
+            worth=False,
+            type="fact",
+        )
+        self.assertEqual(
+            parse_gate_output(
+                json.dumps({"candidates": [nonworthy_with_type]}),
+                ["event-a"],
+            )["candidates"][0]["type"],
+            "fact",
+        )
         self.assertIsNone(ModelOutputError("secret", validation_detail="not-a-detail").validation_detail)
 
     def test_gate_rejects_reused_active_target_and_checks_target_type(self):
@@ -1137,7 +1153,28 @@ class ValidationTest(unittest.TestCase):
                 related_memory_ids=["mem-target"],
                 related_memory_types={"mem-target": "fact"},
             )
-        self.assertEqual(raised.exception.validation_detail, "invalid_type")
+        self.assertEqual(raised.exception.validation_detail, "update_target_type_mismatch")
+
+    def test_gate_update_target_type_mismatch_has_dedicated_detail(self):
+        candidate = {
+            "candidate_id": "wrong-target-type",
+            "memory": "A project update",
+            "evidence_event_ids": ["event-a"],
+            "duplicate": False,
+            "worth": True,
+            "type": "project",
+            "scopes": ["global"],
+            "scope_source": "model",
+            "update_memory_id": "mem-fact",
+        }
+        with self.assertRaises(ModelOutputError) as raised:
+            parse_gate_output(
+                json.dumps({"candidates": [candidate]}),
+                current_event_keys=["event-a"],
+                related_memory_ids=["mem-fact"],
+                related_memory_types={"mem-fact": "fact"},
+            )
+        self.assertEqual(raised.exception.validation_detail, "update_target_type_mismatch")
 
     def test_summary_constraints_preserve_gate_target_and_type(self):
         summary = {
@@ -1180,6 +1217,11 @@ class ValidationTest(unittest.TestCase):
         self.assertIn("only once", DUPLICATE_TARGET_CORRECTION.lower())
         self.assertIn("immutable", SUMMARY_TARGET_CORRECTION.lower())
         self.assertIn("exactly equal", SUMMARY_TYPE_CORRECTION.lower())
+        self.assertIn("invalid_type", GATE_TYPE_CORRECTION)
+        self.assertIn("worth=false", GATE_TYPE_CORRECTION)
+        self.assertIn("may use null or any of those legal types", GATE_TYPE_CORRECTION)
+        self.assertIn("update_target_type_mismatch", UPDATE_TARGET_TYPE_CORRECTION)
+        self.assertIn("immutable", UPDATE_TARGET_TYPE_CORRECTION.lower())
 
     def test_correction_prompt_explains_project_scope_atomicity(self):
         self.assertIn("mixed_project_scopes", MIXED_PROJECT_SCOPES_CORRECTION)
@@ -1195,6 +1237,17 @@ class ValidationTest(unittest.TestCase):
         self.assertEqual(
             _safe_model_diagnostics(error)["validation_detail"],
             "duplicate_update_target",
+        )
+
+    def test_mcp_model_diagnostics_preserve_update_target_type_detail(self):
+        error = ModelOutputError(
+            "safe",
+            validation_reason="schema_violation",
+            validation_detail="update_target_type_mismatch",
+        )
+        self.assertEqual(
+            _safe_model_diagnostics(error)["validation_detail"],
+            "update_target_type_mismatch",
         )
 
     def test_strict_json_rejects_fences_tail_and_summary_requires_atomic_fields(self):
