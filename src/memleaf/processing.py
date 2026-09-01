@@ -282,6 +282,7 @@ def _event_payload(turn: InboxTurn) -> list[dict[str, Any]]:
             "event_key": event.event_key,
             "role": event.role,
             "turn_id": event.turn_id or "",
+            "timestamp": event.timestamp,
             "content": event.content,
         }
         for event in turn.events

@@ -61,10 +61,20 @@ MODEL_VALIDATION_DETAILS = frozenset(
         "reason_too_long",
         "source_shape",
         "todo_fields",
+        "relative_time",
         "other_schema_violation",
     )
 )
 _SCOPE_NAME = re.compile(r"^[^\s/\\:\x00\r\n]+$")
+_RELATIVE_CALENDAR_EXPRESSION = re.compile(
+    r"(?:"
+    r"(?<![A-Za-z])(?:today|tomorrow|yesterday)(?![A-Za-z])"
+    r"|(?<![A-Za-z])(?:this|next|last)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?![A-Za-z])"
+    r"|(?:本|这|下|上)(?:个)?(?:周|星期|礼拜)\s*(?:一|二|三|四|五|六|日|天|末|[1-7])"
+    r"|(?:今天|明天|昨天)"
+    r")",
+    re.IGNORECASE,
+)
 _SOURCE_FIELDS = frozenset(("event_key", "session_id", "turn_id", "conversation_title", "evidence_event_ids"))
 _COMPACT_FIELDS = frozenset(
     (
@@ -165,6 +175,27 @@ def _string_list(
     for item in value:
         result.append(_string(item, field, validation_detail=validation_detail))
     return result
+
+
+def _reject_relative_calendar_expression(item: Mapping[str, Any]) -> None:
+    """Reject unresolved one-off calendar expressions without parsing dates.
+
+    The event timestamp is supplied to the model in the prompt, where the
+    model can resolve the expression.  This validator only catches the small
+    set of strong relative forms; recurring language such as 每周三 and
+    every Wednesday is intentionally outside the expression.
+    """
+
+    text = "\n".join(
+        value
+        for field in ("title", "body")
+        if isinstance(value := item.get(field), str)
+    )
+    if _RELATIVE_CALENDAR_EXPRESSION.search(text):
+        raise ModelOutputError(
+            "summary contains an unresolved relative calendar date",
+            validation_detail="relative_time",
+        )
 
 
 def _scopes(value: Any, scope_source: Any) -> list[str]:
@@ -579,6 +610,7 @@ def validate_summarize_output(
     item = dict(value)
     _string(item["title"], "title")
     _string(item["body"], "body", multiline=True)
+    _reject_relative_calendar_expression(item)
     item["tags"] = _string_list(item["tags"], "tags")
     candidate_type = item["type"]
     if not isinstance(candidate_type, str) or candidate_type not in MEMORY_TYPES:

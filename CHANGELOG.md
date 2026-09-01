@@ -2,6 +2,13 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.3 — 2026-09-01
+
+- Preserve capture event timestamps in extraction prompts and resolve one-off
+  relative calendar dates against the supporting event timestamp as
+  `YYYY-MM-DD`; reject unresolved relative dates with bounded retries while
+  retaining the inbox turn after repeated failure.
+
 ## 0.2.2 — 2026-09-01
 
 - Publish GitHub Release and PyPI from the same wheel and source distribution

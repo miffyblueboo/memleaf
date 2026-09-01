@@ -4,6 +4,7 @@ import tempfile
 import urllib.error
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from memleaf import Memleaf
 from memleaf.config import default_config, load_config, save_config
@@ -21,7 +22,7 @@ from memleaf.llm import (
     ModelUnavailable,
     OpenAICompatibleBackend,
 )
-from memleaf.processing import Processor
+from memleaf.processing import Processor, _event_payload
 from memleaf.validation import parse_gate_output, parse_summarize_output
 
 
@@ -138,6 +139,198 @@ class StageB1Test(unittest.TestCase):
         self.assertEqual(len(turns), 1)
         self.assertTrue(turns[0].complete)
         self.assertEqual(complete_turns(self.service.vault), turns)
+
+    def test_event_timestamp_is_preserved_in_extraction_payload_and_prompts(self):
+        anchor = "2026-09-01T02:01:41Z"
+        with mock.patch("memleaf.capture._timestamp", return_value=anchor):
+            self.service.capture("codex", "calendar", "turn-1", "user", "Finish before Wednesday", event_id="calendar-user")
+            self.service.capture(
+                "codex",
+                "calendar",
+                "turn-1",
+                "assistant",
+                "I will track the deadline.",
+                event_id="calendar-assistant",
+            )
+
+        turn = parse_inbox(self.service.vault)[0]
+        events = _event_payload(turn)
+        self.assertEqual([event["timestamp"] for event in events], [anchor, anchor])
+        candidate = {
+            "candidate_id": "calendar-deadline",
+            "memory": "Finish before Wednesday",
+            "evidence_event_ids": [event_key("calendar-user")],
+            "duplicate": False,
+            "worth": True,
+            "type": "todo",
+            "scopes": ["global"],
+            "scope_source": "model",
+        }
+        gate_text = gate_prompt(events)
+        summary_text = summarize_prompt(candidate, events)
+        self.assertIn(anchor, gate_text)
+        self.assertIn(anchor, summary_text)
+        for prompt_system in (GATE_SYSTEM, SUMMARIZE_SYSTEM):
+            self.assertIn("ISO-8601 UTC timestamp", prompt_system)
+            self.assertIn("YYYY-MM-DD", prompt_system)
+            self.assertIn("本周X/这周X/下周X/上周X", prompt_system)
+            self.assertIn("every Wednesday", prompt_system)
+
+    def test_relative_summary_is_rejected_then_absolute_retry_is_committed(self):
+        anchor = "2026-09-01T02:01:41Z"
+        evidence_key = event_key("relative-retry-user")
+        gate = {
+            "candidates": [{
+                "candidate_id": "relative-deadline",
+                "memory": "Complete before Wednesday",
+                "evidence_event_ids": [evidence_key],
+                "duplicate": False,
+                "worth": True,
+                "type": "todo",
+                "scopes": ["global"],
+                "scope_source": "model",
+            }]
+        }
+
+        def summary(body):
+            return {
+                "title": "Project deadline",
+                "body": body,
+                "tags": ["deadline"],
+                "type": "todo",
+                "scopes": ["global"],
+                "scope_source": "model",
+                "sources": [{"event_key": evidence_key}],
+                "status": "active",
+            }
+
+        responses = [json.dumps(gate), json.dumps(summary("在本周三前完成。")), json.dumps(summary("在2026-09-02前完成。"))]
+        calls = []
+
+        def callback(prompt, **kwargs):
+            calls.append((prompt, kwargs["purpose"]))
+            return responses.pop(0)
+
+        with mock.patch("memleaf.capture._timestamp", return_value=anchor):
+            self.service.capture("codex", "relative-retry", "turn-1", "user", "Finish before Wednesday", event_id="relative-retry-user")
+            self.service.capture(
+                "codex",
+                "relative-retry",
+                "turn-1",
+                "assistant",
+                "The deadline is confirmed.",
+                event_id="relative-retry-assistant",
+            )
+
+        result = self.service.process(
+            source="codex",
+            session_id="relative-retry",
+            model=FakeBackend(callback, model="relative-retry"),
+        )
+        self.assertEqual(result["processed_turns"], 1)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([purpose for _, purpose in calls], ["gate", "summarize", "summarize"])
+        self.assertIn(anchor, calls[0][0])
+        self.assertIn("Previous output violated: relative_time.", calls[2][0])
+        memory = self.service.read(result["memory_ids"][0])
+        self.assertIsNotNone(memory)
+        self.assertIn("2026-09-02", memory.body)
+        self.assertNotIn("本周三", memory.body)
+
+    def test_recurring_weekday_expression_is_not_rejected_as_relative_date(self):
+        for body in (
+            "每周三例会。",
+            "The recurring meeting is every Wednesday.",
+            "会议时间：2026-09-01（周二）16:30。",
+        ):
+            with self.subTest(body=body):
+                summary = {
+                    "title": "Recurring meeting",
+                    "body": body,
+                    "tags": ["meeting"],
+                    "type": "event",
+                    "scopes": ["global"],
+                    "sources": [{"event_key": "event-a"}],
+                }
+                parsed = parse_summarize_output(json.dumps(summary), current_event_keys=["event-a"])
+                self.assertEqual(parsed["body"], body)
+
+    def test_relative_summary_without_timestamp_is_rejected_and_only_title_body_are_scanned(self):
+        relative = {
+            "title": "截止今天",
+            "body": "完成项目交付。",
+            "tags": [],
+            "type": "project",
+            "scopes": ["global"],
+            "sources": [{"event_key": "event-a", "conversation_title": "今天的会话"}],
+        }
+        with self.assertRaises(ModelOutputError) as raised:
+            parse_summarize_output(json.dumps(relative), current_event_keys=["event-a"])
+        self.assertEqual(raised.exception.validation_detail, "relative_time")
+
+        recurring_metadata = dict(relative, title="交付安排", body="每周三例会。")
+        parsed = parse_summarize_output(json.dumps(recurring_metadata), current_event_keys=["event-a"])
+        self.assertEqual(parsed["sources"][0]["conversation_title"], "今天的会话")
+
+    def test_three_relative_summary_failures_keep_watermark_and_inbox(self):
+        anchor = "2026-09-01T02:01:41Z"
+        evidence_key = event_key("relative-failure-user")
+        gate = {
+            "candidates": [{
+                "candidate_id": "relative-failure",
+                "memory": "Complete before Wednesday",
+                "evidence_event_ids": [evidence_key],
+                "duplicate": False,
+                "worth": True,
+                "type": "todo",
+                "scopes": ["global"],
+                "scope_source": "model",
+            }]
+        }
+        relative_summary = {
+            "title": "Project deadline",
+            "body": "在本周三前完成。",
+            "tags": ["deadline"],
+            "type": "todo",
+            "scopes": ["global"],
+            "scope_source": "model",
+            "sources": [{"event_key": evidence_key}],
+            "status": "active",
+        }
+        responses = [json.dumps(gate)] + [json.dumps(relative_summary)] * 3
+        calls = []
+
+        def callback(prompt, **kwargs):
+            calls.append(kwargs["purpose"])
+            return responses.pop(0)
+
+        with mock.patch("memleaf.capture._timestamp", return_value=anchor):
+            self.service.capture("codex", "relative-failure", "turn-1", "user", "Finish before Wednesday", event_id="relative-failure-user")
+            self.service.capture(
+                "codex",
+                "relative-failure",
+                "turn-1",
+                "assistant",
+                "The deadline is confirmed.",
+                event_id="relative-failure-assistant",
+            )
+
+        with self.assertRaises(ModelOutputError) as raised:
+            self.service.process(
+                source="codex",
+                session_id="relative-failure",
+                model=FakeBackend(callback, model="relative-failure"),
+            )
+        self.assertEqual(raised.exception.validation_detail, "relative_time")
+        self.assertEqual(raised.exception.attempt_count, 3)
+        self.assertEqual(calls, ["gate", "summarize", "summarize", "summarize"])
+        processed = json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
+        state = processed["sessions"]["codex/relative-failure"]
+        self.assertEqual(state.get("watermark", 0), 0)
+        self.assertEqual(state["processing"]["status"], "failed")
+        inbox = self.vault_path / "inbox" / "codex" / "relative-failure.md"
+        self.assertTrue(inbox.is_file())
+        self.assertIn("Finish before Wednesday", inbox.read_text(encoding="utf-8"))
 
     def test_process_retries_schema_violation_until_third_gate_attempt_and_commits(self):
         responses = [

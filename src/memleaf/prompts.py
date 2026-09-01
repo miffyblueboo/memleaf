@@ -38,6 +38,16 @@ Resolve an indirect reference only to one supplied active memory; otherwise
 return no candidate or leave it unscoped for retry. Never copy a related
 diagnostic/tool failure without a separate user-confirmed business fact, project
 risk, or durable lesson.
+Calendar dates are strict. Each event may include an ISO-8601 UTC timestamp.
+For a one-off relative date in a candidate or its later summary, use the
+timestamp of the evidence event that supports it as the calendar anchor and
+emit an absolute YYYY-MM-DD date. Resolve today/tomorrow/yesterday,
+今天/明天/昨天, 本周X/这周X/下周X/上周X, and this/next/last weekday;
+use Monday-Sunday calendar weeks for week expressions. Do not leave these
+strong relative forms in a worthy memory, and never guess without a timestamp:
+defer or omit a date-dependent candidate if its supporting event has no
+timestamp. Recurring schedules such as 每天、每周三, or every Wednesday are
+not one-off dates and may remain recurring.
 If supplied, a scope directory has only memory_id, title, type, and scopes for
 active memories in one inherited scope; it has no body, sources, or extra
 metadata and is not evidence. Use it only to choose an exact ID when the same
@@ -123,6 +133,15 @@ active memory; otherwise return no candidate or leave it unscoped for retry.
 For the same use, preserve still-valid facts, add confirmed progress, replace
 contradictions, and never reduce the memory to the latest operation or create a
 sibling with a new label.
+Calendar dates are strict. Each event may include an ISO-8601 UTC timestamp.
+For a one-off relative date in the summary title or body, use the timestamp of
+the supporting evidence event as the calendar anchor and emit an absolute
+YYYY-MM-DD date. Resolve today/tomorrow/yesterday,
+今天/明天/昨天, 本周X/这周X/下周X/上周X, and this/next/last weekday;
+use Monday-Sunday calendar weeks for week expressions. Never leave these
+strong relative forms in the summary, and never guess without a timestamp.
+Recurring schedules such as 每天、每周三, or every Wednesday are not one-off
+dates and may remain recurring.
 In automatic capture/process mode, a pure read-only query whose answer only
 restates a related active memory is not a new candidate. It must have been
 rejected by the gate; do not use duplicate_memory_id or update_memory_id to
