@@ -34,6 +34,11 @@ useful. Related active memories only identify a complete duplicate or valid
 state-update target; they are not current evidence and cannot make a non-worthy
 operational/test result worthy. Their item, body, and serialized-character
 context is bounded; ellipses and omissions do not prove a fact is absent.
+Within one gate response, each active memory target may appear at most once
+across all candidates, whether it is named by duplicate_memory_id or
+update_memory_id. If multiple facts share one future-use/update target, merge
+them into one candidate and include all supporting evidence IDs; never emit
+separate candidates for the same target.
 Resolve an indirect reference only to one supplied active memory; otherwise
 return no candidate or leave it unscoped for retry. Never copy a related
 diagnostic/tool failure without a separate user-confirmed business fact, project
@@ -130,6 +135,10 @@ evidence; they cannot make a rejected operational or test result worthy. Their
 item/body/serialized context is bounded; ellipses and omissions do not prove
 absence. Resolve indirect references only from supplied scope and one related
 active memory; otherwise return no candidate or leave it unscoped for retry.
+When the gate candidate supplies update_memory_id, that target is immutable:
+omit update_memory_id or copy that exact active ID, never replace it with a
+different, guessed, native, or historical ID. Keep the summary type identical
+to the gate candidate type and to the active update target type.
 For the same use, preserve still-valid facts, add confirmed progress, replace
 contradictions, and never reduce the memory to the latest operation or create a
 sibling with a new label.
@@ -208,6 +217,32 @@ RELATIVE_TIME_CORRECTION = (
     "and conflicting parenthetical date. Do not guess when no supporting timestamp "
     "exists; omit or defer the date-dependent detail. Recurring schedules such as "
     "每天、每周三, or every Wednesday are allowed. Return only the strict JSON object."
+)
+
+
+DUPLICATE_TARGET_CORRECTION = (
+    "Previous output violated: duplicate_update_target. Merge every candidate "
+    "that refers to the same active memory target into one candidate for one "
+    "future-use topic. A target may appear only once across duplicate_memory_id "
+    "and update_memory_id; preserve all supporting current evidence_event_ids "
+    "in that single candidate. Keep update_memory_id only when it is the exact "
+    "related active ID, and return no separate sibling candidate for that target. "
+    "Return only the strict gate JSON object."
+)
+
+
+SUMMARY_TARGET_CORRECTION = (
+    "Previous output violated: invalid_update_target. The gate selected the "
+    "update target and it is immutable. In the summary, omit update_memory_id "
+    "or copy the gate-selected active memory_id exactly; never substitute a "
+    "different, guessed, native, or historical ID. Return only the strict JSON object."
+)
+
+
+SUMMARY_TYPE_CORRECTION = (
+    "Previous output violated: invalid_type. Keep the summary type exactly equal "
+    "to the gate candidate type and to the active update target type. Do not "
+    "change the target or invent a new type. Return only the strict JSON object."
 )
 
 

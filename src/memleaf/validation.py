@@ -51,6 +51,7 @@ MODEL_VALIDATION_DETAILS = frozenset(
         "unknown_fields",
         "candidate_shape",
         "duplicate_candidate_id",
+        "duplicate_update_target",
         "invalid_evidence",
         "invalid_flags",
         "invalid_type",
@@ -397,6 +398,7 @@ def validate_gate_output(
     *,
     current_event_keys: Iterable[Any] | None = None,
     related_memory_ids: Iterable[Any] | None = None,
+    related_memory_types: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate and return a normalized gate object without writing anything."""
 
@@ -426,6 +428,7 @@ def validate_gate_output(
     }
     normalized: list[dict[str, Any]] = []
     candidate_ids: set[str] = set()
+    target_ids: set[str] = set()
     for candidate in candidates:
         if not isinstance(candidate, Mapping):
             raise ModelOutputError("each gate candidate must be an object", validation_detail="candidate_shape")
@@ -504,7 +507,32 @@ def validate_gate_output(
                     "update_memory_id is not a related active memory",
                     validation_detail="invalid_update_target",
                 )
+            target_type = None
+            if isinstance(related_memory_types, Mapping):
+                target_type = next(
+                    (
+                        value
+                        for key, value in related_memory_types.items()
+                        if isinstance(key, str) and key.casefold() == update_id.casefold()
+                    ),
+                    None,
+                )
+            if target_type is not None and candidate_type != target_type:
+                raise ModelOutputError(
+                    "candidate type does not match update target",
+                    validation_detail="invalid_type",
+                )
             item["update_memory_id"] = update_id
+        for target_field in ("duplicate_memory_id", "update_memory_id"):
+            target = item.get(target_field)
+            if isinstance(target, str):
+                target_key = target.casefold()
+                if target_key in target_ids:
+                    raise ModelOutputError(
+                        "multiple gate candidates reference the same memory target; merge them into one candidate",
+                        validation_detail="duplicate_update_target",
+                    )
+                target_ids.add(target_key)
         if not isinstance(item["scope_source"], str) or item["scope_source"] not in SCOPE_SOURCES:
             raise ModelOutputError("invalid scope_source", validation_detail="invalid_scope_source")
         _scopes(item["scopes"], item["scope_source"])
@@ -523,6 +551,7 @@ def parse_gate_output(
     *,
     current_event_keys: Iterable[Any] | None = None,
     related_memory_ids: Iterable[Any] | None = None,
+    related_memory_types: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         parsed = parse_strict_json(raw)
@@ -536,6 +565,7 @@ def parse_gate_output(
             event_keys,
             current_event_keys=current_event_keys,
             related_memory_ids=related_memory_ids,
+            related_memory_types=related_memory_types,
         )
     except ModelOutputError as error:
         if error.validation_reason is None:
@@ -581,6 +611,9 @@ def validate_summarize_output(
     related_native_ids: Iterable[Any] | None = None,
     related_memory_ids: Iterable[Any] | None = None,
     scope_registry: Mapping[str, Any] | None = None,
+    expected_type: str | None = None,
+    expected_update_memory_id: str | None = None,
+    expected_target_type: str | None = None,
 ) -> dict[str, Any]:
     """Validate one atomic memory summary; this function has no filesystem effects."""
 
@@ -615,6 +648,16 @@ def validate_summarize_output(
     candidate_type = item["type"]
     if not isinstance(candidate_type, str) or candidate_type not in MEMORY_TYPES:
         raise ModelOutputError("invalid memory type", validation_detail="invalid_type")
+    if expected_type is not None and candidate_type != expected_type:
+        raise ModelOutputError(
+            "summary type differs from gate candidate",
+            validation_detail="invalid_type",
+        )
+    if expected_target_type is not None and candidate_type != expected_target_type:
+        raise ModelOutputError(
+            "summary type does not match update target",
+            validation_detail="invalid_type",
+        )
     item["scopes"] = _scopes(item["scopes"], item.get("scope_source"))
     item["scope_operations"] = _scope_operations(
         item.get("scope_operations"),
@@ -635,6 +678,17 @@ def validate_summarize_output(
         item["memory_id"] = _memory_id(item["memory_id"], "memory_id")
     if "update_memory_id" in item:
         item["update_memory_id"] = _memory_id(item["update_memory_id"], "update_memory_id")
+        if (
+            expected_update_memory_id is not None
+            and (
+                not isinstance(expected_update_memory_id, str)
+                or item["update_memory_id"].casefold() != expected_update_memory_id.casefold()
+            )
+        ):
+            raise ModelOutputError(
+                "summary update target differs from gate target",
+                validation_detail="invalid_update_target",
+            )
         if related_memory_ids is not None:
             related_ids = {
                 memory_id.casefold()
@@ -689,6 +743,9 @@ def parse_summarize_output(
     related_native_ids: Iterable[Any] | None = None,
     related_memory_ids: Iterable[Any] | None = None,
     scope_registry: Mapping[str, Any] | None = None,
+    expected_type: str | None = None,
+    expected_update_memory_id: str | None = None,
+    expected_target_type: str | None = None,
 ) -> dict[str, Any]:
     try:
         parsed = parse_strict_json(raw)
@@ -703,6 +760,9 @@ def parse_summarize_output(
             related_native_ids=related_native_ids,
             related_memory_ids=related_memory_ids,
             scope_registry=scope_registry,
+            expected_type=expected_type,
+            expected_update_memory_id=expected_update_memory_id,
+            expected_target_type=expected_target_type,
         )
     except ModelOutputError as error:
         if error.validation_reason is None:

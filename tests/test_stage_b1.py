@@ -10,8 +10,11 @@ from memleaf import Memleaf
 from memleaf.config import default_config, load_config, save_config
 from memleaf.inbox import complete_turns, parse_inbox
 from memleaf.prompts import (
+    DUPLICATE_TARGET_CORRECTION,
     GATE_SYSTEM,
     RELATIVE_TIME_CORRECTION,
+    SUMMARY_TARGET_CORRECTION,
+    SUMMARY_TYPE_CORRECTION,
     SUMMARIZE_SYSTEM,
     gate_prompt,
     summarize_prompt,
@@ -30,6 +33,7 @@ from memleaf.llm import (
 )
 from memleaf.processing import Processor, _event_payload
 from memleaf.validation import parse_gate_output, parse_summarize_output
+from memleaf.mcp_server import _safe_model_diagnostics
 
 
 class _Response:
@@ -1095,6 +1099,96 @@ class ValidationTest(unittest.TestCase):
         }
         self.assertEqual(len(parse_gate_output(json.dumps(valid), ["event-a"])["candidates"]), 3)
         self.assertIsNone(ModelOutputError("secret", validation_detail="not-a-detail").validation_detail)
+
+    def test_gate_rejects_reused_active_target_and_checks_target_type(self):
+        base = {
+            "memory": "supported update",
+            "evidence_event_ids": ["event-a"],
+            "duplicate": False,
+            "worth": True,
+            "type": "fact",
+            "scopes": ["global"],
+            "scope_source": "model",
+        }
+        reused = {
+            "candidates": [
+                dict(base, candidate_id="first", update_memory_id="mem-target"),
+                dict(base, candidate_id="second", update_memory_id="MEM-TARGET"),
+            ]
+        }
+        with self.assertRaises(ModelOutputError) as raised:
+            parse_gate_output(
+                json.dumps(reused),
+                current_event_keys=["event-a"],
+                related_memory_ids=["mem-target"],
+                related_memory_types={"mem-target": "fact"},
+            )
+        self.assertEqual(raised.exception.validation_detail, "duplicate_update_target")
+
+        wrong_type = {
+            "candidates": [dict(base, candidate_id="wrong-type", type="project", update_memory_id="mem-target")]
+        }
+        with self.assertRaises(ModelOutputError) as raised:
+            parse_gate_output(
+                json.dumps(wrong_type),
+                current_event_keys=["event-a"],
+                related_memory_ids=["mem-target"],
+                related_memory_types={"mem-target": "fact"},
+            )
+        self.assertEqual(raised.exception.validation_detail, "invalid_type")
+
+    def test_summary_constraints_preserve_gate_target_and_type(self):
+        summary = {
+            "title": "Fact",
+            "body": "Updated fact.",
+            "tags": ["fact"],
+            "type": "fact",
+            "scopes": ["global"],
+            "scope_source": "model",
+            "sources": [{"event_key": "event-a"}],
+        }
+        parsed = parse_summarize_output(
+            json.dumps(summary),
+            current_event_keys=["event-a"],
+            related_memory_ids=["mem-target"],
+            expected_type="fact",
+            expected_update_memory_id="mem-target",
+            expected_target_type="fact",
+        )
+        self.assertNotIn("update_memory_id", parsed)
+        for field, value in (("update_memory_id", "mem-other"), ("type", "project")):
+            invalid = dict(summary, **{field: value})
+            with self.subTest(field=field):
+                with self.assertRaises(ModelOutputError) as raised:
+                    parse_summarize_output(
+                        json.dumps(invalid),
+                        current_event_keys=["event-a"],
+                        related_memory_ids=["mem-target", "mem-other"],
+                        expected_type="fact",
+                        expected_update_memory_id="mem-target",
+                        expected_target_type="fact",
+                    )
+                self.assertEqual(
+                    raised.exception.validation_detail,
+                    "invalid_update_target" if field == "update_memory_id" else "invalid_type",
+                )
+
+    def test_correction_prompts_explain_target_and_type_repairs(self):
+        self.assertIn("merge", DUPLICATE_TARGET_CORRECTION.lower())
+        self.assertIn("only once", DUPLICATE_TARGET_CORRECTION.lower())
+        self.assertIn("immutable", SUMMARY_TARGET_CORRECTION.lower())
+        self.assertIn("exactly equal", SUMMARY_TYPE_CORRECTION.lower())
+
+    def test_mcp_model_diagnostics_preserve_duplicate_target_detail(self):
+        error = ModelOutputError(
+            "safe",
+            validation_reason="schema_violation",
+            validation_detail="duplicate_update_target",
+        )
+        self.assertEqual(
+            _safe_model_diagnostics(error)["validation_detail"],
+            "duplicate_update_target",
+        )
 
     def test_strict_json_rejects_fences_tail_and_summary_requires_atomic_fields(self):
         for raw in ("```json\n{\"candidates\":[]}\n```", '{"candidates":[]} trailing'):

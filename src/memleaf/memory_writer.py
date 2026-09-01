@@ -133,6 +133,25 @@ class MemoryWriter:
         }
         return request_keys.issubset(applied_keys)
 
+    @staticmethod
+    def _preflight_error(
+        message: str,
+        *,
+        validation_detail: str = "other_schema_violation",
+    ) -> ModelOutputError:
+        """Return a safe, stage-labelled batch-consistency failure."""
+
+        error = ModelOutputError(
+            message,
+            validation_reason="schema_violation",
+            validation_detail=validation_detail,
+        )
+        # The model outputs that form this batch have already passed their
+        # individual summaries. Keep the public stage vocabulary bounded
+        # while making a defensive aggregate failure diagnosable.
+        error.stage = "summarize"
+        return error
+
     def _preflight(self, requests: list[Mapping[str, Any]]) -> None:
         active = self._active_records()
         target_ids: set[str] = set()
@@ -144,11 +163,14 @@ class MemoryWriter:
             duplicate_id = request.get("duplicate_memory_id")
             if duplicate_id is not None:
                 if not isinstance(duplicate_id, str) or duplicate_id not in active:
-                    raise ModelOutputError("duplicate target is not an active memory")
+                    raise self._preflight_error("duplicate target is not an active memory")
                 if duplicate_id in duplicate_ids:
-                    raise ModelOutputError("batch contains duplicate metadata merge target")
+                    raise self._preflight_error(
+                        "batch contains duplicate metadata merge target",
+                        validation_detail="duplicate_update_target",
+                    )
                 if summary.get("update_memory_id") is not None:
-                    raise ModelOutputError("duplicate target conflicts with update target")
+                    raise self._preflight_error("duplicate target conflicts with update target")
                 duplicate_ids.add(duplicate_id)
                 continue
             target_id = summary.get("update_memory_id")
@@ -161,12 +183,15 @@ class MemoryWriter:
                 )
                 seen_turns = target_turns.setdefault(target_id, set())
                 if turn_identity in seen_turns:
-                    raise ModelOutputError("batch contains duplicate update target")
+                    raise self._preflight_error(
+                        "batch contains duplicate update target",
+                        validation_detail="duplicate_update_target",
+                    )
                 seen_turns.add(turn_identity)
                 target_ids.add(target_id)
                 target = active.get(target_id)
                 if target is None:
-                    raise ModelOutputError("update target is not an active memory")
+                    raise self._preflight_error("update target is not an active memory")
                 target_memory = getattr(target, "memory", target)
                 target_type = (
                     target_memory.type
@@ -176,19 +201,22 @@ class MemoryWriter:
                     else None
                 )
                 if target_type != summary.get("type"):
-                    raise ModelOutputError("update target type does not match summary")
+                    raise self._preflight_error(
+                        "update target type does not match summary",
+                        validation_detail="invalid_type",
+                    )
             deterministic_id = request["memory_id"]
             if deterministic_id in memory_ids:
-                raise ModelOutputError("batch contains duplicate deterministic memory id")
+                raise self._preflight_error("batch contains duplicate deterministic memory id")
             if deterministic_id in duplicate_ids:
-                raise ModelOutputError("batch memory id collides with metadata merge target")
+                raise self._preflight_error("batch memory id collides with metadata merge target")
             if deterministic_id in target_ids:
-                raise ModelOutputError("batch memory id collides with update target")
+                raise self._preflight_error("batch memory id collides with update target")
             if target_id is not None and target_id.casefold() == deterministic_id.casefold():
-                raise ModelOutputError("batch memory id collides with update target")
+                raise self._preflight_error("batch memory id collides with update target")
             memory_ids.add(deterministic_id)
             if "/" in deterministic_id or "\\" in deterministic_id or deterministic_id in (".", ".."):
-                raise ModelOutputError("invalid deterministic memory id")
+                raise self._preflight_error("invalid deterministic memory id")
             # Make the request visible to the rest of this same commit batch.
             # This is needed when a later pending turn updates a memory that
             # an earlier pending turn has just created; the real filesystem
@@ -198,9 +226,9 @@ class MemoryWriter:
             else:
                 active[deterministic_id] = summary
         if target_ids.intersection(duplicate_ids):
-            raise ModelOutputError("batch update target collides with metadata merge target")
+            raise self._preflight_error("batch update target collides with metadata merge target")
         if memory_ids.intersection(duplicate_ids):
-            raise ModelOutputError("batch memory id collides with metadata merge target")
+            raise self._preflight_error("batch memory id collides with metadata merge target")
 
     def _core_sources(self, request: Mapping[str, Any]) -> list[dict[str, Any]]:
         turn = request["turn"]

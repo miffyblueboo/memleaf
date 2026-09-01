@@ -2,6 +2,17 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.5 — 2026-09-01
+
+- Detect multiple gate candidates that target the same active memory before
+  batch writing, then retry with an explicit instruction to merge the
+  candidates while preserving all supporting evidence.
+- Keep gate-selected update targets and active-memory types stable through
+  summarization, with bounded corrective retries for target or type drift.
+- Preserve `duplicate_update_target` and aggregate preflight diagnostics across
+  Core, MCP, and Hermes while retaining the inbox and zero-write transaction
+  boundary after repeated failure.
+
 ## 0.2.4 — 2026-09-01
 
 - Give `relative_time` retries explicit, actionable correction instructions so

@@ -31,9 +31,12 @@ from .memory_writer import MemoryWriter
 from .models import Memory, utc_now
 from .native_index import NativeIndexer
 from .prompts import (
+    DUPLICATE_TARGET_CORRECTION,
     JSON_CORRECTION,
     RELATIVE_TIME_CORRECTION,
     GATE_SYSTEM,
+    SUMMARY_TARGET_CORRECTION,
+    SUMMARY_TYPE_CORRECTION,
     SUMMARIZE_SYSTEM,
     gate_prompt,
     summarize_prompt,
@@ -473,8 +476,15 @@ class Processor:
     @staticmethod
     def _correction_instruction(error: BaseException) -> Optional[str]:
         hint = Processor._safe_correction_hint(error)
+        stage = getattr(error, "stage", None)
+        if hint == "duplicate_update_target":
+            return DUPLICATE_TARGET_CORRECTION
         if hint == "relative_time":
             return RELATIVE_TIME_CORRECTION
+        if stage == "summarize" and hint == "invalid_update_target":
+            return SUMMARY_TARGET_CORRECTION
+        if stage == "summarize" and hint == "invalid_type":
+            return SUMMARY_TYPE_CORRECTION
         if hint is not None:
             return f"Previous output violated: {hint}."
         return None
@@ -1548,6 +1558,13 @@ class Processor:
             if item.get("native") is not True and isinstance(item.get("memory_id"), str)
         ]
         gate_related_memory_ids = list(related_memory_ids)
+        gate_related_memory_types = {
+            item["memory_id"].casefold(): item["type"]
+            for item in gate_related
+            if isinstance(item, Mapping)
+            and isinstance(item.get("memory_id"), str)
+            and isinstance(item.get("type"), str)
+        }
         if scope_fallback is not None:
             scoped_records, scope_ambiguous = scope_fallback
             if scope_ambiguous and self._single_specific_scope(scope_background):
@@ -1559,6 +1576,11 @@ class Processor:
                         value.casefold() for value in gate_related_memory_ids
                     }:
                         gate_related_memory_ids.append(memory_id)
+                    if (
+                        isinstance(memory_id, str)
+                        and isinstance(entry.get("type"), str)
+                    ):
+                        gate_related_memory_types[memory_id.casefold()] = entry["type"]
         scope_registry = self._scope_registry_projection()
         with self.service.vault.lock():
             validation_scope_registry = self.service.vault.config().get("scopes", {})
@@ -1620,6 +1642,7 @@ class Processor:
                 raw,
                 current_event_keys=turn.event_keys,
                 related_memory_ids=gate_related_memory_ids,
+                related_memory_types=gate_related_memory_types,
             ),
             diagnostic_context={
                 "source": turn.source,
@@ -1728,6 +1751,22 @@ class Processor:
                     )
                 continue
 
+            gate_update_target = candidate.get("update_memory_id")
+            gate_target_type = None
+            if isinstance(gate_update_target, str):
+                gate_target_key = gate_update_target.casefold()
+                gate_target_type = next(
+                    (
+                        item.get("type")
+                        for item in candidate_related
+                        if isinstance(item, Mapping)
+                        and isinstance(item.get("memory_id"), str)
+                        and item["memory_id"].casefold() == gate_target_key
+                        and isinstance(item.get("type"), str)
+                    ),
+                    None,
+                )
+
             summary = self._complete_json_stage(
                 backend,
                 summarize_prompt(
@@ -1745,6 +1784,20 @@ class Processor:
                     related_native_ids=candidate_native_ids,
                     related_memory_ids=candidate_memory_ids,
                     scope_registry=validation_scope_registry,
+                    expected_type=(
+                        candidate.get("type")
+                        if (
+                            gate_update_target is not None
+                            and gate_target_type == candidate.get("type")
+                        )
+                        else None
+                    ),
+                    expected_update_memory_id=gate_update_target,
+                    expected_target_type=(
+                        gate_target_type
+                        if gate_target_type == candidate.get("type")
+                        else None
+                    ),
                 ),
                 diagnostic_context={
                     "source": turn.source,
@@ -1752,7 +1805,6 @@ class Processor:
                     "turn_index": turn.turn_index,
                 },
             )
-            gate_update_target = candidate.get("update_memory_id")
             if gate_update_target is not None:
                 summary_update_target = summary.get("update_memory_id")
                 if summary_update_target is None:
@@ -1766,6 +1818,9 @@ class Processor:
                         "summary update target differs from gate target",
                         validation_detail="invalid_update_target",
                     )
+                else:
+                    summary = dict(summary)
+                    summary["update_memory_id"] = gate_update_target
             if summary["scopes"] == ["unscoped"] or summary.get("scope_source") == "insufficient_context":
                 self._defer_candidate(
                     turn_ref,

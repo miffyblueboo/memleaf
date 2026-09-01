@@ -10,7 +10,9 @@ from unittest.mock import patch
 from memleaf import Memleaf
 from memleaf.config import save_config
 from memleaf.index import event_key
+from memleaf.inbox import parse_inbox
 from memleaf.llm import ModelError, ModelUnavailable
+from memleaf.memory_writer import MemoryWriter
 from memleaf.processing import ProcessingError, Processor
 from memleaf.validation import ModelOutputError
 
@@ -383,7 +385,7 @@ class StageB2ATest(unittest.TestCase):
         self.assertEqual(processed["watermark"], 2)
         self.assertEqual(processed["processing"]["status"], "idle")
 
-    def test_gate_and_summary_update_target_mismatch_fails_before_writing(self):
+    def test_summary_update_target_mismatch_is_retried_before_writing(self):
         backend = QueueBackend()
         service = self.service(backend, name="email-update-mismatch")
         old = service.create_memory(
@@ -416,16 +418,273 @@ class StageB2ATest(unittest.TestCase):
             [
                 self.gate([candidate]),
                 self.summary(user_key, title="Sent", body="The email was sent.", type="event", update_memory_id=other.memory_id),
+                self.summary(user_key, title="Sent", body="The email was sent.", type="event", update_memory_id=old.memory_id),
             ]
         )
+
+        result = service.process()
+
+        self.assertEqual(result["processed_turns"], 1)
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize", "summarize"])
+        self.assertIn("gate selected the update target", backend.calls[2]["prompt"])
+        self.assertEqual(service.read(old.memory_id).body, "The email was sent.")
+        self.assertEqual(service.read(other.memory_id).body, other.body)
+        self.assertEqual(len(service.vault.list_markdown("history")), 1)
+
+    def test_gate_and_summary_update_target_mismatch_fails_after_bounded_retries(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="email-update-mismatch-failure")
+        old = service.create_memory(
+            memory_id="mem-draft",
+            title="Email draft",
+            body="A draft email is awaiting confirmation.",
+            type="event",
+        )
+        other = service.create_memory(
+            memory_id="mem-other",
+            title="Other email",
+            body="An unrelated email fact.",
+            type="event",
+        )
+        user_key, _ = self.capture_turn(
+            service,
+            turn="sent",
+            user_event="sent-user",
+            assistant_event="sent-assistant",
+            user="Confirm the email is sent.",
+        )
+        candidate = self.candidate(
+            "email-sent",
+            [user_key],
+            memory="The email was sent.",
+            type="event",
+            update_memory_id=old.memory_id,
+        )
+        bad_summary = self.summary(
+            user_key,
+            title="Sent",
+            body="The email was sent.",
+            type="event",
+            update_memory_id=other.memory_id,
+        )
+        backend.responses.extend([self.gate([candidate]), bad_summary, bad_summary, bad_summary])
 
         with self.assertRaises(ModelOutputError) as raised:
             service.process()
 
         self.assertEqual(raised.exception.validation_detail, "invalid_update_target")
+        self.assertEqual(raised.exception.stage, "summarize")
+        self.assertEqual(raised.exception.attempt_count, 3)
+        marker = self.processed(service)["sessions"]["codex/s"]["processing"]
+        self.assertEqual(marker["failure_stage"], "summarize")
+        self.assertEqual(marker["attempt_count"], 3)
         self.assertEqual(service.read(old.memory_id).body, old.body)
         self.assertEqual(service.read(other.memory_id).body, other.body)
         self.assertEqual(len(service.vault.list_markdown("history")), 0)
+        self.assertEqual(self.processed(service)["sessions"]["codex/s"].get("watermark", 0), 0)
+
+    def test_gate_and_summary_update_type_mismatches_are_retried(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="update-type-mismatch-retry")
+        existing = service.create_memory(
+            memory_id="mem-existing",
+            title="Existing fact",
+            body="The existing fact.",
+            type="fact",
+            scopes=["global"],
+        )
+        user_key, _ = self.capture_turn(
+            service,
+            turn="update-type-mismatch",
+            user_event="update-type-user",
+            assistant_event="update-type-assistant",
+        )
+        wrong_gate = self.candidate(
+            "wrong-gate-type",
+            [user_key],
+            type="project",
+            update_memory_id=existing.memory_id,
+        )
+        corrected_gate = self.candidate(
+            "correct-gate-type",
+            [user_key],
+            type="fact",
+            update_memory_id=existing.memory_id,
+        )
+        backend.responses.extend(
+            [
+                self.gate([wrong_gate]),
+                self.gate([corrected_gate]),
+                self.summary(user_key, title="Updated", body="Wrong summary type.", type="project", update_memory_id=existing.memory_id),
+                self.summary(user_key, title="Updated", body="The fact is updated.", type="fact", update_memory_id=existing.memory_id),
+            ]
+        )
+
+        result = service.process()
+
+        self.assertEqual(result["processed_turns"], 1)
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "summarize", "summarize"])
+        self.assertIn("Previous output violated: invalid_type.", backend.calls[1]["prompt"])
+        self.assertIn("Previous output violated: invalid_type.", backend.calls[3]["prompt"])
+        self.assertEqual(service.read(existing.memory_id).body, "The fact is updated.")
+        self.assertEqual(len(service.vault.list_markdown("history")), 1)
+
+    def test_duplicate_update_target_is_rejected_at_gate_and_retried(self):
+        """Duplicate targets are corrected before the writer commit phase."""
+
+        backend = QueueBackend()
+        service = self.service(backend, name="duplicate-update-target-field-repro")
+        existing = service.create_memory(
+            memory_id="mem-existing",
+            title="Existing fact",
+            body="The existing fact.",
+            type="fact",
+            scopes=["global"],
+        )
+        user_key, assistant_key = self.capture_turn(
+            service,
+            turn="duplicate-update",
+            user_event="duplicate-user",
+            assistant_event="duplicate-assistant",
+            user="The first update is true.",
+            assistant="The second update is also true.",
+        )
+        candidates = [
+            self.candidate(
+                "update-one",
+                [user_key],
+                memory="First update",
+                update_memory_id=existing.memory_id,
+            ),
+            self.candidate(
+                "update-two",
+                [assistant_key],
+                memory="Second update",
+                update_memory_id=existing.memory_id,
+            ),
+        ]
+        backend.responses.extend(
+            [
+                self.gate(candidates),
+                self.gate(
+                    [
+                        self.candidate(
+                            "merged-update",
+                            [user_key, assistant_key],
+                            memory="First and second update",
+                            update_memory_id=existing.memory_id,
+                        )
+                    ]
+                ),
+                self.summary(
+                    user_key,
+                    title="Existing fact",
+                    body="The existing fact now includes both updates.",
+                    update_memory_id=existing.memory_id,
+                ),
+            ]
+        )
+
+        result = service.process()
+
+        self.assertEqual(result["processed_turns"], 1)
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "summarize"])
+        self.assertIn("Previous output violated: duplicate_update_target.", backend.calls[1]["prompt"])
+        self.assertIn("merge", backend.calls[1]["prompt"].lower())
+        self.assertEqual(service.read(existing.memory_id).body, "The existing fact now includes both updates.")
+        self.assertEqual(len(service.vault.list_markdown("history")), 1)
+        marker = self.processed(service)["sessions"]["codex/s"]["processing"]
+        self.assertEqual(marker["status"], "idle")
+        self.assertEqual(self.processed(service)["sessions"]["codex/s"]["watermark"], 1)
+
+    def test_three_duplicate_update_targets_fail_at_gate_and_keep_inbox(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="duplicate-update-target-failure")
+        existing = service.create_memory(
+            memory_id="mem-existing",
+            title="Existing fact",
+            body="The existing fact.",
+            type="fact",
+            scopes=["global"],
+        )
+        user_key, assistant_key = self.capture_turn(
+            service,
+            turn="duplicate-update-failure",
+            user_event="duplicate-failure-user",
+            assistant_event="duplicate-failure-assistant",
+        )
+        candidates = [
+            self.candidate("update-one", [user_key], update_memory_id=existing.memory_id),
+            self.candidate("update-two", [assistant_key], update_memory_id=existing.memory_id),
+        ]
+        backend.responses.extend([self.gate(candidates)] * 3)
+
+        with self.assertRaises(ModelOutputError) as raised:
+            service.process()
+
+        self.assertEqual(raised.exception.validation_detail, "duplicate_update_target")
+        marker = self.processed(service)["sessions"]["codex/s"]["processing"]
+        self.assertEqual(marker["failure_code"], "model_invalid_response")
+        self.assertEqual(marker["failure_stage"], "gate")
+        self.assertEqual(marker["validation_reason"], "schema_violation")
+        self.assertEqual(marker["validation_detail"], "duplicate_update_target")
+        self.assertEqual(marker["attempt_count"], 3)
+        self.assertEqual(self.processed(service)["sessions"]["codex/s"].get("watermark", 0), 0)
+        self.assertEqual(len(self.knowledge(service)), 1)
+        self.assertEqual(service.read(existing.memory_id).body, existing.body)
+        self.assertEqual(len(service.vault.list_markdown("history")), 0)
+        self.assertTrue((service.vault.inbox_path / "codex" / "s.md").exists())
+        self.assertTrue(all("merge every candidate" in call["prompt"].lower() for call in backend.calls[1:]))
+
+    def test_writer_batch_defense_labels_duplicate_update_conflict(self):
+        service = self.service(QueueBackend(), name="writer-duplicate-update-defense")
+        existing = service.create_memory(
+            memory_id="mem-existing",
+            title="Existing fact",
+            body="The existing fact.",
+            type="fact",
+            scopes=["global"],
+        )
+        self.capture_turn(
+            service,
+            turn="writer-defense",
+            user_event="writer-defense-user",
+            assistant_event="writer-defense-assistant",
+        )
+        turn = parse_inbox(service.vault)[0]
+        request = {
+            "summary": {"type": "fact", "update_memory_id": existing.memory_id},
+            "memory_id": "mem-one",
+            "turn": turn,
+        }
+        with self.assertRaises(ModelOutputError) as raised:
+            MemoryWriter(service)._preflight([request, dict(request, memory_id="mem-two")])
+        self.assertEqual(raised.exception.validation_detail, "duplicate_update_target")
+        self.assertEqual(raised.exception.validation_reason, "schema_violation")
+        self.assertEqual(raised.exception.stage, "summarize")
+
+    def test_writer_batch_defense_labels_deterministic_id_conflict(self):
+        service = self.service(QueueBackend(), name="writer-deterministic-id-defense")
+        self.capture_turn(
+            service,
+            turn="writer-deterministic",
+            user_event="writer-deterministic-user",
+            assistant_event="writer-deterministic-assistant",
+        )
+        turn = parse_inbox(service.vault)[0]
+        request = {
+            "summary": {"type": "fact"},
+            "memory_id": "mem-same",
+            "turn": turn,
+        }
+        with self.assertRaises(ModelOutputError) as raised:
+            MemoryWriter(service)._preflight([request, dict(request)])
+        self.assertEqual(raised.exception.validation_reason, "schema_violation")
+        self.assertEqual(raised.exception.validation_detail, "other_schema_violation")
+        self.assertEqual(raised.exception.stage, "summarize")
 
     def test_remember_skips_gate_native_duplicate_still_writes_and_retries_idempotently(self):
         backend = QueueBackend()
