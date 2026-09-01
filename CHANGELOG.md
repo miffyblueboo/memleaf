@@ -2,6 +2,15 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.4 — 2026-09-01
+
+- Give `relative_time` retries explicit, actionable correction instructions so
+  the summarizer recalculates one-off dates from evidence timestamps, removes
+  relative wording, and resolves conflicting parenthesized dates before the
+  strict validator accepts the memory.
+- Preserve the `relative_time` validation detail across the Hermes provider
+  boundary instead of degrading it to `other_schema_violation` in diagnostics.
+
 ## 0.2.3 — 2026-09-01
 
 - Preserve capture event timestamps in extraction prompts and resolve one-off

@@ -9,7 +9,13 @@ from unittest import mock
 from memleaf import Memleaf
 from memleaf.config import default_config, load_config, save_config
 from memleaf.inbox import complete_turns, parse_inbox
-from memleaf.prompts import GATE_SYSTEM, SUMMARIZE_SYSTEM, gate_prompt, summarize_prompt
+from memleaf.prompts import (
+    GATE_SYSTEM,
+    RELATIVE_TIME_CORRECTION,
+    SUMMARIZE_SYSTEM,
+    gate_prompt,
+    summarize_prompt,
+)
 from memleaf.validation import ModelOutputError
 from memleaf.index import event_key, turn_key
 from memleaf.llm import (
@@ -204,7 +210,11 @@ class StageB1Test(unittest.TestCase):
                 "status": "active",
             }
 
-        responses = [json.dumps(gate), json.dumps(summary("在本周三前完成。")), json.dumps(summary("在2026-09-02前完成。"))]
+        responses = [
+            json.dumps(gate),
+            json.dumps(summary("在本周三（9/3）前完成。")),
+            json.dumps(summary("在2026-09-02前完成。")),
+        ]
         calls = []
 
         def callback(prompt, **kwargs):
@@ -231,6 +241,11 @@ class StageB1Test(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         self.assertEqual([purpose for _, purpose in calls], ["gate", "summarize", "summarize"])
         self.assertIn(anchor, calls[0][0])
+        self.assertIn(RELATIVE_TIME_CORRECTION, calls[2][0])
+        self.assertIn("event supporting each date as the anchor", calls[2][0])
+        self.assertIn("every one-off calendar date must be written only as YYYY-MM-DD", calls[2][0])
+        self.assertIn("parenthesized numeric date", calls[2][0])
+        self.assertIn("trust the event timestamp plus the weekday meaning", calls[2][0])
         self.assertIn("Previous output violated: relative_time.", calls[2][0])
         memory = self.service.read(result["memory_ids"][0])
         self.assertIsNotNone(memory)

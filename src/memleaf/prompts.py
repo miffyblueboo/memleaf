@@ -195,6 +195,22 @@ JSON_CORRECTION = (
 )
 
 
+RELATIVE_TIME_CORRECTION = (
+    "Previous output violated: relative_time. Re-read the evidence events and use "
+    "the timestamp of the event supporting each date as the anchor; recompute "
+    "each one-off relative date from that timestamp and the stated weekday "
+    "semantics. In the summary title and body, every one-off calendar date must "
+    "be written only as YYYY-MM-DD: remove forms such as today/tomorrow/yesterday, "
+    "今天/明天/昨天, 本周三/这周三/下周三/上周三, and this/next/last Wednesday. "
+    "If a relative weekday is followed by a parenthesized numeric date and they "
+    "conflict, trust the event timestamp plus the weekday meaning, replace the "
+    "numeric date with the computed YYYY-MM-DD, and remove the relative wording "
+    "and conflicting parenthetical date. Do not guess when no supporting timestamp "
+    "exists; omit or defer the date-dependent detail. Recurring schedules such as "
+    "每天、每周三, or every Wednesday are allowed. Return only the strict JSON object."
+)
+
+
 COMPACT_SYSTEM = """You are memleaf's memory compactor. Return JSON only.
 Merge only the supplied low-priority memories when they express compatible
 information. Return an object with a memories array; [] is a safe no-op.

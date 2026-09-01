@@ -1717,6 +1717,44 @@ class HermesProviderTests(unittest.TestCase):
         self.assertIsNotNone(fields)
         self.assertEqual(fields[4], "invalid_update_target")
 
+    def test_relative_time_validation_detail_is_preserved_and_logged(self) -> None:
+        value = {
+            "isError": True,
+            "structuredContent": {
+                "error": {
+                    "code": "model_invalid_response",
+                    "stage": "summarize",
+                    "validation_reason": "schema_violation",
+                    "validation_detail": "relative_time",
+                    "attempt_count": 3,
+                }
+            },
+        }
+        fields = provider_module._mcp_error_fields(value)
+        self.assertIsNotNone(fields)
+        self.assertEqual(fields[4], "relative_time")
+        error = provider_module._MCPToolError(
+            code="model_invalid_response",
+            stage="summarize",
+            validation_reason="schema_violation",
+            validation_detail="relative_time",
+            attempt_count=3,
+        )
+        self.assertEqual(error.validation_detail, "relative_time")
+
+        provider = self.provider(
+            responses=[
+                {"stored": True},
+                {"stored": True},
+                value,
+            ]
+        )
+        with patch.object(provider_module.logger, "info") as info:
+            provider.sync_turn("visible user", "visible assistant", session_id="relative-time-session")
+        output = "\n".join(call.args[0] % call.args[1:] for call in info.call_args_list)
+        self.assertIn("validation_detail=relative_time", output)
+        self.assertIn("attempt_count=3", output)
+
     def test_capture_failure_skips_process_and_does_not_escape_provider(self) -> None:
         provider = self.provider(responses=[{"stored": True}, RuntimeError("capture unavailable")])
         with patch.object(provider_module.logger, "warning") as warning:

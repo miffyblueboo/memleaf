@@ -85,6 +85,7 @@ _MODEL_VALIDATION_DETAILS = frozenset(
         "reason_too_long",
         "source_shape",
         "todo_fields",
+        "relative_time",
         "other_schema_violation",
     }
 )

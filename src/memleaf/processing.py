@@ -30,7 +30,14 @@ from .locking import atomic_write_json, atomic_write_text, read_json
 from .memory_writer import MemoryWriter
 from .models import Memory, utc_now
 from .native_index import NativeIndexer
-from .prompts import JSON_CORRECTION, GATE_SYSTEM, SUMMARIZE_SYSTEM, gate_prompt, summarize_prompt
+from .prompts import (
+    JSON_CORRECTION,
+    RELATIVE_TIME_CORRECTION,
+    GATE_SYSTEM,
+    SUMMARIZE_SYSTEM,
+    gate_prompt,
+    summarize_prompt,
+)
 from .redaction import redact_text
 from .retrieval import candidate_matches_query, filter_by_scope, normalize_term
 from .scope_state import ScopeError, normalize_scopes, register_scope_nodes
@@ -463,6 +470,15 @@ class Processor:
                 return reason
         return None
 
+    @staticmethod
+    def _correction_instruction(error: BaseException) -> Optional[str]:
+        hint = Processor._safe_correction_hint(error)
+        if hint == "relative_time":
+            return RELATIVE_TIME_CORRECTION
+        if hint is not None:
+            return f"Previous output violated: {hint}."
+        return None
+
     def _diagnostic_enabled(self) -> bool:
         try:
             config = self.service.vault.config()
@@ -620,10 +636,10 @@ class Processor:
                 except Exception:
                     pass
                 if self._allows_next_json_attempt(error, attempt_count):
-                    hint = self._safe_correction_hint(error)
                     correction_prompt = prompt + "\n\n" + JSON_CORRECTION
-                    if hint is not None:
-                        correction_prompt += f"\nPrevious output violated: {hint}."
+                    instruction = self._correction_instruction(error)
+                    if instruction is not None:
+                        correction_prompt += f"\n{instruction}"
                     continue
                 raise
             try:
