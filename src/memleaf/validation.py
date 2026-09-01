@@ -52,6 +52,7 @@ MODEL_VALIDATION_DETAILS = frozenset(
         "candidate_shape",
         "duplicate_candidate_id",
         "duplicate_update_target",
+        "mixed_project_scopes",
         "invalid_evidence",
         "invalid_flags",
         "invalid_type",
@@ -72,7 +73,7 @@ _RELATIVE_CALENDAR_EXPRESSION = re.compile(
     r"(?<![A-Za-z])(?:today|tomorrow|yesterday)(?![A-Za-z])"
     r"|(?<![A-Za-z])(?:this|next|last)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?![A-Za-z])"
     r"|(?:本|这|下|上)(?:个)?(?:周|星期|礼拜)\s*(?:一|二|三|四|五|六|日|天|末|[1-7])"
-    r"|(?:今天|明天|昨天)"
+    r"|(?:今天|明天|昨天|今日|明日|昨日)"
     r")",
     re.IGNORECASE,
 )
@@ -226,6 +227,25 @@ def _scopes(value: Any, scope_source: Any) -> list[str]:
             validation_detail="invalid_scope",
         )
     return result
+
+
+def _reject_mixed_project_scopes(scopes: Iterable[str]) -> None:
+    """Keep one worthy memory atomic across independent project scopes.
+
+    Parent scopes (global/domain/portfolio) may accompany one project scope;
+    only two or more distinct project scopes represent an ambiguous aggregate.
+    """
+
+    project_scopes = {
+        scope.casefold()
+        for scope in scopes
+        if isinstance(scope, str) and scope.partition(":")[0] == "project"
+    }
+    if len(project_scopes) > 1:
+        raise ModelOutputError(
+            "one memory cannot cover multiple project scopes",
+            validation_detail="mixed_project_scopes",
+        )
 
 
 def _memory_id(value: Any, field: str) -> str:
@@ -535,7 +555,9 @@ def validate_gate_output(
                 target_ids.add(target_key)
         if not isinstance(item["scope_source"], str) or item["scope_source"] not in SCOPE_SOURCES:
             raise ModelOutputError("invalid scope_source", validation_detail="invalid_scope_source")
-        _scopes(item["scopes"], item["scope_source"])
+        item["scopes"] = _scopes(item["scopes"], item["scope_source"])
+        if item["worth"]:
+            _reject_mixed_project_scopes(item["scopes"])
         if "reason" in item:
             _string(item["reason"], "reason", nonempty=False)
             if len(item["reason"]) > 30:
@@ -659,6 +681,7 @@ def validate_summarize_output(
             validation_detail="invalid_type",
         )
     item["scopes"] = _scopes(item["scopes"], item.get("scope_source"))
+    _reject_mixed_project_scopes(item["scopes"])
     item["scope_operations"] = _scope_operations(
         item.get("scope_operations"),
         summary_scopes=item["scopes"],

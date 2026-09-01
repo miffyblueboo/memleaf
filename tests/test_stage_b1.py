@@ -12,6 +12,7 @@ from memleaf.inbox import complete_turns, parse_inbox
 from memleaf.prompts import (
     DUPLICATE_TARGET_CORRECTION,
     GATE_SYSTEM,
+    MIXED_PROJECT_SCOPES_CORRECTION,
     RELATIVE_TIME_CORRECTION,
     SUMMARY_TARGET_CORRECTION,
     SUMMARY_TYPE_CORRECTION,
@@ -184,6 +185,7 @@ class StageB1Test(unittest.TestCase):
             self.assertIn("ISO-8601 UTC timestamp", prompt_system)
             self.assertIn("YYYY-MM-DD", prompt_system)
             self.assertIn("本周X/这周X/下周X/上周X", prompt_system)
+            self.assertIn("今日/明日/昨日", prompt_system)
             self.assertIn("every Wednesday", prompt_system)
 
     def test_relative_summary_is_rejected_then_absolute_retry_is_committed(self):
@@ -1179,6 +1181,11 @@ class ValidationTest(unittest.TestCase):
         self.assertIn("immutable", SUMMARY_TARGET_CORRECTION.lower())
         self.assertIn("exactly equal", SUMMARY_TYPE_CORRECTION.lower())
 
+    def test_correction_prompt_explains_project_scope_atomicity(self):
+        self.assertIn("mixed_project_scopes", MIXED_PROJECT_SCOPES_CORRECTION)
+        self.assertIn("split", MIXED_PROJECT_SCOPES_CORRECTION.lower())
+        self.assertIn("global plus one project", MIXED_PROJECT_SCOPES_CORRECTION.lower())
+
     def test_mcp_model_diagnostics_preserve_duplicate_target_detail(self):
         error = ModelOutputError(
             "safe",
@@ -1330,6 +1337,63 @@ class ValidationTest(unittest.TestCase):
                 json.dumps({"candidates": [dict(base, scopes=["global", "unscoped"], scope_source="insufficient_context")]}),
                 ["event-a"],
             )
+
+    def test_worthy_memory_rejects_multiple_project_scopes_but_allows_parent_context(self):
+        base = {
+            "candidate_id": "c",
+            "memory": "one future-use topic",
+            "evidence_event_ids": ["event-a"],
+            "duplicate": False,
+            "worth": True,
+            "type": "project",
+            "scope_source": "model",
+        }
+        invalid = dict(base, scopes=["project:cn", "project:fund"])
+        with self.assertRaises(ModelOutputError) as raised:
+            parse_gate_output(json.dumps({"candidates": [invalid]}), ["event-a"])
+        self.assertEqual(raised.exception.validation_detail, "mixed_project_scopes")
+
+        for scopes in (
+            ["global", "project:cn"],
+            ["portfolio:finance", "project:cn"],
+            ["domain:work", "portfolio:finance", "project:cn"],
+        ):
+            with self.subTest(scopes=scopes):
+                parsed = parse_gate_output(
+                    json.dumps({"candidates": [dict(base, scopes=scopes)]}),
+                    ["event-a"],
+                )
+                self.assertEqual(parsed["candidates"][0]["scopes"], scopes)
+
+        summary = {
+            "title": "One topic",
+            "body": "One future-use topic.",
+            "tags": [],
+            "type": "project",
+            "scopes": ["project:cn", "project:fund"],
+            "scope_source": "model",
+            "sources": [{"event_key": "event-a"}],
+        }
+        with self.assertRaises(ModelOutputError) as raised:
+            parse_summarize_output(json.dumps(summary), current_event_keys=["event-a"])
+        self.assertEqual(raised.exception.validation_detail, "mixed_project_scopes")
+
+    def test_chinese_relative_date_aliases_are_rejected(self):
+        for relative in ("今日", "明日", "昨日"):
+            with self.subTest(relative=relative):
+                summary = {
+                    "title": f"截止{relative}",
+                    "body": "完成项目交付。",
+                    "tags": [],
+                    "type": "todo",
+                    "scopes": ["global"],
+                    "scope_source": "model",
+                    "sources": [{"event_key": "event-a"}],
+                    "status": "active",
+                }
+                with self.assertRaises(ModelOutputError) as raised:
+                    parse_summarize_output(json.dumps(summary), current_event_keys=["event-a"])
+                self.assertEqual(raised.exception.validation_detail, "relative_time")
 
     def test_summary_evidence_and_sources_are_limited_to_current_turn_fields(self):
         summary = {

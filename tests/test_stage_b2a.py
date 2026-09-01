@@ -182,6 +182,205 @@ class StageB2ATest(unittest.TestCase):
         self.assertEqual(len(backend.calls), calls_after_first)
         self.assertEqual(len(self.knowledge(service)), 2)
 
+    def test_mixed_project_digest_retries_to_atomic_project_outputs(self):
+        service = self.service(name="mixed-project-digest")
+        history_memory = service.create_memory(
+            memory_id="mem-zhongyin-history",
+            title="中银国际历史需求",
+            body="中银国际历史需求已完整覆盖：需求清单逐项确认、信创测试环境部署、历史数据库和附件全量迁移。",
+            type="project",
+            scopes=["project:zhongyin"],
+        )
+        existing = service.create_memory(
+            memory_id="mem-zhongyin-plan",
+            title="中银国际实施计划",
+            body="中银国际实施计划当前按原始安排执行。",
+            type="project",
+            scopes=["project:zhongyin"],
+        )
+        config = service.vault.config()
+        config["llm"]["diagnostic_logging"] = True
+        save_config(service.vault.config_path, config)
+        user_key, assistant_key = self.capture_turn(
+            service,
+            session="mixed-project-digest",
+            user_event="mixed-digest-user",
+            assistant_event="mixed-digest-assistant",
+            user=(
+                "邮箱巡检：中银国际历史需求已覆盖需求清单逐项确认、信创测试环境部署、"
+                "历史数据库和附件全量迁移；客户提出单点登录提前并行、数据文件规范提前确认、"
+                "重新压实实施计划；摩根基金本周三排查证券申报类型；会议待确认；"
+                "Orion待PM受理；金元顺安待反馈。"
+            ),
+            assistant="会议和待办已整理，后续按项目分别跟进。",
+        )
+
+        def scoped(candidate_id, *, memory, type, scopes, worth=True, update_memory_id=None):
+            value = self.candidate(
+                candidate_id,
+                [user_key, assistant_key],
+                memory=memory,
+                type=type,
+                worth=worth,
+                update_memory_id=update_memory_id,
+            )
+            value["scopes"] = list(scopes)
+            return value
+
+        mixed = scoped(
+            "digest",
+            memory="2026-09-01邮箱巡检需关注事项",
+            type="fact",
+            scopes=[
+                "project:zhongyin",
+                "project:morgan",
+                "project:orion",
+                "project:jinyuan",
+            ],
+        )
+        corrected = [
+            scoped(
+                "zhongyin-plan",
+                memory="中银国际实施计划新增客户建议：单点登录提前并行、数据文件规范提前确认、重新压实实施计划",
+                type="project",
+                scopes=["project:zhongyin"],
+                update_memory_id=existing.memory_id,
+            ),
+            scoped(
+                "morgan-todo",
+                memory="摩根基金排查证券申报类型",
+                type="todo",
+                scopes=["project:morgan"],
+            ),
+            scoped(
+                "orion-pending",
+                memory="Orion待PM受理",
+                type=None,
+                scopes=["project:orion"],
+                worth=False,
+            ),
+            scoped(
+                "jinyuan-pending",
+                memory="金元顺安待反馈",
+                type=None,
+                scopes=["project:jinyuan"],
+                worth=False,
+            ),
+        ]
+        backend = QueueBackend(
+            [
+                self.gate([mixed]),
+                self.gate(corrected),
+                self.summary(
+                    user_key,
+                    title="中银国际实施计划",
+                    body=(
+                        "客户提出单点登录提前并行、数据文件规范提前确认、重新压实实施计划；"
+                        "当前待纳入，尚未表示已落地。"
+                    ),
+                    type="project",
+                    scopes=["project:zhongyin"],
+                    update_memory_id=existing.memory_id,
+                ),
+                self.summary(
+                    user_key,
+                    title="摩根基金证券申报类型排查",
+                    body="待排查摩根基金证券申报类型，截止日期为2026-09-02。",
+                    type="todo",
+                    scopes=["project:morgan"],
+                    status="active",
+                ),
+            ]
+        )
+
+        result = service.process(
+            source="codex",
+            session_id="mixed-project-digest",
+            model=backend,
+        )
+
+        self.assertEqual(result["processed_turns"], 1)
+        self.assertEqual(result["memories_written"], 2)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "summarize", "summarize"])
+        self.assertIn("Previous output violated: mixed_project_scopes.", backend.calls[1]["prompt"])
+        active = self.knowledge(service)
+        self.assertEqual(len(active), 3)
+        active_by_id = {record.memory.memory_id: record.memory for record in active}
+        self.assertIn(history_memory.memory_id, active_by_id)
+        self.assertIn(existing.memory_id, active_by_id)
+        self.assertTrue(all(sum(scope.startswith("project:") for scope in record.memory.scopes) <= 1 for record in active))
+        self.assertEqual(active_by_id[existing.memory_id].type, "project")
+        self.assertIn("客户提出", active_by_id[existing.memory_id].body)
+        self.assertIn("待纳入", active_by_id[existing.memory_id].body)
+        todo = next(
+            memory
+            for memory_id, memory in active_by_id.items()
+            if memory_id not in {history_memory.memory_id, existing.memory_id}
+        )
+        self.assertEqual(
+            set(active_by_id),
+            {history_memory.memory_id, existing.memory_id, todo.memory_id},
+        )
+        self.assertEqual(todo.type, "todo")
+        self.assertEqual(todo.scopes, ["project:morgan"])
+        self.assertEqual(active_by_id[history_memory.memory_id].body, history_memory.body)
+        self.assertIn("单点登录提前并行", active_by_id[existing.memory_id].body)
+        self.assertNotIn("需求清单逐项确认", active_by_id[existing.memory_id].body)
+        self.assertNotIn("历史数据库和附件全量迁移", active_by_id[existing.memory_id].body)
+        history = service._read_memories_unlocked("history")
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].memory.extra["active_memory_id"], existing.memory_id)
+        self.assertEqual(history[0].memory.body, existing.body)
+        bodies = "\n".join(record.memory.body for record in active)
+        self.assertNotIn("邮箱巡检", bodies)
+        self.assertNotIn("需关注事项", bodies)
+        self.assertNotIn("待PM受理", bodies)
+        self.assertNotIn("待反馈", bodies)
+        diagnostics = [
+            json.loads(line)
+            for line in (service.vault.logs_path / "model-diagnostics.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(diagnostics[0]["validation_detail"], "mixed_project_scopes")
+
+    def test_three_mixed_project_gate_failures_keep_inbox_and_watermark(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="mixed-gate-failure")
+        user_key, assistant_key = self.capture_turn(
+            service,
+            session="mixed-gate-failure",
+            user_event="mixed-gate-failure-user",
+            assistant_event="mixed-gate-failure-assistant",
+        )
+        mixed = self.candidate(
+            "mixed-gate-candidate",
+            [user_key, assistant_key],
+            memory="cross-project digest",
+            type="fact",
+        )
+        mixed["scopes"] = ["project:zhongyin", "project:morgan"]
+        backend.responses.extend([self.gate([mixed])] * 3)
+
+        with self.assertRaises(ModelOutputError) as raised:
+            service.process(
+                source="codex",
+                session_id="mixed-gate-failure",
+                model=backend,
+            )
+
+        self.assertEqual(raised.exception.validation_detail, "mixed_project_scopes")
+        self.assertEqual(raised.exception.stage, "gate")
+        self.assertEqual(raised.exception.attempt_count, 3)
+        marker = self.processed(service)["sessions"]["codex/mixed-gate-failure"]["processing"]
+        self.assertEqual(marker["failure_stage"], "gate")
+        self.assertEqual(marker["validation_detail"], "mixed_project_scopes")
+        self.assertEqual(marker["attempt_count"], 3)
+        self.assertEqual(
+            self.processed(service)["sessions"]["codex/mixed-gate-failure"].get("watermark", 0),
+            0,
+        )
+        self.assertTrue((service.vault.inbox_path / "codex" / "mixed-gate-failure.md").is_file())
+        self.assertEqual(self.knowledge(service), [])
+
     def test_draft_turn_is_discarded_and_final_email_state_is_the_only_memory(self):
         backend = QueueBackend()
         service = self.service(backend, name="email-final-only")
@@ -530,6 +729,154 @@ class StageB2ATest(unittest.TestCase):
         self.assertIn("Previous output violated: invalid_type.", backend.calls[3]["prompt"])
         self.assertEqual(service.read(existing.memory_id).body, "The fact is updated.")
         self.assertEqual(len(service.vault.list_markdown("history")), 1)
+
+    def test_mixed_project_summary_retries_before_writing(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="mixed-summary-retry")
+        user_key, _ = self.capture_turn(
+            service,
+            turn="mixed-summary",
+            user_event="mixed-summary-user",
+            assistant_event="mixed-summary-assistant",
+        )
+        candidate = self.candidate(
+            "mixed-summary-candidate",
+            [user_key],
+            memory="one project topic",
+            type="project",
+        )
+        candidate["scopes"] = ["project:zhongyin"]
+        mixed_summary = self.summary(
+            user_key,
+            title="One topic",
+            body="One project topic.",
+            type="project",
+            scopes=["project:zhongyin", "project:morgan"],
+        )
+        corrected_summary = self.summary(
+            user_key,
+            title="One topic",
+            body="One project topic.",
+            type="project",
+            scopes=["project:zhongyin"],
+        )
+        backend.responses.extend([self.gate([candidate]), mixed_summary, corrected_summary])
+
+        result = service.process()
+
+        self.assertEqual(result["processed_turns"], 1)
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize", "summarize"])
+        self.assertIn("Previous output violated: mixed_project_scopes.", backend.calls[2]["prompt"])
+        self.assertEqual(service._read_memories_unlocked("knowledge")[0].memory.scopes, ["project:zhongyin"])
+
+    def test_three_mixed_project_summary_failures_keep_inbox_and_watermark(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="mixed-summary-failure")
+        user_key, _ = self.capture_turn(
+            service,
+            turn="mixed-summary-failure",
+            user_event="mixed-summary-failure-user",
+            assistant_event="mixed-summary-failure-assistant",
+        )
+        candidate = self.candidate(
+            "mixed-summary-failure-candidate",
+            [user_key],
+            memory="one project topic",
+            type="project",
+        )
+        candidate["scopes"] = ["project:zhongyin"]
+        mixed_summary = self.summary(
+            user_key,
+            title="One topic",
+            body="One project topic.",
+            type="project",
+            scopes=["project:zhongyin", "project:morgan"],
+        )
+        backend.responses.extend([self.gate([candidate]), mixed_summary, mixed_summary, mixed_summary])
+
+        with self.assertRaises(ModelOutputError) as raised:
+            service.process()
+
+        self.assertEqual(raised.exception.validation_detail, "mixed_project_scopes")
+        self.assertEqual(raised.exception.stage, "summarize")
+        self.assertEqual(raised.exception.attempt_count, 3)
+        marker = self.processed(service)["sessions"]["codex/s"]["processing"]
+        self.assertEqual(marker["failure_stage"], "summarize")
+        self.assertEqual(marker["validation_detail"], "mixed_project_scopes")
+        self.assertEqual(marker["attempt_count"], 3)
+        self.assertEqual(self.processed(service)["sessions"]["codex/s"].get("watermark", 0), 0)
+        self.assertTrue((service.vault.inbox_path / "codex" / "s.md").is_file())
+        self.assertEqual(service._read_memories_unlocked("knowledge"), [])
+
+    def test_chinese_relative_date_alias_retries_to_absolute_date(self):
+        anchor = "2026-09-01T02:01:41Z"
+        backend = QueueBackend()
+        with patch("memleaf.capture._timestamp", return_value=anchor):
+            service = self.service(backend, name="chinese-relative-retry-anchored")
+            user_key, _ = self.capture_turn(
+                service,
+                turn="chinese-relative",
+                user_event="chinese-relative-user",
+                assistant_event="chinese-relative-assistant",
+            )
+            candidate = self.candidate(
+                "chinese-relative-candidate",
+                [user_key],
+                memory="完成截止日期",
+                type="todo",
+            )
+            backend.responses.extend(
+                [
+                    self.gate([candidate]),
+                    self.summary(user_key, title="截止昨日", body="昨日完成。", type="todo", status="active"),
+                    self.summary(user_key, title="截止日期", body="截止日期为2026-08-31。", type="todo", status="active"),
+                ]
+            )
+            result = service.process()
+
+        self.assertEqual(result["processed_turns"], 1)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize", "summarize"])
+        self.assertIn("今日/明日/昨日", backend.calls[2]["prompt"])
+        self.assertEqual(service._read_memories_unlocked("knowledge")[0].memory.body, "截止日期为2026-08-31。")
+
+    def test_three_chinese_relative_date_failures_keep_inbox_and_watermark(self):
+        anchor = "2026-09-01T02:01:41Z"
+        backend = QueueBackend()
+        service = self.service(backend, name="chinese-relative-failure")
+        with patch("memleaf.capture._timestamp", return_value=anchor):
+            user_key, _ = self.capture_turn(
+                service,
+                turn="chinese-relative-failure",
+                user_event="chinese-relative-failure-user",
+                assistant_event="chinese-relative-failure-assistant",
+            )
+        candidate = self.candidate(
+            "chinese-relative-failure-candidate",
+            [user_key],
+            memory="完成截止日期",
+            type="todo",
+        )
+        bad_summary = self.summary(
+            user_key,
+            title="截止今日",
+            body="今日完成。",
+            type="todo",
+            status="active",
+        )
+        backend.responses.extend([self.gate([candidate]), bad_summary, bad_summary, bad_summary])
+
+        with self.assertRaises(ModelOutputError) as raised:
+            service.process()
+
+        self.assertEqual(raised.exception.validation_detail, "relative_time")
+        self.assertEqual(raised.exception.stage, "summarize")
+        self.assertEqual(raised.exception.attempt_count, 3)
+        marker = self.processed(service)["sessions"]["codex/s"]["processing"]
+        self.assertEqual(marker["validation_detail"], "relative_time")
+        self.assertEqual(marker["attempt_count"], 3)
+        self.assertEqual(self.processed(service)["sessions"]["codex/s"].get("watermark", 0), 0)
+        self.assertTrue((service.vault.inbox_path / "codex" / "s.md").is_file())
 
     def test_duplicate_update_target_is_rejected_at_gate_and_retried(self):
         """Duplicate targets are corrected before the writer commit phase."""

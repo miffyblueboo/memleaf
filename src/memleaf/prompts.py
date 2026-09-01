@@ -47,7 +47,7 @@ Calendar dates are strict. Each event may include an ISO-8601 UTC timestamp.
 For a one-off relative date in a candidate or its later summary, use the
 timestamp of the evidence event that supports it as the calendar anchor and
 emit an absolute YYYY-MM-DD date. Resolve today/tomorrow/yesterday,
-今天/明天/昨天, 本周X/这周X/下周X/上周X, and this/next/last weekday;
+今天/明天/昨天/今日/明日/昨日, 本周X/这周X/下周X/上周X, and this/next/last weekday;
 use Monday-Sunday calendar weeks for week expressions. Do not leave these
 strong relative forms in a worthy memory, and never guess without a timestamp:
 defer or omit a date-dependent candidate if its supporting event has no
@@ -92,6 +92,13 @@ be independently retrieved and updated. Prefer one coherent current-state memory
 over adjacent overlapping snapshots; do not use a score or fixed category rule.
 Most ordinary turns should produce zero or one candidate; multiple require
 genuinely independent future questions or actions.
+Never persist an aggregate mailbox sweep, daily report, or "items to watch"
+digest as one cross-project memory. Inspect each item and split genuinely
+independent project risks or actionable todo items; if an item has no
+independent future use, set worth=false. A one-off meeting with no durable
+decision or commitment, a request awaiting PM acceptance, and pending feedback
+or another intermediate status normally have worth=false. Keep an independent
+project risk or concrete future action even when it came from a digest.
 An intermediate state such as a draft awaiting confirmation, preparation/
 processing status, temporary error, repeated confirmation, or unconfirmed
 suggestion normally has no independent future use and is worth=false. Keep one
@@ -113,6 +120,11 @@ operational incident spans stats/search/remember calls; this default remains.
 Retain only a separate, user-confirmed future-use fact, preference, identity, constraint, commitment,
 project risk, or durable lesson that prevents repeating the investigation, not
 the execution transcript.
+If a related active memory already covers the same future question/action and
+the current turn adds no confirmed change, use worth=false and do not create a
+sibling. If a customer or user proposes a new change without confirmation of
+implementation, preserve it as requested/proposed/pending and never state that
+it is already implemented.
 Return no prose, markdown fences, comments, or trailing text."""
 
 
@@ -142,11 +154,15 @@ to the gate candidate type and to the active update target type.
 For the same use, preserve still-valid facts, add confirmed progress, replace
 contradictions, and never reduce the memory to the latest operation or create a
 sibling with a new label.
+Never turn an email sweep, daily report, or watchlist into one cross-project
+summary. Keep only one future-use topic in the summary; split unrelated
+projects at the gate, and omit temporary meeting/awaiting-acceptance/pending-
+feedback states unless they have an independent future action.
 Calendar dates are strict. Each event may include an ISO-8601 UTC timestamp.
 For a one-off relative date in the summary title or body, use the timestamp of
 the supporting evidence event as the calendar anchor and emit an absolute
 YYYY-MM-DD date. Resolve today/tomorrow/yesterday,
-今天/明天/昨天, 本周X/这周X/下周X/上周X, and this/next/last weekday;
+今天/明天/昨天/今日/明日/昨日, 本周X/这周X/下周X/上周X, and this/next/last weekday;
 use Monday-Sunday calendar weeks for week expressions. Never leave these
 strong relative forms in the summary, and never guess without a timestamp.
 Recurring schedules such as 每天、每周三, or every Wednesday are not one-off
@@ -155,7 +171,12 @@ In automatic capture/process mode, a pure read-only query whose answer only
 restates a related active memory is not a new candidate. It must have been
 rejected by the gate; do not use duplicate_memory_id or update_memory_id to
 append the query as a source. Only a newly confirmed fact or state change in
-the current evidence may update an existing memory.
+the current evidence may update an existing memory. If a related active memory
+already covers the same future question/action and the current evidence adds no
+confirmed change, retain the existing memory unchanged (the gate should emit
+worth=false) rather than creating a sibling. When the current evidence is a
+customer/user request that is not confirmed implemented, state it as
+requested/proposed/pending and never as completed or deployed.
 fields and JSON types are title (string), body (string), tags (string list),
 type (one of preference, fact, project, todo, event, identity, other), scopes
 (non-empty string list), and sources (non-empty object list). scope_source, if
@@ -210,13 +231,26 @@ RELATIVE_TIME_CORRECTION = (
     "each one-off relative date from that timestamp and the stated weekday "
     "semantics. In the summary title and body, every one-off calendar date must "
     "be written only as YYYY-MM-DD: remove forms such as today/tomorrow/yesterday, "
-    "今天/明天/昨天, 本周三/这周三/下周三/上周三, and this/next/last Wednesday. "
+    "今天/明天/昨天/今日/明日/昨日, 本周三/这周三/下周三/上周三, and this/next/last Wednesday. "
     "If a relative weekday is followed by a parenthesized numeric date and they "
     "conflict, trust the event timestamp plus the weekday meaning, replace the "
     "numeric date with the computed YYYY-MM-DD, and remove the relative wording "
     "and conflicting parenthetical date. Do not guess when no supporting timestamp "
     "exists; omit or defer the date-dependent detail. Recurring schedules such as "
     "每天、每周三, or every Wednesday are allowed. Return only the strict JSON object."
+)
+
+
+MIXED_PROJECT_SCOPES_CORRECTION = (
+    "Previous output violated: mixed_project_scopes. Keep each worthy "
+    "candidate and summary atomic: it may contain at most one distinct "
+    "project:<name> scope. At the gate, split genuinely independent projects "
+    "into separate candidates, preserving their own evidence, or mark purely "
+    "temporary meeting/awaiting-acceptance/pending-feedback items worth=false. "
+    "In a summary, keep only one future-use project topic and its matching "
+    "details. global plus one project and valid domain/portfolio parent scopes "
+    "are allowed; do not remove those parent scopes merely to pass validation. "
+    "Return only the strict JSON object."
 )
 
 

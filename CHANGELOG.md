@@ -2,6 +2,19 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.6 — 2026-09-01
+
+- Reject one worthy memory that spans multiple independent project scopes and
+  retry with an explicit instruction to split actionable project topics while
+  discarding temporary mailbox-sweep status items.
+- Tighten automatic admission so aggregate mailbox/daily-report snapshots,
+  one-off meetings without durable outcomes, pending PM acceptance, and
+  awaiting-feedback states do not become a cross-project permanent memory;
+  keep independent risks and actionable todos eligible.
+- Prefer `UPDATE` or `NO_CHANGE` for an existing future-use topic, preserve
+  unimplemented customer requests as proposed or pending, and recognize the
+  Chinese relative-date forms `今日`, `明日`, and `昨日` in strict retries.
+
 ## 0.2.5 — 2026-09-01
 
 - Detect multiple gate candidates that target the same active memory before

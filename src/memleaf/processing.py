@@ -33,6 +33,7 @@ from .native_index import NativeIndexer
 from .prompts import (
     DUPLICATE_TARGET_CORRECTION,
     JSON_CORRECTION,
+    MIXED_PROJECT_SCOPES_CORRECTION,
     RELATIVE_TIME_CORRECTION,
     GATE_SYSTEM,
     SUMMARY_TARGET_CORRECTION,
@@ -479,6 +480,8 @@ class Processor:
         stage = getattr(error, "stage", None)
         if hint == "duplicate_update_target":
             return DUPLICATE_TARGET_CORRECTION
+        if hint == "mixed_project_scopes":
+            return MIXED_PROJECT_SCOPES_CORRECTION
         if hint == "relative_time":
             return RELATIVE_TIME_CORRECTION
         if stage == "summarize" and hint == "invalid_update_target":
