@@ -6,7 +6,12 @@ import json
 import re
 from typing import Any, Iterable, Mapping
 
-from .scope_state import ScopeError, validate_scope_key, validate_scope_registry
+from .scope_state import (
+    ScopeError,
+    project_scope_matches_text,
+    validate_scope_key,
+    validate_scope_registry,
+)
 
 
 class ModelOutputError(ValueError):
@@ -41,6 +46,7 @@ class ModelOutputError(ValueError):
 MEMORY_TYPES = frozenset(("preference", "fact", "project", "todo", "event", "identity", "other"))
 SCOPE_SOURCES = frozenset(("model", "user", "session_context", "insufficient_context"))
 TODO_STATUSES = frozenset(("active", "completed", "cancelled"))
+NO_CHANGE_DECISION = "NO_CHANGE"
 MODEL_VALIDATION_REASONS = frozenset(
     ("empty_content", "invalid_json", "schema_violation", "response_shape")
 )
@@ -54,6 +60,8 @@ MODEL_VALIDATION_DETAILS = frozenset(
         "duplicate_update_target",
         "mixed_project_scopes",
         "update_target_type_mismatch",
+        "scope_not_grounded",
+        "scope_drift",
         "invalid_evidence",
         "invalid_flags",
         "invalid_type",
@@ -249,6 +257,78 @@ def _reject_mixed_project_scopes(scopes: Iterable[str]) -> None:
         )
 
 
+def _reject_ungrounded_project_scope(
+    memory: str,
+    scopes: Iterable[str],
+    scope_registry: Mapping[str, Any] | None,
+) -> None:
+    """Require model-attributed project scopes to be named by this candidate.
+
+    The gate's memory text is the only candidate-local attribution evidence.
+    Session background, other events, and related-memory bodies are
+    intentionally excluded so an aggregate mailbox turn cannot lend a
+    project name to an unrelated candidate.
+    """
+
+    selected = {
+        scope.casefold(): scope
+        for scope in scopes
+        if isinstance(scope, str) and scope.partition(":")[0] == "project"
+    }
+    if not selected:
+        return
+    try:
+        registry = validate_scope_registry(scope_registry or {})
+    except ScopeError as error:
+        raise ModelOutputError("invalid scope registry", validation_detail="invalid_scope") from error
+
+    # Resolve a selected project key through a registered canonical scope when
+    # it is an alias (including the full ``project:...`` spelling).  A merged
+    # source may remain selectable as an alias of its target; treating both as
+    # separate projects would incorrectly reject that otherwise valid update.
+    selected_owners: dict[str, str] = {}
+    for selected_scope in selected.values():
+        selected_owner = selected_scope
+        for registered_scope, node in registry.items():
+            if not registered_scope.startswith("project:"):
+                continue
+            terms = {
+                registered_scope.casefold(),
+                registered_scope.split(":", 1)[1].casefold(),
+            }
+            aliases = node.get("aliases", [])
+            if isinstance(aliases, list):
+                for alias in aliases:
+                    if isinstance(alias, str):
+                        alias_key = alias.casefold()
+                        terms.add(alias_key)
+                        if ":" not in alias:
+                            terms.add(f"project:{alias_key}")
+            if selected_scope.casefold() in terms:
+                selected_owner = registered_scope
+                break
+        selected_owners[selected_scope.casefold()] = selected_owner.casefold()
+
+    # Include unregistered selections as temporary nodes: new scopes must be
+    # grounded by their own project name, while registered scopes also accept
+    # their configured aliases.  All known projects are checked to reject an
+    # otherwise ambiguous candidate that names multiple projects.
+    candidate_registry = dict(registry)
+    for scope in selected.values():
+        owner = selected_owners[scope.casefold()]
+        if owner not in {registered.casefold() for registered in registry}:
+            candidate_registry.setdefault(scope, {})
+    matches = {
+        scope.casefold()
+        for scope in project_scope_matches_text(memory, {"scopes": candidate_registry})
+    }
+    if len(matches) != 1 or not matches.intersection(selected_owners.values()):
+        raise ModelOutputError(
+            "model project scope is not grounded by this candidate",
+            validation_detail="scope_not_grounded",
+        )
+
+
 def _memory_id(value: Any, field: str) -> str:
     result = _string(value, field)
     if "/" in result or "\\" in result or result in (".", ".."):
@@ -420,6 +500,7 @@ def validate_gate_output(
     current_event_keys: Iterable[Any] | None = None,
     related_memory_ids: Iterable[Any] | None = None,
     related_memory_types: Mapping[str, Any] | None = None,
+    scope_registry: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate and return a normalized gate object without writing anything."""
 
@@ -559,6 +640,8 @@ def validate_gate_output(
         item["scopes"] = _scopes(item["scopes"], item["scope_source"])
         if item["worth"]:
             _reject_mixed_project_scopes(item["scopes"])
+            if item["scope_source"] == "model":
+                _reject_ungrounded_project_scope(item["memory"], item["scopes"], scope_registry)
         if "reason" in item:
             _string(item["reason"], "reason", nonempty=False)
             if len(item["reason"]) > 30:
@@ -575,6 +658,7 @@ def parse_gate_output(
     current_event_keys: Iterable[Any] | None = None,
     related_memory_ids: Iterable[Any] | None = None,
     related_memory_types: Mapping[str, Any] | None = None,
+    scope_registry: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         parsed = parse_strict_json(raw)
@@ -589,6 +673,7 @@ def parse_gate_output(
             current_event_keys=current_event_keys,
             related_memory_ids=related_memory_ids,
             related_memory_types=related_memory_types,
+            scope_registry=scope_registry,
         )
     except ModelOutputError as error:
         if error.validation_reason is None:
@@ -637,6 +722,9 @@ def validate_summarize_output(
     expected_type: str | None = None,
     expected_update_memory_id: str | None = None,
     expected_target_type: str | None = None,
+    expected_scopes: Iterable[Any] | None = None,
+    expected_scope_source: str | None = None,
+    allow_no_change: bool = False,
 ) -> dict[str, Any]:
     """Validate one atomic memory summary; this function has no filesystem effects."""
 
@@ -644,6 +732,13 @@ def validate_summarize_output(
         value = parse_strict_json(value)
     if not isinstance(value, Mapping):
         raise ModelOutputError("summarize output must be an object", validation_detail="root_shape")
+    if "decision" in value:
+        if allow_no_change and dict(value) == {"decision": NO_CHANGE_DECISION}:
+            return {"decision": NO_CHANGE_DECISION}
+        raise ModelOutputError(
+            "NO_CHANGE is only valid as the exact automatic no-write response",
+            validation_detail="unknown_fields",
+        )
     allowed = {
         "memory_id",
         "update_memory_id",
@@ -681,8 +776,24 @@ def validate_summarize_output(
             "summary type does not match update target",
             validation_detail="invalid_type",
         )
-    item["scopes"] = _scopes(item["scopes"], item.get("scope_source"))
+    summary_scope_source = item.get("scope_source")
+    if "scope_source" not in item and expected_scope_source is not None:
+        summary_scope_source = expected_scope_source
+        item["scope_source"] = summary_scope_source
+    item["scopes"] = _scopes(item["scopes"], summary_scope_source)
     _reject_mixed_project_scopes(item["scopes"])
+    if expected_scopes is not None:
+        expected_scope_values = list(expected_scopes)
+        if item["scopes"] != expected_scope_values:
+            raise ModelOutputError(
+                "summary scopes differ from gate candidate",
+                validation_detail="scope_drift",
+            )
+    if expected_scope_source is not None and summary_scope_source != expected_scope_source:
+        raise ModelOutputError(
+            "summary scope source differs from gate candidate",
+            validation_detail="scope_drift",
+        )
     item["scope_operations"] = _scope_operations(
         item.get("scope_operations"),
         summary_scopes=item["scopes"],
@@ -770,6 +881,9 @@ def parse_summarize_output(
     expected_type: str | None = None,
     expected_update_memory_id: str | None = None,
     expected_target_type: str | None = None,
+    expected_scopes: Iterable[Any] | None = None,
+    expected_scope_source: str | None = None,
+    allow_no_change: bool = False,
 ) -> dict[str, Any]:
     try:
         parsed = parse_strict_json(raw)
@@ -787,6 +901,9 @@ def parse_summarize_output(
             expected_type=expected_type,
             expected_update_memory_id=expected_update_memory_id,
             expected_target_type=expected_target_type,
+            expected_scopes=expected_scopes,
+            expected_scope_source=expected_scope_source,
+            allow_no_change=allow_no_change,
         )
     except ModelOutputError as error:
         if error.validation_reason is None:
@@ -894,6 +1011,7 @@ __all__ = [
     "MODEL_VALIDATION_DETAILS",
     "MODEL_VALIDATION_REASONS",
     "ModelOutputError",
+    "NO_CHANGE_DECISION",
     "SCOPE_SOURCES",
     "TODO_STATUSES",
     "parse_gate",

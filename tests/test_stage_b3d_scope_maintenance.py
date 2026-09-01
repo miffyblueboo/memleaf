@@ -46,14 +46,23 @@ class StageB3DScopeMaintenanceTest(unittest.TestCase):
 
     @staticmethod
     def gate(event_key_value, *, scopes=None, duplicate_memory_id=None, candidate_id="scope-fact"):
+        selected_scopes = list(scopes or ["project:old"])
+        project_name = next(
+            (
+                scope.split(":", 1)[1]
+                for scope in selected_scopes
+                if isinstance(scope, str) and scope.startswith("project:")
+            ),
+            "project",
+        )
         candidate = {
             "candidate_id": candidate_id,
-            "memory": "fact moved to the new project",
+            "memory": f"{project_name} fact moved to the new project",
             "evidence_event_ids": [event_key_value],
             "duplicate": duplicate_memory_id is not None,
             "worth": duplicate_memory_id is None,
             "type": "fact",
-            "scopes": list(scopes or ["project:old"]),
+            "scopes": selected_scopes,
             "scope_source": "model",
         }
         if duplicate_memory_id is not None:

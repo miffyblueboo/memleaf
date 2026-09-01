@@ -66,7 +66,10 @@ class CrossHostAcceptanceTests(unittest.TestCase):
             session = f"{writer_host}-session-a"
             turn = "turn-1"
             title = f"{writer_host} to {reader_host}"
-            body = f"Durable fact written by {writer_host} and recalled by {reader_host}."
+            body = (
+                f"cross-host project durable fact written by {writer_host} "
+                f"and recalled by {reader_host}."
+            )
 
             writer_service = Memleaf(
                 vault,

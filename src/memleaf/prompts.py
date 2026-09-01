@@ -34,6 +34,15 @@ useful. Related active memories only identify a complete duplicate or valid
 state-update target; they are not current evidence and cannot make a non-worthy
 operational/test result worthy. Their item, body, and serialized-character
 context is bounded; ellipses and omissions do not prove a fact is absent.
+For a worthy candidate with scope_source=model, each selected project scope must
+be grounded by this candidate's own memory text: use the project's registered
+scope name or one of its registered aliases; for a new unregistered project
+scope, use that project's name itself. Do not borrow a project name from another
+event, the session background, related memories, or an aggregate mailbox turn.
+If the candidate text does not identify exactly one selected project, choose an
+evidence-supported project, use unscoped with insufficient_context, defer it, or
+set worth=false. user and session_context scope sources may rely on their
+authoritative scope context.
 An update target's existing type is immutable: when the same future use is being
 updated, candidate type must exactly equal the related active target type. If a
 fact serves a different future use, do not force it onto that target; omit
@@ -156,6 +165,16 @@ When the gate candidate supplies update_memory_id, that target is immutable:
 omit update_memory_id or copy that exact active ID, never replace it with a
 different, guessed, native, or historical ID. Keep the summary type identical
 to the gate candidate type and to the active update target type.
+For automatic capture/process, independently re-check whether this candidate
+still has a concrete future-use fact or action. If not, return exactly
+{"decision":"NO_CHANGE"}; this is the only no-write summary response. Use it
+for temporary delegation, waiting for feedback, a one-off meeting arrangement with
+no durable outcome/decision/project constraint, or a subject/attachment-only item
+without a concrete impact or conclusion.
+Explicit remember mode never permits NO_CHANGE and must return the normal summary
+object. When producing a normal automatic summary, copy the gate candidate's
+scopes exactly. scope_source may be omitted to inherit the gate value, but an
+explicit value must match it; never drift to another project.
 For the same use, preserve still-valid facts, add confirmed progress, replace
 contradictions, and never reduce the memory to the latest operation or create a
 sibling with a new label.
@@ -306,6 +325,28 @@ SUMMARY_TYPE_CORRECTION = (
 )
 
 
+SUMMARY_SCOPE_CORRECTION = (
+    "Previous output violated: scope_drift. For a normal automatic summary, copy "
+    "the gate candidate scopes exactly and keep its scope_source unchanged. If "
+    "scope_source was omitted, inherit the gate value; an explicit value must "
+    "match it. Do not move the memory to another project. If the candidate has "
+    "no independent future-use fact or action, return exactly "
+    '{"decision":"NO_CHANGE"}. Return only the strict JSON object.'
+)
+
+
+SCOPE_GROUNDING_CORRECTION = (
+    "Previous output violated: scope_not_grounded. For each worthy candidate "
+    "with scope_source=model, choose a project scope named by that candidate's "
+    "own memory text: use the registered project name or alias, or the name "
+    "itself for a new scope. Do not borrow a name from another event, related "
+    "memory, session background, or an aggregate mailbox turn. If exactly one "
+    "project cannot be supported, choose the evidence-supported scope, use "
+    "unscoped with insufficient_context, defer it, or set worth=false. Return "
+    "only the strict gate JSON object."
+)
+
+
 COMPACT_SYSTEM = """You are memleaf's memory compactor. Return JSON only.
 Merge only the supplied low-priority memories when they express compatible
 information. Return an object with a memories array; [] is a safe no-op.
@@ -398,6 +439,14 @@ def summarize_prompt(
         f"Current scope registry (safe projection; no paths):\n"
         f"{_json(scope_registry if scope_registry is not None else [])}\n"
     )
+    if not explicit:
+        prompt += (
+            "Automatic admission re-check: if the candidate has no independent "
+            "future-use fact or action after reviewing the evidence, return exactly "
+            '{"decision":"NO_CHANGE"}; do not return an empty or partial memory object. '
+            "For a normal summary, copy Candidate scopes exactly; omit scope_source "
+            "to inherit it or repeat the same value, never choose another scope.\n"
+        )
     example_key = _first_event_key(events)
     if example_key is not None:
         candidate_type = candidate.get("type") if isinstance(candidate, dict) else None
@@ -431,6 +480,8 @@ def summarize_prompt(
                 }
             )
         )
+    if not explicit:
+        return prompt + '\nReturn one summary JSON object or exactly {"decision":"NO_CHANGE"}.'
     return prompt + "\nReturn one summary JSON object."
 
 

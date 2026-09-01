@@ -153,6 +153,207 @@ class StageB2ATest(unittest.TestCase):
         )
         self.assertTrue((service.vault.inbox_path / "codex" / "s.md").exists())
 
+    def test_automatic_no_change_skips_writes_and_scope_observation(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="automatic-no-change")
+        user_key, _ = self.capture_turn(
+            service,
+            turn="automatic-no-change",
+            user_event="automatic-no-change-user",
+            assistant_event="automatic-no-change-assistant",
+            user="浙江东方正文为空，尚未闭环，待问结论。",
+            assistant="先暂存为待跟进事项。",
+        )
+        no_change = self.candidate(
+            "zhejiang-pending",
+            [user_key],
+            memory="浙江东方正文为空，尚未闭环，待问结论。",
+            type="event",
+        )
+        no_change["scopes"] = ["project:浙江东方"]
+        temporary = self.candidate(
+            "temporary-feedback",
+            [user_key],
+            memory="金元顺安等待反馈。",
+            worth=False,
+            type=None,
+        )
+        temporary["scopes"] = ["project:金元顺安"]
+        backend.responses.extend(
+            [
+                self.gate([no_change, temporary]),
+                json.dumps({"decision": "NO_CHANGE"}),
+            ]
+        )
+
+        result = service.process(source="codex", session_id="s", model=backend)
+
+        self.assertEqual(result["processed_turns"], 1)
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["memory_ids"], [])
+        self.assertEqual(self.knowledge(service), [])
+        state = self.processed(service)["sessions"]["codex/s"]
+        self.assertEqual(state["watermark"], 1)
+        self.assertEqual(state["processed_turns"][0]["memory_ids"], [])
+        self.assertNotIn("project:浙江东方", state.get("scopes", []))
+        self.assertNotIn("project:金元顺安", state.get("scopes", []))
+        self.assertNotIn("project:浙江东方", service.vault.config()["scopes"])
+        self.assertNotIn("project:金元顺安", service.vault.config()["scopes"])
+        self.assertTrue((service.vault.inbox_path / "codex" / "s.md").is_file())
+
+    def test_explicit_no_change_is_rejected_and_retried(self):
+        backend = QueueBackend([json.dumps({"decision": "NO_CHANGE"})] * 3)
+        service = self.service(backend, name="explicit-no-change")
+
+        with self.assertRaises(ModelOutputError) as raised:
+            service.remember(
+                "A concrete explicitly requested memory.",
+                source="codex",
+                session_id="explicit-no-change",
+                turn_id="remember-turn",
+                event_id="explicit-no-change-event",
+                model=backend,
+            )
+
+        self.assertEqual(raised.exception.validation_detail, "unknown_fields")
+        self.assertEqual(raised.exception.stage, "summarize")
+        self.assertEqual(raised.exception.attempt_count, 3)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["summarize"] * 3)
+        self.assertEqual(self.knowledge(service), [])
+        marker = self.processed(service)["sessions"]["codex/explicit-no-change"]["processing"]
+        self.assertEqual(marker["failure_stage"], "summarize")
+        self.assertEqual(marker["validation_detail"], "unknown_fields")
+        self.assertEqual(marker["attempt_count"], 3)
+
+    def test_gate_scope_misroute_retries_then_automatic_no_change_is_safe(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="scope-misroute-no-change")
+        config = service.vault.config()
+        config["scopes"] = {"project:zhongyin": {"aliases": ["中银国际"]}}
+        save_config(service.vault.config_path, config)
+        user_key, _ = self.capture_turn(
+            service,
+            turn="scope-misroute",
+            user_event="scope-misroute-user",
+            assistant_event="scope-misroute-assistant",
+            user="浙江东方正文为空，尚未闭环，待问结论。",
+            assistant="先暂存为待跟进事项。",
+        )
+        wrong = self.candidate(
+            "wrong-zhejiang-scope",
+            [user_key],
+            memory="浙江东方正文为空，尚未闭环，待问结论。",
+            type="event",
+        )
+        wrong["scopes"] = ["project:zhongyin"]
+        corrected = dict(wrong, candidate_id="correct-zhejiang-scope", scopes=["project:浙江东方"])
+        backend.responses.extend(
+            [
+                self.gate([wrong]),
+                self.gate([corrected]),
+                json.dumps({"decision": "NO_CHANGE"}),
+            ]
+        )
+
+        result = service.process(source="codex", session_id="s", model=backend)
+
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "summarize"])
+        self.assertIn("Previous output violated: scope_not_grounded.", backend.calls[1]["prompt"])
+        self.assertEqual(self.knowledge(service), [])
+        state = self.processed(service)["sessions"]["codex/s"]
+        self.assertNotIn("project:zhongyin", state.get("scopes", []))
+        self.assertNotIn("project:浙江东方", state.get("scopes", []))
+        self.assertNotIn("project:浙江东方", service.vault.config()["scopes"])
+
+    def test_summary_scope_drift_retries_before_writing(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="summary-scope-drift")
+        user_key, _ = self.capture_turn(
+            service,
+            turn="summary-scope-drift",
+            user_event="summary-scope-drift-user",
+            assistant_event="summary-scope-drift-assistant",
+            user="中银国际实施计划需要更新。",
+            assistant="已确认中银国际计划调整。",
+        )
+        candidate = self.candidate(
+            "zhongyin-plan",
+            [user_key],
+            memory="中银国际实施计划需要更新。",
+            type="project",
+        )
+        candidate["scopes"] = ["project:中银国际"]
+        backend.responses.extend(
+            [
+                self.gate([candidate]),
+                self.summary(
+                    user_key,
+                    title="中银国际实施计划",
+                    body="中银国际实施计划需要更新。",
+                    type="project",
+                    scopes=["project:摩根基金"],
+                ),
+                self.summary(
+                    user_key,
+                    title="中银国际实施计划",
+                    body="中银国际实施计划需要更新。",
+                    type="project",
+                    scopes=["project:中银国际"],
+                ),
+            ]
+        )
+
+        result = service.process(source="codex", session_id="s", model=backend)
+
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize", "summarize"])
+        self.assertIn("Previous output violated: scope_drift.", backend.calls[2]["prompt"])
+        self.assertEqual(self.knowledge(service)[0].memory.scopes, ["project:中银国际"])
+        self.assertNotIn("project:摩根基金", service.vault.config()["scopes"])
+
+    def test_three_summary_scope_drifts_keep_queue_and_write_nothing(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="summary-scope-drift-failure")
+        user_key, _ = self.capture_turn(
+            service,
+            turn="summary-scope-drift-failure",
+            user_event="summary-scope-drift-failure-user",
+            assistant_event="summary-scope-drift-failure-assistant",
+            user="中银国际实施计划需要更新。",
+            assistant="已确认中银国际计划调整。",
+        )
+        candidate = self.candidate(
+            "zhongyin-plan-failure",
+            [user_key],
+            memory="中银国际实施计划需要更新。",
+            type="project",
+        )
+        candidate["scopes"] = ["project:中银国际"]
+        bad_summary = self.summary(
+            user_key,
+            title="中银国际实施计划",
+            body="中银国际实施计划需要更新。",
+            type="project",
+            scopes=["project:摩根基金"],
+        )
+        backend.responses.extend([self.gate([candidate]), bad_summary, bad_summary, bad_summary])
+
+        with self.assertRaises(ModelOutputError) as raised:
+            service.process(source="codex", session_id="s", model=backend)
+
+        self.assertEqual(raised.exception.validation_detail, "scope_drift")
+        self.assertEqual(raised.exception.stage, "summarize")
+        self.assertEqual(raised.exception.attempt_count, 3)
+        marker = self.processed(service)["sessions"]["codex/s"]["processing"]
+        self.assertEqual(marker["failure_stage"], "summarize")
+        self.assertEqual(marker["validation_detail"], "scope_drift")
+        self.assertEqual(marker["attempt_count"], 3)
+        self.assertEqual(self.processed(service)["sessions"]["codex/s"].get("watermark", 0), 0)
+        self.assertEqual(self.knowledge(service), [])
+        self.assertNotIn("project:摩根基金", service.vault.config()["scopes"])
+        self.assertTrue((service.vault.inbox_path / "codex" / "s.md").is_file())
+
     def test_two_candidates_are_separate_deterministic_memories_and_repeat_is_noop(self):
         backend = QueueBackend()
         service = self.service(backend)
@@ -200,6 +401,10 @@ class StageB2ATest(unittest.TestCase):
         )
         config = service.vault.config()
         config["llm"]["diagnostic_logging"] = True
+        config["scopes"] = {
+            "project:zhongyin": {"aliases": ["中银国际"]},
+            "project:morgan": {"aliases": ["摩根基金"]},
+        }
         save_config(service.vault.config_path, config)
         user_key, assistant_key = self.capture_turn(
             service,
@@ -209,8 +414,8 @@ class StageB2ATest(unittest.TestCase):
             user=(
                 "邮箱巡检：中银国际历史需求已覆盖需求清单逐项确认、信创测试环境部署、"
                 "历史数据库和附件全量迁移；客户提出单点登录提前并行、数据文件规范提前确认、"
-                "重新压实实施计划；摩根基金本周三排查证券申报类型；会议待确认；"
-                "Orion待PM受理；金元顺安待反馈。"
+                "重新压实实施计划；摩根基金本周三排查证券申报类型；兴银转给测试同事；"
+                "金元顺安待反馈；嘉实一次性启动会安排；浙江东方正文为空、尚未闭环、待问结论。"
             ),
             assistant="会议和待办已整理，后续按项目分别跟进。",
         )
@@ -234,8 +439,10 @@ class StageB2ATest(unittest.TestCase):
             scopes=[
                 "project:zhongyin",
                 "project:morgan",
-                "project:orion",
-                "project:jinyuan",
+                "project:兴银",
+                "project:金元顺安",
+                "project:嘉实",
+                "project:浙江东方",
             ],
         )
         corrected = [
@@ -253,18 +460,28 @@ class StageB2ATest(unittest.TestCase):
                 scopes=["project:morgan"],
             ),
             scoped(
-                "orion-pending",
-                memory="Orion待PM受理",
-                type=None,
-                scopes=["project:orion"],
-                worth=False,
+                "xingyin-transfer",
+                memory="兴银事项已转给测试同事，等待内部处理",
+                type="event",
+                scopes=["project:兴银"],
             ),
             scoped(
                 "jinyuan-pending",
                 memory="金元顺安待反馈",
-                type=None,
-                scopes=["project:jinyuan"],
-                worth=False,
+                type="event",
+                scopes=["project:金元顺安"],
+            ),
+            scoped(
+                "jiashi-kickoff",
+                memory="嘉实一次性启动会安排，暂无持久决策或项目约束",
+                type="event",
+                scopes=["project:嘉实"],
+            ),
+            scoped(
+                "zhejiang-pending",
+                memory="浙江东方正文为空，尚未闭环，待问结论",
+                type="event",
+                scopes=["project:浙江东方"],
             ),
         ]
         backend = QueueBackend(
@@ -290,6 +507,10 @@ class StageB2ATest(unittest.TestCase):
                     scopes=["project:morgan"],
                     status="active",
                 ),
+                json.dumps({"decision": "NO_CHANGE"}),
+                json.dumps({"decision": "NO_CHANGE"}),
+                json.dumps({"decision": "NO_CHANGE"}),
+                json.dumps({"decision": "NO_CHANGE"}),
             ]
         )
 
@@ -301,7 +522,10 @@ class StageB2ATest(unittest.TestCase):
 
         self.assertEqual(result["processed_turns"], 1)
         self.assertEqual(result["memories_written"], 2)
-        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "summarize", "summarize"])
+        self.assertEqual(
+            [call["purpose"] for call in backend.calls],
+            ["gate", "gate"] + ["summarize"] * 6,
+        )
         self.assertIn("Previous output violated: mixed_project_scopes.", backend.calls[1]["prompt"])
         active = self.knowledge(service)
         self.assertEqual(len(active), 3)
@@ -323,6 +547,8 @@ class StageB2ATest(unittest.TestCase):
         )
         self.assertEqual(todo.type, "todo")
         self.assertEqual(todo.scopes, ["project:morgan"])
+        self.assertIn("2026-09-02", todo.body)
+        self.assertNotIn("本周三", todo.body)
         self.assertEqual(active_by_id[history_memory.memory_id].body, history_memory.body)
         self.assertIn("单点登录提前并行", active_by_id[existing.memory_id].body)
         self.assertNotIn("需求清单逐项确认", active_by_id[existing.memory_id].body)
@@ -334,8 +560,24 @@ class StageB2ATest(unittest.TestCase):
         bodies = "\n".join(record.memory.body for record in active)
         self.assertNotIn("邮箱巡检", bodies)
         self.assertNotIn("需关注事项", bodies)
-        self.assertNotIn("待PM受理", bodies)
+        self.assertNotIn("转给测试同事", bodies)
         self.assertNotIn("待反馈", bodies)
+        self.assertNotIn("启动会", bodies)
+        self.assertNotIn("正文为空", bodies)
+        self.assertEqual(
+            len(service.vault.list_markdown("history")),
+            1,
+        )
+        self.assertEqual(
+            service.vault.config()["scopes"].keys(),
+            {"project:zhongyin", "project:morgan"},
+        )
+        state = self.processed(service)["sessions"]["codex/mixed-project-digest"]
+        self.assertEqual(state["scopes"], ["project:zhongyin", "project:morgan"])
+        self.assertNotIn("project:兴银", state["scopes"])
+        self.assertNotIn("project:金元顺安", state["scopes"])
+        self.assertNotIn("project:嘉实", state["scopes"])
+        self.assertNotIn("project:浙江东方", state["scopes"])
         diagnostics = [
             json.loads(line)
             for line in (service.vault.logs_path / "model-diagnostics.jsonl").read_text(encoding="utf-8").splitlines()
@@ -833,7 +1075,7 @@ class StageB2ATest(unittest.TestCase):
         candidate = self.candidate(
             "mixed-summary-candidate",
             [user_key],
-            memory="one project topic",
+            memory="zhongyin project topic",
             type="project",
         )
         candidate["scopes"] = ["project:zhongyin"]
@@ -873,7 +1115,7 @@ class StageB2ATest(unittest.TestCase):
         candidate = self.candidate(
             "mixed-summary-failure-candidate",
             [user_key],
-            memory="one project topic",
+            memory="zhongyin project topic",
             type="project",
         )
         candidate["scopes"] = ["project:zhongyin"]

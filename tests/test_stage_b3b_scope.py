@@ -54,9 +54,17 @@ class StageB3BScopeTest(unittest.TestCase):
 
     @staticmethod
     def candidate(candidate_id, scopes, *, worth=False, evidence=None):
+        project_scope = next(
+            (scope for scope in scopes if isinstance(scope, str) and scope.startswith("project:")),
+            None,
+        )
         return {
             "candidate_id": candidate_id,
-            "memory": "a scope observation",
+            "memory": (
+                f"{project_scope.split(':', 1)[1]} scope observation"
+                if worth and project_scope is not None
+                else "a scope observation"
+            ),
             "evidence_event_ids": list(evidence or ["missing"]),
             "duplicate": False,
             "worth": worth,
@@ -120,7 +128,10 @@ class StageB3BScopeTest(unittest.TestCase):
     def test_success_observes_scopes_and_registers_nodes(self):
         user_key, _ = self.capture_turn()
         backend = QueueBackend(
-            [self.gate([self.candidate("c1", ["project:alpha"], evidence=[user_key])])]
+            [
+                self.gate([self.candidate("c1", ["project:alpha"], worth=True, evidence=[user_key])]),
+                self.summary(user_key, ["project:alpha"]),
+            ]
         )
 
         result = self.service.process(model=backend)
@@ -133,7 +144,10 @@ class StageB3BScopeTest(unittest.TestCase):
     def test_gate_empty_preserves_scope_and_failed_registration_does_not_update(self):
         user_key, _ = self.capture_turn(prefix="first")
         backend = QueueBackend(
-            [self.gate([self.candidate("c1", ["project:old"], evidence=[user_key])])]
+            [
+                self.gate([self.candidate("c1", ["project:old"], worth=True, evidence=[user_key])]),
+                self.summary(user_key, ["project:old"]),
+            ]
         )
         self.service.process(model=backend)
         self.assertEqual(self.processed()["sessions"]["codex/s"]["scopes"], ["project:old"])
@@ -145,7 +159,12 @@ class StageB3BScopeTest(unittest.TestCase):
         self.assertNotIn("project:new", self.service.vault.config()["scopes"])
 
         third_user, _ = self.capture_turn(turn="t3", prefix="third")
-        backend.responses.append(self.gate([self.candidate("c3", ["project:new"], evidence=[third_user])]))
+        backend.responses.extend(
+            [
+                self.gate([self.candidate("c3", ["project:new"], worth=True, evidence=[third_user])]),
+                self.summary(third_user, ["project:new"]),
+            ]
+        )
         with patch("memleaf.processing.save_config", side_effect=OSError("config write")):
             with self.assertRaises(OSError):
                 self.service.process(model=backend)
@@ -160,8 +179,10 @@ class StageB3BScopeTest(unittest.TestCase):
         second_user, _ = self.capture_turn(turn="t2", prefix="two")
         backend = QueueBackend(
             [
-                self.gate([self.candidate("one", ["project:one"], evidence=[first_user])]),
-                self.gate([self.candidate("two", ["project:two"], evidence=[second_user])]),
+                self.gate([self.candidate("one", ["project:one"], worth=True, evidence=[first_user])]),
+                self.summary(first_user, ["project:one"]),
+                self.gate([self.candidate("two", ["project:two"], worth=True, evidence=[second_user])]),
+                self.summary(second_user, ["project:two"]),
             ]
         )
 
@@ -175,14 +196,14 @@ class StageB3BScopeTest(unittest.TestCase):
         user_key, _ = self.capture_turn(prefix="summary")
         backend = QueueBackend(
             [
-                self.gate([self.candidate("c1", ["global"], worth=True, evidence=[user_key])]),
+                self.gate([self.candidate("c1", ["project:from-summary"], worth=True, evidence=[user_key])]),
                 self.summary(user_key, ["project:from-summary"]),
             ]
         )
         self.service.process(model=backend)
         self.assertEqual(
             self.processed()["sessions"]["codex/s"]["scopes"],
-            ["global", "project:from-summary"],
+            ["project:from-summary"],
         )
 
         remember_key = event_key("remember-scope")

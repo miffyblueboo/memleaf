@@ -37,6 +37,8 @@ from .prompts import (
     MIXED_PROJECT_SCOPES_CORRECTION,
     RELATIVE_TIME_CORRECTION,
     GATE_SYSTEM,
+    SCOPE_GROUNDING_CORRECTION,
+    SUMMARY_SCOPE_CORRECTION,
     SUMMARY_TARGET_CORRECTION,
     SUMMARY_TYPE_CORRECTION,
     SUMMARIZE_SYSTEM,
@@ -51,6 +53,7 @@ from .scope_maintenance import ScopeMaintainer, ScopeMaintenanceError, scope_reg
 from .validation import (
     MODEL_VALIDATION_DETAILS,
     ModelOutputError,
+    NO_CHANGE_DECISION,
     parse_gate_output,
     parse_summarize_output,
 )
@@ -488,6 +491,10 @@ class Processor:
             return UPDATE_TARGET_TYPE_CORRECTION
         if stage == "gate" and hint == "invalid_type":
             return GATE_TYPE_CORRECTION
+        if stage == "gate" and hint == "scope_not_grounded":
+            return SCOPE_GROUNDING_CORRECTION
+        if stage == "summarize" and hint == "scope_drift":
+            return SUMMARY_SCOPE_CORRECTION
         if hint == "relative_time":
             return RELATIVE_TIME_CORRECTION
         if stage == "summarize" and hint == "invalid_update_target":
@@ -1614,6 +1621,7 @@ class Processor:
                     related_native_ids=related_native_ids,
                     related_memory_ids=related_memory_ids,
                     scope_registry=validation_scope_registry,
+                    allow_no_change=False,
                 ),
                 diagnostic_context={
                     "source": turn.source,
@@ -1652,6 +1660,7 @@ class Processor:
                 current_event_keys=turn.event_keys,
                 related_memory_ids=gate_related_memory_ids,
                 related_memory_types=gate_related_memory_types,
+                scope_registry=validation_scope_registry,
             ),
             diagnostic_context={
                 "source": turn.source,
@@ -1663,13 +1672,6 @@ class Processor:
         observed_scopes: list[str] = []
         for candidate in gate["candidates"]:
             candidate_scopes = list(candidate["scopes"])
-            if (
-                candidate_scopes != ["unscoped"]
-                and candidate.get("scope_source") != "insufficient_context"
-            ):
-                for observed_scope in candidate_scopes:
-                    if observed_scope not in observed_scopes:
-                        observed_scopes.append(observed_scope)
             # An automatic candidate with no reliable project attribution is
             # retained as a retryable inbox turn, never silently promoted to
             # global knowledge.  The processed ledger records only a compact
@@ -1758,6 +1760,27 @@ class Processor:
                             native_refs=candidate_native_refs,
                         )
                     )
+                    # Automatic duplicate observations are metadata no-ops;
+                    # only the already-active target's scopes are trustworthy
+                    # session context, never a transient model-provided scope.
+                    duplicate_scopes = next(
+                        (
+                            item.get("scopes")
+                            for item in candidate_related
+                            if isinstance(item, Mapping)
+                            and isinstance(item.get("memory_id"), str)
+                            and item["memory_id"].casefold() == duplicate_memory_id.casefold()
+                            and isinstance(item.get("scopes"), list)
+                        ),
+                        [],
+                    )
+                    for observed_scope in duplicate_scopes:
+                        if (
+                            isinstance(observed_scope, str)
+                            and observed_scope != "unscoped"
+                            and observed_scope not in observed_scopes
+                        ):
+                            observed_scopes.append(observed_scope)
                 continue
 
             gate_update_target = candidate.get("update_memory_id")
@@ -1793,6 +1816,9 @@ class Processor:
                     related_native_ids=candidate_native_ids,
                     related_memory_ids=candidate_memory_ids,
                     scope_registry=validation_scope_registry,
+                    expected_scopes=candidate["scopes"],
+                    expected_scope_source=candidate["scope_source"],
+                    allow_no_change=True,
                     expected_type=(
                         candidate.get("type")
                         if (
@@ -1814,6 +1840,8 @@ class Processor:
                     "turn_index": turn.turn_index,
                 },
             )
+            if summary.get("decision") == NO_CHANGE_DECISION:
+                continue
             if gate_update_target is not None:
                 summary_update_target = summary.get("update_memory_id")
                 if summary_update_target is None:
@@ -1839,9 +1867,6 @@ class Processor:
                     scope_source=summary.get("scope_source"),
                 )
                 continue
-            for observed_scope in summary["scopes"]:
-                if observed_scope not in observed_scopes:
-                    observed_scopes.append(observed_scope)
             requests.append(
                 self._request(
                     summary,
@@ -1851,6 +1876,13 @@ class Processor:
                     native_refs=candidate_native_refs,
                 )
             )
+            for observed_scope in summary["scopes"]:
+                if (
+                    isinstance(observed_scope, str)
+                    and observed_scope != "unscoped"
+                    and observed_scope not in observed_scopes
+                ):
+                    observed_scopes.append(observed_scope)
         return requests, observed_scopes
 
     def _state_for_snapshot_unlocked(self, snapshot: _Snapshot, processed: Mapping[str, Any]) -> Mapping[str, Any]:

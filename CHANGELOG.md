@@ -2,6 +2,19 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.8 — 2026-09-01
+
+- Let the automatic summarizer independently reject an over-admitted gate
+  candidate with an exact `NO_CHANGE` response, without writing memory,
+  history, or Scope state; explicit remember remains write-oriented and does
+  not permit this response.
+- Ground every model-attributed project Scope in the candidate's own project
+  name or registered alias, and prevent the summarizer from drifting away
+  from the gate-selected Scope.
+- Register session and Vault Scopes only for committed memories or trusted
+  active duplicate targets, so temporary, deferred, and no-change mailbox
+  items cannot pollute Scope state.
+
 ## 0.2.7 — 2026-09-01
 
 - Distinguish an invalid gate type enum from a candidate type that conflicts

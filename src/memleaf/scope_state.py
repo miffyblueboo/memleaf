@@ -256,9 +256,20 @@ def _term_matches(query: str, term: str) -> bool:
 def resolve_query_project_scope(query: Any, config: Mapping[str, Any]) -> str | None:
     """Return one unambiguous project scope named or aliased by ``query``."""
 
+    matches = project_scope_matches_text(query, config)
+    return matches[0] if len(matches) == 1 else None
+
+
+def project_scope_matches_text(query: Any, config: Mapping[str, Any]) -> list[str]:
+    """Return registered project scopes named or aliased by text.
+
+    Matching uses the same token/substring rules as query scope resolution,
+    but retains every match so callers can reject ambiguous model attribution.
+    """
+
     query_value = _query_text(query)
     if not query_value:
-        return None
+        return []
     registry = validate_scope_registry(config.get("scopes", {}) if isinstance(config, Mapping) else {})
     matches: set[str] = set()
     for scope, node in registry.items():
@@ -271,7 +282,7 @@ def resolve_query_project_scope(query: Any, config: Mapping[str, Any]) -> str | 
             terms.extend(item for item in aliases if isinstance(item, str))
         if any(_term_matches(query_value, term) for term in terms):
             matches.add(scope)
-    return next(iter(matches)) if len(matches) == 1 else None
+    return sorted(matches, key=str.casefold)
 
 
 def _resolved_path(value: str | Path, *, base_dir: Path | None = None) -> Path:
@@ -320,6 +331,7 @@ def resolve_project_path_scope(
 __all__ = [
     "ScopeError",
     "normalize_scopes",
+    "project_scope_matches_text",
     "register_scope_nodes",
     "resolve_project_path_scope",
     "resolve_query_project_scope",

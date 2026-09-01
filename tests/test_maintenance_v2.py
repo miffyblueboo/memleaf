@@ -391,7 +391,7 @@ class MaintenanceV2Tests(unittest.TestCase):
                         candidate(
                             "summary-budget-update",
                             [user_event, assistant_event],
-                            "summary budgeted project plan update",
+                            "summary-budget project plan update",
                             scopes=["project:summary-budget"],
                             type="project",
                             update_memory_id=target_id,
@@ -453,7 +453,7 @@ class MaintenanceV2Tests(unittest.TestCase):
                         candidate(
                             "ambiguous-update",
                             [user_event, assistant_event],
-                            "项目任务已同步",
+                            "ambiguous project task has been synced",
                             scopes=["project:ambiguous"],
                             type="project",
                         )
@@ -518,17 +518,19 @@ class MaintenanceV2Tests(unittest.TestCase):
                     "candidate_id": "scope-context",
                     "memory": "项目工作范围",
                     "evidence_event_ids": [context_user, context_assistant],
-                    "duplicate": False,
+                    "duplicate": True,
                     "worth": False,
-                    "type": None,
+                    "type": "project",
                     "scopes": ["project:orion"],
                     "scope_source": "model",
+                    "duplicate_memory_id": target.memory_id,
                 }
             ]
         )
         self.service.process(
             source="hermes",
             session_id="orion-directory",
+            scope="project:orion",
             model=QueueBackend([context_gate]),
         )
 
@@ -545,7 +547,7 @@ class MaintenanceV2Tests(unittest.TestCase):
                         candidate(
                             "orion-sync",
                             [user_event, assistant_event],
-                            "项目任务已同步到 Orion。",
+                            "Orion 项目任务已同步。",
                             scopes=["project:orion"],
                             type="project",
                             update_memory_id=target.memory_id,
@@ -930,7 +932,7 @@ class MaintenanceV2Tests(unittest.TestCase):
                         candidate(
                             "owner",
                             [user_event, assistant_event],
-                            "某项目负责人是甲。",
+                            "alpha 项目负责人是甲。",
                             scopes=["project:alpha"],
                         )
                     ]

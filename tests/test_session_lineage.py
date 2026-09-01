@@ -194,7 +194,7 @@ class SessionLineageTests(unittest.TestCase):
                         candidate(
                             "alpha-owner-update",
                             [child_user, child_assistant],
-                            "这个项目的负责人更新为乙。",
+                            "alpha 项目的负责人更新为乙。",
                             scopes=["project:alpha"],
                             update_memory_id=old.memory_id,
                         )
@@ -336,7 +336,7 @@ class SessionLineageTests(unittest.TestCase):
                         candidate(
                             "alpha-owner-update",
                             child_keys,
-                            "这个项目负责人更新为乙。",
+                            "alpha 项目负责人更新为乙。",
                             scopes=["project:alpha"],
                             update_memory_id=old.memory_id,
                         )

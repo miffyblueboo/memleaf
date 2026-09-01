@@ -430,19 +430,17 @@ class AdmissionFlowTests(unittest.TestCase):
             )
         )
         query_summary["scope_source"] = "session_context"
+        query_candidate = candidate(
+            "owner-query-update",
+            [user_key, assistant_key],
+            memory=active_before.body,
+            type="identity",
+            update_memory_id=old.memory_id,
+        )
+        query_candidate["scope_source"] = "session_context"
         backend.responses.extend(
             [
-                gate(
-                    [
-                        candidate(
-                            "owner-query-update",
-                            [user_key, assistant_key],
-                            memory=active_before.body,
-                            type="identity",
-                            update_memory_id=old.memory_id,
-                        )
-                    ]
-                ),
+                gate([query_candidate]),
                 json.dumps(query_summary, ensure_ascii=False),
             ]
         )

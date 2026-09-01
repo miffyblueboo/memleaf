@@ -15,6 +15,8 @@ from memleaf.prompts import (
     GATE_SYSTEM,
     MIXED_PROJECT_SCOPES_CORRECTION,
     RELATIVE_TIME_CORRECTION,
+    SCOPE_GROUNDING_CORRECTION,
+    SUMMARY_SCOPE_CORRECTION,
     SUMMARY_TARGET_CORRECTION,
     SUMMARY_TYPE_CORRECTION,
     SUMMARIZE_SYSTEM,
@@ -22,7 +24,7 @@ from memleaf.prompts import (
     gate_prompt,
     summarize_prompt,
 )
-from memleaf.validation import ModelOutputError
+from memleaf.validation import ModelOutputError, NO_CHANGE_DECISION
 from memleaf.index import event_key, turn_key
 from memleaf.llm import (
     CallableBackend,
@@ -1223,6 +1225,143 @@ class ValidationTest(unittest.TestCase):
         self.assertIn("update_target_type_mismatch", UPDATE_TARGET_TYPE_CORRECTION)
         self.assertIn("immutable", UPDATE_TARGET_TYPE_CORRECTION.lower())
 
+    def test_automatic_no_change_is_exact_union_and_explicit_mode_rejects_it(self):
+        self.assertEqual(
+            parse_summarize_output(
+                json.dumps({"decision": NO_CHANGE_DECISION}),
+                current_event_keys=["event-a"],
+                allow_no_change=True,
+            ),
+            {"decision": NO_CHANGE_DECISION},
+        )
+        for raw in (
+            json.dumps({"decision": NO_CHANGE_DECISION}),
+            json.dumps({"decision": NO_CHANGE_DECISION, "extra": True}),
+            json.dumps({"decision": "no_change"}),
+        ):
+            with self.subTest(raw=raw):
+                with self.assertRaises(ModelOutputError) as raised:
+                    parse_summarize_output(raw, current_event_keys=["event-a"])
+                self.assertEqual(raised.exception.validation_detail, "unknown_fields")
+        with self.assertRaises(ModelOutputError) as raised:
+            parse_summarize_output(
+                json.dumps({"decision": NO_CHANGE_DECISION, "extra": True}),
+                current_event_keys=["event-a"],
+                allow_no_change=True,
+            )
+        self.assertEqual(raised.exception.validation_detail, "unknown_fields")
+
+    def test_gate_model_project_scope_requires_candidate_local_grounding_and_aliases(self):
+        registry = {
+            "project:zhongyin": {"aliases": ["中银国际", "zy"]},
+            "project:morgan": {"aliases": ["摩根基金"]},
+        }
+        base = {
+            "candidate_id": "c",
+            "memory": "中银国际实施计划需要更新。",
+            "evidence_event_ids": ["event-a"],
+            "duplicate": False,
+            "worth": True,
+            "type": "project",
+            "scopes": ["project:zhongyin"],
+            "scope_source": "model",
+        }
+        parsed = parse_gate_output(
+            json.dumps({"candidates": [base]}),
+            current_event_keys=["event-a"],
+            scope_registry=registry,
+        )
+        self.assertEqual(parsed["candidates"][0]["scopes"], ["project:zhongyin"])
+        alias_candidate = dict(base, candidate_id="alias", memory="zy 实施计划需要更新。")
+        self.assertEqual(
+            parse_gate_output(
+                json.dumps({"candidates": [alias_candidate]}),
+                current_event_keys=["event-a"],
+                scope_registry=registry,
+            )["candidates"][0]["scopes"],
+            ["project:zhongyin"],
+        )
+        morgan = dict(
+            base,
+            candidate_id="morgan",
+            memory="摩根基金证券申报类型存在问题。",
+            scopes=["project:morgan"],
+        )
+        self.assertEqual(
+            parse_gate_output(
+                json.dumps({"candidates": [morgan]}),
+                current_event_keys=["event-a"],
+                scope_registry=registry,
+            )["candidates"][0]["scopes"],
+            ["project:morgan"],
+        )
+        for candidate in (
+            dict(base, candidate_id="wrong", memory="浙江东方待跟进。"),
+            dict(base, candidate_id="ambiguous", memory="中银国际和摩根基金均需跟进。"),
+        ):
+            with self.subTest(candidate=candidate["candidate_id"]):
+                with self.assertRaises(ModelOutputError) as raised:
+                    parse_gate_output(
+                        json.dumps({"candidates": [candidate]}),
+                        current_event_keys=["event-a"],
+                        scope_registry=registry,
+                    )
+                self.assertEqual(raised.exception.validation_detail, "scope_not_grounded")
+        user_scoped = dict(base, candidate_id="user", memory="unrelated text", scope_source="user")
+        self.assertEqual(
+            parse_gate_output(
+                json.dumps({"candidates": [user_scoped]}),
+                current_event_keys=["event-a"],
+                scope_registry=registry,
+            )["candidates"][0]["scopes"],
+            ["project:zhongyin"],
+        )
+        new_scope = dict(base, candidate_id="new", memory="浙江东方部署风险。", scopes=["project:浙江东方"])
+        self.assertEqual(
+            parse_gate_output(
+                json.dumps({"candidates": [new_scope]}),
+                current_event_keys=["event-a"],
+                scope_registry=registry,
+            )["candidates"][0]["scopes"],
+            ["project:浙江东方"],
+        )
+
+    def test_summary_scope_must_match_gate_and_omitted_source_is_inherited(self):
+        summary = {
+            "title": "Zhongyin plan",
+            "body": "中银国际实施计划需要更新。",
+            "tags": [],
+            "type": "project",
+            "scopes": ["project:zhongyin"],
+            "sources": [{"event_key": "event-a"}],
+        }
+        parsed = parse_summarize_output(
+            json.dumps(summary),
+            current_event_keys=["event-a"],
+            expected_scopes=["project:zhongyin"],
+            expected_scope_source="model",
+        )
+        self.assertEqual(parsed["scope_source"], "model")
+        for mutation in (
+            {"scopes": ["project:morgan"]},
+            {"scope_source": "session_context"},
+        ):
+            with self.subTest(mutation=mutation):
+                with self.assertRaises(ModelOutputError) as raised:
+                    parse_summarize_output(
+                        json.dumps(dict(summary, **mutation)),
+                        current_event_keys=["event-a"],
+                        expected_scopes=["project:zhongyin"],
+                        expected_scope_source="model",
+                    )
+                self.assertEqual(raised.exception.validation_detail, "scope_drift")
+
+    def test_scope_correction_prompts_are_specific(self):
+        self.assertIn("scope_not_grounded", SCOPE_GROUNDING_CORRECTION)
+        self.assertIn("own memory text", SCOPE_GROUNDING_CORRECTION)
+        self.assertIn("scope_drift", SUMMARY_SCOPE_CORRECTION)
+        self.assertIn("copy the gate candidate scopes exactly", SUMMARY_SCOPE_CORRECTION)
+
     def test_correction_prompt_explains_project_scope_atomicity(self):
         self.assertIn("mixed_project_scopes", MIXED_PROJECT_SCOPES_CORRECTION)
         self.assertIn("split", MIXED_PROJECT_SCOPES_CORRECTION.lower())
@@ -1369,7 +1508,8 @@ class ValidationTest(unittest.TestCase):
             "scope_source": "model",
         }
         for scope in ("domain:work", "portfolio:alpha_1", "project:中文项目"):
-            valid = {"candidates": [dict(base, scopes=[scope])]}
+            memory = "中文项目 fact" if scope.startswith("project:") else base["memory"]
+            valid = {"candidates": [dict(base, scopes=[scope], memory=memory)]}
             self.assertEqual(parse_gate_output(json.dumps(valid), ["event-a"])["candidates"][0]["scopes"], [scope])
         invalid = (
             ("project:", "model"),
@@ -1394,7 +1534,7 @@ class ValidationTest(unittest.TestCase):
     def test_worthy_memory_rejects_multiple_project_scopes_but_allows_parent_context(self):
         base = {
             "candidate_id": "c",
-            "memory": "one future-use topic",
+            "memory": "cn future-use topic",
             "evidence_event_ids": ["event-a"],
             "duplicate": False,
             "worth": True,
