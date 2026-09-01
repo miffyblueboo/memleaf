@@ -222,10 +222,48 @@ jobs:
           VERSION: ${{ steps.release_meta.outputs.version }}
         shell: bash
         run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          RELEASE_SHA="$GITHUB_SHA"
           test -f "dist/memleaf-${VERSION}-py3-none-any.whl"
           test -f "dist/memleaf-${VERSION}.tar.gz"
           (
             cd dist
             sha256sum "memleaf-${VERSION}-py3-none-any.whl" "memleaf-${VERSION}.tar.gz" > SHA256SUMS
           )
-          gh release create "v${VERSION}"             --repo "$GITHUB_REPOSITORY"             --target "$GITHUB_SHA"             --title "memleaf ${VERSION}"             --notes-file /tmp/memleaf-release-notes.md             --latest             "dist/memleaf-${VERSION}-py3-none-any.whl"             "dist/memleaf-${VERSION}.tar.gz"             dist/SHA256SUMS
+
+          verify_existing_release() {
+            local release_target
+            local target_sha
+            release_target="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq '.targetCommitish')"
+            target_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TAG}" --jq '.sha')"
+            test "$target_sha" = "$RELEASE_SHA" || {
+              echo "Release ${TAG} target ${release_target} resolves to ${target_sha}, expected ${RELEASE_SHA}" >&2
+              return 1
+            }
+            gh release upload "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber \
+              "dist/memleaf-${VERSION}-py3-none-any.whl" \
+              "dist/memleaf-${VERSION}.tar.gz" \
+              dist/SHA256SUMS
+          }
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            verify_existing_release
+          elif gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$RELEASE_SHA" \
+              --title "memleaf ${VERSION}" \
+              --notes-file /tmp/memleaf-release-notes.md \
+              --latest \
+              "dist/memleaf-${VERSION}-py3-none-any.whl" \
+              "dist/memleaf-${VERSION}.tar.gz" \
+              dist/SHA256SUMS; then
+            :
+          else
+            # Another release attempt may have won the create race.  Only
+            # continue after resolving and validating that release's target.
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+            verify_existing_release
+          fi

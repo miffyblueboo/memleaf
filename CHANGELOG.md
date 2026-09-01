@@ -2,6 +2,16 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.2 — 2026-09-01
+
+- Publish GitHub Release and PyPI from the same wheel and source distribution
+  artifact verified by the CI build job; the PyPI workflow accepts only a
+  successful push from this repository's `main` branch.
+- Make GitHub Release publication idempotent: an existing tag must resolve to
+  the current release commit before its three assets are replaced or completed.
+- Normalize resolved paths in the partial-delete regression test so the
+  macOS `/var` and `/private/var` aliases exercise the intended failure path.
+
 ## 0.2.1 — 2026-08-31
 
 - Fixed the finalized `search → read` contract in both supported hosts: Codex `PostToolUse` and Hermes diagnostics now accept only `memory_id + title` search candidates, so a real `found` result no longer degrades to an error before `read`.

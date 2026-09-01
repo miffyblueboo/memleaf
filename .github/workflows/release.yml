@@ -9,10 +9,13 @@ jobs:
   build:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
       startsWith(github.event.workflow_run.head_commit.message, 'release: v')
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
     steps:
       - name: Check out verified release source
@@ -20,15 +23,32 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Set up Python
+      - name: Set up Python for metadata verification
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Build distributions
+      - name: Download distributions from triggering CI run
+        uses: actions/download-artifact@v4
+        with:
+          name: memleaf-distributions
+          path: dist/
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Verify source and distribution identity
         run: |
-          python -m pip install --upgrade build
-          python -m build --wheel --sdist
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.workflow_run.head_sha }}"
+          VERSION="$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          print(tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"])
+          PY
+          )"
+          test -f "dist/memleaf-${VERSION}-py3-none-any.whl"
+          test -f "dist/memleaf-${VERSION}.tar.gz"
 
       - name: Upload distributions
         uses: actions/upload-artifact@v4
@@ -39,7 +59,9 @@ jobs:
   publish:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
       startsWith(github.event.workflow_run.head_commit.message, 'release: v')
     needs: build
     runs-on: ubuntu-latest

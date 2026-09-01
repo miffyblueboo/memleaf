@@ -1,6 +1,6 @@
 # Maintainer Handoff
 
-Current release: **0.2.1**
+Current release: **0.2.2**
 License: **MIT**
 
 This file is for maintainers and is intentionally not linked from the user-facing README.
@@ -138,6 +138,18 @@ A release commit on `main` must start with `release: v<version>`.
 CI must pass Linux tests, Windows acceptance, and packaging before GitHub Release
 creation. The separate `Publish to PyPI` workflow then publishes with PyPI
 Trusted Publishing / OIDC.
+
+The CI release step is idempotent. If the tag's GitHub Release already exists,
+it resolves that tag to a commit and fails unless the commit equals the current
+release `GITHUB_SHA`; only then does it upload the wheel, source distribution,
+and `SHA256SUMS` with `--clobber`. A concurrent create race is handled by the
+same validation path rather than accepting an arbitrary existing release.
+
+The PyPI workflow is triggered only by a successful `push` CI run from this
+repository's own `main` branch. It downloads `memleaf-distributions` from the
+triggering CI run using its `workflow_run.id` and checks out its `head_sha`; it
+does not rebuild the package. Its publish job retains the PyPI Trusted
+Publishing `id-token: write` permission.
 
 Release documentation policy:
 

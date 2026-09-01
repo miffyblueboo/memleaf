@@ -306,13 +306,15 @@ class StageATest(unittest.TestCase):
         )
         active_path = self.vault_path / "knowledge" / f"{active.memory_id}.md"
         first_path = self.vault_path / "history" / f"{first_history.memory_id}.md"
-        second_path = self.vault_path / "history" / f"{second_history.memory_id}.md"
+        second_path = (
+            self.vault_path / "history" / f"{second_history.memory_id}.md"
+        ).resolve()
         original_unlink = Path.unlink
         attempted: list[str] = []
 
         def flaky_unlink(path, *args, **kwargs):
             attempted.append(path.name)
-            if path == second_path:
+            if path.resolve() == second_path:
                 raise PermissionError("simulated history delete failure")
             return original_unlink(path, *args, **kwargs)
 

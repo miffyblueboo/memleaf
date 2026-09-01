@@ -24,7 +24,7 @@ class StageC3PackagingTests(unittest.TestCase):
 
     def test_project_metadata_and_version_export(self) -> None:
         self.assertEqual(self.project["name"], "memleaf")
-        self.assertEqual(self.project["version"], "0.2.1")
+        self.assertEqual(self.project["version"], "0.2.2")
         self.assertEqual(self.project["requires-python"], ">=3.11")
         self.assertEqual(self.project["dependencies"], [])
         self.assertEqual(self.project["license"], "MIT")
@@ -120,6 +120,42 @@ class StageC3PackagingTests(unittest.TestCase):
         )
         self.assertNotIn("/Users/", sample.read_text(encoding="utf-8"))
         self.assertNotIn("secret", sample.read_text(encoding="utf-8").casefold())
+
+    def test_pypi_workflow_uses_the_triggering_ci_artifact_without_rebuilding(self) -> None:
+        workflow_path = ROOT / ".github" / "workflows" / "release.yml"
+        if not workflow_path.is_file():
+            self.skipTest("repository workflows are not included in the source distribution")
+        workflow = workflow_path.read_text(encoding="utf-8")
+        self.assertNotIn("python -m build", workflow)
+        self.assertEqual(workflow.count("github.event.workflow_run.event == 'push'"), 2)
+        self.assertEqual(
+            workflow.count("github.event.workflow_run.head_repository.full_name == github.repository"),
+            2,
+        )
+        self.assertIn("ref: ${{ github.event.workflow_run.head_sha }}", workflow)
+        self.assertIn("name: memleaf-distributions", workflow)
+        self.assertIn("github-token: ${{ github.token }}", workflow)
+        self.assertIn("repository: ${{ github.repository }}", workflow)
+        self.assertIn("run-id: ${{ github.event.workflow_run.id }}", workflow)
+        self.assertIn("actions: read", workflow)
+        self.assertIn("contents: read", workflow)
+        self.assertIn("id-token: write", workflow)
+
+    def test_github_release_update_validates_tag_target_and_clobbers_assets(self) -> None:
+        workflow_path = ROOT / ".github" / "workflows" / "ci.yml"
+        if not workflow_path.is_file():
+            self.skipTest("repository workflows are not included in the source distribution")
+        workflow = workflow_path.read_text(encoding="utf-8")
+        self.assertIn('gh release view "$TAG"', workflow)
+        self.assertIn('--json targetCommitish --jq \'.targetCommitish\'', workflow)
+        self.assertIn(
+            'gh api "repos/${GITHUB_REPOSITORY}/commits/${TAG}" --jq \'.sha\'',
+            workflow,
+        )
+        self.assertIn('test "$target_sha" = "$RELEASE_SHA"', workflow)
+        self.assertIn("gh release upload", workflow)
+        self.assertIn("--clobber", workflow)
+        self.assertIn("dist/SHA256SUMS", workflow)
 
 
 if __name__ == "__main__":
