@@ -873,6 +873,215 @@ class StageB2ATest(unittest.TestCase):
         self.assertEqual(service.read(other.memory_id).body, other.body)
         self.assertEqual(len(service.vault.list_markdown("history")), 1)
 
+    def test_same_project_different_future_use_target_retries_then_creates(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="same-project-wrong-target")
+        old = service.create_memory(
+            memory_id="mem-orion-sync",
+            title="金元顺安项目任务同步到 Orion 系统",
+            body=(
+                "金元顺安项目任务已同步到 Orion；里程碑包含信创环境搭建、"
+                "功能验证测试和上线安排。"
+            ),
+            type="todo",
+            scopes=["project:金元顺安"],
+        )
+        user_key, assistant_key = self.capture_turn(
+            service,
+            turn="same-project-wrong-target",
+            user_event="same-project-wrong-target-user",
+            assistant_event="same-project-wrong-target-assistant",
+            user="金元顺安实施计划六项建议；同时需要查看 Orion 任务同步。",
+            assistant="已整理金元顺安实施计划与 Orion 任务同步。",
+        )
+        wrong = self.candidate(
+            "wrong-jinyuan-target",
+            [user_key, assistant_key],
+            memory="金元顺安实施计划六项建议含里程碑、信创环境、测试和上线安排。",
+            type="todo",
+            update_memory_id=old.memory_id,
+        )
+        wrong["scopes"] = ["project:金元顺安"]
+        corrected = dict(wrong, candidate_id="jinyuan-independent")
+        corrected.pop("update_memory_id")
+        backend.responses.extend(
+            [
+                self.gate([wrong]),
+                self.gate([corrected]),
+                self.summary(
+                    user_key,
+                    title="金元顺安实施计划六项建议",
+                    body="金元顺安实施计划六项建议含里程碑、信创环境、测试和上线安排。",
+                    type="todo",
+                    scopes=["project:金元顺安"],
+                    status="active",
+                ),
+            ]
+        )
+
+        result = service.process(source="codex", session_id="s", model=backend)
+
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "summarize"])
+        self.assertIn("Previous output violated: target_not_relevant.", backend.calls[1]["prompt"])
+        self.assertEqual(service.read(old.memory_id).title, old.title)
+        self.assertEqual(service.read(old.memory_id).body, old.body)
+        self.assertEqual(len(service.vault.list_markdown("history")), 0)
+        active = service._read_memories_unlocked("knowledge")
+        self.assertEqual(len(active), 2)
+        self.assertIn(
+            "金元顺安实施计划六项建议含里程碑、信创环境、测试和上线安排。",
+            "\n".join(item.memory.body for item in active),
+        )
+
+    def test_same_project_same_future_use_target_remains_valid(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="same-project-valid-target")
+        old = service.create_memory(
+            memory_id="mem-jinyuan-plan",
+            title="金元顺安实施计划",
+            body="金元顺安实施计划按原方案执行。",
+            type="project",
+            scopes=["project:金元顺安"],
+        )
+        user_key, assistant_key = self.capture_turn(
+            service,
+            turn="same-project-valid-target",
+            user_event="same-project-valid-target-user",
+            assistant_event="same-project-valid-target-assistant",
+            user="金元顺安实施计划新增部署要求。",
+            assistant="已确认金元顺安实施计划需要纳入部署要求。",
+        )
+        candidate = self.candidate(
+            "valid-jinyuan-target",
+            [user_key, assistant_key],
+            memory="金元顺安实施计划新增部署要求。",
+            type="project",
+            update_memory_id=old.memory_id,
+        )
+        candidate["scopes"] = ["project:金元顺安"]
+        backend.responses.extend(
+            [
+                self.gate([candidate]),
+                self.summary(
+                    user_key,
+                    title="金元顺安实施计划",
+                    body="金元顺安实施计划新增部署要求。",
+                    type="project",
+                    scopes=["project:金元顺安"],
+                    update_memory_id=old.memory_id,
+                ),
+            ]
+        )
+
+        result = service.process(source="codex", session_id="s", model=backend)
+
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
+        self.assertEqual(service.read(old.memory_id).body, "金元顺安实施计划新增部署要求。")
+        self.assertEqual(len(service.vault.list_markdown("history")), 1)
+
+    def test_same_project_wrong_update_target_final_retry_becomes_create(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="same-project-wrong-target-final-retry")
+        old = service.create_memory(
+            memory_id="mem-beta-owner-final-retry",
+            title="beta 项目负责人",
+            body="beta 项目负责人是丙。",
+            type="identity",
+            scopes=["project:beta"],
+        )
+        user_key, assistant_key = self.capture_turn(
+            service,
+            turn="same-project-wrong-target-final-retry",
+            user_event="same-project-wrong-target-final-retry-user",
+            assistant_event="same-project-wrong-target-final-retry-assistant",
+            user="alpha 项目负责人更新为乙；beta 项目负责人仍为丙。",
+            assistant="已确认 alpha 负责人为乙，beta 负责人仍为丙。",
+        )
+        wrong = self.candidate(
+            "wrong-target-final-retry",
+            [user_key, assistant_key],
+            memory="alpha 项目负责人更新为乙。",
+            type="identity",
+            update_memory_id=old.memory_id,
+        )
+        wrong["scopes"] = ["project:alpha"]
+        invalid_gate = self.gate([wrong])
+        backend.responses.extend(
+            [
+                invalid_gate,
+                invalid_gate,
+                invalid_gate,
+                self.summary(
+                    user_key,
+                    title="alpha 项目负责人",
+                    body="alpha 项目负责人已更新为乙。",
+                    type="identity",
+                    scopes=["project:alpha"],
+                ),
+            ]
+        )
+
+        result = service.process(source="codex", session_id="s", model=backend)
+
+        self.assertEqual(result["processed_turns"], 1)
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual(
+            [call["purpose"] for call in backend.calls],
+            ["gate", "gate", "gate", "summarize"],
+        )
+        self.assertIn("Previous output violated: target_not_relevant.", backend.calls[1]["prompt"])
+        self.assertEqual(service.read(old.memory_id).body, old.body)
+        self.assertEqual(len(service.vault.list_markdown("history")), 0)
+        self.assertEqual(self.processed(service)["sessions"]["codex/s"]["processing"]["status"], "idle")
+        self.assertIn(
+            "alpha 项目负责人已更新为乙。",
+            "\n".join(record.memory.body for record in service._read_memories_unlocked("knowledge")),
+        )
+
+    def test_same_project_wrong_duplicate_target_final_retry_is_dropped(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="same-project-wrong-duplicate-final-retry")
+        old = service.create_memory(
+            memory_id="mem-beta-duplicate-final-retry",
+            title="beta 项目状态",
+            body="beta 项目状态保持不变。",
+            type="fact",
+            scopes=["project:beta"],
+        )
+        user_key, assistant_key = self.capture_turn(
+            service,
+            turn="same-project-wrong-duplicate-final-retry",
+            user_event="same-project-wrong-duplicate-final-retry-user",
+            assistant_event="same-project-wrong-duplicate-final-retry-assistant",
+            user="alpha 项目状态保持不变；beta 项目状态也保持不变。",
+            assistant="已确认两个项目状态均未变化。",
+        )
+        wrong = self.candidate(
+            "wrong-duplicate-final-retry",
+            [user_key, assistant_key],
+            memory="alpha 项目状态保持不变。",
+            duplicate=True,
+            worth=False,
+            type="fact",
+        )
+        wrong["duplicate_memory_id"] = old.memory_id
+        wrong["scopes"] = ["project:alpha"]
+        invalid_gate = self.gate([wrong])
+        backend.responses.extend([invalid_gate, invalid_gate, invalid_gate])
+
+        result = service.process(source="codex", session_id="s", model=backend)
+
+        self.assertEqual(result["processed_turns"], 1)
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "gate"])
+        self.assertIn("Previous output violated: target_not_relevant.", backend.calls[1]["prompt"])
+        self.assertEqual(service.read(old.memory_id).body, old.body)
+        self.assertEqual(len(service._read_memories_unlocked("knowledge")), 1)
+        self.assertEqual(len(service.vault.list_markdown("history")), 0)
+        self.assertEqual(self.processed(service)["sessions"]["codex/s"]["processing"]["status"], "idle")
+
     def test_gate_and_summary_update_target_mismatch_fails_after_bounded_retries(self):
         backend = QueueBackend()
         service = self.service(backend, name="email-update-mismatch-failure")

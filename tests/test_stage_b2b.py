@@ -150,7 +150,12 @@ class StageB2BTest(unittest.TestCase):
             user=f"user {turn} b2b{related_context}",
             assistant=f"assistant {turn}",
         )
-        candidate = self.candidate("candidate-" + turn, [user_key], type=type)
+        candidate = self.candidate(
+            "candidate-" + turn,
+            [user_key],
+            memory=f"{active.title} {active.body}",
+            type=type,
+        )
         summary_extra = dict(extra or {})
         summary_extra["update_memory_id"] = active_id
         backend.responses.extend(
@@ -333,7 +338,9 @@ class StageB2BTest(unittest.TestCase):
             assistant_event="a2",
             user="user t2 old",
         )
-        candidate = self.candidate("candidate-t2", [user_key])
+        candidate = self.candidate(
+            "candidate-t2", [user_key], memory=f"{active.title} {active.body}"
+        )
         responses = [
             self.gate([candidate]),
             self.summary(user_key, title="Updated", body="new", update_memory_id=active.memory_id),
@@ -373,7 +380,9 @@ class StageB2BTest(unittest.TestCase):
             assistant_event="a2",
             user="user t2 b2b old",
         )
-        candidate = self.candidate("candidate-t2", [user_key])
+        candidate = self.candidate(
+            "candidate-t2", [user_key], memory=f"{active.title} {active.body}"
+        )
         responses = [self.gate([candidate]), self.summary(user_key, title="Updated", body="b2b new", update_memory_id=active.memory_id)]
 
         backend.responses.extend(responses)
@@ -405,7 +414,9 @@ class StageB2BTest(unittest.TestCase):
             assistant_event="p-a2",
             user="user t2 b2b old",
         )
-        candidate2 = self.candidate("candidate-t2", [user_key2])
+        candidate2 = self.candidate(
+            "candidate-t2", [user_key2], memory=f"{active2.title} {active2.body}"
+        )
         responses2 = [self.gate([candidate2]), self.summary(user_key2, title="Updated", body="b2b new", update_memory_id=active2.memory_id)]
         backend2.responses.extend(responses2)
         import memleaf.processing as processing_module
@@ -543,7 +554,10 @@ class StageB2BTest(unittest.TestCase):
             assistant_event="a2",
             user="user t2 b2b old",
         )
-        candidates = [self.candidate("c1", [user_key]), self.candidate("c2", [user_key], memory="second")]
+        candidates = [
+            self.candidate("c1", [user_key], memory=f"{active.title} {active.body}"),
+            self.candidate("c2", [user_key], memory=f"{active.title} {active.body} second"),
+        ]
         backend.responses.extend(
             [
                 self.gate(candidates),

@@ -56,10 +56,10 @@ class StageB3BNativeContextTest(unittest.TestCase):
         return json.dumps({"candidates": [candidate] if candidate is not None else []})
 
     @staticmethod
-    def candidate(event_key_value, *, duplicate=False, worth=True):
+    def candidate(event_key_value, *, memory="new state", duplicate=False, worth=True):
         return {
             "candidate_id": "candidate-1",
-            "memory": "new state",
+            "memory": memory,
             "evidence_event_ids": [event_key_value],
             "duplicate": duplicate,
             "worth": worth,
@@ -188,7 +188,7 @@ class StageB3BNativeContextTest(unittest.TestCase):
         event_key_value = self.capture_turn(user="legacy status is now replaced", assistant="confirmed")
         invalid = QueueBackend(
             [
-                self.gate(self.candidate(event_key_value)),
+                self.gate(self.candidate(event_key_value, memory="legacy status is now replaced")),
                 self.summary(event_key_value, "new status", shadow=["native-not-related"]),
                 self.summary(event_key_value, "new status", shadow=["native-not-related"]),
                 self.summary(event_key_value, "new status", shadow=["native-not-related"]),
@@ -200,7 +200,7 @@ class StageB3BNativeContextTest(unittest.TestCase):
 
         backend = QueueBackend(
             [
-                self.gate(self.candidate(event_key_value)),
+                self.gate(self.candidate(event_key_value, memory="legacy status is now replaced")),
                 self.summary(event_key_value, "new status", shadow=[native_id]),
             ]
         )
@@ -239,9 +239,9 @@ class StageB3BNativeContextTest(unittest.TestCase):
 
         event_key_value = self.capture_turn(user="legacy retry status is replaced", assistant="confirmed")
         responses = [
-            self.gate(self.candidate(event_key_value)),
+            self.gate(self.candidate(event_key_value, memory="legacy retry status is replaced")),
             self.summary(event_key_value, "retry status", shadow=[native_id]),
-            self.gate(self.candidate(event_key_value)),
+            self.gate(self.candidate(event_key_value, memory="legacy retry status is replaced")),
             self.summary(event_key_value, "retry status", shadow=[native_id]),
         ]
         backend = QueueBackend(responses)

@@ -335,6 +335,18 @@ SUMMARY_SCOPE_CORRECTION = (
 )
 
 
+TARGET_RELEVANCE_CORRECTION = (
+    "Previous output violated: target_not_relevant. An update or duplicate "
+    "target must match the candidate's own memory topic through the supplied "
+    "active memory; do not borrow relevance from another event in the same "
+    "mailbox turn, aggregate context, or a priority ID. For a different "
+    "future use, remove the target and emit a separate atomic candidate. An "
+    "indirect same-use update may use a complete scope directory or session "
+    "context only when exactly one supplied active target is clear; otherwise "
+    "leave the target unset or defer it. Return only the strict gate JSON object."
+)
+
+
 SCOPE_GROUNDING_CORRECTION = (
     "Previous output violated: scope_not_grounded. For each worthy candidate "
     "with scope_source=model, choose a project scope named by that candidate's "

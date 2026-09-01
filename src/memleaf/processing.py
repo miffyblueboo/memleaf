@@ -42,6 +42,7 @@ from .prompts import (
     SUMMARY_TARGET_CORRECTION,
     SUMMARY_TYPE_CORRECTION,
     SUMMARIZE_SYSTEM,
+    TARGET_RELEVANCE_CORRECTION,
     UPDATE_TARGET_TYPE_CORRECTION,
     gate_prompt,
     summarize_prompt,
@@ -493,6 +494,8 @@ class Processor:
             return GATE_TYPE_CORRECTION
         if stage == "gate" and hint == "scope_not_grounded":
             return SCOPE_GROUNDING_CORRECTION
+        if stage == "gate" and hint == "target_not_relevant":
+            return TARGET_RELEVANCE_CORRECTION
         if stage == "summarize" and hint == "scope_drift":
             return SUMMARY_SCOPE_CORRECTION
         if hint == "relative_time":
@@ -1419,6 +1422,157 @@ class Processor:
             strict_relevance=True,
         )
 
+    def _target_is_relevant_to_candidate(
+        self,
+        turn: InboxTurn,
+        candidate: Mapping[str, Any],
+        *,
+        scope_directory: Optional[list[dict[str, Any]]] = None,
+        scope_directory_complete: bool = True,
+    ) -> bool:
+        """Check a model-selected target against the candidate topic only.
+
+        The ordinary related-memory prompt may include several independent
+        items from one mailbox turn.  Target selection must not inherit that
+        aggregate relevance: only the candidate's own extracted topic may
+        make an active target eligible.  A complete scope directory remains a
+        bounded escape hatch for an explicitly indirect user/session scope;
+        it never turns the target into an unconditional priority hit for a
+        direct model-attributed candidate.
+        """
+
+        target = next(
+            (
+                candidate.get(field)
+                for field in ("duplicate_memory_id", "update_memory_id")
+                if isinstance(candidate.get(field), str) and candidate.get(field)
+            ),
+            None,
+        )
+        memory = candidate.get("memory")
+        candidate_scopes = candidate.get("scopes")
+        if (
+            not isinstance(target, str)
+            or not isinstance(memory, str)
+            or not isinstance(candidate_scopes, list)
+        ):
+            return False
+
+        target_key = target.casefold()
+        candidate_scope_source = candidate.get("scope_source")
+
+        # A complete bounded directory is the existing indirect resolution
+        # path.  It contains only active IDs from the requested inherited
+        # scope, so preserve its exact-ID selection semantics rather than
+        # forcing a body relevance check that the directory intentionally
+        # cannot provide.
+        if scope_directory is not None:
+            if not scope_directory_complete:
+                return False
+            selected = next(
+                (
+                    item
+                    for item in scope_directory
+                    if isinstance(item, Mapping)
+                    and isinstance(item.get("memory_id"), str)
+                    and item["memory_id"].casefold() == target_key
+                ),
+                None,
+            )
+            if selected is not None and selected.get("type") == candidate.get("type"):
+                return True
+
+        # Model-attributed, directly named scopes must match the active
+        # target's stable topic title.  Matching the whole old body is too
+        # permissive: two different project memories can share implementation
+        # details such as milestones while serving different future uses.
+        if candidate_scope_source == "model":
+            scope_terms: list[str] = []
+            try:
+                scope_config = self.service.vault.config()
+                configured_scopes = scope_config.get("scopes", {})
+            except (OSError, UnicodeError, ValueError, TypeError):
+                scope_config = {}
+                configured_scopes = {}
+            for candidate_scope in candidate_scopes:
+                if not isinstance(candidate_scope, str) or not candidate_scope.startswith("project:"):
+                    continue
+                scope_terms.append(candidate_scope.partition(":")[2])
+                metadata = (
+                    configured_scopes.get(candidate_scope)
+                    if isinstance(configured_scopes, Mapping)
+                    else None
+                )
+                aliases = metadata.get("aliases") if isinstance(metadata, Mapping) else None
+                if isinstance(aliases, list):
+                    scope_terms.extend(
+                        alias for alias in aliases if isinstance(alias, str) and alias
+                    )
+
+            # The regression is project-scope drift inside aggregate turns.
+            # Global/domain/portfolio targets keep their established semantic
+            # gate behavior because there is no project identity to remove
+            # before comparing stable topics.
+            if not scope_terms:
+                return True
+
+            visible_turn = " ".join(
+                event.content for event in turn.events if isinstance(event.content, str)
+            )
+            if scope_terms and not any(
+                normalize_term(term) in normalize_term(visible_turn) for term in scope_terms
+            ):
+                # The visible turn is elliptical (for example, "this
+                # project"); the inherited scope and bounded related context
+                # already resolved its target.
+                return True
+
+            target_memory = None
+            with self.service.vault.lock():
+                for record in self.service._read_memories_unlocked("knowledge"):
+                    if record.memory.memory_id.casefold() == target_key:
+                        target_memory = record.memory
+                        break
+            if target_memory is None:
+                for item in self._planned_related:
+                    if (
+                        isinstance(item, Mapping)
+                        and isinstance(item.get("memory_id"), str)
+                        and item["memory_id"].casefold() == target_key
+                    ):
+                        try:
+                            target_memory = Memory.from_mapping(item)
+                        except (TypeError, ValueError):
+                            target_memory = None
+                        break
+            if target_memory is None:
+                return False
+            if not filter_by_scope([target_memory], candidate_scopes, scope_config):
+                return False
+
+            def without_scope_terms(value: str) -> str:
+                result = value
+                for term in sorted(set(scope_terms), key=len, reverse=True):
+                    result = re.sub(re.escape(term), "", result, flags=re.IGNORECASE)
+                return result.strip()
+
+            topic_title = without_scope_terms(target_memory.title)
+            topic_query = without_scope_terms(memory)
+            if not topic_title or not topic_query:
+                return False
+            topic_memory = Memory(
+                memory_id=target_memory.memory_id,
+                title=topic_query,
+                body="",
+                type=target_memory.type,
+                scopes=target_memory.scopes,
+            )
+            return candidate_matches_query(topic_memory, topic_title)
+
+        # User/session scopes are authoritative indirect context.  The base
+        # parser has already limited the target to an active related memory.
+        return candidate_scope_source in {"user", "session_context"}
+
     def _defer_candidate(
         self,
         turn_ref: tuple[str, str, str],
@@ -1643,6 +1797,60 @@ class Processor:
                 list(summary["scopes"]),
             )
 
+        gate_attempt_count = 0
+
+        def parse_gate(raw: str) -> dict[str, Any]:
+            nonlocal gate_attempt_count
+            gate_attempt_count += 1
+            parsed = parse_gate_output(
+                raw,
+                current_event_keys=turn.event_keys,
+                related_memory_ids=gate_related_memory_ids,
+                related_memory_types=gate_related_memory_types,
+                scope_registry=validation_scope_registry,
+            )
+            invalid_targets: dict[str, set[str]] = {}
+            for candidate in parsed["candidates"]:
+                target_fields = {
+                    field
+                    for field in ("duplicate_memory_id", "update_memory_id")
+                    if isinstance(candidate.get(field), str) and candidate.get(field)
+                }
+                if target_fields and not self._target_is_relevant_to_candidate(
+                    turn,
+                    candidate,
+                    scope_directory=scope_directory,
+                    scope_directory_complete=scope_directory_complete,
+                ):
+                    invalid_targets[candidate["candidate_id"].casefold()] = target_fields
+
+            if invalid_targets and gate_attempt_count < 3:
+                raise ModelOutputError(
+                    "selected target is not relevant to the candidate topic",
+                    validation_detail="target_not_relevant",
+                )
+
+            if invalid_targets:
+                # A persistently non-converging model must not hold an entire
+                # inbox turn hostage.  An unrelated update target can safely
+                # become an independent CREATE candidate; an unrelated
+                # duplicate has no independent fact to write and is dropped.
+                candidates: list[dict[str, Any]] = []
+                for candidate in parsed["candidates"]:
+                    fields = invalid_targets.get(candidate["candidate_id"].casefold())
+                    if not fields:
+                        candidates.append(candidate)
+                        continue
+                    if "duplicate_memory_id" in fields:
+                        continue
+                    if "update_memory_id" in fields and candidate.get("worth"):
+                        independent = dict(candidate)
+                        independent.pop("update_memory_id", None)
+                        candidates.append(independent)
+                parsed = dict(parsed)
+                parsed["candidates"] = candidates
+            return parsed
+
         gate = self._complete_json_stage(
             backend,
             gate_prompt(
@@ -1655,13 +1863,7 @@ class Processor:
             ),
             system=GATE_SYSTEM,
             purpose="gate",
-            parser=lambda raw: parse_gate_output(
-                raw,
-                current_event_keys=turn.event_keys,
-                related_memory_ids=gate_related_memory_ids,
-                related_memory_types=gate_related_memory_types,
-                scope_registry=validation_scope_registry,
-            ),
+            parser=parse_gate,
             diagnostic_context={
                 "source": turn.source,
                 "session_id": turn.session_id,
@@ -1710,15 +1912,7 @@ class Processor:
             candidate_related, candidate_scope_background, candidate_native_refs, _ = self._related_query(
                 turn,
                 state,
-                (
-                    str(candidate.get("memory", ""))
-                    + "\n"
-                    + " ".join(
-                        event.get("content", "")
-                        for event in events
-                        if isinstance(event.get("content"), str)
-                    )
-                ).strip(),
+                str(candidate.get("memory", "")).strip(),
                 candidate_scopes,
                 overlay=self._planned_related,
                 priority_memory_ids=[

@@ -2,6 +2,17 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.9 — 2026-09-01
+
+- Reject update and duplicate targets that are relevant only to another item
+  in the same aggregate turn, preventing cross-project memory overwrites.
+- Retry an unrelated gate target with an explicit correction, then recover
+  deterministically after the bounded final attempt: preserve unrelated
+  updates as independent candidates and discard unsafe duplicate claims.
+- Query related memories from each candidate's own complete topic instead of
+  the whole mailbox turn, while allowing the remaining valid candidates to be
+  processed without holding the retained inbox turn hostage.
+
 ## 0.2.8 — 2026-09-01
 
 - Let the automatic summarizer independently reject an over-admitted gate

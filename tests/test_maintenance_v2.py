@@ -326,7 +326,7 @@ class MaintenanceV2Tests(unittest.TestCase):
                         candidate(
                             "priority-update",
                             [user_event, assistant_event],
-                            "priority project 状态更新",
+                            "priority project plan 状态更新",
                             scopes=["project:priority"],
                             type="project",
                             update_memory_id=target.memory_id,
@@ -1026,24 +1026,37 @@ class MaintenanceV2Tests(unittest.TestCase):
             "alpha 项目负责人更新为乙。",
             "已确认 alpha 负责人为乙；beta 项目负责人仍为丙。",
         )
-        backend = QueueBackend(
+        invalid_gate = gate(
             [
-                gate(
-                    [
-                        candidate(
-                            "wrong-target",
-                            [user_event, assistant_event],
-                            "alpha 项目负责人更新为乙。",
-                            scopes=["project:alpha"],
-                            update_memory_id="mem-beta-owner",
-                        )
-                    ]
+                candidate(
+                    "wrong-target",
+                    [user_event, assistant_event],
+                    "alpha 项目负责人更新为乙。",
+                    scopes=["project:alpha"],
+                    update_memory_id="mem-beta-owner",
                 )
             ]
         )
+        backend = QueueBackend(
+            [
+                invalid_gate,
+                invalid_gate,
+                invalid_gate,
+                summary(
+                    user_event,
+                    "alpha 项目负责人更新为乙。",
+                    title="alpha 项目负责人",
+                    scopes=["project:alpha"],
+                ),
+            ]
+        )
 
-        with self.assertRaises(ValueError):
-            self.service.process(source="hermes", session_id="isolation", model=backend)
+        result = self.service.process(source="hermes", session_id="isolation", model=backend)
+
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "gate", "summarize"])
+        self.assertIn("Previous output violated: target_not_relevant.", backend.calls[1]["prompt"])
+        self.assertEqual(self.processed()["sessions"]["hermes/isolation"]["processing"]["status"], "idle")
 
         self.assertEqual(self.service.read("mem-alpha-owner").body, "alpha 项目负责人是甲。")
         self.assertEqual(self.service.read("mem-beta-owner").body, "beta 项目负责人是丙。")
