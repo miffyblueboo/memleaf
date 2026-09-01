@@ -49,12 +49,17 @@ from .prompts import (
 )
 from .redaction import redact_text
 from .retrieval import candidate_matches_query, filter_by_scope, normalize_term
-from .scope_state import ScopeError, normalize_scopes, register_scope_nodes
+from .scope_state import (
+    ScopeError,
+    normalize_scopes,
+    register_scope_nodes,
+)
 from .scope_maintenance import ScopeMaintainer, ScopeMaintenanceError, scope_registry_projection
 from .validation import (
     MODEL_VALIDATION_DETAILS,
     ModelOutputError,
     NO_CHANGE_DECISION,
+    _model_scope_grounding_evidence,
     parse_gate_output,
     parse_summarize_output,
 )
@@ -1808,7 +1813,51 @@ class Processor:
                 related_memory_ids=gate_related_memory_ids,
                 related_memory_types=gate_related_memory_types,
                 scope_registry=validation_scope_registry,
+                enforce_model_scope_grounding=gate_attempt_count < 3,
             )
+            if gate_attempt_count >= 3:
+                candidates = []
+                for candidate in parsed["candidates"]:
+                    candidate_scopes = [
+                        item
+                        for item in candidate.get("scopes", [])
+                        if isinstance(item, str)
+                    ]
+                    if (
+                        candidate.get("scope_source") == "model"
+                        and candidate.get("worth") is True
+                        and any(item.partition(":")[0] == "project" for item in candidate_scopes)
+                    ):
+                        selected_owners, matches = _model_scope_grounding_evidence(
+                            str(candidate.get("memory", "")),
+                            candidate_scopes,
+                            validation_scope_registry,
+                        )
+                        candidate = dict(candidate)
+                        if not selected_owners:
+                            candidates.append(candidate)
+                            continue
+                        if len(matches) == 1:
+                            grounded_scope = next(iter(matches.values()))
+                            if grounded_scope.casefold() not in set(selected_owners.values()):
+                                non_project_scopes = [
+                                    item
+                                    for item in candidate_scopes
+                                    if item.partition(":")[0] != "project"
+                                ]
+                                if all(
+                                    item.casefold() != grounded_scope.casefold()
+                                    for item in non_project_scopes
+                                ):
+                                    non_project_scopes.append(grounded_scope)
+                                candidate["scopes"] = non_project_scopes
+                        else:
+                            candidate["scopes"] = ["unscoped"]
+                            candidate["scope_source"] = "insufficient_context"
+                    candidates.append(candidate)
+                parsed = dict(parsed)
+                parsed["candidates"] = candidates
+
             invalid_targets: dict[str, set[str]] = {}
             for candidate in parsed["candidates"]:
                 target_fields = {

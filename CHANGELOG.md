@@ -2,6 +2,18 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.10 — 2026-09-01
+
+- Keep strict candidate-local project Scope grounding for the first two gate
+  attempts, then isolate a persistently invalid candidate instead of failing
+  the entire mailbox turn.
+- Correct a final-attempt model Scope only when the candidate text identifies
+  exactly one registered project name or alias; defer zero-match and
+  multi-project candidates as insufficient context without writing memory.
+- Preserve valid sibling candidates, new explicitly named project Scopes, and
+  the existing update-target relevance guard when Scope and target errors occur
+  together.
+
 ## 0.2.9 — 2026-09-01
 
 - Reject update and duplicate targets that are relevant only to another item

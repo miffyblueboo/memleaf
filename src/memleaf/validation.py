@@ -258,17 +258,16 @@ def _reject_mixed_project_scopes(scopes: Iterable[str]) -> None:
         )
 
 
-def _reject_ungrounded_project_scope(
+def _model_scope_grounding_evidence(
     memory: str,
     scopes: Iterable[str],
     scope_registry: Mapping[str, Any] | None,
-) -> None:
-    """Require model-attributed project scopes to be named by this candidate.
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Return model scope ownership and memory-grounded matches.
 
-    The gate's memory text is the only candidate-local attribution evidence.
-    Session background, other events, and related-memory bodies are
-    intentionally excluded so an aggregate mailbox turn cannot lend a
-    project name to an unrelated candidate.
+    Returns a tuple of:
+      - selected project scopes -> selected owner scope (casefold)
+      - grounded project scope matches from candidate memory (casefold -> canonical)
     """
 
     selected = {
@@ -277,16 +276,14 @@ def _reject_ungrounded_project_scope(
         if isinstance(scope, str) and scope.partition(":")[0] == "project"
     }
     if not selected:
-        return
+        return {}, {}
     try:
         registry = validate_scope_registry(scope_registry or {})
     except ScopeError as error:
         raise ModelOutputError("invalid scope registry", validation_detail="invalid_scope") from error
 
-    # Resolve a selected project key through a registered canonical scope when
-    # it is an alias (including the full ``project:...`` spelling).  A merged
-    # source may remain selectable as an alias of its target; treating both as
-    # separate projects would incorrectly reject that otherwise valid update.
+    # Resolve each selected project scope to its canonical owner when it is an
+    # alias of a registered project scope.
     selected_owners: dict[str, str] = {}
     for selected_scope in selected.values():
         selected_owner = selected_scope
@@ -311,19 +308,42 @@ def _reject_ungrounded_project_scope(
         selected_owners[selected_scope.casefold()] = selected_owner.casefold()
 
     # Include unregistered selections as temporary nodes: new scopes must be
-    # grounded by their own project name, while registered scopes also accept
-    # their configured aliases.  All known projects are checked to reject an
-    # otherwise ambiguous candidate that names multiple projects.
+    # grounded by their own project name. All known projects are still checked
+    # to reject ambiguous memory wording.
     candidate_registry = dict(registry)
-    for scope in selected.values():
-        owner = selected_owners[scope.casefold()]
+    for selected_scope in selected.values():
+        owner = selected_owners[selected_scope.casefold()]
         if owner not in {registered.casefold() for registered in registry}:
-            candidate_registry.setdefault(scope, {})
+            candidate_registry.setdefault(selected_scope, {})
+
     matches = {
-        scope.casefold()
+        scope.casefold(): scope
         for scope in project_scope_matches_text(memory, {"scopes": candidate_registry})
     }
-    if len(matches) != 1 or not matches.intersection(selected_owners.values()):
+    return selected_owners, matches
+
+
+def _reject_ungrounded_project_scope(
+    memory: str,
+    scopes: Iterable[str],
+    scope_registry: Mapping[str, Any] | None,
+) -> None:
+    """Require model-attributed project scopes to be named by this candidate.
+
+    The gate's memory text is the only candidate-local attribution evidence.
+    Session background, other events, and related-memory bodies are
+    intentionally excluded so an aggregate mailbox turn cannot lend a
+    project name to an unrelated candidate.
+    """
+
+    selected_owners, matches = _model_scope_grounding_evidence(
+        memory,
+        scopes,
+        scope_registry,
+    )
+    if not selected_owners:
+        return
+    if len(matches) != 1 or matches.keys().isdisjoint(set(selected_owners.values())):
         raise ModelOutputError(
             "model project scope is not grounded by this candidate",
             validation_detail="scope_not_grounded",
@@ -502,6 +522,7 @@ def validate_gate_output(
     related_memory_ids: Iterable[Any] | None = None,
     related_memory_types: Mapping[str, Any] | None = None,
     scope_registry: Mapping[str, Any] | None = None,
+    enforce_model_scope_grounding: bool = True,
 ) -> dict[str, Any]:
     """Validate and return a normalized gate object without writing anything."""
 
@@ -642,7 +663,8 @@ def validate_gate_output(
         if item["worth"]:
             _reject_mixed_project_scopes(item["scopes"])
             if item["scope_source"] == "model":
-                _reject_ungrounded_project_scope(item["memory"], item["scopes"], scope_registry)
+                if enforce_model_scope_grounding:
+                    _reject_ungrounded_project_scope(item["memory"], item["scopes"], scope_registry)
         if "reason" in item:
             _string(item["reason"], "reason", nonempty=False)
             if len(item["reason"]) > 30:
@@ -660,6 +682,7 @@ def parse_gate_output(
     related_memory_ids: Iterable[Any] | None = None,
     related_memory_types: Mapping[str, Any] | None = None,
     scope_registry: Mapping[str, Any] | None = None,
+    enforce_model_scope_grounding: bool = True,
 ) -> dict[str, Any]:
     try:
         parsed = parse_strict_json(raw)
@@ -675,6 +698,7 @@ def parse_gate_output(
             related_memory_ids=related_memory_ids,
             related_memory_types=related_memory_types,
             scope_registry=scope_registry,
+            enforce_model_scope_grounding=enforce_model_scope_grounding,
         )
     except ModelOutputError as error:
         if error.validation_reason is None:

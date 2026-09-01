@@ -104,7 +104,7 @@ class StageC1MCPTest(unittest.TestCase):
         testcase.assertEqual(result["resultType"], "complete")
         testcase.assertEqual(
             result["_meta"]["io.modelcontextprotocol/serverInfo"],
-            {"name": "memleaf", "version": "0.2.9"},
+            {"name": "memleaf", "version": "0.2.10"},
         )
         return result
 

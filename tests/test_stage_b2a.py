@@ -266,6 +266,279 @@ class StageB2ATest(unittest.TestCase):
         self.assertNotIn("project:浙江东方", state.get("scopes", []))
         self.assertNotIn("project:浙江东方", service.vault.config()["scopes"])
 
+    def test_gate_scope_not_grounded_final_retry_corrects_by_unique_memory_match(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="scope-final-correct")
+        config = service.vault.config()
+        config["scopes"] = {
+            "project:zhongyin": {"aliases": ["中银国际"]},
+            "project:金元顺安": {"aliases": ["金元顺安"]},
+        }
+        save_config(service.vault.config_path, config)
+        user_key, _ = self.capture_turn(
+            service,
+            turn="scope-final-correct",
+            user_event="scope-final-correct-user",
+            assistant_event="scope-final-correct-assistant",
+            user="中银国际实施计划需要更新。",
+            assistant="确认中银国际计划更新。",
+        )
+        wrong = self.candidate(
+            "wrong-zg-scope",
+            [user_key],
+            memory="中银国际实施计划需要更新。",
+            type="project",
+        )
+        wrong["scopes"] = ["project:金元顺安"]
+        backend.responses.extend(
+            [
+                self.gate([wrong]),
+                self.gate([wrong]),
+                self.gate([wrong]),
+                self.summary(
+                    user_key,
+                    title="中银国际实施计划",
+                    body="中银国际实施计划需要更新。",
+                    type="project",
+                    scopes=["project:zhongyin"],
+                ),
+            ]
+        )
+
+        result = service.process(source="codex", session_id="s", model=backend)
+
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "gate", "summarize"])
+        self.assertIn("Previous output violated: scope_not_grounded.", backend.calls[1]["prompt"])
+        self.assertEqual(self.knowledge(service)[0].memory.scopes, ["project:zhongyin"])
+        self.assertIn("project:zhongyin", service.vault.config()["scopes"])
+
+    def test_scope_not_grounded_final_retry_keeps_other_valid_candidates(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="scope-final-keep-valid")
+        config = service.vault.config()
+        config["scopes"] = {
+            "project:zhongyin": {"aliases": ["中银国际"]},
+            "project:xinyuan": {"aliases": ["鑫元基金"]},
+        }
+        save_config(service.vault.config_path, config)
+        user_key, assistant_key = self.capture_turn(
+            service,
+            turn="scope-final-keep-valid",
+            user_event="scope-final-keep-valid-user",
+            assistant_event="scope-final-keep-valid-assistant",
+            user="中银国际计划已更新；鑫元待反馈。",
+            assistant="待确认中银国际与鑫元相关事项。",
+        )
+
+        valid = self.candidate(
+            "zhongyin-plan",
+            [user_key],
+            memory="中银国际计划已更新。",
+            type="project",
+        )
+        valid["scopes"] = ["project:zhongyin"]
+        bad = self.candidate(
+            "xinyuan-ambiguous",
+            [assistant_key],
+            memory="鑫元 待反馈。",
+            type="event",
+        )
+        bad["scopes"] = ["project:xinyuan"]
+        backend.responses.extend(
+            [
+                self.gate([bad, valid]),
+                self.gate([bad, valid]),
+                self.gate([bad, valid]),
+                self.summary(
+                    user_key,
+                    title="中银国际计划",
+                    body="中银国际计划已更新。",
+                    type="project",
+                    scopes=["project:zhongyin"],
+                ),
+            ]
+        )
+
+        result = service.process(source="codex", session_id="s", model=backend)
+
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "gate", "summarize"])
+        self.assertIn("Previous output violated: scope_not_grounded.", backend.calls[1]["prompt"])
+        self.assertEqual(len(self.knowledge(service)), 1)
+        self.assertEqual(self.knowledge(service)[0].memory.scopes, ["project:zhongyin"])
+        turn_entry = self.processed(service)["sessions"]["codex/s"]["processed_turns"][0]
+        deferred = turn_entry["deferred_candidates"]
+        self.assertEqual(len(deferred), 1)
+        self.assertEqual(deferred[0]["candidate_id"], "xinyuan-ambiguous")
+        self.assertNotIn("鑫元", "\n".join(record.memory.body for record in self.knowledge(service)))
+
+    def test_scope_not_grounded_final_retry_ambiguous_mention_no_write(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="scope-final-ambiguous")
+        config = service.vault.config()
+        config["scopes"] = {
+            "project:zhongyin": {"aliases": ["中银国际"]},
+            "project:jinyuan": {"aliases": ["金元顺安"]},
+        }
+        save_config(service.vault.config_path, config)
+        user_key, _ = self.capture_turn(
+            service,
+            turn="scope-final-ambiguous",
+            user_event="scope-final-ambiguous-user",
+            assistant_event="scope-final-ambiguous-assistant",
+            user="中银国际和金元顺安均有更新。",
+            assistant="已确认两个项目的进展。",
+        )
+        wrong = self.candidate(
+            "both-mentioned",
+            [user_key],
+            memory="中银国际和金元顺安均有更新。",
+            type="fact",
+        )
+        wrong["scopes"] = ["project:zhongyin"]
+        backend.responses.extend([self.gate([wrong]), self.gate([wrong]), self.gate([wrong])])
+
+        result = service.process(source="codex", session_id="s", model=backend)
+
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "gate"])
+        self.assertEqual(self.knowledge(service), [])
+        turn_entry = self.processed(service)["sessions"]["codex/s"]["processed_turns"][0]
+        deferred = turn_entry["deferred_candidates"]
+        self.assertEqual(len(deferred), 1)
+        self.assertEqual(deferred[0]["candidate_id"], "both-mentioned")
+        self.assertEqual(deferred[0]["reason"], "scope_required")
+        self.assertEqual(self.processed(service)["sessions"]["codex/s"]["processing"]["status"], "idle")
+
+    def test_scope_not_grounded_final_retry_wrong_scope_and_wrong_update_target_is_safe(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="scope-final-wrong-scope-target")
+        config = service.vault.config()
+        config["scopes"] = {
+            "project:alpha": {"aliases": ["阿尔法"]},
+            "project:beta": {"aliases": ["贝塔"]},
+        }
+        save_config(service.vault.config_path, config)
+        old = service.create_memory(
+            memory_id="alpha-existing",
+            title="阿尔法 项目负责人",
+            body="阿尔法 项目负责人当前为甲。",
+            type="identity",
+            scopes=["project:alpha"],
+        )
+        user_key, _ = self.capture_turn(
+            service,
+            turn="scope-final-wrong-scope-target",
+            user_event="scope-final-wrong-scope-target-user",
+            assistant_event="scope-final-wrong-scope-target-assistant",
+            user="阿尔法 项目负责人当前为甲；贝塔 项目负责人更新为乙。",
+            assistant="已确认两个项目的负责人信息。",
+        )
+        wrong = self.candidate(
+            "wrong-scope-target",
+            [user_key],
+            memory="贝塔 项目负责人更新为乙。",
+            type="identity",
+            update_memory_id=old.memory_id,
+        )
+        wrong["scopes"] = ["project:alpha"]
+        backend.responses.extend(
+            [
+                self.gate([wrong]),
+                self.gate([wrong]),
+                self.gate([wrong]),
+                self.summary(
+                    user_key,
+                    title="贝塔 项目负责人",
+                    body="贝塔 项目负责人更新为乙。",
+                    type="identity",
+                    scopes=["project:beta"],
+                ),
+            ]
+        )
+
+        result = service.process(source="codex", session_id="s", model=backend)
+
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "gate", "summarize"])
+        self.assertIn("Previous output violated: scope_not_grounded.", backend.calls[1]["prompt"])
+        self.assertEqual(service.read(old.memory_id).body, old.body)
+        self.assertEqual(len(self.knowledge(service)), 2)
+        self.assertIn(
+            "贝塔 项目负责人更新为乙。",
+            "\n".join(record.memory.body for record in self.knowledge(service)),
+        )
+        self.assertEqual(
+            {
+                tuple(record.memory.scopes): record.memory.body
+                for record in self.knowledge(service)
+            }[("project:beta",)],
+            "贝塔 项目负责人更新为乙。",
+        )
+
+    def test_scope_not_grounded_final_retry_preserves_unregistered_project_scope(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="scope-final-unregistered-legal")
+        config = service.vault.config()
+        config["scopes"] = {
+            "project:alpha": {"aliases": ["阿尔法"]},
+        }
+        save_config(service.vault.config_path, config)
+        old = service.create_memory(
+            memory_id="alpha-existing",
+            title="阿尔法 项目状态",
+            body="阿尔法 项目状态保持不变。",
+            type="project",
+            scopes=["project:alpha"],
+        )
+        user_key, _ = self.capture_turn(
+            service,
+            turn="scope-final-unregistered-legal",
+            user_event="scope-final-unregistered-legal-user",
+            assistant_event="scope-final-unregistered-legal-assistant",
+            user="阿尔法项目状态不变；浙江东方实施计划待确认。",
+            assistant="已确认两个项目的状态。",
+        )
+        wrong = self.candidate(
+            "new-unregistered-final-retry",
+            [user_key],
+            memory="浙江东方实施计划待确认。",
+            type="project",
+            update_memory_id=old.memory_id,
+        )
+        wrong["scopes"] = ["project:浙江东方"]
+        backend.responses.extend(
+            [
+                self.gate([wrong]),
+                self.gate([wrong]),
+                self.gate([wrong]),
+                self.summary(
+                    user_key,
+                    title="浙江东方实施计划",
+                    body="浙江东方实施计划待确认。",
+                    type="project",
+                    scopes=["project:浙江东方"],
+                ),
+            ]
+        )
+
+        result = service.process(source="codex", session_id="s", model=backend)
+
+        self.assertEqual(result["processed_turns"], 1)
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "gate", "summarize"])
+        self.assertIn("Previous output violated: target_not_relevant.", backend.calls[1]["prompt"])
+        self.assertEqual(service.read(old.memory_id).body, old.body)
+        self.assertEqual(len(self.knowledge(service)), 2)
+        unregistered = [
+            record
+            for record in self.knowledge(service)
+            if record.memory.scopes == ["project:浙江东方"]
+        ]
+        self.assertEqual(len(unregistered), 1)
+        self.assertEqual(unregistered[0].memory.body, "浙江东方实施计划待确认。")
+
     def test_summary_scope_drift_retries_before_writing(self):
         backend = QueueBackend()
         service = self.service(backend, name="summary-scope-drift")
