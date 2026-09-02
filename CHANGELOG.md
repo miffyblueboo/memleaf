@@ -2,6 +2,18 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.15 — 2026-09-02
+
+- Recover a candidate whose `update_memory_id` has the wrong type at the
+  candidate level after bounded gate retries, without blocking unrelated
+  candidates or changing the active target's immutable type.
+- Require candidate-local Scope membership and future-use relevance before
+  accepting a duplicate or update target, keeping cross-project targets
+  deferred and preventing unsafe overwrites.
+- Keep duplicate validation independent from UPDATE type validation, and
+  safely defer unknown or same-use type-mismatch targets instead of creating
+  a sibling memory or failing the whole inbox turn.
+
 ## 0.2.14 — 2026-09-02
 
 - Reject a permanent-memory candidate that combines a durable project rule or

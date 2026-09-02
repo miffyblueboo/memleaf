@@ -1798,23 +1798,25 @@ class StageB2ATest(unittest.TestCase):
         wrong_gate = self.candidate(
             "wrong-target-type",
             [user_key],
-            memory="A project update forced onto a fact target.",
+            memory="The existing fact is updated to a new value.",
             type="project",
             update_memory_id=existing.memory_id,
         )
         backend.responses.extend([self.gate([wrong_gate])] * 3)
 
-        with self.assertRaises(ModelOutputError) as raised:
-            service.process()
+        result = service.process()
 
-        self.assertEqual(raised.exception.validation_detail, "update_target_type_mismatch")
-        self.assertEqual(raised.exception.stage, "gate")
-        self.assertEqual(raised.exception.attempt_count, 3)
-        marker = self.processed(service)["sessions"]["codex/s"]["processing"]
-        self.assertEqual(marker["failure_stage"], "gate")
-        self.assertEqual(marker["validation_detail"], "update_target_type_mismatch")
-        self.assertEqual(marker["attempt_count"], 3)
-        self.assertEqual(self.processed(service)["sessions"]["codex/s"].get("watermark", 0), 0)
+        self.assertEqual(result["processed_turns"], 1)
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["memory_ids"], [])
+        self.assertEqual(result["deferred_candidates"], 1)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate"] * 3)
+        entry = self.processed(service)["sessions"]["codex/s"]["processed_turns"][0]
+        self.assertEqual(len(entry["deferred_candidates"]), 1)
+        self.assertEqual(entry["deferred_candidates"][0]["candidate_id"], "wrong-target-type")
+        self.assertEqual(entry["deferred_candidates"][0]["reason"], "update_target_type_mismatch")
+        self.assertEqual(self.processed(service)["sessions"]["codex/s"].get("watermark"), 1)
+        self.assertEqual(self.processed(service)["sessions"]["codex/s"]["processing"]["status"], "idle")
         self.assertTrue((service.vault.inbox_path / "codex" / "s.md").is_file())
         self.assertEqual(service.read(existing.memory_id).body, existing.body)
         self.assertEqual(service._read_memories_unlocked("history"), [])
