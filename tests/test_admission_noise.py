@@ -305,7 +305,160 @@ class AdmissionFlowTests(unittest.TestCase):
         self.assertEqual(len(memories), 1)
         self.assertIn("交付延期风险", memories[0].memory.body)
 
-    def test_combined_orion_digest_is_dropped_but_atomic_action_is_kept(self):
+    def test_pure_operational_query_cannot_reingest_assistant_snapshot(self):
+        service = self.make_service("pure-operational-query")
+        existing = service.create_memory(
+            memory_id="mem-puyin-overdue",
+            title="浦银安盛测试数据",
+            body="浦银安盛需要提供一版可靠测试数据。",
+            tags=["project"],
+            type="todo",
+        )
+        backend = QueueBackend()
+        user_key, assistant_key = self.capture_turn(
+            service,
+            session="pure-operational-query",
+            turn="turn-1",
+            user="我有没有近期比较紧急的事情要处理？",
+            assistant=(
+                "巡检汇总：浦银安盛任务逾期5天；泰信基金任务逾期33天，"
+                "状态已驳回、无负责人；中银国际历史数据和附件需要全部迁移。"
+            ),
+        )
+        backend.responses.append(
+            gate(
+                [
+                    candidate(
+                        "repeated-task",
+                        [user_key, assistant_key],
+                        memory="浦银安盛需要提供一版可靠测试数据，逾期5天。",
+                        type="todo",
+                    ),
+                    candidate(
+                        "daily-overdue",
+                        [user_key, assistant_key],
+                        memory="泰信基金任务逾期33天，状态已驳回、无负责人。",
+                        type="todo",
+                    ),
+                    candidate(
+                        "assistant-only-plan",
+                        [user_key, assistant_key],
+                        memory="中银国际历史数据和附件需要全部迁移。",
+                        type="project",
+                    ),
+                ]
+            )
+        )
+
+        result = service.process(source="hermes", session_id="pure-operational-query", model=backend)
+
+        self.assertEqual(result["memory_ids"], [])
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(service.read(existing.memory_id).body, existing.body)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate"])
+
+    def test_query_with_user_confirmed_durable_fact_remains_admissible(self):
+        service = self.make_service("query-with-confirmation")
+        backend = QueueBackend()
+        user_key, assistant_key = self.capture_turn(
+            service,
+            session="query-with-confirmation",
+            turn="turn-1",
+            user="以后处理项目邮件请保持简洁，可以吗？",
+            assistant="可以，之后项目邮件保持简洁。",
+        )
+        backend.responses.extend(
+            [
+                gate(
+                    [
+                        candidate(
+                            "confirmed-preference",
+                            [user_key, assistant_key],
+                            memory="用户偏好项目邮件保持简洁。",
+                            type="preference",
+                        )
+                    ]
+                ),
+                summary(
+                    user_key,
+                    title="项目邮件保持简洁",
+                    body="用户偏好项目邮件保持简洁。",
+                    type="preference",
+                ),
+            ]
+        )
+
+        result = service.process(source="hermes", session_id="query-with-confirmation", model=backend)
+
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual(service._read_memories_unlocked("knowledge")[0].memory.type, "preference")
+
+    def test_dynamic_overdue_only_update_is_ignored(self):
+        service = self.make_service("dynamic-overdue-update")
+        old = service.create_memory(
+            memory_id="mem-taixin-overdue",
+            title="泰信基金申请日期展示问题",
+            body="泰信基金申请日期展示问题逾期26天。",
+            tags=["operational"],
+            type="todo",
+        )
+        backend = QueueBackend()
+        user_key, assistant_key = self.capture_turn(
+            service,
+            session="dynamic-overdue-update",
+            turn="turn-1",
+            user="查询泰信基金当前任务状态。",
+            assistant="泰信基金申请日期展示问题现在逾期33天。",
+        )
+        backend.responses.append(
+            gate(
+                [
+                    candidate(
+                        "taixin-status",
+                        [user_key, assistant_key],
+                        memory="泰信基金申请日期展示问题逾期33天。",
+                        type="todo",
+                        update_memory_id=old.memory_id,
+                    )
+                ]
+            )
+        )
+
+        result = service.process(source="hermes", session_id="dynamic-overdue-update", model=backend)
+
+        self.assertEqual(result["memory_ids"], [])
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(service.read(old.memory_id).body, old.body)
+
+    def test_one_time_execution_receipt_is_not_persisted(self):
+        service = self.make_service("execution-receipt")
+        backend = QueueBackend()
+        user_key, assistant_key = self.capture_turn(
+            service,
+            session="execution-receipt",
+            turn="turn-1",
+            user="把供数清单发给刘洋。",
+            assistant="邮件已发送，已归档核验，服务器已接受提交。",
+        )
+        backend.responses.append(
+            gate(
+                [
+                    candidate(
+                        "sent-receipt",
+                        [user_key, assistant_key],
+                        memory="供数清单邮件已发送并完成归档核验。",
+                        type="fact",
+                    )
+                ]
+            )
+        )
+
+        result = service.process(source="hermes", session_id="execution-receipt", model=backend)
+
+        self.assertEqual(result["memory_ids"], [])
+        self.assertEqual(result["memories_written"], 0)
+
+    def test_read_only_orion_digest_does_not_reingest_atomic_assistant_action(self):
         service = self.make_service("orion-digest")
         backend = QueueBackend()
         user_key, _ = self.capture_turn(
@@ -329,34 +482,14 @@ class AdmissionFlowTests(unittest.TestCase):
             type="todo",
         )
         atomic["scopes"] = ["project:orion"]
-        atomic_summary = json.loads(
-            summary(
-                user_key,
-                title="Orion提供旧版本生产取数脚本",
-                body="Orion需要提供旧版本生产取数脚本。",
-                type="todo",
-            )
-        )
-        atomic_summary.update(
-            {
-                "scopes": ["project:orion"],
-                "status": "active",
-            }
-        )
-        backend.responses.extend(
-            [gate([aggregate, atomic]), json.dumps(atomic_summary, ensure_ascii=False)]
-        )
+        backend.responses.append(gate([aggregate, atomic]))
 
         result = service.process(source="hermes", session_id="orion-digest", model=backend)
 
-        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual(result["memories_written"], 0)
         self.assertEqual(result["deferred_candidates"], 0)
-        memories = service._read_memories_unlocked("knowledge")
-        self.assertEqual(len(memories), 1)
-        self.assertEqual(memories[0].memory.title, "Orion提供旧版本生产取数脚本")
-        self.assertNotIn("汇总", memories[0].memory.title)
-        self.assertNotIn("完成4条", memories[0].memory.body)
-        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
+        self.assertEqual(service._read_memories_unlocked("knowledge"), [])
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate"])
 
     def test_attachment_only_followup_is_dropped_before_summary(self):
         service = self.make_service("attachment-followup")
@@ -412,7 +545,7 @@ class AdmissionFlowTests(unittest.TestCase):
 
         self.assertEqual(result["memories_written"], 0)
         self.assertEqual(service._read_memories_unlocked("knowledge"), [])
-        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate"])
 
     def test_attachment_with_owner_deadline_and_remediation_remains_admissible(self):
         service = self.make_service("attachment-action")
@@ -421,8 +554,8 @@ class AdmissionFlowTests(unittest.TestCase):
             service,
             session="attachment-action",
             turn="turn-1",
-            user="鑫元基金SIT问题清单怎么处理？",
-            assistant="张三需在2026-09-03前逐项整改SIT问题清单。",
+            user="已确认张三需在2026-09-03前逐项整改鑫元基金SIT问题清单，还要补充什么吗？",
+            assistant="该负责人、期限和整改要求已经明确。",
         )
         item = candidate(
             "xinyuan-sit-remediation",

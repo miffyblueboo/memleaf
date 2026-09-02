@@ -49,6 +49,7 @@ _MAX_PENDING_TURN_NUMBERS = 128
 _MAX_SESSION_ALIASES = 128
 _MAX_LINEAGE_RETRIES = 2
 _MAX_DEFERRED_PROCESS_SESSIONS = 128
+_MAX_OBSERVED_TOOL_CALL_KEYS = 2048
 _SAFE_COMPONENT_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 _PROVIDER_VERSION_RE = re.compile(r"^version:\s*([^\s#]+)\s*(?:#.*)?$", re.MULTILINE)
 _ASCII_QUERY_TERM_RE = re.compile(r"[a-z0-9]+(?:[ ._-][a-z0-9]+)*")
@@ -628,6 +629,45 @@ def _tool_result_for_call(
     return _CALL_FAILED
 
 
+def _tool_observation_key(call: Mapping[str, Any], ordinal: int) -> str:
+    """Build a stable in-memory identity for one visible tool call.
+
+    Hermes can pass the complete conversation back on every turn.  The
+    retrieval token and result status are turn-relative, so they must not be
+    part of the identity: otherwise an old successful read is reclassified as
+    ``uncontrolled_success`` when a newer token is observed.  Call ids are
+    stable when Hermes supplies them; the ordinal/arguments fallback keeps
+    anonymous calls distinct within the cumulative message list.
+    """
+
+    arguments = call.get("arguments")
+    try:
+        arguments_text = json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        arguments_text = ""
+    call_id = call.get("call_id") if isinstance(call.get("call_id"), str) else ""
+    name = call.get("name") if isinstance(call.get("name"), str) else ""
+    if call_id:
+        identity = f"{name}\x00call-id\x00{call_id}"
+    else:
+        identity = f"{name}\x00anonymous\x00{ordinal}\x00{arguments_text}"
+    return sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _record_tool_observation(seen: Any, key: str) -> bool:
+    """Record one observation key and report whether it was new."""
+
+    if seen is None:
+        return True
+    if key in seen:
+        return False
+    if isinstance(seen, set):
+        seen.add(key)
+    else:
+        seen[key] = None
+    return True
+
+
 def _hermes_read_status(value: Any) -> str:
     """Classify a visible read result without inspecting it in diagnostics."""
 
@@ -1125,6 +1165,7 @@ class MemleafMemoryProvider(MemoryProvider):
         self._gate_turn_ids: "OrderedDict[Tuple[str, int], str]" = OrderedDict()
         self._active_turn_numbers: "OrderedDict[str, int]" = OrderedDict()
         self._active_retrieval_ids: "OrderedDict[str, Optional[str]]" = OrderedDict()
+        self._observed_tool_call_keys: "OrderedDict[str, None]" = OrderedDict()
         self._version_warning_emitted = False
         # Hermes keeps one provider instance alive while compression rotates
         # the physical session id.  Keep only a bounded alias chain so a
@@ -1752,6 +1793,7 @@ class MemleafMemoryProvider(MemoryProvider):
             if not continuous:
                 self._pending_lineage.clear()
                 self._deferred_process_sessions.clear()
+                self._observed_tool_call_keys.clear()
             if _as_bool(reset, False) or _as_bool(rewound, False):
                 self._clear_session_turn_state(old_session_id or next_session_id)
                 for key in list(self._retrieval_ids_by_turn):
@@ -1826,6 +1868,7 @@ class MemleafMemoryProvider(MemoryProvider):
         self._gate_turn_ids.clear()
         self._active_turn_numbers.clear()
         self._active_retrieval_ids.clear()
+        self._observed_tool_call_keys.clear()
         self._session_aliases.clear()
         self._pending_lineage.clear()
         self._deferred_process_sessions.clear()
@@ -2073,6 +2116,7 @@ class MemleafMemoryProvider(MemoryProvider):
         session_id: str = "",
         turn_id: str = "",
         vault_root: Optional[Path] = None,
+        seen_call_keys: Any = None,
     ) -> str:
         """Observe explicit host MCP calls in public messages.
 
@@ -2087,25 +2131,32 @@ class MemleafMemoryProvider(MemoryProvider):
         results = _visible_tool_results(messages)
         statuses: list[str] = []
         search_results_used: set[int] = set()
+        search_ordinal = 0
         for call in calls:
             if call.get("name") != "mcp__memleaf__search":
                 continue
+            search_ordinal += 1
             arguments = call.get("arguments")
             if not isinstance(arguments, Mapping) or arguments.get("retrieval_id") != retrieval_id:
                 continue
             payload = _tool_result_for_call(call, calls, results, search_results_used)
             if payload is not _CALL_FAILED:
+                status = _hermes_search_status(payload)
+                observation_key = _tool_observation_key(call, search_ordinal)
+                if not _record_tool_observation(seen_call_keys, observation_key):
+                    continue
                 # Hermes has no public write-back hook for this soft observer.
                 # A valid current-turn result is enough to mark the local
                 # provider diagnostic; no Core ledger or body is touched here.
-                statuses.append(_hermes_search_status(payload))
+                statuses.append(status)
 
         read_results_used: set[int] = set()
         read_sequence = 0
+        read_ordinal = 0
         for call in calls:
             if call.get("name") != "mcp__memleaf__read":
                 continue
-            read_sequence += 1
+            read_ordinal += 1
             arguments = call.get("arguments")
             retrieval_present = isinstance(arguments, Mapping) and "retrieval_id" in arguments
             retrieval_match = bool(
@@ -2120,6 +2171,10 @@ class MemleafMemoryProvider(MemoryProvider):
                 # mismatched gate binding.  Do not make that look like a
                 # controlled success in the diagnostic stream.
                 result_status = "uncontrolled_success"
+            observation_key = _tool_observation_key(call, read_ordinal)
+            if not _record_tool_observation(seen_call_keys, observation_key):
+                continue
+            read_sequence += 1
             logger.info(
                 "memleaf retrieval-read source=hermes session=%s turn=%s read_seq=%d retrieval_present=%s retrieval_match=%s result=%s",
                 _safe_component(session_id, "none") if session_id else "none",
@@ -2286,7 +2341,10 @@ class MemleafMemoryProvider(MemoryProvider):
                         session_id=effective_session,
                         turn_id=turn_id,
                         vault_root=_resolve_vault(self._config()),
+                        seen_call_keys=self._observed_tool_call_keys,
                     )
+                    while len(self._observed_tool_call_keys) > _MAX_OBSERVED_TOOL_CALL_KEYS:
+                        self._observed_tool_call_keys.popitem(last=False)
                     self._last_retrieval_observation = observation
                 lineage_ready = self._retry_pending_lineage(effective_session)
                 for role, content in visible_events:

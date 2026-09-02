@@ -87,6 +87,55 @@ _DIAGNOSTIC_GATE_ALLOWED = frozenset(("candidates",))
 _DIAGNOSTIC_CANDIDATE_REQUIRED = frozenset(
     ("candidate_id", "memory", "evidence_event_ids", "duplicate", "worth", "type", "scopes", "scope_source")
 )
+
+_READ_ONLY_QUERY_MARKERS = (
+    "有没有", "有哪些", "是什么", "是谁", "多少", "查询", "查一下", "查下",
+    "看看", "查看", "汇总", "列出", "告诉我", "what", "which", "who", "show me",
+)
+_USER_ASSERTION_MARKERS = (
+    "已确认", "确认了", "已决定", "我决定", "改为", "更新为", "变更为", "以后",
+    "今后", "约定", "我的偏好", "我喜欢", "必须", "要求是", "截止日期为",
+    "负责人是", "负责人为",
+)
+_DERIVED_OVERDUE_RE = re.compile(
+    r"(?:逾期|超期|overdue)\s*\d+(?:\.\d+)?\s*(?:天|日|days?)",
+    re.IGNORECASE,
+)
+_EXECUTION_RECEIPT_RE = re.compile(
+    r"(?:核验归档|归档核验|服务器已接受(?:提交|投递)|server accepted)",
+    re.IGNORECASE,
+)
+
+
+def _automatic_read_only_query(events: Iterable[Mapping[str, Any]]) -> bool:
+    """Return true when the user only asks for information in this turn."""
+
+    user_text = "\n".join(
+        str(event.get("content", ""))
+        for event in events
+        if str(event.get("role", "")).casefold() == "user"
+    ).strip()
+    if not user_text:
+        return False
+    folded = user_text.casefold()
+    query_prefix = re.sub(r"^(?:请|帮我|麻烦|请帮我)\s*", "", folded)
+    asks = "?" in user_text or "？" in user_text or any(
+        query_prefix.startswith(marker) or query_prefix.startswith(f"我{marker}")
+        for marker in _READ_ONLY_QUERY_MARKERS
+    )
+    if not asks:
+        return False
+    return not any(marker in folded for marker in _USER_ASSERTION_MARKERS)
+
+
+def _automatic_transient_memory(value: Any) -> bool:
+    """Reject volatile counters and one-off execution receipts at write time."""
+
+    if not isinstance(value, str):
+        return False
+    return bool(_DERIVED_OVERDUE_RE.search(value) or _EXECUTION_RECEIPT_RE.search(value))
+
+
 _DIAGNOSTIC_CANDIDATE_ALLOWED = _DIAGNOSTIC_CANDIDATE_REQUIRED | frozenset(
     ("reason", "duplicate_memory_id", "update_memory_id")
 )
@@ -2268,9 +2317,14 @@ class Processor:
         )
         requests: list[dict[str, Any]] = []
         observed_scopes: list[str] = []
+        read_only_query = _automatic_read_only_query(events)
         for candidate in gate["candidates"]:
             candidate_id_key = str(candidate.get("candidate_id", "")).casefold()
             detached_update_target_id = detached_update_target_ids.get(candidate_id_key)
+            if candidate.get("worth") and (
+                read_only_query or _automatic_transient_memory(candidate.get("memory"))
+            ):
+                continue
             # A combined mailbox/daily digest is not an atomic memory.  If a
             # concrete action was worth retaining, the gate must emit it as
             # its own candidate; the aggregate shell itself is NO_CHANGE.
@@ -2563,6 +2617,10 @@ class Processor:
             if summary.get("decision") == NO_CHANGE_DECISION:
                 continue
             if is_attachment_followup_only_text(
+                f"{summary.get('title', '')}\n{summary.get('body', '')}"
+            ):
+                continue
+            if _automatic_transient_memory(
                 f"{summary.get('title', '')}\n{summary.get('body', '')}"
             ):
                 continue

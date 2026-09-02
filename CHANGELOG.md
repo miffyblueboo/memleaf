@@ -2,6 +2,15 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.16 — 2026-09-02
+
+- Keep read-only operational queries, derived overdue counters, and one-time
+  execution receipts out of permanent-memory extraction; preserve explicitly
+  confirmed durable facts and preferences.
+- Deduplicate Hermes tool observations across cumulative conversation payloads,
+  preventing historical reads from being re-audited as uncontrolled while
+  retaining diagnostics for genuinely mismatched current-turn reads.
+
 ## 0.2.15 — 2026-09-02
 
 - Recover a candidate whose `update_memory_id` has the wrong type at the

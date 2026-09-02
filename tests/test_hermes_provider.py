@@ -303,11 +303,11 @@ class HermesProviderTests(unittest.TestCase):
 
     def test_provider_does_not_warn_when_core_versions_match(self) -> None:
         client = FakeClient(responses=[{"stats": True}])
-        client.server_version = "0.2.15"
+        client.server_version = "0.2.16"
         provider = provider_module.MemleafMemoryProvider()
         with patch.object(provider_module, "_resolve_command", return_value="memleaf-mcp"), \
              patch.object(provider_module, "_MCPClient", return_value=client), \
-             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.15"), \
+             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.16"), \
              patch.object(provider_module.logger, "warning") as warning:
             provider.initialize(
                 "version-match-session",
@@ -324,7 +324,7 @@ class HermesProviderTests(unittest.TestCase):
         provider = provider_module.MemleafMemoryProvider()
         with patch.object(provider_module, "_resolve_command", return_value="memleaf-mcp"), \
              patch.object(provider_module, "_MCPClient", return_value=client), \
-             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.15"), \
+             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.16"), \
              patch.object(provider_module.logger, "warning") as warning:
             provider.initialize(
                 "version-missing-session",
@@ -1481,7 +1481,7 @@ class HermesProviderTests(unittest.TestCase):
         )
         self.assertEqual(provider_module._hermes_read_status(empty), "missing_result")
 
-    def test_read_diagnostics_keep_token_after_client_reconnect_and_log_repeated_reads(self) -> None:
+    def test_read_diagnostics_keep_token_after_client_reconnect_without_relogging_history(self) -> None:
         provider = self.provider(
             responses=[{"stored": True}, {"stored": True}, {"processed_turns": 1}] * 2
         )
@@ -1538,10 +1538,81 @@ class HermesProviderTests(unittest.TestCase):
 
         output = "\n".join(call.args[0] % call.args[1:] for call in info.call_args_list)
         read_logs = [line for line in output.splitlines() if "retrieval-read" in line]
-        self.assertEqual(len(read_logs), 4)
+        self.assertEqual(len(read_logs), 2)
         self.assertTrue(all("retrieval_present=True" in line for line in read_logs))
         self.assertTrue(all("retrieval_match=True" in line for line in read_logs))
         self.assertNotIn("rtv-reconnect", output)
+
+    def test_read_diagnostics_skip_cumulative_history_but_keep_current_wrong_token(self) -> None:
+        old_call = {
+            "id": "read-old",
+            "function": {
+                "name": "mcp__memleaf__read",
+                "arguments": json.dumps(
+                    {"memory_id": "MEMORY_OLD", "retrieval_id": "rtv-old"}
+                ),
+            },
+        }
+        current_call = {
+            "id": "read-current",
+            "function": {
+                "name": "mcp__memleaf__read",
+                "arguments": json.dumps(
+                    {"memory_id": "MEMORY_CURRENT", "retrieval_id": "rtv-current"}
+                ),
+            },
+        }
+        wrong_token_call = {
+            "id": "read-current-wrong-token",
+            "function": {
+                "name": "mcp__memleaf__read",
+                "arguments": json.dumps(
+                    {"memory_id": "MEMORY_WRONG", "retrieval_id": "rtv-other"}
+                ),
+            },
+        }
+        first_messages = [
+            {"role": "assistant", "tool_calls": [old_call]},
+            {
+                "role": "tool",
+                "tool_call_id": "read-old",
+                "content": json.dumps({"memory_id": "MEMORY_OLD", "body": "old"}),
+            },
+        ]
+        cumulative_messages = [
+            *first_messages,
+            {"role": "assistant", "tool_calls": [current_call, wrong_token_call]},
+            {
+                "role": "tool",
+                "tool_call_id": "read-current",
+                "content": json.dumps({"memory_id": "MEMORY_CURRENT", "body": "current"}),
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "read-current-wrong-token",
+                "content": json.dumps({"memory_id": "MEMORY_WRONG", "body": "wrong"}),
+            },
+        ]
+        seen_call_keys: set[str] = set()
+
+        with patch.object(provider_module.logger, "info") as info:
+            provider_module.MemleafMemoryProvider._observe_search_messages(
+                first_messages,
+                "rtv-old",
+                seen_call_keys=seen_call_keys,
+            )
+            provider_module.MemleafMemoryProvider._observe_search_messages(
+                cumulative_messages,
+                "rtv-current",
+                seen_call_keys=seen_call_keys,
+            )
+
+        output = "\n".join(call.args[0] % call.args[1:] for call in info.call_args_list)
+        read_logs = [line for line in output.splitlines() if "retrieval-read" in line]
+        self.assertEqual(len(read_logs), 3)
+        self.assertIn("retrieval_match=True result=ok", read_logs[0])
+        self.assertIn("retrieval_match=True result=ok", read_logs[1])
+        self.assertIn("retrieval_match=False result=uncontrolled_success", read_logs[2])
 
     def test_file_tools_only_mark_paths_inside_configured_vault_as_bypass(self) -> None:
         vault = self.root / "configured-vault"
