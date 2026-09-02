@@ -2,6 +2,16 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.17 — 2026-09-02
+
+- Preserve explicit user-confirmed completion or cancellation of one uniquely
+  related active todo as an in-place state update, even when the gate omits the
+  candidate or the same message asks what remains.
+- Keep todo-state recovery deterministic and bounded: reuse the existing
+  memory ID, anchor `completed_at` to the user event, archive the old version,
+  and reject queries, negation, future intent, uncertainty, assistant-only
+  claims, and ambiguous targets.
+
 ## 0.2.16 — 2026-09-02
 
 - Keep read-only operational queries, derived overdue counters, and one-time

@@ -84,6 +84,15 @@ active memory, return candidates=[]; never set duplicate_memory_id or
 update_memory_id merely to record the query or append its source. A query turn
 that also contains a newly confirmed fact or state change remains eligible for
 that new information only.
+An explicit user statement that a related active todo is now completed or
+cancelled is a durable state change for the same future use, even when the
+statement also asks what remains. Emit one worthy todo UPDATE for the exact
+related active memory_id, keep type=todo, and make the candidate memory text
+state that the todo is completed or cancelled. The summary must set the
+corresponding status field; for status=completed it must also set completed_at
+from the supporting event timestamp. Do not treat "完成了吗？"/"是否完成" as completion, and do not
+infer completion from assistant-only text, a future promise ("我会完成"), or a
+negative statement ("还没完成").
 An explicit user request to remember, keep, or use a concrete object bypasses
 the worth test only in the actual explicit remember API path, and only for its
 requested content. In the automatic capture/process path, a request to invoke or test the remember tool
@@ -237,6 +246,13 @@ confirmed change, retain the existing memory unchanged (the gate should emit
 worth=false) rather than creating a sibling. When the current evidence is a
 customer/user request that is not confirmed implemented, state it as
 requested/proposed/pending and never as completed or deployed.
+When the current user explicitly confirms that a related active todo was
+completed or cancelled, this is a state update rather than a read-only query.
+Preserve the todo's same memory_id and type, set status=completed or cancelled,
+and for completed set completed_at to the timestamp of the supporting user
+event. A later question in the same user message does not erase that update.
+Never infer this transition from assistant-only text, "完成了吗？", "还没完成",
+or a future promise such as "准备完成"/"我会完成".
 fields and JSON types are title (string), body (string), tags (string list),
 type (one of preference, fact, project, todo, event, identity, other), scopes
 (non-empty string list), and sources (non-empty object list). scope_source, if

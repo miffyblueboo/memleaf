@@ -105,6 +105,100 @@ _EXECUTION_RECEIPT_RE = re.compile(
     r"(?:核验归档|归档核验|服务器已接受(?:提交|投递)|server accepted)",
     re.IGNORECASE,
 )
+_TODO_COMPLETION_RE = re.compile(
+    r"(?:完成|做完|办完|搞定|处理完|closed|completed|finished|done)",
+    re.IGNORECASE,
+)
+_TODO_CANCEL_RE = re.compile(
+    r"(?:取消|作废|撤销|不做|不用做|不需要做|cancel(?:led|ed)?|abort(?:ed)?)",
+    re.IGNORECASE,
+)
+_TODO_NEGATION_MARKERS = (
+    "还没", "没有", "未", "尚未", "没", "not", "never", "will", "would", "准备", "打算", "计划", "将要", "会", "要",
+)
+_TODO_UNCERTAINTY_MARKERS = (
+    "应该", "可能", "大概", "似乎", "不确定", "也许", "好像", "probably", "perhaps", "maybe", "seems", "not sure",
+)
+_TODO_CONFIRMATION_RE = re.compile(
+    r"(?:对吗|对不对|是吗|正确吗|是不是|是否(?=(?:已|已经|完成|正确|这样|发|做|弄)))"
+)
+_TODO_QUERY_SUFFIXES = ("吗", "么", "？", "?", "呢")
+
+
+def _explicit_todo_state_change(
+    events: Iterable[Mapping[str, Any]],
+) -> tuple[str, list[str], str] | None:
+    """Detect one explicit user todo completion/cancellation declaration.
+
+    This intentionally reads user events only.  A completion marker is valid
+    only when it is declarative (not negated, future, or a question), so an
+    assistant recap or a trailing "what remains?" cannot manufacture a state
+    transition.
+    """
+
+    states: list[tuple[str, str, str]] = []
+    for event in events:
+        if str(event.get("role", "")).casefold() != "user":
+            continue
+        content = event.get("content")
+        event_key_value = event.get("event_key")
+        timestamp = event.get("timestamp")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        if not isinstance(event_key_value, str) or not event_key_value:
+            continue
+        if not isinstance(timestamp, str) or _parse_time(timestamp) is None:
+            continue
+        folded = content.casefold()
+        event_states: set[str] = set()
+        for marker, state in (
+            (_TODO_COMPLETION_RE, "completed"),
+            (_TODO_CANCEL_RE, "cancelled"),
+        ):
+            for match in marker.finditer(folded):
+                start, end = match.span()
+                prefix = folded[max(0, start - 8) : start]
+                suffix = folded[end : end + 4]
+                if any(value in prefix for value in _TODO_NEGATION_MARKERS + _TODO_UNCERTAINTY_MARKERS):
+                    continue
+                if any(suffix.startswith(value) for value in _TODO_QUERY_SUFFIXES) or re.match(
+                    r"^(?:了|啦)?(?:吗|么|呢|[?？])", suffix
+                ):
+                    continue
+                # Confirmation questions may place the question marker after
+                # a comma ("已经完成了，对吗？").  Keep a follow-up about
+                # other work eligible; only direct confirmation wording is
+                # rejected here.
+                if _TODO_CONFIRMATION_RE.search(prefix) or _TODO_CONFIRMATION_RE.search(folded[end:]):
+                    continue
+                # A bare English "done"/"completed" is declarative.  For
+                # Chinese verbs require either a completion particle or an
+                # explicit completed-state prefix to avoid matching a future
+                # action such as "完成计划".
+                if state in {"completed", "cancelled"} and not (
+                    any(value in prefix for value in ("已", "已经", "刚刚", "刚才", "i ", "i've", "has ", "was "))
+                    or suffix.startswith(("了", "啦", ".", "!", "！", ",", "，", ";", "；"))
+                    or match.group(0).casefold() in {"completed", "finished", "done", "closed", "cancelled", "canceled", "aborted"}
+                ):
+                    continue
+                event_states.add(state)
+                break
+        states.extend((state, event_key_value, timestamp) for state in sorted(event_states))
+
+    if not states:
+        return None
+    distinct_states = {state for state, _event_key_value, _timestamp in states}
+    if len(distinct_states) != 1:
+        return None
+    state = states[0][0]
+    evidence_event_ids = list(dict.fromkeys(item[1] for item in states))
+    # Preserve the event timestamp's absolute instant as completed_at.  The
+    # parser accepts ISO-8601 strings; canonical UTC avoids offset ambiguity.
+    anchor = _parse_time(states[-1][2])
+    if anchor is None:
+        return None
+    completed_at = anchor.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return state, evidence_event_ids, completed_at
 
 
 def _automatic_read_only_query(events: Iterable[Mapping[str, Any]]) -> bool:
@@ -134,6 +228,71 @@ def _automatic_transient_memory(value: Any) -> bool:
     if not isinstance(value, str):
         return False
     return bool(_DERIVED_OVERDUE_RE.search(value) or _EXECUTION_RECEIPT_RE.search(value))
+
+
+def _todo_state_recovery_candidate(
+    events: Iterable[Mapping[str, Any]],
+    related: Iterable[Mapping[str, Any]],
+) -> tuple[dict[str, Any], str, str, str] | None:
+    """Recover a missed todo transition from one explicit user declaration.
+
+    This is deliberately narrower than general admission: it only considers
+    active todo records already returned by the bounded related-memory query,
+    and proceeds only when exactly one record is lexically relevant to the
+    user's own completion/cancellation statement.
+    """
+
+    state_change = _explicit_todo_state_change(events)
+    if state_change is None:
+        return None
+    state, evidence_event_ids, completed_at = state_change
+    user_text = "\n".join(
+        str(event.get("content", ""))
+        for event in events
+        if str(event.get("role", "")).casefold() == "user"
+    ).strip()
+    matches: list[Memory] = []
+    seen_ids: set[str] = set()
+    for item in related:
+        if not isinstance(item, Mapping) or item.get("native") is True:
+            continue
+        if item.get("type") != "todo" or item.get("status") in {"completed", "cancelled"}:
+            continue
+        memory_id = item.get("memory_id")
+        if not isinstance(memory_id, str) or not memory_id or memory_id.casefold() in seen_ids:
+            continue
+        try:
+            memory = Memory.from_mapping(item)
+        except (TypeError, ValueError):
+            continue
+        if not candidate_matches_query(memory, user_text):
+            continue
+        seen_ids.add(memory_id.casefold())
+        matches.append(memory)
+    if len(matches) != 1:
+        return None
+    target = matches[0]
+    candidate_id_material = "|".join(
+        [target.memory_id, state, *sorted(item.casefold() for item in evidence_event_ids)]
+    )
+    candidate_id = "todo-state-" + hashlib.sha256(candidate_id_material.encode("utf-8")).hexdigest()[:16]
+    scopes = list(target.scopes) or ["global"]
+    scope_source = target.scope_source
+    if scope_source not in {"model", "user", "session_context", "insufficient_context"}:
+        scope_source = "model"
+    status_word = "completed" if state == "completed" else "cancelled"
+    candidate = {
+        "candidate_id": candidate_id,
+        "memory": f"{target.title} 用户已明确{status_word}。",
+        "evidence_event_ids": evidence_event_ids,
+        "duplicate": False,
+        "worth": True,
+        "type": "todo",
+        "scopes": scopes,
+        "scope_source": scope_source,
+        "update_memory_id": target.memory_id,
+    }
+    return candidate, state, target.memory_id, completed_at
 
 
 _DIAGNOSTIC_CANDIDATE_ALLOWED = _DIAGNOSTIC_CANDIDATE_REQUIRED | frozenset(
@@ -2315,14 +2474,70 @@ class Processor:
                 "turn_index": turn.turn_index,
             },
         )
+        # A model may correctly treat the rest of a mixed turn as a query and
+        # still miss the user's explicit completion update. Recover only one
+        # uniquely related active todo; all other gate decisions stay intact.
+        todo_state_recovery = _todo_state_recovery_candidate(events, related)
+        recovery_by_candidate: dict[str, tuple[str, str, str]] = {}
+        if todo_state_recovery is not None:
+            recovery_candidate, recovery_state, recovery_target_id, recovery_completed_at = todo_state_recovery
+            matching_index = next(
+                (
+                    index
+                    for index, item in enumerate(gate["candidates"])
+                    if isinstance(item, Mapping)
+                    and (
+                        item.get("update_memory_id") == recovery_target_id
+                        or item.get("duplicate_memory_id") == recovery_target_id
+                    )
+                ),
+                None,
+            )
+            if matching_index is not None:
+                existing_candidate = gate["candidates"][matching_index]
+                if (
+                    isinstance(existing_candidate, Mapping)
+                    and existing_candidate.get("update_memory_id") == recovery_target_id
+                    and existing_candidate.get("type") == "todo"
+                    and existing_candidate.get("worth") is True
+                    and existing_candidate.get("duplicate") is False
+                ):
+                    recovery_by_candidate[str(existing_candidate["candidate_id"]).casefold()] = (
+                        recovery_state,
+                        recovery_target_id,
+                        recovery_completed_at,
+                    )
+                else:
+                    # A duplicate or mismatched candidate cannot represent a
+                    # state transition. Replace only that target's candidate.
+                    gate["candidates"] = [
+                        item
+                        for index, item in enumerate(gate["candidates"])
+                        if index != matching_index
+                    ]
+                    gate["candidates"].append(recovery_candidate)
+                    recovery_by_candidate[recovery_candidate["candidate_id"].casefold()] = (
+                        recovery_state,
+                        recovery_target_id,
+                        recovery_completed_at,
+                    )
+            else:
+                gate["candidates"].append(recovery_candidate)
+                recovery_by_candidate[recovery_candidate["candidate_id"].casefold()] = (
+                    recovery_state,
+                    recovery_target_id,
+                    recovery_completed_at,
+                )
         requests: list[dict[str, Any]] = []
         observed_scopes: list[str] = []
         read_only_query = _automatic_read_only_query(events)
         for candidate in gate["candidates"]:
             candidate_id_key = str(candidate.get("candidate_id", "")).casefold()
+            recovery = recovery_by_candidate.get(candidate_id_key)
             detached_update_target_id = detached_update_target_ids.get(candidate_id_key)
             if candidate.get("worth") and (
-                read_only_query or _automatic_transient_memory(candidate.get("memory"))
+                (read_only_query and recovery is None)
+                or _automatic_transient_memory(candidate.get("memory"))
             ):
                 continue
             # A combined mailbox/daily digest is not an atomic memory.  If a
@@ -2413,6 +2628,15 @@ class Processor:
                     else None
                 ),
             )
+            if recovery is not None:
+                recovery_target = self._active_memory_by_id(recovery[1])
+                if recovery_target is not None and not any(
+                    isinstance(item, Mapping)
+                    and isinstance(item.get("memory_id"), str)
+                    and item["memory_id"].casefold() == recovery_target.memory_id.casefold()
+                    for item in candidate_related
+                ):
+                    candidate_related = [recovery_target.to_dict(), *candidate_related]
             if detached_update_target_id is not None:
                 candidate_related = [
                     item
@@ -2567,6 +2791,42 @@ class Processor:
                 )
 
             try:
+                def parse_summary(raw: str) -> dict[str, Any]:
+                    if recovery is not None and isinstance(raw, str):
+                        # Complete/cancel state is deterministic evidence from
+                        # the user event. Inject it before strict validation so
+                        # a model that omits status/completed_at cannot leave
+                        # the update active or fail the required-field check.
+                        parsed_raw = parse_strict_json(raw)
+                        if isinstance(parsed_raw, Mapping) and "decision" not in parsed_raw:
+                            state_change, target_id, completed_at = recovery
+                            parsed_raw = dict(parsed_raw)
+                            parsed_raw["update_memory_id"] = target_id
+                            parsed_raw["status"] = state_change
+                            if state_change == "completed":
+                                parsed_raw["completed_at"] = completed_at
+                            else:
+                                parsed_raw.pop("completed_at", None)
+                            raw = json.dumps(parsed_raw, ensure_ascii=False, separators=(",", ":"))
+                    parsed = parse_summarize_output(
+                        _normalize_summary_dates(raw, turn, candidate),
+                        current_event_keys=turn.event_keys,
+                        related_native_ids=candidate_native_ids,
+                        related_memory_ids=same_type_update_memory_ids,
+                        scope_registry=validation_scope_registry,
+                        expected_scopes=candidate["scopes"],
+                        expected_scope_source=candidate["scope_source"],
+                        allow_no_change=recovery is None,
+                        # The summarize stage may not reinterpret a gate
+                        # candidate, including CREATE candidates. Updates
+                        # additionally retain the active target's immutable
+                        # type below.
+                        expected_type=candidate.get("type"),
+                        expected_update_memory_id=gate_update_target,
+                        expected_target_type=gate_target_type,
+                    )
+                    return parsed
+
                 summary = self._complete_json_stage(
                     backend,
                     summarize_prompt(
@@ -2578,23 +2838,7 @@ class Processor:
                     ),
                     system=SUMMARIZE_SYSTEM,
                     purpose="summarize",
-                    parser=lambda raw: parse_summarize_output(
-                        _normalize_summary_dates(raw, turn, candidate),
-                        current_event_keys=turn.event_keys,
-                        related_native_ids=candidate_native_ids,
-                        related_memory_ids=same_type_update_memory_ids,
-                        scope_registry=validation_scope_registry,
-                        expected_scopes=candidate["scopes"],
-                        expected_scope_source=candidate["scope_source"],
-                        allow_no_change=True,
-                        # The summarize stage may not reinterpret a gate
-                        # candidate, including CREATE candidates.  Updates
-                        # additionally retain the active target's immutable
-                        # type below.
-                        expected_type=candidate.get("type"),
-                        expected_update_memory_id=gate_update_target,
-                        expected_target_type=gate_target_type,
-                    ),
+                    parser=parse_summary,
                     diagnostic_context={
                         "source": turn.source,
                         "session_id": turn.session_id,
