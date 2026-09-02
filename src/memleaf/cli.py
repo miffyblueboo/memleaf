@@ -127,6 +127,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(output, ensure_ascii=False, sort_keys=True))
         elif output.get("status") in {"configured", "already_configured"}:
             print(f"memleaf installed for {args.host}: {output['vault']}")
+            if args.host == "hermes" and (
+                output.get("core_version") is not None
+                or output.get("provider_version") is not None
+            ):
+                print(
+                    "memleaf versions: "
+                    f"core={output.get('core_version') or 'unknown'}, "
+                    f"Hermes provider={output.get('provider_version') or 'unknown'}"
+                )
             if output.get("vault_source") == "hermes_config":
                 print("Preserved the Vault from the existing Hermes memleaf configuration.")
             if args.host == "hermes":
@@ -136,6 +145,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             if output.get("model", {}).get("status") == "not_configured":
                 print("Configure a memleaf model route before using automatic processing.")
         else:
+            if args.host == "hermes" and (
+                output.get("core_version") is not None
+                or output.get("provider_version") is not None
+            ):
+                print(
+                    "memleaf versions: "
+                    f"core={output.get('core_version') or 'unknown'}, "
+                    f"Hermes provider={output.get('provider_version') or 'unknown'}"
+                )
             print(f"memleaf install failed: {output.get('reason', 'unknown error')}", file=sys.stderr)
         return 0 if output.get("status") in {"configured", "already_configured"} else 2
     if args.json:

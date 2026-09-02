@@ -6,6 +6,7 @@ import json
 import os
 from importlib import resources
 from pathlib import Path
+import re
 import shutil
 import site
 import stat
@@ -15,6 +16,7 @@ import sysconfig
 import tempfile
 from typing import Any
 
+from . import __version__
 from .adapters.base import update_agents_index
 from .adapters.codex import CodexAdapter
 from .adapters.hermes import HermesAdapter, hermes_home_for_platform
@@ -24,6 +26,7 @@ from .vault import Vault
 
 
 _EXPECTED_TOOLS = 11
+_PROVIDER_VERSION_RE = re.compile(r"^version:\s*([^\s#]+)\s*(?:#.*)?$", re.MULTILINE)
 
 
 def _hermes_home(
@@ -232,6 +235,17 @@ def _copy_provider(hermes_home: Path) -> Path:
     return target
 
 
+def _provider_manifest_version(provider_path: Path) -> str | None:
+    """Read the copied Hermes provider version without requiring a YAML parser."""
+
+    try:
+        text = (provider_path / "plugin.yaml").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    match = _PROVIDER_VERSION_RE.search(text)
+    return match.group(1) if match else None
+
+
 def _write_provider_config(path: Path, command: Path, vault: Path) -> None:
     if path.is_symlink():
         raise RuntimeError(f"refusing to write symlinked Hermes config: {path}")
@@ -289,6 +303,7 @@ def _verify_provider(hermes: str) -> bool:
 def install_hermes(*, vault_path: Path | None = None) -> dict[str, Any]:
     """Install and configure memleaf for Hermes from the PyPI package."""
 
+    core_version = __version__
     home = _home_from_environment()
     hermes_home = _hermes_home(home)
     selected_vault, vault_source = _select_vault_path(
@@ -308,6 +323,8 @@ def install_hermes(*, vault_path: Path | None = None) -> dict[str, Any]:
         return {
             "status": "failure",
             "reason": "model route is not configured",
+            "core_version": core_version,
+            "provider_version": None,
             "vault": str(vault.root),
             "model": model,
         }
@@ -318,12 +335,28 @@ def install_hermes(*, vault_path: Path | None = None) -> dict[str, Any]:
         return {
             "status": "failure",
             "reason": "Hermes executable was not found",
+            "core_version": core_version,
+            "provider_version": None,
             "vault": str(vault.root),
             "model": model,
         }
 
     command = _memleaf_mcp_command()
     provider_path = _copy_provider(hermes_home)
+    provider_version = _provider_manifest_version(provider_path)
+    if provider_version != core_version:
+        return {
+            "status": "failure",
+            "reason": (
+                "Hermes provider version mismatch after copy: "
+                f"core={core_version}, provider={provider_version or 'unknown'}"
+            ),
+            "core_version": core_version,
+            "provider_version": provider_version,
+            "vault": str(vault.root),
+            "provider": str(provider_path),
+            "model": model,
+        }
     _write_provider_config(hermes_home / "memleaf.json", command, vault.root)
 
     activated = _run([detection.executable, "config", "set", "memory.provider", "memleaf"])
@@ -331,6 +364,8 @@ def install_hermes(*, vault_path: Path | None = None) -> dict[str, Any]:
         return {
             "status": "failure",
             "reason": "Hermes MemoryProvider could not be activated",
+            "core_version": core_version,
+            "provider_version": provider_version,
             "vault": str(vault.root),
             "provider": str(provider_path),
             "model": model,
@@ -348,6 +383,8 @@ def install_hermes(*, vault_path: Path | None = None) -> dict[str, Any]:
         return {
             "status": "failure",
             "reason": "Hermes MCP entry could not be configured",
+            "core_version": core_version,
+            "provider_version": provider_version,
             "vault": str(vault.root),
             "provider": str(provider_path),
             "model": model,
@@ -357,6 +394,8 @@ def install_hermes(*, vault_path: Path | None = None) -> dict[str, Any]:
         return {
             "status": "failure",
             "reason": "Hermes MCP lifecycle could not be configured",
+            "core_version": core_version,
+            "provider_version": provider_version,
             "vault": str(vault.root),
             "provider": str(provider_path),
             "model": model,
@@ -369,6 +408,8 @@ def install_hermes(*, vault_path: Path | None = None) -> dict[str, Any]:
         return {
             "status": "failure",
             "reason": "Hermes MCP test did not confirm 11 tools",
+            "core_version": core_version,
+            "provider_version": provider_version,
             "vault": str(vault.root),
             "provider": str(provider_path),
             "model": model,
@@ -395,6 +436,8 @@ def install_hermes(*, vault_path: Path | None = None) -> dict[str, Any]:
     return {
         "status": "configured",
         "reason": "memleaf is fully configured for Hermes",
+        "core_version": core_version,
+        "provider_version": provider_version,
         "vault": str(vault.root),
         "vault_source": vault_source,
         "provider": str(provider_path),

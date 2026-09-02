@@ -282,6 +282,61 @@ class HermesProviderTests(unittest.TestCase):
             },
         )
 
+    def test_provider_warns_with_one_line_update_when_core_versions_differ(self) -> None:
+        client = FakeClient(responses=[{"stats": True}])
+        client.server_version = "0.2.11"
+        provider = provider_module.MemleafMemoryProvider()
+        with patch.object(provider_module, "_resolve_command", return_value="memleaf-mcp"), \
+             patch.object(provider_module, "_MCPClient", return_value=client), \
+             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.10"), \
+             patch.object(provider_module.logger, "warning") as warning:
+            provider.initialize(
+                "version-mismatch-session",
+                hermes_home=str(self.hermes_home),
+                platform="cli",
+                agent_context="primary",
+            )
+
+        self.assertEqual(warning.call_count, 1)
+        self.assertIn(provider_module._UPDATE_COMMAND, " ".join(map(str, warning.call_args.args)))
+        self.assertIn("mismatch", warning.call_args.args[0])
+
+    def test_provider_does_not_warn_when_core_versions_match(self) -> None:
+        client = FakeClient(responses=[{"stats": True}])
+        client.server_version = "0.2.11"
+        provider = provider_module.MemleafMemoryProvider()
+        with patch.object(provider_module, "_resolve_command", return_value="memleaf-mcp"), \
+             patch.object(provider_module, "_MCPClient", return_value=client), \
+             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.11"), \
+             patch.object(provider_module.logger, "warning") as warning:
+            provider.initialize(
+                "version-match-session",
+                hermes_home=str(self.hermes_home),
+                platform="cli",
+                agent_context="primary",
+            )
+
+        warning.assert_not_called()
+
+    def test_provider_handles_missing_core_version_without_claiming_sync(self) -> None:
+        client = FakeClient(responses=[{"stats": True}])
+        client.server_version = {"unexpected": True}
+        provider = provider_module.MemleafMemoryProvider()
+        with patch.object(provider_module, "_resolve_command", return_value="memleaf-mcp"), \
+             patch.object(provider_module, "_MCPClient", return_value=client), \
+             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.11"), \
+             patch.object(provider_module.logger, "warning") as warning:
+            provider.initialize(
+                "version-missing-session",
+                hermes_home=str(self.hermes_home),
+                platform="cli",
+                agent_context="primary",
+            )
+
+        self.assertEqual(warning.call_count, 1)
+        self.assertIn("unavailable", warning.call_args.args[0])
+        self.assertIn(provider_module._UPDATE_COMMAND, " ".join(map(str, warning.call_args.args)))
+
     def test_prefetch_bodyless_directory_is_bounded_and_keeps_read_ids(self) -> None:
         responses = [
             {

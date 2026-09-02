@@ -2,6 +2,21 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.11 — 2026-09-02
+
+- Document one complete macOS/Linux upgrade command that upgrades the core
+  package and refreshes the Hermes Provider together; report and verify both
+  versions after installation instead of silently accepting a stale copy.
+- Compare the copied Provider manifest with the MCP server version at Hermes
+  startup and emit the same actionable one-line upgrade command when they
+  differ or cannot be verified.
+- Normalize supported one-off Chinese and English relative dates
+  deterministically from their current evidence timestamps before strict
+  summary validation, including conflicting parenthesized numeric dates.
+- Keep ambiguous or unsupported relative-date candidates retryable without
+  guessing, while allowing valid sibling candidates from the same turn to
+  commit and preserving the source inbox.
+
 ## 0.2.10 — 2026-09-01
 
 - Keep strict candidate-local project Scope grounding for the first two gate

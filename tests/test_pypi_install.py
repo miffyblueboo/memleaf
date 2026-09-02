@@ -7,9 +7,17 @@ import tempfile
 import unittest
 from unittest import mock
 
-from memleaf import cli
+from memleaf import __version__, cli
 from memleaf.adapters.hermes import HermesAdapter
-from memleaf.installer import _copy_provider, _hermes_home, _run, _write_provider_config, install_codex
+from memleaf.installer import (
+    _copy_provider,
+    _hermes_home,
+    _provider_manifest_version,
+    _run,
+    _write_provider_config,
+    install_codex,
+    install_hermes,
+)
 
 
 class PyPIInstallTests(unittest.TestCase):
@@ -22,6 +30,40 @@ class PyPIInstallTests(unittest.TestCase):
             self.assertTrue((target / "plugin.yaml").is_file())
             self.assertTrue((target / "README.md").is_file())
             self.assertIn("name: memleaf", (target / "plugin.yaml").read_text(encoding="utf-8"))
+            self.assertEqual(__version__, _provider_manifest_version(target))
+
+    def test_installer_rejects_provider_version_mismatch_after_copy(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="memleaf-pypi-version-mismatch-") as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            vault_path = root / "vault"
+            provider_path = root / ".hermes" / "plugins" / "memleaf"
+            provider_path.mkdir(parents=True)
+            (provider_path / "plugin.yaml").write_text(
+                "name: memleaf\nversion: 0.2.9\n",
+                encoding="utf-8",
+            )
+            detection = SimpleNamespace(detected=True, confidence="high", executable="hermes")
+            initialized = SimpleNamespace(root=vault_path)
+            model = {"status": "configured"}
+            adapter = mock.Mock()
+            adapter.detect.return_value = detection
+
+            with mock.patch("memleaf.installer._home_from_environment", return_value=home), \
+                 mock.patch("memleaf.installer._select_vault_path", return_value=(vault_path, "default")), \
+                 mock.patch("memleaf.installer.Vault.initialize", return_value=initialized), \
+                 mock.patch("memleaf.installer._prepare_model_route", return_value=model), \
+                 mock.patch("memleaf.installer.HermesAdapter", return_value=adapter), \
+                 mock.patch("memleaf.installer._memleaf_mcp_command", return_value=root / "memleaf-mcp"), \
+                 mock.patch("memleaf.installer._copy_provider", return_value=provider_path), \
+                 mock.patch("memleaf.installer._write_provider_config") as write_config:
+                result = install_hermes()
+
+            self.assertEqual("failure", result["status"])
+            self.assertEqual(__version__, result["core_version"])
+            self.assertEqual("0.2.9", result["provider_version"])
+            self.assertIn("version mismatch", result["reason"])
+            write_config.assert_not_called()
 
     @unittest.skipIf(os.name == "nt", "symlink creation is not guaranteed on Windows")
     def test_copy_provider_replaces_verified_legacy_symlink(self) -> None:
@@ -39,7 +81,7 @@ class PyPIInstallTests(unittest.TestCase):
 
             self.assertTrue(target.is_dir())
             self.assertFalse(target.is_symlink())
-            self.assertIn("version: 0.2.10", (target / "plugin.yaml").read_text(encoding="utf-8"))
+            self.assertIn("version: 0.2.11", (target / "plugin.yaml").read_text(encoding="utf-8"))
 
     def test_windows_hermes_paths_follow_official_native_layout(self) -> None:
         with tempfile.TemporaryDirectory(prefix="memleaf-win-paths-") as temporary:
@@ -164,6 +206,32 @@ class PyPIInstallTests(unittest.TestCase):
                 self.assertEqual(cli.main(["install", "--json"]), 0)
         hermes.assert_called_once_with(vault_path=None)
         codex.assert_not_called()
+
+    def test_cli_hermes_install_prints_core_and_provider_versions(self) -> None:
+        result = {
+            "status": "configured",
+            "reason": "ok",
+            "vault": "/tmp/memleaf-vault",
+            "core_version": "0.2.11",
+            "provider_version": "0.2.11",
+            "model": {"status": "configured"},
+        }
+        with mock.patch("memleaf.installer.install_hermes", return_value=result), \
+             mock.patch("sys.stdout") as stdout:
+            self.assertEqual(cli.main(["install"]), 0)
+        output = "\n".join(str(call.args[0]) for call in stdout.write.call_args_list)
+        self.assertIn("core=0.2.11", output)
+        self.assertIn("Hermes provider=0.2.11", output)
+
+    def test_readmes_document_one_line_core_and_provider_upgrade(self) -> None:
+        command = "python -m pip install -U memleaf && python -m memleaf install"
+        for filename, heading in (("README.md", "### 更新 memleaf"), ("README.en.md", "### Updating memleaf")):
+            with self.subTest(filename=filename):
+                text = (Path(__file__).resolve().parents[1] / filename).read_text(encoding="utf-8")
+                section = text.split(heading, 1)[1].split("\n### ", 1)[0]
+                self.assertIn(command, section)
+                self.assertTrue("core" in section.casefold() or "核心" in section)
+                self.assertIn("provider", section.casefold())
 
     def test_cli_codex_install_requires_explicit_host(self) -> None:
         result = {

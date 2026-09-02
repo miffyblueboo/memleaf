@@ -66,7 +66,9 @@ use Monday-Sunday calendar weeks for week expressions. Do not leave these
 strong relative forms in a worthy memory, and never guess without a timestamp:
 defer or omit a date-dependent candidate if its supporting event has no
 timestamp. Recurring schedules such as 每天、每周三, or every Wednesday are
-not one-off dates and may remain recurring.
+not one-off dates and may remain recurring. The core also performs a
+deterministic safety pass for the supported forms before strict summary
+validation; do not rely on it for unsupported or ambiguous expressions.
 If supplied, a scope directory has only memory_id, title, type, and scopes for
 active memories in one inherited scope; it has no body, sources, or extra
 metadata and is not evidence. Use it only to choose an exact ID when the same
@@ -190,7 +192,9 @@ YYYY-MM-DD date. Resolve today/tomorrow/yesterday,
 use Monday-Sunday calendar weeks for week expressions. Never leave these
 strong relative forms in the summary, and never guess without a timestamp.
 Recurring schedules such as 每天、每周三, or every Wednesday are not one-off
-dates and may remain recurring.
+dates and may remain recurring. The core applies a deterministic safety pass
+for the supported forms before strict validation; unsupported or ambiguous
+expressions remain invalid and are deferred rather than guessed.
 In automatic capture/process mode, a pure read-only query whose answer only
 restates a related active memory is not a new candidate. It must have been
 rejected by the gate; do not use duplicate_memory_id or update_memory_id to

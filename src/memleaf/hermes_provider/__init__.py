@@ -32,6 +32,7 @@ _DEFAULT_TIMEOUT = 5.0
 _MAX_TIMEOUT = 30.0
 _DEFAULT_PROCESS_TIMEOUT = 300.0
 _MAX_PROCESS_TIMEOUT = 900.0
+_UPDATE_COMMAND = "python -m pip install -U memleaf && python -m memleaf install"
 _MAX_SCOPE_ITEMS = 20
 _MAX_SCOPE_CHARS = 2000
 _SCOPE_MAP_INCOMPLETE = (
@@ -49,6 +50,7 @@ _MAX_SESSION_ALIASES = 128
 _MAX_LINEAGE_RETRIES = 2
 _MAX_DEFERRED_PROCESS_SESSIONS = 128
 _SAFE_COMPONENT_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+_PROVIDER_VERSION_RE = re.compile(r"^version:\s*([^\s#]+)\s*(?:#.*)?$", re.MULTILINE)
 _ASCII_QUERY_TERM_RE = re.compile(r"[a-z0-9]+(?:[ ._-][a-z0-9]+)*")
 _DISABLED_PLATFORMS = frozenset({"cron"})
 _DISABLED_AGENT_CONTEXTS = frozenset({"cron", "flush", "subagent"})
@@ -704,6 +706,28 @@ def _config_path(hermes_home: str | Path) -> Path:
     return Path(hermes_home).expanduser() / "memleaf.json"
 
 
+def _version_value(value: Any) -> Optional[str]:
+    """Return a bounded, log-safe version string or ``None``."""
+
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or len(value) > 64 or any(char.isspace() for char in value):
+        return None
+    return value
+
+
+def _provider_manifest_version() -> Optional[str]:
+    """Read the version from this copied provider's adjacent manifest."""
+
+    try:
+        text = Path(__file__).with_name("plugin.yaml").read_text(encoding="utf-8")
+    except (OSError, UnicodeError, RuntimeError):
+        return None
+    match = _PROVIDER_VERSION_RE.search(text)
+    return _version_value(match.group(1)) if match else None
+
+
 def _default_hermes_home() -> Path:
     configured = os.environ.get("HERMES_HOME")
     return Path(configured).expanduser() if configured else Path.home() / ".hermes"
@@ -863,6 +887,7 @@ class _MCPClient:
         self._stdout_thread: Optional[threading.Thread] = None
         self._next_id = 1
         self._lock = threading.RLock()
+        self.server_version: Optional[str] = None
 
     def _resolve_command(self) -> str:
         path = Path(self.command).expanduser()
@@ -921,7 +946,7 @@ class _MCPClient:
             bufsize=1,
         )
         self._start_stdout_reader_locked(self._process)
-        self._request_locked(
+        initialize_result = self._request_locked(
             "initialize",
             {
                 "protocolVersion": "2024-11-05",
@@ -929,6 +954,13 @@ class _MCPClient:
                 "clientInfo": {"name": "hermes-memleaf", "version": "0.1.0"},
             },
         )
+        server_info = (
+            initialize_result.get("serverInfo")
+            if isinstance(initialize_result, Mapping)
+            else None
+        )
+        if isinstance(server_info, Mapping):
+            self.server_version = _version_value(server_info.get("version"))
         self._send_locked({"jsonrpc": "2.0", "method": "notifications/initialized"})
 
     def _send_locked(self, message: Mapping[str, Any]) -> None:
@@ -983,6 +1015,7 @@ class _MCPClient:
         self._process = None
         self._stdout_queue = None
         self._stdout_thread = None
+        self.server_version = None
         if process is None:
             return
         if process.stdin is not None:
@@ -1091,6 +1124,7 @@ class MemleafMemoryProvider(MemoryProvider):
         self._gate_turn_ids: "OrderedDict[Tuple[str, int], str]" = OrderedDict()
         self._active_turn_numbers: "OrderedDict[str, int]" = OrderedDict()
         self._active_retrieval_ids: "OrderedDict[str, Optional[str]]" = OrderedDict()
+        self._version_warning_emitted = False
         # Hermes keeps one provider instance alive while compression rotates
         # the physical session id.  Keep only a bounded alias chain so a
         # callback already queued for the parent can still resolve to the
@@ -1506,6 +1540,48 @@ class MemleafMemoryProvider(MemoryProvider):
             _safe_component(turn_id, "none") if turn_id else "none",
         )
 
+    def _check_version_sync(self) -> None:
+        """Warn when the copied provider and MCP core came from different releases."""
+
+        client = self._client
+        if client is None:
+            return
+        # Test doubles and older host integrations may not expose the MCP
+        # initialize metadata.  The real client always does, so only suppress
+        # this check for a double that has no version attribute at all.
+        client_type = _MCPClient
+        is_real_client = isinstance(client_type, type) and isinstance(client, client_type)
+        client_fields = getattr(client, "__dict__", {})
+        if not is_real_client and not (
+            isinstance(client_fields, Mapping) and "server_version" in client_fields
+        ):
+            return
+        provider_version = _provider_manifest_version()
+        core_version = _version_value(getattr(client, "server_version", None))
+        if provider_version is None or core_version is None:
+            if not self._version_warning_emitted:
+                logger.warning(
+                    "memleaf provider/core version check unavailable "
+                    "(provider=%s core=%s); do not assume they are synchronized. "
+                    "Run: %s",
+                    provider_version or "unknown",
+                    core_version or "unknown",
+                    _UPDATE_COMMAND,
+                )
+                self._version_warning_emitted = True
+            return
+        if provider_version == core_version:
+            return
+        if not self._version_warning_emitted:
+            logger.warning(
+                "memleaf provider/core version mismatch (provider=%s core=%s). "
+                "Run: %s",
+                provider_version,
+                core_version,
+                _UPDATE_COMMAND,
+            )
+            self._version_warning_emitted = True
+
     def _queue_turn_number(self, turn_number: Any, message: Any) -> None:
         if isinstance(turn_number, bool) or not isinstance(turn_number, int) or turn_number <= 0:
             return
@@ -1753,6 +1829,7 @@ class MemleafMemoryProvider(MemoryProvider):
         self._pending_lineage.clear()
         self._deferred_process_sessions.clear()
         self._last_retrieval_observation = "unknown"
+        self._version_warning_emitted = False
         if self._client is not None:
             self._client.close()
             self._client = None
@@ -1795,6 +1872,7 @@ class MemleafMemoryProvider(MemoryProvider):
             session_id=self._session_id,
         )
         self._call("stats", {}, stage="stats", session_id=self._session_id)
+        self._check_version_sync()
 
     def system_prompt_block(self) -> str:
         if not self._write_enabled:

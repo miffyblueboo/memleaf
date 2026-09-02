@@ -14,7 +14,6 @@ from memleaf.prompts import (
     GATE_TYPE_CORRECTION,
     GATE_SYSTEM,
     MIXED_PROJECT_SCOPES_CORRECTION,
-    RELATIVE_TIME_CORRECTION,
     SCOPE_GROUNDING_CORRECTION,
     SUMMARY_SCOPE_CORRECTION,
     SUMMARY_TARGET_CORRECTION,
@@ -24,7 +23,7 @@ from memleaf.prompts import (
     gate_prompt,
     summarize_prompt,
 )
-from memleaf.validation import ModelOutputError, NO_CHANGE_DECISION
+from memleaf.validation import ModelOutputError, NO_CHANGE_DECISION, normalize_relative_calendar_text
 from memleaf.index import event_key, turn_key
 from memleaf.llm import (
     CallableBackend,
@@ -192,8 +191,8 @@ class StageB1Test(unittest.TestCase):
             self.assertIn("今日/明日/昨日", prompt_system)
             self.assertIn("every Wednesday", prompt_system)
 
-    def test_relative_summary_is_rejected_then_absolute_retry_is_committed(self):
-        anchor = "2026-09-01T02:01:41Z"
+    def test_relative_summary_is_deterministically_normalized_before_validation(self):
+        anchor = "2026-09-02T02:01:41Z"
         evidence_key = event_key("relative-retry-user")
         gate = {
             "candidates": [{
@@ -223,7 +222,6 @@ class StageB1Test(unittest.TestCase):
         responses = [
             json.dumps(gate),
             json.dumps(summary("在本周三（9/3）前完成。")),
-            json.dumps(summary("在2026-09-02前完成。")),
         ]
         calls = []
 
@@ -248,15 +246,9 @@ class StageB1Test(unittest.TestCase):
             model=FakeBackend(callback, model="relative-retry"),
         )
         self.assertEqual(result["processed_turns"], 1)
-        self.assertEqual(len(calls), 3)
-        self.assertEqual([purpose for _, purpose in calls], ["gate", "summarize", "summarize"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([purpose for _, purpose in calls], ["gate", "summarize"])
         self.assertIn(anchor, calls[0][0])
-        self.assertIn(RELATIVE_TIME_CORRECTION, calls[2][0])
-        self.assertIn("event supporting each date as the anchor", calls[2][0])
-        self.assertIn("every one-off calendar date must be written only as YYYY-MM-DD", calls[2][0])
-        self.assertIn("parenthesized numeric date", calls[2][0])
-        self.assertIn("trust the event timestamp plus the weekday meaning", calls[2][0])
-        self.assertIn("Previous output violated: relative_time.", calls[2][0])
         memory = self.service.read(result["memory_ids"][0])
         self.assertIsNotNone(memory)
         self.assertIn("2026-09-02", memory.body)
@@ -297,8 +289,8 @@ class StageB1Test(unittest.TestCase):
         parsed = parse_summarize_output(json.dumps(recurring_metadata), current_event_keys=["event-a"])
         self.assertEqual(parsed["sources"][0]["conversation_title"], "今天的会话")
 
-    def test_three_relative_summary_failures_keep_watermark_and_inbox(self):
-        anchor = "2026-09-01T02:01:41Z"
+    def test_relative_summary_without_reliable_timestamp_is_deferred(self):
+        anchor = "2026-09-02T02:01:41Z"
         evidence_key = event_key("relative-failure-user")
         gate = {
             "candidates": [{
@@ -340,22 +332,71 @@ class StageB1Test(unittest.TestCase):
                 event_id="relative-failure-assistant",
             )
 
-        with self.assertRaises(ModelOutputError) as raised:
-            self.service.process(
-                source="codex",
-                session_id="relative-failure",
-                model=FakeBackend(callback, model="relative-failure"),
-            )
-        self.assertEqual(raised.exception.validation_detail, "relative_time")
-        self.assertEqual(raised.exception.attempt_count, 3)
+        inbox = self.vault_path / "inbox" / "codex" / "relative-failure.md"
+        inbox.write_text(
+            inbox.read_text(encoding="utf-8").replace(
+                f'"timestamp":"{anchor}"',
+                '"timestamp":"not-a-timestamp"',
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.service.process(
+            source="codex",
+            session_id="relative-failure",
+            model=FakeBackend(callback, model="relative-failure"),
+        )
+        self.assertEqual(result["processed_turns"], 1)
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["deferred_candidates"], 1)
         self.assertEqual(calls, ["gate", "summarize", "summarize", "summarize"])
         processed = json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
         state = processed["sessions"]["codex/relative-failure"]
-        self.assertEqual(state.get("watermark", 0), 0)
-        self.assertEqual(state["processing"]["status"], "failed")
-        inbox = self.vault_path / "inbox" / "codex" / "relative-failure.md"
+        self.assertEqual(state.get("watermark", 0), 1)
+        self.assertEqual(state["processing"]["status"], "idle")
+        self.assertEqual(state["processed_turns"][0]["deferred_candidates"][0]["reason"], "relative_time")
         self.assertTrue(inbox.is_file())
         self.assertIn("Finish before Wednesday", inbox.read_text(encoding="utf-8"))
+
+    def test_relative_calendar_normalizer_uses_week_dates_and_preserves_recurring_schedules(self):
+        anchor = "2026-09-02T02:01:41Z"
+        self.assertEqual(
+            normalize_relative_calendar_text("本周四（明天 9/3）", anchor),
+            "2026-09-03",
+        )
+        self.assertEqual(
+            normalize_relative_calendar_text("本周四（明天 9/4）", anchor),
+            "2026-09-03",
+        )
+        self.assertEqual(
+            normalize_relative_calendar_text("明天（部署版本1.2.3）", anchor),
+            "2026-09-03（部署版本1.2.3）",
+        )
+        self.assertEqual(
+            normalize_relative_calendar_text("明天（2/31）", anchor),
+            "2026-09-03（2/31）",
+        )
+        self.assertEqual(
+            normalize_relative_calendar_text("明天（检查 10.0.0.1）", anchor),
+            "2026-09-03（检查 10.0.0.1）",
+        )
+        self.assertEqual(
+            normalize_relative_calendar_text("本周三就是今天", anchor),
+            "2026-09-02",
+        )
+        self.assertEqual(
+            normalize_relative_calendar_text("today; tomorrow; yesterday", anchor),
+            "2026-09-02; 2026-09-03; 2026-09-01",
+        )
+        self.assertEqual(
+            normalize_relative_calendar_text("this Thursday; next Monday; last Sunday", anchor),
+            "2026-09-03; 2026-09-07; 2026-08-30",
+        )
+        self.assertEqual(normalize_relative_calendar_text("每周三例会", anchor), "每周三例会")
+        self.assertEqual(normalize_relative_calendar_text("every Wednesday", anchor), "every Wednesday")
+        self.assertIsNone(normalize_relative_calendar_text("本周末安排", anchor))
+        self.assertIsNone(normalize_relative_calendar_text("明天完成", None))
+        self.assertIsNone(normalize_relative_calendar_text("明天完成", "invalid"))
 
     def test_process_retries_schema_violation_until_third_gate_attempt_and_commits(self):
         responses = [

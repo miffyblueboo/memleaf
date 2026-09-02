@@ -61,7 +61,9 @@ from .validation import (
     NO_CHANGE_DECISION,
     _model_scope_grounding_evidence,
     parse_gate_output,
+    parse_strict_json,
     parse_summarize_output,
+    normalize_relative_calendar_text,
 )
 from .vault import safe_component
 
@@ -309,6 +311,108 @@ def _event_payload(turn: InboxTurn) -> list[dict[str, Any]]:
         }
         for event in turn.events
     ]
+
+
+def _summary_evidence_keys(summary: Mapping[str, Any], candidate: Mapping[str, Any]) -> list[str]:
+    """Collect only current-turn evidence IDs that the summary explicitly names."""
+
+    values: list[str] = []
+
+    def add(value: Any) -> None:
+        if not isinstance(value, str) or not value:
+            return
+        key = value.casefold()
+        if key not in values:
+            values.append(key)
+
+    evidence = summary.get("evidence_event_ids")
+    if isinstance(evidence, list):
+        for value in evidence:
+            add(value)
+    sources = summary.get("sources")
+    if isinstance(sources, list):
+        for source in sources:
+            if not isinstance(source, Mapping):
+                continue
+            add(source.get("event_key"))
+            source_evidence = source.get("evidence_event_ids")
+            if isinstance(source_evidence, list):
+                for value in source_evidence:
+                    add(value)
+    if values:
+        return values
+    candidate_evidence = candidate.get("evidence_event_ids")
+    if isinstance(candidate_evidence, list):
+        for value in candidate_evidence:
+            add(value)
+    return values
+
+
+def _summary_date_anchor(
+    turn: InboxTurn,
+    summary: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+) -> Optional[datetime]:
+    """Return one unambiguous current-evidence timestamp for date rewriting."""
+
+    event_timestamps = {
+        event.event_key.casefold(): _parse_time(event.timestamp)
+        for event in turn.events
+        if isinstance(event.event_key, str)
+    }
+    evidence_keys = _summary_evidence_keys(summary, candidate)
+    if not evidence_keys:
+        return None
+    timestamps: list[datetime] = []
+    for evidence_key in evidence_keys:
+        timestamp = event_timestamps.get(evidence_key)
+        if timestamp is None:
+            # An omitted, malformed, or foreign evidence timestamp is not a
+            # safe anchor.  The strict parser will reject unresolved dates and
+            # the caller can defer this candidate without advancing silently.
+            return None
+        timestamps.append(timestamp)
+    calendar_dates = {timestamp.date() for timestamp in timestamps}
+    if len(calendar_dates) != 1:
+        # A summary can cite multiple events from different UTC dates, but a
+        # single unlabelled relative phrase cannot be assigned safely to one
+        # of them.
+        return None
+    return timestamps[0]
+
+
+def _normalize_summary_dates(
+    raw: Any,
+    turn: InboxTurn,
+    candidate: Mapping[str, Any],
+) -> Any:
+    """Normalize summary dates before strict validation when evidence permits."""
+
+    if not isinstance(raw, str):
+        return raw
+    try:
+        parsed = parse_strict_json(raw)
+    except ModelOutputError:
+        # Let the regular summary parser preserve its invalid-JSON metadata.
+        return raw
+    if not isinstance(parsed, Mapping):
+        return raw
+    anchor = _summary_date_anchor(turn, parsed, candidate)
+    if anchor is None:
+        return raw
+    normalized = dict(parsed)
+    changed = False
+    for field in ("title", "body"):
+        value = normalized.get(field)
+        if not isinstance(value, str):
+            continue
+        rewritten = normalize_relative_calendar_text(value, anchor)
+        if rewritten is not None:
+            normalized[field] = rewritten
+            changed = changed or rewritten != value
+    if not changed:
+        return raw
+    return json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
 
 
 def _native_result(value: Any) -> list[dict[str, Any]]:
@@ -1775,7 +1879,7 @@ class Processor:
                 system=SUMMARIZE_SYSTEM,
                 purpose="summarize",
                 parser=lambda raw: parse_summarize_output(
-                    raw,
+                    _normalize_summary_dates(raw, turn, candidate),
                     current_event_keys=turn.event_keys,
                     related_native_ids=related_native_ids,
                     related_memory_ids=related_memory_ids,
@@ -2042,47 +2146,61 @@ class Processor:
                     None,
                 )
 
-            summary = self._complete_json_stage(
-                backend,
-                summarize_prompt(
+            try:
+                summary = self._complete_json_stage(
+                    backend,
+                    summarize_prompt(
+                        candidate,
+                        events,
+                        related_memories=candidate_related,
+                        scope_background=candidate_scope_background,
+                        scope_registry=scope_registry,
+                    ),
+                    system=SUMMARIZE_SYSTEM,
+                    purpose="summarize",
+                    parser=lambda raw: parse_summarize_output(
+                        _normalize_summary_dates(raw, turn, candidate),
+                        current_event_keys=turn.event_keys,
+                        related_native_ids=candidate_native_ids,
+                        related_memory_ids=candidate_memory_ids,
+                        scope_registry=validation_scope_registry,
+                        expected_scopes=candidate["scopes"],
+                        expected_scope_source=candidate["scope_source"],
+                        allow_no_change=True,
+                        expected_type=(
+                            candidate.get("type")
+                            if (
+                                gate_update_target is not None
+                                and gate_target_type == candidate.get("type")
+                            )
+                            else None
+                        ),
+                        expected_update_memory_id=gate_update_target,
+                        expected_target_type=(
+                            gate_target_type
+                            if gate_target_type == candidate.get("type")
+                            else None
+                        ),
+                    ),
+                    diagnostic_context={
+                        "source": turn.source,
+                        "session_id": turn.session_id,
+                        "turn_index": turn.turn_index,
+                    },
+                )
+            except ModelOutputError as error:
+                if getattr(error, "validation_detail", None) != "relative_time":
+                    raise
+                # The candidate's source turn remains in inbox for an
+                # explicit retry.  Other candidates from this same turn may
+                # still commit safely in the same transaction.
+                self._defer_candidate(
+                    turn_ref,
                     candidate,
-                    events,
-                    related_memories=candidate_related,
-                    scope_background=candidate_scope_background,
-                    scope_registry=scope_registry,
-                ),
-                system=SUMMARIZE_SYSTEM,
-                purpose="summarize",
-                parser=lambda raw: parse_summarize_output(
-                    raw,
-                    current_event_keys=turn.event_keys,
-                    related_native_ids=candidate_native_ids,
-                    related_memory_ids=candidate_memory_ids,
-                    scope_registry=validation_scope_registry,
-                    expected_scopes=candidate["scopes"],
-                    expected_scope_source=candidate["scope_source"],
-                    allow_no_change=True,
-                    expected_type=(
-                        candidate.get("type")
-                        if (
-                            gate_update_target is not None
-                            and gate_target_type == candidate.get("type")
-                        )
-                        else None
-                    ),
-                    expected_update_memory_id=gate_update_target,
-                    expected_target_type=(
-                        gate_target_type
-                        if gate_target_type == candidate.get("type")
-                        else None
-                    ),
-                ),
-                diagnostic_context={
-                    "source": turn.source,
-                    "session_id": turn.session_id,
-                    "turn_index": turn.turn_index,
-                },
-            )
+                    "relative_time",
+                    scopes=candidate["scopes"],
+                )
+                continue
             if summary.get("decision") == NO_CHANGE_DECISION:
                 continue
             if gate_update_target is not None:
@@ -2612,6 +2730,7 @@ class Processor:
             event_key=event_key_value,
             content=redact_text(content),
             turn_id=_safe_turn_id(turn_id),
+            timestamp=now,
         )
         turn = InboxTurn(source, session_id, stable_key, index, (event,))
         candidate = {

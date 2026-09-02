@@ -4,8 +4,8 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **当前版本：0.2.10。**
-> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.2.10 通过 PyPI 分发。
+> **当前版本：0.2.11。**
+> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.2.11 通过 PyPI 分发。
 > **当前版本支持 Hermes 和 Codex。** Antigravity（反重力）不检测、不安装、不配置。
 
 ## 项目定位
@@ -113,7 +113,13 @@ python -m pip install -U memleaf && python -m memleaf install
 
 ### 更新 memleaf
 
-安装命令同时也是升级命令，不需要先卸载旧版本。Windows 用户重新执行上面的 PowerShell 一行命令；macOS / Linux 用户重新执行上面的 `pip install -U` 命令即可。
+安装命令同时也是升级命令，不需要先卸载旧版本。Windows 用户重新执行上面的 PowerShell 一行命令；macOS / Linux 用户升级时请重新执行下面这一行完整命令，它会同时升级核心包并刷新 Hermes Provider：
+
+```bash
+python -m pip install -U memleaf && python -m memleaf install
+```
+
+不要只执行 `pip install -U memleaf`；那只会升级核心包，不会刷新 `~/.hermes/plugins/memleaf` 中的 Provider。
 
 升级时不会迁移或删除现有记忆。Vault 选择顺序固定为：
 

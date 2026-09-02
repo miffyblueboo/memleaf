@@ -9,7 +9,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from memleaf import Memleaf
+from memleaf import Memleaf, __version__
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -104,10 +104,12 @@ class HermesStdioTransportTests(unittest.TestCase):
                         "visible": True,
                     },
                 )
+                server_version = client.server_version
             finally:
                 client.close()
 
             self.assertIsInstance(stats, dict)
+            self.assertEqual(__version__, server_version)
             self.assertIn("scopes", catalog)
             self.assertIn("scopes", managed_catalog)
             self.assertIsInstance(retrieval_id, str)

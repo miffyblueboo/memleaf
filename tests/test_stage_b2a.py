@@ -14,6 +14,7 @@ from memleaf.inbox import parse_inbox
 from memleaf.llm import ModelError, ModelUnavailable
 from memleaf.memory_writer import MemoryWriter
 from memleaf.processing import ProcessingError, Processor
+from memleaf.prompts import RELATIVE_TIME_CORRECTION
 from memleaf.validation import ModelOutputError
 
 
@@ -1651,11 +1652,10 @@ class StageB2ATest(unittest.TestCase):
             result = service.process()
 
         self.assertEqual(result["processed_turns"], 1)
-        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize", "summarize"])
-        self.assertIn("今日/明日/昨日", backend.calls[2]["prompt"])
-        self.assertEqual(service._read_memories_unlocked("knowledge")[0].memory.body, "截止日期为2026-08-31。")
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
+        self.assertEqual(service._read_memories_unlocked("knowledge")[0].memory.body, "2026-08-31完成。")
 
-    def test_three_chinese_relative_date_failures_keep_inbox_and_watermark(self):
+    def test_ambiguous_relative_date_is_deferred_without_guessing(self):
         anchor = "2026-09-01T02:01:41Z"
         backend = QueueBackend()
         service = self.service(backend, name="chinese-relative-failure")
@@ -1674,23 +1674,85 @@ class StageB2ATest(unittest.TestCase):
         )
         bad_summary = self.summary(
             user_key,
-            title="截止今日",
-            body="今日完成。",
+            title="截止本周末",
+            body="本周末完成。",
             type="todo",
             status="active",
         )
         backend.responses.extend([self.gate([candidate]), bad_summary, bad_summary, bad_summary])
 
-        with self.assertRaises(ModelOutputError) as raised:
-            service.process()
+        result = service.process()
 
-        self.assertEqual(raised.exception.validation_detail, "relative_time")
-        self.assertEqual(raised.exception.stage, "summarize")
-        self.assertEqual(raised.exception.attempt_count, 3)
+        self.assertEqual(result["processed_turns"], 1)
+        self.assertEqual(
+            [call["purpose"] for call in backend.calls],
+            ["gate", "summarize", "summarize", "summarize"],
+        )
+        self.assertIn(RELATIVE_TIME_CORRECTION, backend.calls[2]["prompt"])
+        self.assertIn("Previous output violated: relative_time.", backend.calls[2]["prompt"])
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["deferred_candidates"], 1)
         marker = self.processed(service)["sessions"]["codex/s"]["processing"]
-        self.assertEqual(marker["validation_detail"], "relative_time")
-        self.assertEqual(marker["attempt_count"], 3)
-        self.assertEqual(self.processed(service)["sessions"]["codex/s"].get("watermark", 0), 0)
+        self.assertEqual(marker["status"], "idle")
+        entry = self.processed(service)["sessions"]["codex/s"]["processed_turns"][0]
+        self.assertEqual(entry["deferred_candidates"][0]["reason"], "relative_time")
+        self.assertEqual(self.processed(service)["sessions"]["codex/s"].get("watermark", 0), 1)
+        self.assertTrue((service.vault.inbox_path / "codex" / "s.md").is_file())
+
+    def test_relative_time_candidate_is_deferred_without_blocking_other_candidates(self):
+        anchor = "2026-09-02T02:01:41Z"
+        backend = QueueBackend()
+        service = self.service(backend, name="relative-candidate-isolation")
+        with patch("memleaf.capture._timestamp", return_value=anchor):
+            user_key, assistant_key = self.capture_turn(
+                service,
+                turn="relative-candidate-isolation",
+                user_event="relative-candidate-isolation-user",
+                assistant_event="relative-candidate-isolation-assistant",
+            )
+        ambiguous = self.candidate(
+            "ambiguous-date",
+            [user_key],
+            memory="项目截止日期需要确认。",
+            type="todo",
+        )
+        valid = self.candidate(
+            "valid-fact",
+            [assistant_key],
+            memory="项目负责人已确认。",
+            type="fact",
+        )
+        bad_summary = self.summary(
+            user_key,
+            title="截止本周末",
+            body="本周末完成。",
+            type="todo",
+        )
+        good_summary = self.summary(
+            assistant_key,
+            title="项目负责人",
+            body="项目负责人已确认。",
+            type="fact",
+        )
+        backend.responses.extend(
+            [self.gate([ambiguous, valid]), bad_summary, bad_summary, bad_summary, good_summary]
+        )
+
+        result = service.process()
+
+        self.assertEqual(result["processed_turns"], 1)
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual(result["deferred_candidates"], 1)
+        self.assertEqual(len(self.knowledge(service)), 1)
+        self.assertEqual(self.knowledge(service)[0].memory.body, "项目负责人已确认。")
+        entry = self.processed(service)["sessions"]["codex/s"]["processed_turns"][0]
+        self.assertEqual(
+            [item["candidate_id"] for item in entry["deferred_candidates"]],
+            ["ambiguous-date"],
+        )
+        self.assertEqual(entry["deferred_candidates"][0]["reason"], "relative_time")
+        self.assertEqual(self.processed(service)["sessions"]["codex/s"]["processing"]["status"], "idle")
+        self.assertEqual(self.processed(service)["sessions"]["codex/s"]["watermark"], 1)
         self.assertTrue((service.vault.inbox_path / "codex" / "s.md").is_file())
 
     def test_duplicate_update_target_is_rejected_at_gate_and_retried(self):

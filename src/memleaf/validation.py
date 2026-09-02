@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
 from .scope_state import (
@@ -78,15 +79,73 @@ MODEL_VALIDATION_DETAILS = frozenset(
     )
 )
 _SCOPE_NAME = re.compile(r"^[^\s/\\:\x00\r\n]+$")
-_RELATIVE_CALENDAR_EXPRESSION = re.compile(
+_RELATIVE_DATE_TOKEN = (
     r"(?:"
     r"(?<![A-Za-z])(?:today|tomorrow|yesterday)(?![A-Za-z])"
     r"|(?<![A-Za-z])(?:this|next|last)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?![A-Za-z])"
-    r"|(?:本|这|下|上)(?:个)?(?:周|星期|礼拜)\s*(?:一|二|三|四|五|六|日|天|末|[1-7])"
+    r"|(?:本|这|下|上)(?:个)?(?:周|星期|礼拜)\s*"
+    r"(?:(?:星期|礼拜)\s*)?(?:一|二|三|四|五|六|日|天|末|[1-7])"
     r"|(?:今天|明天|昨天|今日|明日|昨日)"
-    r")",
+    r")"
+)
+_RELATIVE_CALENDAR_EXPRESSION = re.compile(_RELATIVE_DATE_TOKEN, re.IGNORECASE)
+_RELATIVE_PARENTHESIZED_DATE = re.compile(
+    rf"({_RELATIVE_DATE_TOKEN})([ \t]*)([（(])([^()\r\n]*)([）)])",
     re.IGNORECASE,
 )
+_NUMERIC_CALENDAR_DATE = re.compile(
+    r"(?<![A-Za-z\d./-])(?:"
+    r"\d{4}[/\-](?:0?[1-9]|1[0-2])[/\-](?:0?[1-9]|[12]\d|3[01])"
+    r"|(?:0?[1-9]|1[0-2])[/\-](?:0?[1-9]|[12]\d|3[01])"
+    r"|(?:\d{4}\s*年\s*)?(?:0?[1-9]|1[0-2])\s*月\s*(?:0?[1-9]|[12]\d|3[01])\s*日?"
+    r")(?![A-Za-z\d./-])"
+)
+_ISO_CALENDAR_DATE = re.compile(
+    r"(?<![A-Za-z\d./-])\d{4}-(?:0?[1-9]|1[0-2])-(?:0?[1-9]|[12]\d|3[01])"
+    r"(?![A-Za-z\d./-])"
+)
+_DUPLICATE_ISO_DATE = re.compile(
+    r"(?P<date>\d{4}-\d{2}-\d{2})"
+    r"\s*[,，、:]?\s*(?:(?:就是|即|即为|即是|也就是|是|为)|[/／])\s*"
+    r"(?P=date)(?!\d)"
+)
+_ENGLISH_WEEKDAYS = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+_CHINESE_WEEKDAYS = {
+    "一": 0,
+    "二": 1,
+    "三": 2,
+    "四": 3,
+    "五": 4,
+    "六": 5,
+    "日": 6,
+    "天": 6,
+    "1": 0,
+    "2": 1,
+    "3": 2,
+    "4": 3,
+    "5": 4,
+    "6": 5,
+    "7": 6,
+}
+_RELATIVE_DAY_OFFSETS = {
+    "today": 0,
+    "tomorrow": 1,
+    "yesterday": -1,
+    "今天": 0,
+    "今日": 0,
+    "明天": 1,
+    "明日": 1,
+    "昨天": -1,
+    "昨日": -1,
+}
 _SOURCE_FIELDS = frozenset(("event_key", "session_id", "turn_id", "conversation_title", "evidence_event_ids"))
 _COMPACT_FIELDS = frozenset(
     (
@@ -105,6 +164,185 @@ _COMPACT_FIELDS = frozenset(
 )
 _MAX_SCOPE_OPERATION_COUNT = 16
 _MAX_SCOPE_OPERATION_TEXT = 128
+
+
+def _calendar_anchor_date(anchor: Any) -> date | None:
+    """Return a UTC calendar date only for a parseable evidence timestamp."""
+
+    if isinstance(anchor, datetime):
+        parsed = anchor
+    elif isinstance(anchor, date):
+        return anchor
+    elif isinstance(anchor, str) and anchor.strip():
+        try:
+            parsed = datetime.fromisoformat(anchor.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    try:
+        return parsed.astimezone(timezone.utc).date()
+    except (OverflowError, ValueError):
+        return None
+
+
+def _resolve_relative_date(token: str, anchor: date) -> str | None:
+    """Resolve one supported strong relative expression from an anchor date."""
+
+    normalized = token.strip().casefold()
+    if normalized in _RELATIVE_DAY_OFFSETS:
+        offset = _RELATIVE_DAY_OFFSETS[normalized]
+        try:
+            return (anchor + timedelta(days=offset)).isoformat()
+        except OverflowError:
+            return None
+
+    english_match = re.fullmatch(
+        r"(this|next|last)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)",
+        normalized,
+        re.IGNORECASE,
+    )
+    if english_match:
+        prefix, weekday = english_match.groups()
+        week_offset = {"this": 0, "next": 1, "last": -1}[prefix.casefold()]
+        try:
+            monday = anchor - timedelta(days=anchor.weekday())
+            return (monday + timedelta(days=week_offset * 7 + _ENGLISH_WEEKDAYS[weekday.casefold()])).isoformat()
+        except (KeyError, OverflowError):
+            return None
+
+    chinese_match = re.fullmatch(
+        r"(本|这|下|上)(?:个)?(?:周|星期|礼拜)\s*(?:(?:星期|礼拜)\s*)?(一|二|三|四|五|六|日|天|末|[1-7])",
+        token.strip(),
+    )
+    if chinese_match:
+        prefix, weekday = chinese_match.groups()
+        # 周末 has no single safe calendar date; leave it for strict
+        # validation/deferred-candidate handling instead of guessing Sunday.
+        if weekday == "末":
+            return None
+        week_offset = {"本": 0, "这": 0, "下": 1, "上": -1}[prefix]
+        try:
+            monday = anchor - timedelta(days=anchor.weekday())
+            return (monday + timedelta(days=week_offset * 7 + _CHINESE_WEEKDAYS[weekday])).isoformat()
+        except (KeyError, OverflowError):
+            return None
+    return None
+
+
+def _valid_calendar_date_token(value: str, fallback_year: int) -> bool:
+    parts = [int(item) for item in re.findall(r"\d+", value)]
+    if len(parts) == 2:
+        year, month, day = fallback_year, parts[0], parts[1]
+    elif len(parts) == 3:
+        year, month, day = parts
+    else:
+        return False
+    try:
+        date(year, month, day)
+    except ValueError:
+        return False
+    return True
+
+
+def _strip_parenthesized_calendar_dates(value: str, resolved_date: str) -> str:
+    """Remove duplicate numeric/ISO date spellings from a relative-date note."""
+
+    try:
+        fallback_year = int(resolved_date[:4])
+    except (TypeError, ValueError):
+        return value
+
+    def remove_valid_date(match: re.Match[str]) -> str:
+        return "" if _valid_calendar_date_token(match.group(0), fallback_year) else match.group(0)
+
+    value = _NUMERIC_CALENDAR_DATE.sub(remove_valid_date, value)
+    value = _ISO_CALENDAR_DATE.sub(remove_valid_date, value)
+    value = value.replace(resolved_date, "")
+    value = re.sub(r"[ \t]+", " ", value).strip()
+    return value.strip(" \t,，;；:：")
+
+
+def _collapse_duplicate_calendar_dates(value: str) -> str:
+    """Collapse an explicit equivalence that repeats the same ISO date."""
+
+    previous = None
+    while previous != value:
+        previous = value
+        value = _DUPLICATE_ISO_DATE.sub(r"\g<date>", value)
+    return value
+
+
+def _normalize_relative_calendar_text(
+    text: str,
+    anchor: Any,
+    *,
+    _handle_parentheses: bool = True,
+) -> tuple[str, bool]:
+    """Normalize strong relative dates, reporting whether every one was safe."""
+
+    anchor_date = _calendar_anchor_date(anchor)
+    if anchor_date is None:
+        return text, False
+
+    if _handle_parentheses:
+        parenthetical_safe = True
+
+        def replace_parenthetical(match: re.Match[str]) -> str:
+            nonlocal parenthetical_safe
+            resolved = _resolve_relative_date(match.group(1), anchor_date)
+            if resolved is None:
+                parenthetical_safe = False
+                return match.group(0)
+            inner, inner_safe = _normalize_relative_calendar_text(
+                match.group(4),
+                anchor_date,
+                _handle_parentheses=False,
+            )
+            if not inner_safe:
+                parenthetical_safe = False
+                return match.group(0)
+            remainder = _strip_parenthesized_calendar_dates(inner, resolved)
+            if not remainder:
+                return resolved
+            return f"{resolved}{match.group(3)}{remainder}{match.group(5)}"
+
+        text = _RELATIVE_PARENTHESIZED_DATE.sub(replace_parenthetical, text)
+        if not parenthetical_safe:
+            return text, False
+
+    safe = True
+    relative_replaced = False
+
+    def replace_token(match: re.Match[str]) -> str:
+        nonlocal relative_replaced, safe
+        resolved = _resolve_relative_date(match.group(0), anchor_date)
+        if resolved is None:
+            safe = False
+            return match.group(0)
+        relative_replaced = True
+        return resolved
+
+    normalized = _RELATIVE_CALENDAR_EXPRESSION.sub(replace_token, text)
+    if relative_replaced:
+        normalized = _collapse_duplicate_calendar_dates(normalized)
+    return normalized, safe
+
+
+def normalize_relative_calendar_text(text: str, anchor: Any) -> str | None:
+    """Return text with safely resolvable one-off dates made absolute.
+
+    ``None`` means the anchor is invalid or at least one strong expression is
+    outside the deterministic subset.  Callers must then keep the strict
+    relative-date validator active and defer/fail rather than guessing.
+    """
+
+    if not isinstance(text, str):
+        return None
+    normalized, safe = _normalize_relative_calendar_text(text, anchor)
+    return normalized if safe else None
 
 
 def _reject_constant(value: str) -> None:
@@ -1043,6 +1281,7 @@ __all__ = [
     "parse_gate_output",
     "parse_compact_output",
     "parse_strict_json",
+    "normalize_relative_calendar_text",
     "parse_summarize_output",
     "parse_summary_output",
     "validate_gate",

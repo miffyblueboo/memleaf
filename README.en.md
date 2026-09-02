@@ -4,8 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.10.**
-> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.2.10 is distributed through PyPI.
+> **Version: 0.2.11.**
+> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.2.11 is distributed through PyPI.
 > **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.
 
 ## Project scope
@@ -113,7 +113,13 @@ python -m pip install -U memleaf && python -m memleaf install
 
 ### Updating memleaf
 
-The install command is also the upgrade command; an old version does not need to be uninstalled first. Windows users can rerun the PowerShell one-liner above, while macOS / Linux users can rerun the `pip install -U` command.
+The install command is also the upgrade command; an old version does not need to be uninstalled first. Windows users can rerun the PowerShell one-liner above. On macOS / Linux, run this complete one-line command to upgrade the core package and refresh the Hermes Provider together:
+
+```bash
+python -m pip install -U memleaf && python -m memleaf install
+```
+
+Do not run only `pip install -U memleaf`; that upgrades the core package but does not refresh the Provider under `~/.hermes/plugins/memleaf`.
 
 Upgrades do not migrate or delete existing memories. Vault selection has a fixed precedence:
 
