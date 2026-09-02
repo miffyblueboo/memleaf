@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   apply:
-    if: github.event.head_commit.message == 'chore: wire Hermes native sources'
+    if: "${{ github.event.head_commit.message == 'chore: wire Hermes native sources' }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
