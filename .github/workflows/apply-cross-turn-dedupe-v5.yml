@@ -1,0 +1,64 @@
+name: Verify zero-extra-scan cross-turn dedupe
+
+on:
+  push:
+    branches:
+      - fix/hermes-native-dedup-cross-turn
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: "${{ github.event.head_commit.message == 'chore: verify zero-extra-scan cross-turn dedupe' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/hermes-native-dedup-cross-turn
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Apply base hardening with zero-extra-scan exact duplicate no-op
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/apply-cross-turn-dedupe.yml').read_text(encoding='utf-8').splitlines()
+          start = next(i for i, line in enumerate(workflow) if line.strip() == "python - <<'PY'") + 1
+          end = next(i for i in range(start, len(workflow)) if workflow[i].strip() == 'PY')
+          program = '\n'.join(line[10:] if line.startswith('          ') else line for line in workflow[start:end])
+          exec(compile(program, 'apply-cross-turn-dedupe.yml', 'exec'), {'__name__': '__main__'})
+
+          path = Path('src/memleaf/processing.py')
+          text = path.read_text(encoding='utf-8')
+          anchor = '''    def _target_relation(\n'''
+          helper = '''    @staticmethod\n    def _exact_active_duplicate(\n        candidate: Mapping[str, Any],\n        related: Iterable[Mapping[str, Any]],\n        scoped_records: Optional[Iterable[Any]] = None,\n    ) -> bool:\n        """Return true only for an exact already-loaded active/native duplicate.\n\n        This helper performs no Vault search. It consumes the turn-level related\n        bodies and, when Scope fallback already loaded records, those records.\n        That preserves the single bounded Scope scan used by sparse inherited\n        turns while allowing exact duplicates to become deterministic NO_CHANGE.\n        """\n\n        memory = candidate.get("memory")\n        if not isinstance(memory, str) or not memory.strip():\n            return False\n        normalized = normalize_term(memory)\n        if not normalized:\n            return False\n        for item in related:\n            if not isinstance(item, Mapping):\n                continue\n            body = item.get("body")\n            if isinstance(body, str) and normalize_term(body) == normalized:\n                return True\n        for record in scoped_records or ():\n            target = getattr(record, "memory", None)\n            body = getattr(target, "body", None)\n            if isinstance(body, str) and normalize_term(body) == normalized:\n                return True\n        return False\n\n    def _target_relation(\n'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f'expected one target-relation anchor, found {text.count(anchor)}')
+          text = text.replace(anchor, helper, 1)
+
+          loop_anchor = '''            candidate_scopes = list(candidate["scopes"])\n            # An automatic candidate with no reliable project attribution is\n'''
+          loop_replacement = '''            candidate_scopes = list(candidate["scopes"])\n            if candidate.get("worth") and self._exact_active_duplicate(\n                candidate, related, scoped_records\n            ):\n                # Exact content already loaded for this Scope is a deterministic\n                # NO_CHANGE. No additional search/Scope scan is performed.\n                continue\n            # An automatic candidate with no reliable project attribution is\n'''
+          if text.count(loop_anchor) != 1:
+              raise SystemExit(f'expected one candidate-loop anchor, found {text.count(loop_anchor)}')
+          text = text.replace(loop_anchor, loop_replacement, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+      - name: Run focused and existing regressions
+        run: |
+          python -m pip install .
+          python -m unittest tests.test_cross_turn_dedupe_regressions -v
+          python -m unittest tests.test_extraction_quality_regressions tests.test_maintenance_v2 tests.test_stage_b3b_native_context -v
+          python -m compileall -q src tests
+          git diff --check
+      - name: Commit verified dedupe hardening
+        shell: bash
+        run: |
+          git rm .github/workflows/apply-cross-turn-dedupe.yml .github/workflows/apply-cross-turn-dedupe-v2.yml .github/workflows/apply-cross-turn-dedupe-v3.yml .github/workflows/apply-cross-turn-dedupe-v4.yml .github/workflows/apply-cross-turn-dedupe-v5.yml
+          git config user.name 'miffyblueboo'
+          git config user.email '321381257+miffyblueboo@users.noreply.github.com'
+          git add src/memleaf/processing.py src/memleaf/validation.py src/memleaf/prompts.py tests/test_maintenance_v2.py tests/test_cross_turn_dedupe_regressions.py
+          git commit -m 'fix: harden cross-turn update and no-change decisions'
+          git push origin HEAD:fix/hermes-native-dedup-cross-turn
