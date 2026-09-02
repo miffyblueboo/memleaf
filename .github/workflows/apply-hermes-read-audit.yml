@@ -33,11 +33,17 @@ jobs:
                   raise SystemExit(f'{path}: expected one patch anchor, found {count}')
               file.write_text(text.replace(old, new, 1), encoding='utf-8')
 
-          replace_once(
-              'src/memleaf/hermes_provider/__init__.py',
-              '''        self._last_retrieval_observation = "unknown"\n''',
-              '''        self._last_retrieval_observation = "unknown"\n        self._last_retrieval_audit = "SEARCH_UNKNOWN"\n''',
+          provider = Path('src/memleaf/hermes_provider/__init__.py')
+          text = provider.read_text(encoding='utf-8')
+          old_reset = '        self._last_retrieval_observation = "unknown"\n'
+          if text.count(old_reset) != 2:
+              raise SystemExit(f'expected two retrieval reset anchors, found {text.count(old_reset)}')
+          text = text.replace(
+              old_reset,
+              old_reset + '        self._last_retrieval_audit = "SEARCH_UNKNOWN"\n',
           )
+          provider.write_text(text, encoding='utf-8')
+
           replace_once(
               'src/memleaf/hermes_provider/__init__.py',
               '''        vault_root: Optional[Path] = None,\n        seen_call_keys: Any = None,\n    ) -> str:\n''',
