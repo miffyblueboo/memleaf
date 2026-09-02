@@ -22,6 +22,7 @@ from .adapters.codex import CodexAdapter
 from .adapters.hermes import HermesAdapter, hermes_home_for_platform
 from .cli import _home_from_environment, _prepare_model_route
 from .locking import atomic_write_json
+from .native_registration import ensure_hermes_native_sources
 from .vault import Vault
 
 
@@ -415,6 +416,19 @@ def install_hermes(*, vault_path: Path | None = None) -> dict[str, Any]:
             "model": model,
         }
 
+    try:
+        native_registration = ensure_hermes_native_sources(vault, hermes_home)
+    except Exception:
+        return {
+            "status": "failure",
+            "reason": "Hermes native memory sources could not be registered safely",
+            "core_version": core_version,
+            "provider_version": provider_version,
+            "vault": str(vault.root),
+            "provider": str(provider_path),
+            "model": model,
+        }
+
     update_agents_index(
         vault.agents_index_path,
         {
@@ -443,6 +457,7 @@ def install_hermes(*, vault_path: Path | None = None) -> dict[str, Any]:
         "provider": str(provider_path),
         "mcp_command": str(command),
         "model": model,
+        "native_sources": native_registration,
     }
 
 

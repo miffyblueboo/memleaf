@@ -1181,6 +1181,7 @@ class MemleafMemoryProvider(MemoryProvider):
         # under the original session id after the chain is restored.
         self._deferred_process_sessions: "OrderedDict[str, None]" = OrderedDict()
         self._last_retrieval_observation = "unknown"
+        self._last_retrieval_audit = "SEARCH_UNKNOWN"
 
     @property
     def name(self) -> str:
@@ -1873,6 +1874,7 @@ class MemleafMemoryProvider(MemoryProvider):
         self._pending_lineage.clear()
         self._deferred_process_sessions.clear()
         self._last_retrieval_observation = "unknown"
+        self._last_retrieval_audit = "SEARCH_UNKNOWN"
         self._version_warning_emitted = False
         if self._client is not None:
             self._client.close()
@@ -2117,6 +2119,7 @@ class MemleafMemoryProvider(MemoryProvider):
         turn_id: str = "",
         vault_root: Optional[Path] = None,
         seen_call_keys: Any = None,
+        audit_state: Optional[dict[str, Any]] = None,
     ) -> str:
         """Observe explicit host MCP calls in public messages.
 
@@ -2152,6 +2155,7 @@ class MemleafMemoryProvider(MemoryProvider):
 
         read_results_used: set[int] = set()
         read_sequence = 0
+        controlled_reads = 0
         read_ordinal = 0
         for call in calls:
             if call.get("name") != "mcp__memleaf__read":
@@ -2175,6 +2179,8 @@ class MemleafMemoryProvider(MemoryProvider):
             if not _record_tool_observation(seen_call_keys, observation_key):
                 continue
             read_sequence += 1
+            if result_status == "ok" and retrieval_match:
+                controlled_reads += 1
             logger.info(
                 "memleaf retrieval-read source=hermes session=%s turn=%s read_seq=%d retrieval_present=%s retrieval_match=%s result=%s",
                 _safe_component(session_id, "none") if session_id else "none",
@@ -2202,12 +2208,39 @@ class MemleafMemoryProvider(MemoryProvider):
                 "detected" if bypass else "not_detected",
             )
         if not statuses:
-            return "unknown"
-        if "found" in statuses:
-            return "found"
-        if "no_match" in statuses:
-            return "no_match"
-        return "error"
+            search_status = "unknown"
+            audit_status = "SEARCH_UNKNOWN"
+        elif "found" in statuses:
+            search_status = "found"
+            # Hermes exposes no public pre-final hook and no reliable signal
+            # that proves whether an answer used historical memory when no
+            # controlled read occurred. Do not fabricate FOUND_NOT_USED or
+            # FOUND_REQUIRED_READ_MISSING; record the uncertainty explicitly.
+            audit_status = "FOUND_READ" if controlled_reads else "FOUND_NO_READ_UNDETERMINED"
+        elif "no_match" in statuses:
+            search_status = "no_match"
+            audit_status = "NO_MATCH"
+        else:
+            search_status = "error"
+            audit_status = "ERROR"
+        if isinstance(audit_state, dict):
+            audit_state.clear()
+            audit_state.update(
+                {
+                    "status": audit_status,
+                    "search_status": search_status,
+                    "controlled_reads": controlled_reads,
+                }
+            )
+        logger.info(
+            "memleaf retrieval-audit source=hermes session=%s turn=%s status=%s search=%s controlled_reads=%d",
+            _safe_component(session_id, "none") if session_id else "none",
+            _safe_component(turn_id, "none") if turn_id else "none",
+            audit_status,
+            search_status,
+            controlled_reads,
+        )
+        return search_status
 
     @staticmethod
     def _catalog_retrieval_id(value: Any) -> Optional[str]:
@@ -2335,6 +2368,7 @@ class MemleafMemoryProvider(MemoryProvider):
                 if retrieval_id is None and resolved_turn_number is None:
                     retrieval_id = self._current_gate_id(effective_session)
                 if self._gate_enabled:
+                    audit_state: dict[str, Any] = {}
                     observation = self._observe_search_messages(
                         messages,
                         retrieval_id,
@@ -2342,10 +2376,12 @@ class MemleafMemoryProvider(MemoryProvider):
                         turn_id=turn_id,
                         vault_root=_resolve_vault(self._config()),
                         seen_call_keys=self._observed_tool_call_keys,
+                        audit_state=audit_state,
                     )
                     while len(self._observed_tool_call_keys) > _MAX_OBSERVED_TOOL_CALL_KEYS:
                         self._observed_tool_call_keys.popitem(last=False)
                     self._last_retrieval_observation = observation
+                    self._last_retrieval_audit = str(audit_state.get("status") or "SEARCH_UNKNOWN")
                 lineage_ready = self._retry_pending_lineage(effective_session)
                 for role, content in visible_events:
                     if not self._capture_visible(

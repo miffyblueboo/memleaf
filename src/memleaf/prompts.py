@@ -370,9 +370,12 @@ MIXED_PROJECT_SCOPES_CORRECTION = (
 
 MIXED_FUTURE_USE_CORRECTION = (
     "Previous output violated: mixed_future_use. Keep every candidate and "
-    "summary atomic. Split a durable project rule or implementation-plan "
-    "change from an independent dated todo such as a reply, investigation, "
-    "submission, or follow-up; preserve each part's own evidence and project "
+    "summary atomic. Split a durable project rule, recurring workflow rule, "
+    "or implementation-plan change from an independent dated todo such as a "
+    "reply, investigation, document modification, submission, or follow-up. "
+    "Language such as 后续/今后/以后/每次 or going forward commonly marks a "
+    "separate reusable workflow when paired with an unchanged dated action; "
+    "preserve each part's own evidence and project "
     "scope. A date intrinsic to the same implementation plan may remain in "
     "that project candidate. Return separate gate candidates or return "
     "NO_CHANGE for a part with no independent future use. Return only the "

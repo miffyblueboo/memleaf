@@ -303,11 +303,11 @@ class HermesProviderTests(unittest.TestCase):
 
     def test_provider_does_not_warn_when_core_versions_match(self) -> None:
         client = FakeClient(responses=[{"stats": True}])
-        client.server_version = "0.2.17"
+        client.server_version = "0.2.18"
         provider = provider_module.MemleafMemoryProvider()
         with patch.object(provider_module, "_resolve_command", return_value="memleaf-mcp"), \
              patch.object(provider_module, "_MCPClient", return_value=client), \
-             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.17"), \
+             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.18"), \
              patch.object(provider_module.logger, "warning") as warning:
             provider.initialize(
                 "version-match-session",
@@ -324,7 +324,7 @@ class HermesProviderTests(unittest.TestCase):
         provider = provider_module.MemleafMemoryProvider()
         with patch.object(provider_module, "_resolve_command", return_value="memleaf-mcp"), \
              patch.object(provider_module, "_MCPClient", return_value=client), \
-             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.17"), \
+             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.18"), \
              patch.object(provider_module.logger, "warning") as warning:
             provider.initialize(
                 "version-missing-session",
@@ -1254,6 +1254,94 @@ class HermesProviderTests(unittest.TestCase):
             "unknown",
             provider_module.MemleafMemoryProvider._observe_search_messages(messages[:2], "rtv-current"),
         )
+
+    def test_soft_audit_distinguishes_controlled_read_from_unresolved_found(self) -> None:
+        token = "rtv-audit-current"
+        search_call = {
+            "id": "audit-search",
+            "function": {
+                "name": "mcp__memleaf__search",
+                "arguments": json.dumps({"query": "project", "retrieval_id": token}),
+            },
+        }
+        search_result = {
+            "role": "tool",
+            "tool_call_id": "audit-search",
+            "content": json.dumps(
+                {"status": "found", "results": [{"memory_id": "AUDIT_MEMORY", "title": "Audit title"}]}
+            ),
+        }
+        no_read_messages = [{"role": "assistant", "tool_calls": [search_call]}, search_result]
+        unresolved = {}
+        with patch.object(provider_module.logger, "info") as info:
+            status = provider_module.MemleafMemoryProvider._observe_search_messages(
+                no_read_messages, token, audit_state=unresolved
+            )
+        self.assertEqual(status, "found")
+        self.assertEqual(unresolved["status"], "FOUND_NO_READ_UNDETERMINED")
+        self.assertEqual(unresolved["controlled_reads"], 0)
+
+        read_call = {
+            "id": "audit-read",
+            "function": {
+                "name": "mcp__memleaf__read",
+                "arguments": json.dumps({"memory_id": "AUDIT_MEMORY", "retrieval_id": token}),
+            },
+        }
+        with_read = [
+            {"role": "assistant", "tool_calls": [search_call, read_call]},
+            search_result,
+            {
+                "role": "tool",
+                "tool_call_id": "audit-read",
+                "content": json.dumps({"memory_id": "AUDIT_MEMORY", "body": "AUDIT_BODY_SECRET"}),
+            },
+        ]
+        read_audit = {}
+        with patch.object(provider_module.logger, "info") as info:
+            status = provider_module.MemleafMemoryProvider._observe_search_messages(
+                with_read, token, audit_state=read_audit
+            )
+            output = "\n".join(call.args[0] % call.args[1:] for call in info.call_args_list)
+        self.assertEqual(status, "found")
+        self.assertEqual(read_audit["status"], "FOUND_READ")
+        self.assertEqual(read_audit["controlled_reads"], 1)
+        self.assertIn("status=FOUND_READ", output)
+        for secret in (token, "AUDIT_MEMORY", "AUDIT_BODY_SECRET", "Audit title"):
+            self.assertNotIn(secret, output)
+
+    def test_sync_turn_keeps_soft_audit_as_diagnostic_state(self) -> None:
+        provider = self.provider(responses=[{"stored": True}, {"stored": True}])
+        provider._auto_process = False
+        provider._gate_enabled = True
+        provider._session_id = "audit-session"
+        provider._active_retrieval_ids["audit-session"] = "rtv-audit-sync"
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "sync-search",
+                        "function": {
+                            "name": "mcp__memleaf__search",
+                            "arguments": json.dumps(
+                                {"query": "current", "retrieval_id": "rtv-audit-sync"}
+                            ),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "sync-search",
+                "content": json.dumps(
+                    {"status": "found", "results": [{"memory_id": "m", "title": "M"}]}
+                ),
+            },
+        ]
+        provider.sync_turn("visible", "answer", session_id="audit-session", messages=messages)
+        self.assertEqual(provider._last_retrieval_observation, "found")
+        self.assertEqual(provider._last_retrieval_audit, "FOUND_NO_READ_UNDETERMINED")
 
     def test_search_status_rejects_malformed_v2_envelopes(self) -> None:
         valid = {"memory_id": "mem-1", "title": "Memory"}

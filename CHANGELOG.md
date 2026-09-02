@@ -2,6 +2,13 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.18 — 2026-09-02
+
+- Register Hermes native `MEMORY.md` and `USER.md` as private, read-only native sources during supported install/upgrade flows while preserving custom native source configuration.
+- Harden cross-turn deduplication and UPDATE/NO_CHANGE decisions: split independent future-use clauses, reuse one unambiguous same-scope active target, treat exact active duplicates as deterministic no-ops, and keep crash replay idempotent.
+- Preserve the existing bounded Scope Map / metadata-directory retrieval flow without adding extra scope scans during automatic deduplication.
+- Distinguish Hermes controlled read audit states: record `FOUND_READ` only after a current-token successful read, and use `FOUND_NO_READ_UNDETERMINED` when a FOUND result has no provable controlled read instead of overstating Soft Gate guarantees.
+
 ## 0.2.17 — 2026-09-02
 
 - Preserve explicit user-confirmed completion or cancellation of one uniquely

@@ -347,6 +347,23 @@ PY
     die "Hermes memleaf MCP configuration/test failed"
   fi
 
+  # Register Hermes' own MEMORY.md and USER.md as private, read-only native
+  # sources only after both provider and MCP checks have succeeded. Missing
+  # files remain a valid indexed state and are never created by memleaf.
+  "$venv_path/bin/python" - "$vault_path" "$hermes_home" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+from memleaf.native_registration import ensure_hermes_native_sources
+from memleaf.vault import Vault
+
+vault = Vault(Path(sys.argv[1]).expanduser().resolve())
+hermes_home = Path(sys.argv[2]).expanduser().resolve()
+ensure_hermes_native_sources(vault, hermes_home)
+PY
+
   # The MCP status is written only after its own official test succeeds.  This
   # merge changes no Provider or other host fields.
   "$venv_path/bin/python" - "$vault_path" <<'PY'
