@@ -1100,6 +1100,89 @@ class StageB2ATest(unittest.TestCase):
         self.assertEqual(processed["watermark"], 2)
         self.assertEqual(processed["processing"]["status"], "idle")
 
+    def test_additive_project_plan_update_retains_existing_plan_facts(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="additive-project-plan")
+        old_body = (
+            "金元顺安信创实施计划采用达梦和东方通，要求38个工作日完成，"
+            "上线日期为2026-10-27，负责人为吴江波。"
+        )
+        existing = service.create_memory(
+            memory_id="mem-jinyuan-plan",
+            title="金元顺安员工投资行为申报系统信创改造实施计划",
+            body=old_body,
+            tags=["金元顺安", "达梦", "东方通", "负责人"],
+            type="project",
+            scopes=["project:金元顺安"],
+        )
+        user_key, assistant_key = self.capture_turn(
+            service,
+            source="hermes",
+            session="jinyuan-plan",
+            turn="feedback",
+            user_event="jinyuan-plan-user",
+            assistant_event="jinyuan-plan-assistant",
+            user="金元顺安客户对实施计划提出补充建议。",
+            assistant="需增加数据迁移、安全基线、漏洞扫描和回滚演练。",
+        )
+        item = self.candidate(
+            "jinyuan-plan-feedback",
+            [user_key, assistant_key],
+            memory="金元顺安实施计划需补充数据迁移、安全基线、漏洞扫描和回滚演练。",
+            type="fact",
+        )
+        item["scopes"] = ["project:金元顺安"]
+        backend.responses.extend(
+            [
+                self.gate([item]),
+                self.summary(
+                    user_key,
+                    title=existing.title,
+                    body="客户建议补充数据迁移、安全基线、漏洞扫描和回滚演练。",
+                    tags=["金元顺安", "调整建议"],
+                    type="project",
+                    scopes=["project:金元顺安"],
+                    update_memory_id=existing.memory_id,
+                ),
+            ]
+        )
+
+        result = service.process(source="hermes", session_id="jinyuan-plan", model=backend)
+
+        self.assertEqual(result["memory_ids"], [existing.memory_id])
+        current = service.read(existing.memory_id)
+        self.assertIn(old_body, current.body)
+        self.assertIn("回滚演练", current.body)
+        self.assertEqual(current.title, existing.title)
+        self.assertEqual(current.tags, ["金元顺安", "达梦", "东方通", "负责人", "调整建议"])
+        history = service._read_memories_unlocked("history")
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].memory.body, old_body)
+
+    def test_explicit_project_plan_replacement_does_not_merge_conflicting_body(self):
+        target = self.service().create_memory(
+            memory_id="mem-plan-replacement",
+            title="北辰项目实施计划",
+            body="北辰项目数据库采用达梦。",
+            tags=["达梦"],
+            type="project",
+            scopes=["project:北辰"],
+        )
+        summary = {
+            "title": target.title,
+            "body": "北辰项目数据库改为PostgreSQL。",
+            "tags": ["PostgreSQL"],
+            "type": "project",
+        }
+
+        merged = Processor._merge_additive_project_plan_update(
+            {"memory": "客户建议将北辰项目数据库改为PostgreSQL。"},
+            summary,
+            target,
+        )
+
+        self.assertEqual(merged, summary)
+
     def test_summary_update_target_mismatch_is_retried_before_writing(self):
         backend = QueueBackend()
         service = self.service(backend, name="email-update-mismatch")
@@ -1252,7 +1335,10 @@ class StageB2ATest(unittest.TestCase):
 
         self.assertEqual(result["memories_written"], 1)
         self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
-        self.assertEqual(service.read(old.memory_id).body, "金元顺安实施计划新增部署要求。")
+        self.assertEqual(
+            service.read(old.memory_id).body,
+            "金元顺安实施计划按原方案执行。\n\n金元顺安实施计划新增部署要求。",
+        )
         self.assertEqual(len(service.vault.list_markdown("history")), 1)
 
     def test_same_project_plan_fact_candidate_is_reconciled_to_immutable_project_target(self):

@@ -2,6 +2,17 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.13 — 2026-09-02
+
+- Preserve the full active project-plan body, stable title, and retrieval
+  metadata when a customer suggestion only adds constraints; explicit
+  replacements continue to replace conflicting state normally.
+- Reject attachment, document, presentation, material, and issue-list items
+  described only by transport metadata or a generic follow-up at both the gate
+  and summary boundaries.
+- Keep concrete attachment-backed actions eligible when they include a
+  remediation, owner, deadline, delivery rule, deployment, or migration.
+
 ## 0.2.12 — 2026-09-02
 
 - Remove empty ASCII or Chinese parentheses left after an absolute date is

@@ -395,6 +395,45 @@ def is_aggregate_operational_text(value: Any) -> bool:
     return count_signals >= 2 or (count_signals >= 1 and separator_count >= 1)
 
 
+_ATTACHMENT_SUBJECT_MARKERS = (
+    "附件", "材料", "文档", "问题清单", "ppt", "slides", "deck", "attachment", "checklist",
+)
+_GENERIC_FOLLOWUP_MARKERS = (
+    "待跟进", "需跟进", "需要跟进", "待处理", "需处理", "需要处理", "请查看", "看下",
+    "follow up", "follow-up", "needs review", "to review",
+)
+_CONCRETE_ATTACHMENT_ACTION_MARKERS = (
+    "迁移", "部署", "修复", "整改", "逐项", "发送给", "发给", "抄送", "提交", "回复", "确认",
+    "负责人", "禁止", "必须", "以后", "归档至", "保存至", "migrate", "deploy", "fix",
+    "remediate", "send to", "cc ", "owner", "must",
+)
+_TRANSPORT_DETAIL = re.compile(
+    r"(?:\d+(?:\.\d+)?\s*(?:kb|mb|gb|字节)|(?:邮件|mail|message)\s*(?:id\s*[=:：]?\s*)?#?\d+)",
+    re.IGNORECASE,
+)
+_CONCRETE_DEADLINE = re.compile(
+    r"(?:截至|截止|在|by|before)\s*\d{4}-\d{2}-\d{2}|\d{4}-\d{2}-\d{2}\s*(?:前|之前|截止)",
+    re.IGNORECASE,
+)
+
+
+def is_attachment_followup_only_text(value: Any) -> bool:
+    """Return true for an attachment subject with no reusable concrete action."""
+
+    if not isinstance(value, str):
+        return False
+    folded = value.casefold()
+    if not any(marker in folded for marker in _ATTACHMENT_SUBJECT_MARKERS):
+        return False
+    if any(marker in folded for marker in _CONCRETE_ATTACHMENT_ACTION_MARKERS):
+        return False
+    if _CONCRETE_DEADLINE.search(value):
+        return False
+    return any(marker in folded for marker in _GENERIC_FOLLOWUP_MARKERS) or bool(
+        _TRANSPORT_DETAIL.search(value)
+    )
+
+
 def _reject_constant(value: str) -> None:
     raise ModelOutputError("non-finite JSON number is not allowed", validation_reason="invalid_json")
 
@@ -1335,6 +1374,7 @@ __all__ = [
     "parse_compact_output",
     "parse_strict_json",
     "is_aggregate_operational_text",
+    "is_attachment_followup_only_text",
     "normalize_relative_calendar_text",
     "parse_summarize_output",
     "parse_summary_output",

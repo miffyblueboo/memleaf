@@ -115,6 +115,10 @@ independent future use, set worth=false. A one-off meeting with no durable
 decision or commitment, a request awaiting PM acceptance, and pending feedback
 or another intermediate status normally have worth=false. Keep an independent
 project risk or concrete future action even when it came from a digest.
+A PPT, attachment, material, document, or issue-list item described only as
+"needs follow-up/review/processing" has no independent action and normally has
+worth=false; keep it only when the evidence supplies a concrete remediation,
+owner, deadline, delivery rule, migration, or durable conclusion.
 An intermediate state such as a draft awaiting confirmation, preparation/
 processing status, temporary error, repeated confirmation, or unconfirmed
 suggestion normally has no independent future use and is worth=false. Keep one
@@ -182,7 +186,8 @@ still has a concrete future-use fact or action. If not, return exactly
 {"decision":"NO_CHANGE"}; this is the only no-write summary response. Use it
 for temporary delegation, waiting for feedback, a one-off meeting arrangement with
 no durable outcome/decision/project constraint, or a subject/attachment-only item
-without a concrete impact or conclusion.
+without a concrete impact or conclusion. Attachment sizes, mail/message IDs,
+and a generic "needs follow-up" phrase do not create such an impact.
 Explicit remember mode never permits NO_CHANGE and must return the normal summary
 object. When producing a normal automatic summary, copy the gate candidate's
 scopes exactly. scope_source may be omitted to inherit the gate value, but an

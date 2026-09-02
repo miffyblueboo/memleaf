@@ -358,6 +358,95 @@ class AdmissionFlowTests(unittest.TestCase):
         self.assertNotIn("完成4条", memories[0].memory.body)
         self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
 
+    def test_attachment_only_followup_is_dropped_before_summary(self):
+        service = self.make_service("attachment-followup")
+        backend = QueueBackend()
+        user_key, assistant_key = self.capture_turn(
+            service,
+            session="attachment-followup",
+            turn="turn-1",
+            user="查看鑫元基金最近的邮件。",
+            assistant="评审PPT和SIT问题清单需要跟进处理。",
+        )
+        item = candidate(
+            "xinyuan-materials",
+            [user_key, assistant_key],
+            memory="鑫元基金评审PPT和SIT问题清单待跟进处理。",
+        )
+        item["scopes"] = ["project:鑫元基金"]
+        backend.responses.append(gate([item]))
+
+        result = service.process(source="hermes", session_id="attachment-followup", model=backend)
+
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(service._read_memories_unlocked("knowledge"), [])
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate"])
+
+    def test_attachment_summary_with_only_transport_details_is_dropped(self):
+        service = self.make_service("attachment-summary")
+        backend = QueueBackend()
+        user_key, assistant_key = self.capture_turn(
+            service,
+            session="attachment-summary",
+            turn="turn-1",
+            user="查看鑫元基金当前推进材料。",
+            assistant="有评审材料和问题清单。",
+        )
+        item = candidate(
+            "xinyuan-materials",
+            [user_key, assistant_key],
+            memory="鑫元基金当前推进材料。",
+        )
+        item["scopes"] = ["project:鑫元基金"]
+        summary_value = json.loads(
+            summary(
+                user_key,
+                title="鑫元基金评审PPT和SIT问题清单待跟进",
+                body="评审PPT（附件8MB，邮件918）和SIT问题清单（附件5.8MB，邮件920）需跟进处理。",
+            )
+        )
+        summary_value["scopes"] = ["project:鑫元基金"]
+        backend.responses.extend([gate([item]), json.dumps(summary_value, ensure_ascii=False)])
+
+        result = service.process(source="hermes", session_id="attachment-summary", model=backend)
+
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(service._read_memories_unlocked("knowledge"), [])
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
+
+    def test_attachment_with_owner_deadline_and_remediation_remains_admissible(self):
+        service = self.make_service("attachment-action")
+        backend = QueueBackend()
+        user_key, assistant_key = self.capture_turn(
+            service,
+            session="attachment-action",
+            turn="turn-1",
+            user="鑫元基金SIT问题清单怎么处理？",
+            assistant="张三需在2026-09-03前逐项整改SIT问题清单。",
+        )
+        item = candidate(
+            "xinyuan-sit-remediation",
+            [user_key, assistant_key],
+            memory="鑫元基金SIT问题清单需在2026-09-03前由张三逐项整改。",
+            type="todo",
+        )
+        item["scopes"] = ["project:鑫元基金"]
+        summary_value = json.loads(
+            summary(
+                user_key,
+                title="鑫元基金SIT问题清单整改",
+                body="张三需在2026-09-03前逐项整改鑫元基金SIT问题清单。",
+                type="todo",
+            )
+        )
+        summary_value.update({"scopes": ["project:鑫元基金"], "status": "active"})
+        backend.responses.extend([gate([item]), json.dumps(summary_value, ensure_ascii=False)])
+
+        result = service.process(source="hermes", session_id="attachment-action", model=backend)
+
+        self.assertEqual(result["memories_written"], 1)
+        self.assertIn("逐项整改", service._read_memories_unlocked("knowledge")[0].memory.body)
+
     def test_mixed_preference_is_kept_while_mcp_failure_is_not(self):
         service = self.make_service("mixed-preference")
         backend = QueueBackend()

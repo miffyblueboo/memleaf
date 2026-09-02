@@ -27,6 +27,7 @@ from memleaf.validation import (
     ModelOutputError,
     NO_CHANGE_DECISION,
     is_aggregate_operational_text,
+    is_attachment_followup_only_text,
     normalize_relative_calendar_text,
 )
 from memleaf.index import event_key, turn_key
@@ -442,6 +443,38 @@ class StageB1Test(unittest.TestCase):
         self.assertFalse(
             is_aggregate_operational_text(
                 "Orion项目巡检：浦银安盛任务提供测试数据逾期5天。"
+            )
+        )
+
+    def test_attachment_followup_detector_keeps_only_concrete_actions(self):
+        self.assertTrue(
+            is_attachment_followup_only_text(
+                "鑫元基金评审PPT和SIT问题清单待跟进处理。"
+            )
+        )
+        self.assertTrue(
+            is_attachment_followup_only_text(
+                "评审PPT附件8MB，邮件918，需跟进。"
+            )
+        )
+        self.assertTrue(
+            is_attachment_followup_only_text(
+                "评审PPT 2026-09-02版本待跟进。"
+            )
+        )
+        self.assertFalse(
+            is_attachment_followup_only_text(
+                "SIT问题清单需在2026-09-03前由张三逐项整改。"
+            )
+        )
+        self.assertFalse(
+            is_attachment_followup_only_text(
+                "以后需求文档直接发给王佳鑫、黄欣婕，并抄送谭宇来。"
+            )
+        )
+        self.assertFalse(
+            is_attachment_followup_only_text(
+                "中银国际历史数据库和附件需要全量迁移。"
             )
         )
 

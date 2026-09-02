@@ -65,6 +65,7 @@ from .validation import (
     parse_summarize_output,
     normalize_relative_calendar_text,
     is_aggregate_operational_text,
+    is_attachment_followup_only_text,
 )
 from .vault import safe_component
 
@@ -1712,6 +1713,52 @@ class Processor:
             )
         )
 
+    @classmethod
+    def _merge_additive_project_plan_update(
+        cls,
+        candidate: Mapping[str, Any],
+        summary: Mapping[str, Any],
+        target: Memory | None,
+    ) -> dict[str, Any]:
+        """Preserve a full active plan when current evidence only adds constraints."""
+
+        result = dict(summary)
+        if (
+            target is None
+            or target.type != "project"
+            or not cls._is_project_plan_title(target.title)
+        ):
+            return result
+        candidate_text = str(candidate.get("memory", "")).casefold()
+        additive_markers = (
+            "建议", "补充", "增加", "新增", "追加", "还需", "同时", "纳入", "完善",
+            "suggest", "propose", "additional", "add ", "include",
+        )
+        replacement_markers = (
+            "改为", "变更为", "替换", "取消", "删除", "不再", "更新为", "调整为", "推迟至", "提前至",
+            "replace", "changed to", "no longer", "cancel", "remove", "instead", "moved to",
+        )
+        if not any(marker in candidate_text for marker in additive_markers):
+            return result
+        if any(marker in candidate_text for marker in replacement_markers):
+            return result
+
+        old_body = target.body.strip()
+        new_body = str(result.get("body", "")).strip()
+        normalized_old = " ".join(old_body.casefold().split())
+        normalized_new = " ".join(new_body.casefold().split())
+        if old_body and normalized_old not in normalized_new:
+            result["body"] = f"{old_body}\n\n{new_body}" if new_body else old_body
+        result["title"] = target.title
+        for field in ("tags", "aliases", "keywords"):
+            merged: list[str] = []
+            for value in list(getattr(target, field)) + list(result.get(field, [])):
+                if isinstance(value, str) and value not in merged:
+                    merged.append(value)
+            if merged or field in result:
+                result[field] = merged
+        return result
+
     def _infer_update_target(
         self,
         candidate: Mapping[str, Any],
@@ -2140,6 +2187,8 @@ class Processor:
             # its own candidate; the aggregate shell itself is NO_CHANGE.
             if candidate.get("worth") and is_aggregate_operational_text(candidate.get("memory")):
                 continue
+            if candidate.get("worth") and is_attachment_followup_only_text(candidate.get("memory")):
+                continue
             candidate_scopes = list(candidate["scopes"])
             # An automatic candidate with no reliable project attribution is
             # retained as a retryable inbox turn, never silently promoted to
@@ -2322,6 +2371,10 @@ class Processor:
                 continue
             if summary.get("decision") == NO_CHANGE_DECISION:
                 continue
+            if is_attachment_followup_only_text(
+                f"{summary.get('title', '')}\n{summary.get('body', '')}"
+            ):
+                continue
             if gate_update_target is not None:
                 summary_update_target = summary.get("update_memory_id")
                 if summary_update_target is None:
@@ -2338,6 +2391,8 @@ class Processor:
                 else:
                     summary = dict(summary)
                     summary["update_memory_id"] = gate_update_target
+                target = self.service.read(gate_update_target, include_history=False)
+                summary = self._merge_additive_project_plan_update(candidate, summary, target)
             if summary["scopes"] == ["unscoped"] or summary.get("scope_source") == "insufficient_context":
                 self._defer_candidate(
                     turn_ref,
