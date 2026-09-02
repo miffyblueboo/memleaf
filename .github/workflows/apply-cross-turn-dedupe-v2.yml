@@ -1,0 +1,72 @@
+name: Retry cross-turn dedupe hardening
+
+on:
+  push:
+    branches:
+      - fix/hermes-native-dedup-cross-turn
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: "${{ github.event.head_commit.message == 'chore: retry cross-turn dedupe hardening' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/hermes-native-dedup-cross-turn
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Reapply validated patch set and move ambiguity check
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # Reuse the exact patch program from the previous fail-closed
+          # workflow so the retry cannot silently drift from the tested set.
+          workflow = Path('.github/workflows/apply-cross-turn-dedupe.yml').read_text(encoding='utf-8').splitlines()
+          start = next(i for i, line in enumerate(workflow) if line.strip() == "python - <<'PY'") + 1
+          end = next(i for i in range(start, len(workflow)) if workflow[i].strip() == 'PY')
+          program = '\n'.join(line[10:] if line.startswith('          ') else line for line in workflow[start:end])
+          exec(compile(program, 'apply-cross-turn-dedupe.yml', 'exec'), {'__name__': '__main__'})
+
+          path = Path('src/memleaf/processing.py')
+          text = path.read_text(encoding='utf-8')
+
+          early = '''            if (\n                candidate["worth"]\n                and scope_ambiguous\n                and not has_target\n                and detached_update_target_id is None\n            ):\n                self._defer_candidate(\n                    turn_ref,\n                    candidate,\n                    "related_ambiguous",\n                    scopes=candidate_scopes,\n                )\n                continue\n\n'''
+          if text.count(early) != 1:
+              raise SystemExit(f'expected one early ambiguity block, found {text.count(early)}')
+          text = text.replace(early, '', 1)
+
+          old = '''            candidate_related, candidate_scope_background, candidate_native_refs, _ = self._related_query(\n'''
+          new = '''            candidate_related, candidate_scope_background, candidate_native_refs, candidate_scope_fallback = self._related_query(\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one candidate query assignment, found {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          anchor = '''            candidate = self._infer_update_target(candidate, candidate_related)\n'''
+          insertion = '''            if (\n                candidate_scope_fallback is not None\n                and candidate_scope_fallback[1]\n                and not candidate_related\n                and not any(\n                    isinstance(candidate.get(field), str) and candidate.get(field)\n                    for field in ("duplicate_memory_id", "update_memory_id")\n                )\n            ):\n                # The broad turn-level scope may contain several memories, but\n                # defer only after the candidate's own scoped lookup also fails\n                # to resolve one. This lets exact duplicates reach NO_CHANGE.\n                self._defer_candidate(\n                    turn_ref,\n                    candidate,\n                    "related_ambiguous",\n                    scopes=candidate_scopes,\n                )\n                continue\n            candidate = self._infer_update_target(candidate, candidate_related)\n'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f'expected one infer-update anchor, found {text.count(anchor)}')
+          text = text.replace(anchor, insertion, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+      - name: Run focused and existing regressions
+        run: |
+          python -m pip install .
+          python -m unittest tests.test_cross_turn_dedupe_regressions -v
+          python -m unittest tests.test_extraction_quality_regressions tests.test_maintenance_v2 tests.test_stage_b3b_native_context -v
+          python -m compileall -q src tests
+          git diff --check
+      - name: Commit verified dedupe hardening
+        shell: bash
+        run: |
+          git rm .github/workflows/apply-cross-turn-dedupe.yml .github/workflows/apply-cross-turn-dedupe-v2.yml
+          git config user.name 'miffyblueboo'
+          git config user.email '321381257+miffyblueboo@users.noreply.github.com'
+          git add src/memleaf/processing.py src/memleaf/validation.py src/memleaf/prompts.py tests/test_maintenance_v2.py tests/test_cross_turn_dedupe_regressions.py
+          git commit -m 'fix: harden cross-turn update and no-change decisions'
+          git push origin HEAD:fix/hermes-native-dedup-cross-turn
