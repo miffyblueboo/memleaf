@@ -263,42 +263,43 @@ def _automatic_create_conflicts(
     summary: Mapping[str, Any],
     related: Iterable[Mapping[str, Any]],
     *,
-    ignore_memory_id: str | None = None,
+    ignore_memory_ids: Iterable[str] = (),
 ) -> bool:
-    """Fail closed when an automatic CREATE still overlaps active context."""
+    """Return true only when a finalized CREATE is already covered."""
 
     candidate_text = str(candidate.get("memory", "")).strip()
     queries = _candidate_lookup_queries(candidate_text)
-    summary_text = f"{summary.get('title', '')}\n{summary.get('body', '')}".strip()
+    summary_body = normalize_term(str(summary.get("body", "")))
     candidate_type = candidate.get("type")
-    ignored = ignore_memory_id.casefold() if isinstance(ignore_memory_id, str) and ignore_memory_id else None
+    ignored = {
+        value.casefold() for value in ignore_memory_ids
+        if isinstance(value, str) and value
+    }
     for raw in related:
         if not isinstance(raw, Mapping):
             continue
         memory_id = raw.get("memory_id")
-        if isinstance(memory_id, str) and ignored is not None and memory_id.casefold() == ignored:
-            # A previous transaction attempt may have persisted this exact
-            # deterministic CREATE before failing during native shadow/ledger
-            # commit. Let the idempotent replay finish its remaining work.
+        if isinstance(memory_id, str) and memory_id.casefold() in ignored:
+            # Requests already generated for this visible turn may have been
+            # partially persisted by a failed transaction. Ignore them here
+            # so replay can finish the remaining deterministic candidates.
             continue
-        related_text = f"{raw.get('title', '')}\n{raw.get('body', '')}".strip()
-        related_normalized = normalize_term(related_text)
-        if not related_normalized:
+        related_body = normalize_term(str(raw.get("body", "")))
+        if raw.get("native") is True:
+            related_text = normalize_term(
+                f"{raw.get('title', '')}\n{raw.get('body', '')}"
+            )
+            for query in queries:
+                normalized = normalize_term(query)
+                if len(normalized) >= 8 and related_text and (
+                    normalized in related_text
+                    or (len(related_text) >= 8 and related_text in normalized)
+                ):
+                    return True
             continue
-        for query in queries:
-            normalized = normalize_term(query)
-            if len(normalized) >= 8 and (
-                normalized in related_normalized
-                or (len(related_normalized) >= 8 and related_normalized in normalized)
-            ):
-                return True
-        if raw.get("native") is True or raw.get("type") != candidate_type:
+        if raw.get("type") != candidate_type:
             continue
-        try:
-            memory = Memory.from_mapping(raw)
-        except (TypeError, ValueError):
-            continue
-        if candidate_matches_query(memory, candidate_text) and candidate_matches_query(memory, summary_text):
+        if summary_body and related_body == summary_body:
             return True
     return False
 
@@ -1854,39 +1855,6 @@ class Processor:
                     return None
         return None
 
-    @staticmethod
-    def _exact_active_duplicate(
-        candidate: Mapping[str, Any],
-        related: Iterable[Mapping[str, Any]],
-        scoped_records: Optional[Iterable[Any]] = None,
-    ) -> bool:
-        """Return true only for an exact already-loaded active/native duplicate.
-
-        This helper performs no Vault search. It consumes the turn-level related
-        bodies and, when Scope fallback already loaded records, those records.
-        That preserves the single bounded Scope scan used by sparse inherited
-        turns while allowing exact duplicates to become deterministic NO_CHANGE.
-        """
-
-        memory = candidate.get("memory")
-        if not isinstance(memory, str) or not memory.strip():
-            return False
-        normalized = normalize_term(memory)
-        if not normalized:
-            return False
-        for item in related:
-            if not isinstance(item, Mapping):
-                continue
-            body = item.get("body")
-            if isinstance(body, str) and normalize_term(body) == normalized:
-                return True
-        for record in scoped_records or ():
-            target = getattr(record, "memory", None)
-            body = getattr(target, "body", None)
-            if isinstance(body, str) and normalize_term(body) == normalized:
-                return True
-        return False
-
     def _target_relation(
         self,
         candidate: Mapping[str, Any],
@@ -2148,7 +2116,13 @@ class Processor:
                 target = Memory.from_mapping(item)
             except (TypeError, ValueError):
                 continue
-            if not candidate_matches_query(target, candidate_text):
+            target_title = normalize_term(target.title)
+            candidate_normalized = normalize_term(candidate_text)
+            if (
+                len(target_title) < 4
+                or target_title not in candidate_normalized
+                or not candidate_matches_query(target, candidate_text)
+            ):
                 continue
             seen_same_type.add(memory_id.casefold())
             same_type_matches.append(target)
@@ -2667,6 +2641,7 @@ class Processor:
                 )
         requests: list[dict[str, Any]] = []
         observed_scopes: list[str] = []
+        current_turn_request_ids: set[str] = set()
         read_only_query = _automatic_read_only_query(events)
         for candidate in gate["candidates"]:
             candidate_id_key = str(candidate.get("candidate_id", "")).casefold()
@@ -2685,12 +2660,6 @@ class Processor:
             if candidate.get("worth") and is_attachment_followup_only_text(candidate.get("memory")):
                 continue
             candidate_scopes = list(candidate["scopes"])
-            if candidate.get("worth") and self._exact_active_duplicate(
-                candidate, related, scoped_records
-            ):
-                # Exact content already loaded for this Scope is a deterministic
-                # NO_CHANGE. No additional search/Scope scan is performed.
-                continue
             # An automatic candidate with no reliable project attribution is
             # retained as a retryable inbox turn, never silently promoted to
             # global knowledge.  The processed ledger records only a compact
@@ -3028,14 +2997,6 @@ class Processor:
                     summary = dict(summary)
                     summary["update_memory_id"] = gate_update_target
                 target = self.service.read(gate_update_target, include_history=False)
-                if (
-                    target is not None
-                    and normalize_term(str(summary.get("body", ""))) == normalize_term(target.body)
-                ):
-                    # The current evidence does not change the canonical body.
-                    # Automatic processing must not create a history version
-                    # merely to append a repeated observation/source.
-                    continue
                 summary = self._merge_additive_project_plan_update(candidate, summary, target)
             if summary["scopes"] == ["unscoped"] or summary.get("scope_source") == "insufficient_context":
                 self._defer_candidate(
@@ -3053,19 +3014,17 @@ class Processor:
                 conversation_title=title,
                 native_refs=candidate_native_refs,
             )
-            if gate_update_target is None and _automatic_create_conflicts(
+            current_turn_request_ids.add(pending_request["memory_id"].casefold())
+            summary_update_target = summary.get("update_memory_id")
+            final_is_create = not (
+                isinstance(summary_update_target, str) and summary_update_target
+            )
+            if final_is_create and _automatic_create_conflicts(
                 candidate,
                 summary,
                 candidate_related,
-                ignore_memory_id=pending_request["memory_id"],
+                ignore_memory_ids=current_turn_request_ids,
             ):
-                self._defer_candidate(
-                    turn_ref,
-                    candidate,
-                    "possible_duplicate_target",
-                    scopes=summary["scopes"],
-                    scope_source=summary.get("scope_source"),
-                )
                 continue
             requests.append(pending_request)
             for observed_scope in summary["scopes"]:
