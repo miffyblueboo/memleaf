@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Apply narrow dedupe corrections
+      - name: Apply final-stage dedupe corrections
         shell: bash
         run: |
           python - <<'PY'
@@ -32,36 +32,48 @@ jobs:
               global text
               count = text.count(old)
               if count != 1:
-                  raise SystemExit(f'expected one patch anchor, found {count}: {old[:80]!r}')
+                  raise SystemExit(f'expected one patch anchor, found {count}: {old[:90]!r}')
               text = text.replace(old, new, 1)
 
-          replace_once(
-              '''        for query in queries:\n            normalized = normalize_term(query)\n            if len(normalized) >= 8 and (\n                normalized in related_normalized\n                or (len(related_normalized) >= 8 and related_normalized in normalized)\n            ):\n                return True\n        if raw.get("native") is True or raw.get("type") != candidate_type:\n            continue\n''',
-              '''        if raw.get("native") is True:\n            # Native sources have no memleaf type metadata, so exact/subspan\n            # text overlap is the only safe final CREATE guard for them.\n            for query in queries:\n                normalized = normalize_term(query)\n                if len(normalized) >= 8 and (\n                    normalized in related_normalized\n                    or (len(related_normalized) >= 8 and related_normalized in normalized)\n                ):\n                    return True\n            continue\n        if raw.get("type") != candidate_type:\n            continue\n''',
-          )
-
-          start = text.index('    @staticmethod\n    def _exact_active_duplicate(\n')
-          end = text.index('    def _target_relation(\n', start)
-          replacement = '''    @staticmethod\n    def _exact_active_duplicate(\n        candidate: Mapping[str, Any],\n        related: Iterable[Mapping[str, Any]],\n        scoped_records: Optional[Iterable[Any]] = None,\n        *,\n        current_event_keys: Iterable[str] = (),\n    ) -> bool:\n        """Return true only for an exact pre-existing active/native duplicate.\n\n        Current-turn partial writes are deliberately excluded. If a transaction\n        persisted one deterministic memory before failing, replay must continue\n        so remaining candidates and writer recovery can finish idempotently.\n        """\n\n        memory = candidate.get("memory")\n        if not isinstance(memory, str) or not memory.strip():\n            return False\n        normalized = normalize_term(memory)\n        if not normalized:\n            return False\n        current = {\n            value.casefold() for value in current_event_keys\n            if isinstance(value, str) and value\n        }\n\n        def is_current_turn(value: Mapping[str, Any]) -> bool:\n            sources = value.get("sources")\n            if not isinstance(sources, list):\n                return False\n            return any(\n                isinstance(source, Mapping)\n                and isinstance(source.get("event_key"), str)\n                and source["event_key"].casefold() in current\n                for source in sources\n            )\n\n        for item in related:\n            if not isinstance(item, Mapping) or is_current_turn(item):\n                continue\n            body = item.get("body")\n            if isinstance(body, str) and normalize_term(body) == normalized:\n                return True\n        for record in scoped_records or ():\n            target = getattr(record, "memory", None)\n            body = getattr(target, "body", None)\n            if not isinstance(body, str) or normalize_term(body) != normalized:\n                continue\n            try:\n                target_value = target.to_dict()\n            except (AttributeError, TypeError, ValueError):\n                target_value = {}\n            if isinstance(target_value, Mapping) and is_current_turn(target_value):\n                continue\n            return True\n        return False\n\n'''
+          # Final CREATE conflict classification: native sources may use
+          # conservative text overlap; memleaf active records require exact
+          # summary-body equality and must exclude current-turn partial writes.
+          start = text.index('def _automatic_create_conflicts(\n')
+          end = text.index('\n\ndef _todo_state_recovery_candidate(\n', start)
+          replacement = '''def _automatic_create_conflicts(\n    candidate: Mapping[str, Any],\n    summary: Mapping[str, Any],\n    related: Iterable[Mapping[str, Any]],\n    *,\n    ignore_memory_id: str | None = None,\n    current_event_keys: Iterable[str] = (),\n) -> bool:\n    """Return true only when a finalized CREATE is already covered."""\n\n    candidate_text = str(candidate.get("memory", "")).strip()\n    queries = _candidate_lookup_queries(candidate_text)\n    summary_body = normalize_term(str(summary.get("body", "")))\n    candidate_type = candidate.get("type")\n    ignored = ignore_memory_id.casefold() if isinstance(ignore_memory_id, str) and ignore_memory_id else None\n    current = {\n        value.casefold() for value in current_event_keys\n        if isinstance(value, str) and value\n    }\n\n    def is_current_turn(value: Mapping[str, Any]) -> bool:\n        sources = value.get("sources")\n        if not isinstance(sources, list):\n            return False\n        return any(\n            isinstance(source, Mapping)\n            and isinstance(source.get("event_key"), str)\n            and source["event_key"].casefold() in current\n            for source in sources\n        )\n\n    for raw in related:\n        if not isinstance(raw, Mapping):\n            continue\n        memory_id = raw.get("memory_id")\n        if isinstance(memory_id, str) and ignored is not None and memory_id.casefold() == ignored:\n            # A previous failed transaction may already contain this exact\n            # deterministic CREATE; writer replay must finish idempotently.\n            continue\n        related_body = normalize_term(str(raw.get("body", "")))\n        if raw.get("native") is True:\n            related_text = normalize_term(\n                f"{raw.get('title', '')}\\n{raw.get('body', '')}"\n            )\n            for query in queries:\n                normalized = normalize_term(query)\n                if len(normalized) >= 8 and related_text and (\n                    normalized in related_text\n                    or (len(related_text) >= 8 and related_text in normalized)\n                ):\n                    return True\n            continue\n        if is_current_turn(raw):\n            continue\n        if raw.get("type") != candidate_type:\n            continue\n        if summary_body and related_body == summary_body:\n            return True\n    return False\n'''
           text = text[:start] + replacement + text[end:]
 
+          # Candidate text alone cannot prove NO_CHANGE before summarize;
+          # legitimate updates may retain the old topic/body while changing
+          # status, tags, scopes, or other canonical fields.
+          start = text.index('    @staticmethod\n    def _exact_active_duplicate(\n')
+          end = text.index('    def _target_relation(\n', start)
+          text = text[:start] + text[end:]
           replace_once(
               '''            candidate_scopes = list(candidate["scopes"])\n            if candidate.get("worth") and self._exact_active_duplicate(\n                candidate, related, scoped_records\n            ):\n                # Exact content already loaded for this Scope is a deterministic\n                # NO_CHANGE. No additional search/Scope scan is performed.\n                continue\n            # An automatic candidate with no reliable project attribution is\n''',
-              '''            candidate_scopes = list(candidate["scopes"])\n            has_target = any(\n                isinstance(candidate.get(field), str) and candidate.get(field)\n                for field in ("duplicate_memory_id", "update_memory_id")\n            )\n            if candidate.get("worth") and not has_target and self._exact_active_duplicate(\n                candidate,\n                related,\n                scoped_records,\n                current_event_keys=turn.event_keys,\n            ):\n                # Only a target-free exact duplicate from a previous turn is\n                # deterministic NO_CHANGE. Explicit targets still pass through\n                # validation, and current-turn partial writes remain replayable.\n                continue\n            # An automatic candidate with no reliable project attribution is\n''',
-          )
-          replace_once(
-              '''            has_target = any(\n                isinstance(candidate.get(field), str) and candidate.get(field)\n                for field in ("duplicate_memory_id", "update_memory_id")\n            )\n            if (\n                scope_directory is not None\n''',
-              '''            if (\n                scope_directory is not None\n''',
+              '''            candidate_scopes = list(candidate["scopes"])\n            # An automatic candidate with no reliable project attribution is\n''',
           )
 
+          # General inferred UPDATEs require the candidate to name the target
+          # title explicitly. Shared project words are insufficient.
           replace_once(
               '''            try:\n                target = Memory.from_mapping(item)\n            except (TypeError, ValueError):\n                continue\n            if not candidate_matches_query(target, candidate_text):\n                continue\n            seen_same_type.add(memory_id.casefold())\n''',
-              '''            try:\n                target = Memory.from_mapping(item)\n            except (TypeError, ValueError):\n                continue\n            # General target recovery is intentionally stricter than public\n            # candidate search. The candidate must explicitly name the target\n            # title; shared project words alone cannot turn an independent\n            # future-use object or a scope migration into an UPDATE.\n            target_title = normalize_term(target.title)\n            candidate_normalized = normalize_term(candidate_text)\n            if (\n                len(target_title) < 4\n                or target_title not in candidate_normalized\n                or not candidate_matches_query(target, candidate_text)\n            ):\n                continue\n            seen_same_type.add(memory_id.casefold())\n''',
+              '''            try:\n                target = Memory.from_mapping(item)\n            except (TypeError, ValueError):\n                continue\n            target_title = normalize_term(target.title)\n            candidate_normalized = normalize_term(candidate_text)\n            if (\n                len(target_title) < 4\n                or target_title not in candidate_normalized\n                or not candidate_matches_query(target, candidate_text)\n            ):\n                continue\n            seen_same_type.add(memory_id.casefold())\n''',
           )
 
+          # Never collapse an UPDATE solely because its body matches: status
+          # and metadata transitions still require the normal writer/history path.
           replace_once(
               '''                target = self.service.read(gate_update_target, include_history=False)\n                if (\n                    target is not None\n                    and normalize_term(str(summary.get("body", ""))) == normalize_term(target.body)\n                ):\n                    # The current evidence does not change the canonical body.\n                    # Automatic processing must not create a history version\n                    # merely to append a repeated observation/source.\n                    continue\n                summary = self._merge_additive_project_plan_update(candidate, summary, target)\n''',
-              '''                target = self.service.read(gate_update_target, include_history=False)\n                # Body equality alone is not NO_CHANGE: status, completion,\n                # tags, scopes or other canonical fields may still change.\n                # Exact repeated observations are filtered before summarize.\n                summary = self._merge_additive_project_plan_update(candidate, summary, target)\n''',
+              '''                target = self.service.read(gate_update_target, include_history=False)\n                summary = self._merge_additive_project_plan_update(candidate, summary, target)\n''',
+          )
+
+          # Apply duplicate CREATE guard only after the final summary has not
+          # selected an update target. Exact memleaf duplicates become a clean
+          # NO_CHANGE; ambiguous/nonexact objects are allowed to remain separate.
+          replace_once(
+              '''            if gate_update_target is None and _automatic_create_conflicts(\n                candidate,\n                summary,\n                candidate_related,\n                ignore_memory_id=pending_request["memory_id"],\n            ):\n                self._defer_candidate(\n                    turn_ref,\n                    candidate,\n                    "possible_duplicate_target",\n                    scopes=summary["scopes"],\n                    scope_source=summary.get("scope_source"),\n                )\n                continue\n''',
+              '''            summary_update_target = summary.get("update_memory_id")\n            final_is_create = not (\n                isinstance(summary_update_target, str) and summary_update_target\n            )\n            if final_is_create and _automatic_create_conflicts(\n                candidate,\n                summary,\n                candidate_related,\n                ignore_memory_id=pending_request["memory_id"],\n                current_event_keys=turn.event_keys,\n            ):\n                continue\n''',
           )
 
           path.write_text(text, encoding='utf-8')
