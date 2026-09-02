@@ -186,7 +186,7 @@ class CrossTurnDedupeRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(result["memories_written"], 0)
-        self.assertGreaterEqual(result["deferred_candidates"], 1)
+        self.assertEqual(result["deferred_candidates"], 0)
         self.assertEqual([memory.memory_id for memory in self.active()], [existing.memory_id])
         self.assertEqual([], self.service._read_memories_unlocked("history"))
 

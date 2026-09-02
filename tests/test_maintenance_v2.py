@@ -1058,9 +1058,11 @@ class MaintenanceV2Tests(unittest.TestCase):
         self.assertIn("Previous output violated: target_not_relevant.", backend.calls[1]["prompt"])
         self.assertEqual(self.processed()["sessions"]["hermes/isolation"]["processing"]["status"], "idle")
 
-        self.assertEqual(self.service.read("mem-alpha-owner").body, "alpha 项目负责人是甲。")
+        self.assertEqual(self.service.read("mem-alpha-owner").body, "alpha 项目负责人更新为乙。")
         self.assertEqual(self.service.read("mem-beta-owner").body, "beta 项目负责人是丙。")
-        self.assertEqual(self.service.vault.list_markdown("history"), [])
+        history = self.service._read_memories_unlocked("history")
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].memory.extra.get("active_memory_id"), "mem-alpha-owner")
 
     def test_same_batch_projects_keep_planned_overlay_in_their_scope(self):
         alpha = self.service.create_memory(

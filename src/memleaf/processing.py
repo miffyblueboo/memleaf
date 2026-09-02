@@ -230,6 +230,79 @@ def _automatic_transient_memory(value: Any) -> bool:
     return bool(_DERIVED_OVERDUE_RE.search(value) or _EXECUTION_RECEIPT_RE.search(value))
 
 
+_CANDIDATE_LOOKUP_SPLIT = re.compile(
+    r"[;；。！？!?\n]+|[,，]\s*(?=(?:后续|今后|以后|每次|所有后续|going forward|from now on))"
+    r"|(?:同时|另外|此外|其次|并且|并要求|还需|另需|in addition|separately)",
+    re.IGNORECASE,
+)
+
+
+def _candidate_lookup_queries(value: Any) -> list[str]:
+    """Return bounded candidate-level lookup variants for cross-turn dedupe."""
+
+    if not isinstance(value, str) or not value.strip():
+        return []
+    text = value.strip()
+    values = [text]
+    values.extend(part.strip() for part in _CANDIDATE_LOOKUP_SPLIT.split(text) if part.strip())
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        normalized = normalize_term(item)
+        if len(normalized) < 4 or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(item)
+        if len(result) >= 8:
+            break
+    return result
+
+
+def _automatic_create_conflicts(
+    candidate: Mapping[str, Any],
+    summary: Mapping[str, Any],
+    related: Iterable[Mapping[str, Any]],
+    *,
+    ignore_memory_id: str | None = None,
+) -> bool:
+    """Fail closed when an automatic CREATE still overlaps active context."""
+
+    candidate_text = str(candidate.get("memory", "")).strip()
+    queries = _candidate_lookup_queries(candidate_text)
+    summary_text = f"{summary.get('title', '')}\n{summary.get('body', '')}".strip()
+    candidate_type = candidate.get("type")
+    ignored = ignore_memory_id.casefold() if isinstance(ignore_memory_id, str) and ignore_memory_id else None
+    for raw in related:
+        if not isinstance(raw, Mapping):
+            continue
+        memory_id = raw.get("memory_id")
+        if isinstance(memory_id, str) and ignored is not None and memory_id.casefold() == ignored:
+            # A previous transaction attempt may have persisted this exact
+            # deterministic CREATE before failing during native shadow/ledger
+            # commit. Let the idempotent replay finish its remaining work.
+            continue
+        related_text = f"{raw.get('title', '')}\n{raw.get('body', '')}".strip()
+        related_normalized = normalize_term(related_text)
+        if not related_normalized:
+            continue
+        for query in queries:
+            normalized = normalize_term(query)
+            if len(normalized) >= 8 and (
+                normalized in related_normalized
+                or (len(related_normalized) >= 8 and related_normalized in normalized)
+            ):
+                return True
+        if raw.get("native") is True or raw.get("type") != candidate_type:
+            continue
+        try:
+            memory = Memory.from_mapping(raw)
+        except (TypeError, ValueError):
+            continue
+        if candidate_matches_query(memory, candidate_text) and candidate_matches_query(memory, summary_text):
+            return True
+    return False
+
+
 def _todo_state_recovery_candidate(
     events: Iterable[Mapping[str, Any]],
     related: Iterable[Mapping[str, Any]],
@@ -1450,7 +1523,7 @@ class Processor:
         self,
         turn: InboxTurn,
         state: Mapping[str, Any],
-        query: str,
+        query: str | Iterable[str],
         explicit_scope: Any = None,
         *,
         overlay: Iterable[Mapping[str, Any]] = (),
@@ -1464,7 +1537,15 @@ class Processor:
         list[dict[str, str]],
         Optional[tuple[list[Any], bool]],
     ]:
-        visible = query.strip() if isinstance(query, str) else ""
+        if isinstance(query, str):
+            query_value: str | list[str] = query.strip()
+        else:
+            query_value = [
+                str(item).strip()
+                for item in query
+                if isinstance(item, str) and item.strip()
+            ]
+        visible = query_value if isinstance(query_value, str) else " ".join(query_value)
         scope = _safe_scope_background(state, explicit_scope)
         local: list[dict[str, Any]] = []
         indexed_native: list[dict[str, Any]] = []
@@ -1495,7 +1576,7 @@ class Processor:
                 records = priority_records
             else:
                 records = self.service._search_unlocked(
-                    visible,
+                    query_value,
                     scope=scope if scope else None,
                     include_history=False,
                     todo_status="all",
@@ -1512,7 +1593,7 @@ class Processor:
                     records = [
                         record
                         for record in records
-                        if candidate_matches_query(record.memory, visible)
+                        if candidate_matches_query(record.memory, query_value)
                     ]
                 if visible and not records and not priority_records and self._has_specific_scope(scope):
                     scoped_records, ambiguous = self._scope_records_unlocked(scope)
@@ -1532,7 +1613,7 @@ class Processor:
             if visible:
                 if not priority_only:
                     indexed_native = NativeIndexer(self.service.vault).search_unlocked(
-                        visible,
+                        query_value,
                         target_agent=turn.source,
                         for_context=False,
                         limit=None,
@@ -1773,6 +1854,39 @@ class Processor:
                     return None
         return None
 
+    @staticmethod
+    def _exact_active_duplicate(
+        candidate: Mapping[str, Any],
+        related: Iterable[Mapping[str, Any]],
+        scoped_records: Optional[Iterable[Any]] = None,
+    ) -> bool:
+        """Return true only for an exact already-loaded active/native duplicate.
+
+        This helper performs no Vault search. It consumes the turn-level related
+        bodies and, when Scope fallback already loaded records, those records.
+        That preserves the single bounded Scope scan used by sparse inherited
+        turns while allowing exact duplicates to become deterministic NO_CHANGE.
+        """
+
+        memory = candidate.get("memory")
+        if not isinstance(memory, str) or not memory.strip():
+            return False
+        normalized = normalize_term(memory)
+        if not normalized:
+            return False
+        for item in related:
+            if not isinstance(item, Mapping):
+                continue
+            body = item.get("body")
+            if isinstance(body, str) and normalize_term(body) == normalized:
+                return True
+        for record in scoped_records or ():
+            target = getattr(record, "memory", None)
+            body = getattr(target, "body", None)
+            if isinstance(body, str) and normalize_term(body) == normalized:
+                return True
+        return False
+
     def _target_relation(
         self,
         candidate: Mapping[str, Any],
@@ -1996,14 +2110,11 @@ class Processor:
         candidate: Mapping[str, Any],
         related: Iterable[Mapping[str, Any]],
     ) -> dict[str, Any]:
-        """Reuse one unambiguously matching project plan/constraint memory.
+        """Reuse one unambiguous same-scope active memory before CREATE.
 
-        The gate remains authoritative when it names a target.  This narrow
-        fallback handles a common model omission: a project-plan candidate is
-        emitted as a new ``fact`` without ``update_memory_id`` even though the
-        same scoped plan is already active.  The active target's type is the
-        canonical type; it is copied before summary validation so the target
-        type invariant remains enforced.
+        General same-type matching prevents a wrong gate target from escaping
+        into a sibling CREATE. Project-plan candidates retain the specialized
+        project-over-fact preference used by earlier maintenance behavior.
         """
 
         result = dict(candidate)
@@ -2014,12 +2125,44 @@ class Processor:
             or not isinstance(result.get("memory"), str)
         ):
             return result
-        if result.get("type") not in {"fact", "project"}:
-            return result
-        if not self._is_project_plan_title(result["memory"]):
-            return result
         project_keys = self._project_scope_keys(result.get("scopes"))
         if len(project_keys) != 1:
+            return result
+
+        candidate_type = result.get("type")
+        candidate_text = result["memory"]
+        same_type_matches: list[Memory] = []
+        seen_same_type: set[str] = set()
+        for item in related:
+            if not isinstance(item, Mapping) or item.get("native") is True:
+                continue
+            memory_id = item.get("memory_id")
+            if (
+                not isinstance(memory_id, str)
+                or item.get("type") != candidate_type
+                or self._project_scope_keys(item.get("scopes")) != project_keys
+                or memory_id.casefold() in seen_same_type
+            ):
+                continue
+            try:
+                target = Memory.from_mapping(item)
+            except (TypeError, ValueError):
+                continue
+            if not candidate_matches_query(target, candidate_text):
+                continue
+            seen_same_type.add(memory_id.casefold())
+            same_type_matches.append(target)
+
+        specialized_plan = (
+            candidate_type in {"fact", "project"}
+            and self._is_project_plan_title(candidate_text)
+        )
+        if not specialized_plan:
+            if len(same_type_matches) > 1:
+                result["_defer_reason"] = "ambiguous_update_target"
+                return result
+            if len(same_type_matches) == 1:
+                result["update_memory_id"] = same_type_matches[0].memory_id
             return result
 
         project_matches: list[Memory] = []
@@ -2051,10 +2194,6 @@ class Processor:
             else:
                 fact_matches.append(target)
 
-        # Prefer a project target over a same-topic fact.  If there are
-        # multiple project targets, defer rather than creating a sibling by
-        # guessing; the same conservative rule applies when only multiple
-        # durable fact targets remain.
         if len(project_matches) > 1 or (not project_matches and len(fact_matches) > 1):
             result["_defer_reason"] = "ambiguous_update_target"
             return result
@@ -2065,8 +2204,6 @@ class Processor:
         else:
             return result
         result["update_memory_id"] = target.memory_id
-        # The update target's type is immutable.  Correct a model's fact-vs-
-        # project label only after the same-use target was identified.
         result["type"] = target.type
         return result
 
@@ -2548,6 +2685,12 @@ class Processor:
             if candidate.get("worth") and is_attachment_followup_only_text(candidate.get("memory")):
                 continue
             candidate_scopes = list(candidate["scopes"])
+            if candidate.get("worth") and self._exact_active_duplicate(
+                candidate, related, scoped_records
+            ):
+                # Exact content already loaded for this Scope is a deterministic
+                # NO_CHANGE. No additional search/Scope scan is performed.
+                continue
             # An automatic candidate with no reliable project attribution is
             # retained as a retryable inbox turn, never silently promoted to
             # global knowledge.  The processed ledger records only a compact
@@ -2614,7 +2757,7 @@ class Processor:
             candidate_related, candidate_scope_background, candidate_native_refs, _ = self._related_query(
                 turn,
                 state,
-                str(candidate.get("memory", "")).strip(),
+                _candidate_lookup_queries(candidate.get("memory")),
                 candidate_scopes,
                 overlay=self._planned_related,
                 priority_memory_ids=[
@@ -2885,6 +3028,14 @@ class Processor:
                     summary = dict(summary)
                     summary["update_memory_id"] = gate_update_target
                 target = self.service.read(gate_update_target, include_history=False)
+                if (
+                    target is not None
+                    and normalize_term(str(summary.get("body", ""))) == normalize_term(target.body)
+                ):
+                    # The current evidence does not change the canonical body.
+                    # Automatic processing must not create a history version
+                    # merely to append a repeated observation/source.
+                    continue
                 summary = self._merge_additive_project_plan_update(candidate, summary, target)
             if summary["scopes"] == ["unscoped"] or summary.get("scope_source") == "insufficient_context":
                 self._defer_candidate(
@@ -2895,15 +3046,28 @@ class Processor:
                     scope_source=summary.get("scope_source"),
                 )
                 continue
-            requests.append(
-                self._request(
-                    summary,
-                    turn,
-                    candidate_id=str(candidate["candidate_id"]),
-                    conversation_title=title,
-                    native_refs=candidate_native_refs,
-                )
+            pending_request = self._request(
+                summary,
+                turn,
+                candidate_id=str(candidate["candidate_id"]),
+                conversation_title=title,
+                native_refs=candidate_native_refs,
             )
+            if gate_update_target is None and _automatic_create_conflicts(
+                candidate,
+                summary,
+                candidate_related,
+                ignore_memory_id=pending_request["memory_id"],
+            ):
+                self._defer_candidate(
+                    turn_ref,
+                    candidate,
+                    "possible_duplicate_target",
+                    scopes=summary["scopes"],
+                    scope_source=summary.get("scope_source"),
+                )
+                continue
+            requests.append(pending_request)
             for observed_scope in summary["scopes"]:
                 if (
                     isinstance(observed_scope, str)

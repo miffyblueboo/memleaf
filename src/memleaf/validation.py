@@ -427,8 +427,17 @@ _PROJECT_RULE_MARKERS = (
     "长期约束",
     "统一规范",
     "固定规则",
+    "固定流程",
+    "收发流程",
     "以后",
+    "今后",
+    "后续",
+    "每次",
+    "所有后续",
+    "抄送",
     "project requirement",
+    "going forward",
+    "from now on",
     "project constraint",
     "delivery requirement",
     "technical approach",
@@ -445,6 +454,9 @@ _DATED_TODO_MARKERS = (
     "发给",
     "发送",
     "处理",
+    "修改",
+    "改完",
+    "截止",
     "确认",
     "整改",
     "修复",
@@ -540,7 +552,7 @@ def _split_future_use_clauses(value: str) -> list[str]:
     return [
         part.strip()
         for part in re.split(
-            r"[;；。！？!?\n]+|(?:同时|另外|此外|其次|并且|并要求|还需|另需|in addition|separately)",
+            r"[;；。！？!?\n]+|[,，]\s*(?=(?:后续|今后|以后|每次|所有后续|going forward|from now on))|(?:同时|另外|此外|其次|并且|并要求|还需|另需|in addition|separately)",
             value,
             flags=re.IGNORECASE,
         )
