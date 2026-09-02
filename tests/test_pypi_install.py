@@ -81,7 +81,7 @@ class PyPIInstallTests(unittest.TestCase):
 
             self.assertTrue(target.is_dir())
             self.assertFalse(target.is_symlink())
-            self.assertIn("version: 0.2.11", (target / "plugin.yaml").read_text(encoding="utf-8"))
+            self.assertIn("version: 0.2.12", (target / "plugin.yaml").read_text(encoding="utf-8"))
 
     def test_windows_hermes_paths_follow_official_native_layout(self) -> None:
         with tempfile.TemporaryDirectory(prefix="memleaf-win-paths-") as temporary:
@@ -212,16 +212,16 @@ class PyPIInstallTests(unittest.TestCase):
             "status": "configured",
             "reason": "ok",
             "vault": "/tmp/memleaf-vault",
-            "core_version": "0.2.11",
-            "provider_version": "0.2.11",
+            "core_version": "0.2.12",
+            "provider_version": "0.2.12",
             "model": {"status": "configured"},
         }
         with mock.patch("memleaf.installer.install_hermes", return_value=result), \
              mock.patch("sys.stdout") as stdout:
             self.assertEqual(cli.main(["install"]), 0)
         output = "\n".join(str(call.args[0]) for call in stdout.write.call_args_list)
-        self.assertIn("core=0.2.11", output)
-        self.assertIn("Hermes provider=0.2.11", output)
+        self.assertIn("core=0.2.12", output)
+        self.assertIn("Hermes provider=0.2.12", output)
 
     def test_readmes_document_one_line_core_and_provider_upgrade(self) -> None:
         command = "python -m pip install -U memleaf && python -m memleaf install"

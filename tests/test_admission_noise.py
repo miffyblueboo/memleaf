@@ -305,6 +305,59 @@ class AdmissionFlowTests(unittest.TestCase):
         self.assertEqual(len(memories), 1)
         self.assertIn("交付延期风险", memories[0].memory.body)
 
+    def test_combined_orion_digest_is_dropped_but_atomic_action_is_kept(self):
+        service = self.make_service("orion-digest")
+        backend = QueueBackend()
+        user_key, _ = self.capture_turn(
+            service,
+            session="orion-digest",
+            turn="turn-1",
+            user="查看 Orion 邮件汇总并告诉我需要关注的事项。",
+            assistant="Orion汇总：子任务完成4条；现场增补待受理2条；另派发提供旧版本生产取数脚本。",
+        )
+        aggregate = candidate(
+            "orion-aggregate",
+            [user_key],
+            memory="Orion汇总（2026-09-02）：子任务完成4条；现场增补待受理2条——另派发子任务提供旧版本生产取数脚本。",
+            type="fact",
+        )
+        aggregate["scopes"] = ["project:orion"]
+        atomic = candidate(
+            "orion-script-task",
+            [user_key],
+            memory="Orion需要提供旧版本生产取数脚本。",
+            type="todo",
+        )
+        atomic["scopes"] = ["project:orion"]
+        atomic_summary = json.loads(
+            summary(
+                user_key,
+                title="Orion提供旧版本生产取数脚本",
+                body="Orion需要提供旧版本生产取数脚本。",
+                type="todo",
+            )
+        )
+        atomic_summary.update(
+            {
+                "scopes": ["project:orion"],
+                "status": "active",
+            }
+        )
+        backend.responses.extend(
+            [gate([aggregate, atomic]), json.dumps(atomic_summary, ensure_ascii=False)]
+        )
+
+        result = service.process(source="hermes", session_id="orion-digest", model=backend)
+
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual(result["deferred_candidates"], 0)
+        memories = service._read_memories_unlocked("knowledge")
+        self.assertEqual(len(memories), 1)
+        self.assertEqual(memories[0].memory.title, "Orion提供旧版本生产取数脚本")
+        self.assertNotIn("汇总", memories[0].memory.title)
+        self.assertNotIn("完成4条", memories[0].memory.body)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
+
     def test_mixed_preference_is_kept_while_mcp_failure_is_not(self):
         service = self.make_service("mixed-preference")
         backend = QueueBackend()

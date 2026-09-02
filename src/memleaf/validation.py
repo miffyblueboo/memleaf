@@ -104,6 +104,10 @@ _ISO_CALENDAR_DATE = re.compile(
     r"(?<![A-Za-z\d./-])\d{4}-(?:0?[1-9]|1[0-2])-(?:0?[1-9]|[12]\d|3[01])"
     r"(?![A-Za-z\d./-])"
 )
+_EMPTY_ISO_DATE_PARENTHESIS = re.compile(
+    r"(?P<date>\d{4}-(?:0?[1-9]|1[0-2])-(?:0?[1-9]|[12]\d|3[01]))"
+    r"[ \t]*(?:\([ \t]*[)）]|（[ \t]*[)）])"
+)
 _DUPLICATE_ISO_DATE = re.compile(
     r"(?P<date>\d{4}-\d{2}-\d{2})"
     r"\s*[,，、:]?\s*(?:(?:就是|即|即为|即是|也就是|是|为)|[/／])\s*"
@@ -275,6 +279,14 @@ def _collapse_duplicate_calendar_dates(value: str) -> str:
     return value
 
 
+def _strip_empty_iso_date_parenthesis(value: str) -> str:
+    """Remove empty ASCII/Chinese parentheses attached to an ISO date."""
+
+    if not isinstance(value, str):
+        return value
+    return _EMPTY_ISO_DATE_PARENTHESIS.sub(r"\g<date>", value)
+
+
 def _normalize_relative_calendar_text(
     text: str,
     anchor: Any,
@@ -328,6 +340,7 @@ def _normalize_relative_calendar_text(
     normalized = _RELATIVE_CALENDAR_EXPRESSION.sub(replace_token, text)
     if relative_replaced:
         normalized = _collapse_duplicate_calendar_dates(normalized)
+    normalized = _strip_empty_iso_date_parenthesis(normalized)
     return normalized, safe
 
 
@@ -343,6 +356,43 @@ def normalize_relative_calendar_text(text: str, anchor: Any) -> str | None:
         return None
     normalized, safe = _normalize_relative_calendar_text(text, anchor)
     return normalized if safe else None
+
+
+_AGGREGATE_DIGEST_MARKERS = (
+    "日报",
+    "汇总",
+    "巡检",
+    "收件箱",
+    "邮箱巡检",
+    "daily report",
+    "digest",
+    "watchlist",
+    "mailbox sweep",
+    "inbox sweep",
+)
+_AGGREGATE_COUNT = re.compile(
+    r"(?:\d+\s*(?:条|项|个|件|封|tasks?|items?)|(?:完成|待受理|派发|新增|逾期)\s*\d+)"
+    r"|(?:completed|pending|assigned|new|overdue)\s*[:：]?\s*\d+",
+    re.IGNORECASE,
+)
+
+
+def is_aggregate_operational_text(value: Any) -> bool:
+    """Recognize a combined operational digest, not one concrete work item.
+
+    This deliberately requires multiple aggregate signals.  A single overdue
+    task reported by a daily scan remains eligible for the model's normal
+    future-use decision; a multi-count sweep must be split before persistence.
+    """
+
+    if not isinstance(value, str):
+        return False
+    folded = value.casefold()
+    if not any(marker in folded for marker in _AGGREGATE_DIGEST_MARKERS):
+        return False
+    count_signals = len(_AGGREGATE_COUNT.findall(value))
+    separator_count = len(re.findall(r"[;；]|[—-].*[;；]", value))
+    return count_signals >= 2 or (count_signals >= 1 and separator_count >= 1)
 
 
 def _reject_constant(value: str) -> None:
@@ -1022,6 +1072,9 @@ def validate_summarize_output(
     }
     _require_keys(value, {"title", "body", "tags", "type", "scopes", "sources"}, allowed)
     item = dict(value)
+    for field in ("title", "body"):
+        if isinstance(item.get(field), str):
+            item[field] = _strip_empty_iso_date_parenthesis(item[field])
     _string(item["title"], "title")
     _string(item["body"], "body", multiline=True)
     _reject_relative_calendar_expression(item)
@@ -1281,6 +1334,7 @@ __all__ = [
     "parse_gate_output",
     "parse_compact_output",
     "parse_strict_json",
+    "is_aggregate_operational_text",
     "normalize_relative_calendar_text",
     "parse_summarize_output",
     "parse_summary_output",

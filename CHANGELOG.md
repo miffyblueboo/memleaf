@@ -2,6 +2,20 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.12 — 2026-09-02
+
+- Remove empty ASCII or Chinese parentheses left after an absolute date is
+  normalized, so permanent memory never stores values such as
+  `2026-09-03（）`.
+- Reconcile a same-scoped implementation-plan candidate with its unique active
+  project-plan memory even when the model labels the candidate as a fact or
+  omits `update_memory_id`; preserve the target's immutable type and history.
+- Exclude sent-mail, attachment, archive, and meeting records from automatic
+  plan-target inference, and defer instead of guessing when multiple project
+  plan targets remain.
+- Reject combined mailbox or daily-report count/status digests as permanent
+  memory while keeping separately emitted atomic actions eligible.
+
 ## 0.2.11 — 2026-09-02
 
 - Document one complete macOS/Linux upgrade command that upgrades the core

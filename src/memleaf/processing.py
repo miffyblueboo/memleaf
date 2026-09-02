@@ -64,6 +64,7 @@ from .validation import (
     parse_strict_json,
     parse_summarize_output,
     normalize_relative_calendar_text,
+    is_aggregate_operational_text,
 )
 from .vault import safe_component
 
@@ -1682,6 +1683,114 @@ class Processor:
         # parser has already limited the target to an active related memory.
         return candidate_scope_source in {"user", "session_context"}
 
+    @staticmethod
+    def _project_scope_keys(scopes: Any) -> set[str]:
+        if not isinstance(scopes, list):
+            return set()
+        return {
+            scope.casefold()
+            for scope in scopes
+            if isinstance(scope, str) and scope.startswith("project:")
+        }
+
+    @staticmethod
+    def _is_project_plan_title(value: Any) -> bool:
+        text = normalize_term(value) if isinstance(value, str) else ""
+        return any(
+            marker in text
+            for marker in ("实施计划", "项目计划", "implementation plan", "project plan")
+        )
+
+    @staticmethod
+    def _is_adjacent_plan_record(value: Any) -> bool:
+        text = normalize_term(value) if isinstance(value, str) else ""
+        return any(
+            marker in text
+            for marker in (
+                "已发送", "发送", "邮件", "附件", "存档", "会议", "启动会", "纪要",
+                "sent", "email", "mail", "attachment", "archive", "meeting", "minutes",
+            )
+        )
+
+    def _infer_update_target(
+        self,
+        candidate: Mapping[str, Any],
+        related: Iterable[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Reuse one unambiguously matching project plan/constraint memory.
+
+        The gate remains authoritative when it names a target.  This narrow
+        fallback handles a common model omission: a project-plan candidate is
+        emitted as a new ``fact`` without ``update_memory_id`` even though the
+        same scoped plan is already active.  The active target's type is the
+        canonical type; it is copied before summary validation so the target
+        type invariant remains enforced.
+        """
+
+        result = dict(candidate)
+        if (
+            not result.get("worth")
+            or result.get("duplicate")
+            or any(result.get(field) for field in ("duplicate_memory_id", "update_memory_id"))
+            or not isinstance(result.get("memory"), str)
+        ):
+            return result
+        if result.get("type") not in {"fact", "project"}:
+            return result
+        if not self._is_project_plan_title(result["memory"]):
+            return result
+        project_keys = self._project_scope_keys(result.get("scopes"))
+        if len(project_keys) != 1:
+            return result
+
+        project_matches: list[Memory] = []
+        fact_matches: list[Memory] = []
+        seen: set[str] = set()
+        for item in related:
+            if not isinstance(item, Mapping) or item.get("native") is True:
+                continue
+            memory_id = item.get("memory_id")
+            item_type = item.get("type")
+            item_scopes = item.get("scopes")
+            if (
+                not isinstance(memory_id, str)
+                or not isinstance(item_type, str)
+                or item_type not in {"fact", "project"}
+                or self._project_scope_keys(item_scopes) != project_keys
+                or memory_id.casefold() in seen
+                or not self._is_project_plan_title(item.get("title"))
+                or self._is_adjacent_plan_record(item.get("title"))
+            ):
+                continue
+            try:
+                target = Memory.from_mapping(item)
+            except (TypeError, ValueError):
+                continue
+            seen.add(memory_id.casefold())
+            if target.type == "project":
+                project_matches.append(target)
+            else:
+                fact_matches.append(target)
+
+        # Prefer a project target over a same-topic fact.  If there are
+        # multiple project targets, defer rather than creating a sibling by
+        # guessing; the same conservative rule applies when only multiple
+        # durable fact targets remain.
+        if len(project_matches) > 1 or (not project_matches and len(fact_matches) > 1):
+            result["_defer_reason"] = "ambiguous_update_target"
+            return result
+        if project_matches:
+            target = project_matches[0]
+        elif len(fact_matches) == 1:
+            target = fact_matches[0]
+        else:
+            return result
+        result["update_memory_id"] = target.memory_id
+        # The update target's type is immutable.  Correct a model's fact-vs-
+        # project label only after the same-use target was identified.
+        result["type"] = target.type
+        return result
+
     def _defer_candidate(
         self,
         turn_ref: tuple[str, str, str],
@@ -2026,6 +2135,11 @@ class Processor:
         requests: list[dict[str, Any]] = []
         observed_scopes: list[str] = []
         for candidate in gate["candidates"]:
+            # A combined mailbox/daily digest is not an atomic memory.  If a
+            # concrete action was worth retaining, the gate must emit it as
+            # its own candidate; the aggregate shell itself is NO_CHANGE.
+            if candidate.get("worth") and is_aggregate_operational_text(candidate.get("memory")):
+                continue
             candidate_scopes = list(candidate["scopes"])
             # An automatic candidate with no reliable project attribution is
             # retained as a retryable inbox turn, never silently promoted to
@@ -2075,6 +2189,11 @@ class Processor:
                 priority_only=scope_directory is not None,
                 scope_records=scoped_records if scope_directory is not None else None,
             )
+            candidate = self._infer_update_target(candidate, candidate_related)
+            defer_reason = candidate.pop("_defer_reason", None)
+            if defer_reason:
+                self._defer_candidate(turn_ref, candidate, defer_reason)
+                continue
             candidate_native_ids = [item["native_id"] for item in candidate_native_refs]
             candidate_memory_ids = [
                 item["memory_id"]

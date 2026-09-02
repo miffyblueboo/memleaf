@@ -1255,6 +1255,193 @@ class StageB2ATest(unittest.TestCase):
         self.assertEqual(service.read(old.memory_id).body, "金元顺安实施计划新增部署要求。")
         self.assertEqual(len(service.vault.list_markdown("history")), 1)
 
+    def test_same_project_plan_fact_candidate_is_reconciled_to_immutable_project_target(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="inferred-plan-update")
+        old = service.create_memory(
+            memory_id="mem-zhongyin-plan",
+            title="中银国际员工投资行为申报系统信创改造实施计划",
+            body="中银国际实施计划当前按原始安排执行。",
+            type="project",
+            scopes=["project:中银国际"],
+        )
+        user_key, assistant_key = self.capture_turn(
+            service,
+            turn="inferred-plan-update",
+            user_event="inferred-plan-update-user",
+            assistant_event="inferred-plan-update-assistant",
+            user="中银国际客户提出实施计划调整建议。",
+            assistant="已记录中银国际实施计划调整建议，待更新计划。",
+        )
+        candidate = self.candidate(
+            "zhongyin-plan-feedback",
+            [user_key, assistant_key],
+            memory="中银国际客户提出实施计划调整建议：提前部署测试环境并重新压实计划。",
+            type="fact",
+        )
+        candidate["scopes"] = ["project:中银国际"]
+        backend.responses.extend(
+            [
+                self.gate([candidate]),
+                self.summary(
+                    user_key,
+                    title=old.title,
+                    body="中银国际实施计划当前按原始安排执行；客户提出提前部署测试环境并重新压实计划。",
+                    type="project",
+                    scopes=["project:中银国际"],
+                ),
+            ]
+        )
+
+        result = service.process(source="codex", session_id="s", model=backend)
+
+        self.assertEqual(result["memory_ids"], [old.memory_id])
+        self.assertEqual(len(self.knowledge(service)), 1)
+        self.assertEqual(service.read(old.memory_id).type, "project")
+        self.assertIn("原始安排", service.read(old.memory_id).body)
+        self.assertIn("提前部署测试环境", service.read(old.memory_id).body)
+        self.assertEqual(len(service.vault.list_markdown("history")), 1)
+        self.assertNotIn("update_target_type_mismatch", " ".join(call["prompt"] for call in backend.calls))
+
+    def test_project_plan_target_wins_over_sent_mail_for_zhongyin_and_jinyuan(self):
+        cases = (
+            (
+                "zhongyin",
+                "中银国际",
+                "中银国际员工申报系统信创改造实施计划",
+                "陈国金",
+            ),
+            (
+                "jinyuan",
+                "金元顺安",
+                "金元顺安员工投资行为申报系统信创改造实施计划",
+                "方明",
+            ),
+        )
+        for slug, project, plan_title, recipient in cases:
+            with self.subTest(project=project):
+                backend = QueueBackend()
+                service = self.service(backend, name=f"multi-target-{slug}")
+                plan = service.create_memory(
+                    memory_id=f"mem-{slug}-plan",
+                    title=plan_title,
+                    body=f"{project}实施计划当前按原始安排执行。",
+                    type="project",
+                    scopes=[f"project:{project}"],
+                )
+                adjacent = []
+                for suffix, title, body in (
+                    (
+                        "sent-mail",
+                        f"已发送{plan_title}邮件给{recipient}",
+                        f"已向{recipient}发送{project}实施计划邮件。",
+                    ),
+                    (
+                        "attachment",
+                        f"{project}实施计划附件清单",
+                        f"{project}实施计划附件已归档。",
+                    ),
+                    (
+                        "meeting",
+                        f"{project}实施计划会议纪要",
+                        f"{project}实施计划会议已完成。",
+                    ),
+                ):
+                    adjacent.append(
+                        service.create_memory(
+                            memory_id=f"mem-{slug}-{suffix}",
+                            title=title,
+                            body=body,
+                            type="fact",
+                            scopes=[f"project:{project}"],
+                        )
+                    )
+                user_key, assistant_key = self.capture_turn(
+                    service,
+                    turn=f"multi-target-{slug}",
+                    user_event=f"multi-target-{slug}-user",
+                    assistant_event=f"multi-target-{slug}-assistant",
+                    user=f"{project}客户提出实施计划调整建议。",
+                    assistant=f"已记录{project}实施计划的新约束，待更新计划。",
+                )
+                candidate = self.candidate(
+                    f"{slug}-plan-feedback",
+                    [user_key, assistant_key],
+                    memory=f"{project}客户提出实施计划调整建议：提前部署测试环境并重新压实计划。",
+                    type="fact",
+                )
+                candidate["scopes"] = [f"project:{project}"]
+                backend.responses.extend(
+                    [
+                        self.gate([candidate]),
+                        self.summary(
+                            user_key,
+                            title=plan_title,
+                            body=(
+                                f"{project}实施计划当前按原始安排执行；"
+                                "客户提出提前部署测试环境并重新压实计划。"
+                            ),
+                            type="project",
+                            scopes=[f"project:{project}"],
+                        ),
+                    ]
+                )
+
+                result = service.process(source="codex", session_id="s", model=backend)
+
+                self.assertEqual(result["memory_ids"], [plan.memory_id])
+                self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
+                self.assertEqual(len(self.knowledge(service)), 4)
+                self.assertIn("提前部署测试环境", service.read(plan.memory_id).body)
+                for record in adjacent:
+                    self.assertEqual(service.read(record.memory_id).body, record.body)
+                self.assertEqual(len(service.vault.list_markdown("history")), 1)
+
+    def test_multiple_same_project_plan_targets_are_deferred_without_sibling(self):
+        backend = QueueBackend()
+        service = self.service(backend, name="ambiguous-project-plan-target")
+        for memory_id, title in (
+            ("mem-jinyuan-plan-test", "金元顺安实施计划：测试环境"),
+            ("mem-jinyuan-plan-release", "金元顺安实施计划：上线安排"),
+        ):
+            service.create_memory(
+                memory_id=memory_id,
+                title=title,
+                body=f"{title}按原始安排执行。",
+                type="project",
+                scopes=["project:金元顺安"],
+            )
+        user_key, assistant_key = self.capture_turn(
+            service,
+            turn="ambiguous-project-plan-target",
+            user_event="ambiguous-project-plan-target-user",
+            assistant_event="ambiguous-project-plan-target-assistant",
+            user="金元顺安客户提出实施计划调整建议。",
+            assistant="已记录金元顺安实施计划的新约束，待确认对应计划。",
+        )
+        candidate = self.candidate(
+            "ambiguous-jinyuan-plan-feedback",
+            [user_key, assistant_key],
+            memory="金元顺安实施计划",
+            type="fact",
+        )
+        candidate["scopes"] = ["project:金元顺安"]
+        backend.responses.append(self.gate([candidate]))
+
+        result = service.process(source="codex", session_id="s", model=backend)
+
+        self.assertEqual(result["memory_ids"], [])
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["deferred_candidates"], 1)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate"])
+        self.assertEqual(
+            self.processed(service)["sessions"]["codex/s"]["processed_turns"][0]["deferred_candidates"][0]["reason"],
+            "ambiguous_update_target",
+        )
+        self.assertEqual(len(self.knowledge(service)), 2)
+        self.assertEqual(len(service.vault.list_markdown("history")), 0)
+        self.assertTrue((service.vault.inbox_path / "codex" / "s.md").is_file())
+
     def test_same_project_wrong_update_target_final_retry_becomes_create(self):
         backend = QueueBackend()
         service = self.service(backend, name="same-project-wrong-target-final-retry")

@@ -23,7 +23,12 @@ from memleaf.prompts import (
     gate_prompt,
     summarize_prompt,
 )
-from memleaf.validation import ModelOutputError, NO_CHANGE_DECISION, normalize_relative_calendar_text
+from memleaf.validation import (
+    ModelOutputError,
+    NO_CHANGE_DECISION,
+    is_aggregate_operational_text,
+    normalize_relative_calendar_text,
+)
 from memleaf.index import event_key, turn_key
 from memleaf.llm import (
     CallableBackend,
@@ -397,6 +402,48 @@ class StageB1Test(unittest.TestCase):
         self.assertIsNone(normalize_relative_calendar_text("本周末安排", anchor))
         self.assertIsNone(normalize_relative_calendar_text("明天完成", None))
         self.assertIsNone(normalize_relative_calendar_text("明天完成", "invalid"))
+
+    def test_date_parentheses_are_removed_only_when_empty(self):
+        anchor = "2026-09-02T02:01:41Z"
+        self.assertEqual(
+            normalize_relative_calendar_text("2026-09-03（）", anchor),
+            "2026-09-03",
+        )
+        self.assertEqual(
+            normalize_relative_calendar_text("2026-09-03()", anchor),
+            "2026-09-03",
+        )
+        summary = {
+            "title": "反馈截止 2026-09-03（）",
+            "body": "English spelling: 2026-09-03()",
+            "tags": [],
+            "type": "todo",
+            "scopes": ["global"],
+            "sources": [{"event_key": "event-a"}],
+            "status": "active",
+        }
+        parsed = parse_summarize_output(json.dumps(summary), current_event_keys=["event-a"])
+        self.assertEqual(parsed["title"], "反馈截止 2026-09-03")
+        self.assertEqual(parsed["body"], "English spelling: 2026-09-03")
+        self.assertEqual(
+            parse_summarize_output(
+                json.dumps(dict(summary, body="2026-09-03（周四）")),
+                current_event_keys=["event-a"],
+            )["body"],
+            "2026-09-03（周四）",
+        )
+
+    def test_aggregate_operational_detector_requires_a_combined_digest(self):
+        self.assertTrue(
+            is_aggregate_operational_text(
+                "Orion汇总（2026-09-02）：子任务完成4条；现场增补待受理2条——另派发1条。"
+            )
+        )
+        self.assertFalse(
+            is_aggregate_operational_text(
+                "Orion项目巡检：浦银安盛任务提供测试数据逾期5天。"
+            )
+        )
 
     def test_process_retries_schema_violation_until_third_gate_attempt_and_commits(self):
         responses = [

@@ -24,7 +24,7 @@ class StageC3PackagingTests(unittest.TestCase):
 
     def test_project_metadata_and_version_export(self) -> None:
         self.assertEqual(self.project["name"], "memleaf")
-        self.assertEqual(self.project["version"], "0.2.11")
+        self.assertEqual(self.project["version"], "0.2.12")
         self.assertEqual(self.project["requires-python"], ">=3.11")
         self.assertEqual(self.project["dependencies"], [])
         self.assertEqual(self.project["license"], "MIT")

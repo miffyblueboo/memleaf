@@ -141,6 +141,16 @@ the current turn adds no confirmed change, use worth=false and do not create a
 sibling. If a customer or user proposes a new change without confirmation of
 implementation, preserve it as requested/proposed/pending and never state that
 it is already implemented.
+When a candidate names a project plan or project constraint already represented
+by one same-scoped active memory, prefer that exact active memory as
+update_memory_id, even when the candidate's initial type label is fact; the
+active target type is immutable and must be copied. Never create a sibling for
+the same future question/action. Prefer the durable project-plan target over
+same-topic sent-mail, attachment/archive, or meeting records; if multiple
+same-use project targets remain, do not guess an update target. A candidate
+that still combines a mailbox or daily digest shell with counts/statuses is not
+atomic: set worth=false for the aggregate, and emit any independent concrete
+action as a separate candidate.
 Return no prose, markdown fences, comments, or trailing text."""
 
 
@@ -243,6 +253,13 @@ surrounding diagnosis into a memory. If a user-confirmed future-use
 preference, identity, constraint, project risk, or durable lesson appears in
 the same evidence, summarize only that future-use topic. In explicit remember mode,
 summarize only the requested object and do not append tool/test diagnostics.
+If the gate candidate points to a same-scoped existing plan or constraint,
+update that exact target and retain its still-valid content; do not create a
+new sibling merely because the gate called it a fact. Prefer a durable project
+plan target over same-topic sent-mail, attachment/archive, or meeting records;
+the target type remains immutable. Never summarize a combined mailbox/daily
+digest shell with counts or statuses; return NO_CHANGE for that aggregate,
+while a separate atomic future-use action may still be summarized.
 Return no prose, markdown fences, comments, or trailing text."""
 
 
