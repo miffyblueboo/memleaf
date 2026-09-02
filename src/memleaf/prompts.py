@@ -108,6 +108,13 @@ be independently retrieved and updated. Prefer one coherent current-state memory
 over adjacent overlapping snapshots; do not use a score or fixed category rule.
 Most ordinary turns should produce zero or one candidate; multiple require
 genuinely independent future questions or actions.
+Never combine a durable project rule or implementation-plan change with an
+independent dated todo in one candidate. For example, a project plan/rule and
+"reply or investigate by YYYY-MM-DD" are two future uses: emit separate
+candidates, preserving each candidate's own evidence and project scope. A
+date that is an intrinsic milestone of the same implementation plan may remain
+inside that one project candidate. A candidate that combines these independent
+uses is invalid and must be split before summarization.
 Never persist an aggregate mailbox sweep, daily report, or "items to watch"
 digest as one cross-project memory. Inspect each item and split genuinely
 independent project risks or actionable todo items; if an item has no
@@ -155,6 +162,16 @@ same-use project targets remain, do not guess an update target. A candidate
 that still combines a mailbox or daily digest shell with counts/statuses is not
 atomic: set worth=false for the aggregate, and emit any independent concrete
 action as a separate candidate.
+If the same confirmed change applies to multiple same-project active memories,
+emit one candidate per independently changed memory and set each exact
+update_memory_id; never select one target and silently omit the others. Do not
+target adjacent sent-mail, attachment, meeting, or archive records unless the
+current evidence changes their own future-use topic.
+An explicit implementation plan, project implementation plan, or plan
+adjustment is type project. Do not label it fact merely because it came from
+an email or because no existing project memory was retrieved. Keep an actual
+todo as todo only when its future use is the action itself, not the durable
+plan it mentions.
 Return no prose, markdown fences, comments, or trailing text."""
 
 
@@ -265,6 +282,16 @@ plan target over same-topic sent-mail, attachment/archive, or meeting records;
 the target type remains immutable. Never summarize a combined mailbox/daily
 digest shell with counts or statuses; return NO_CHANGE for that aggregate,
 while a separate atomic future-use action may still be summarized.
+If the current confirmed change applies to multiple same-project active
+memories, the gate will provide separate candidates and exact update targets;
+preserve each candidate's target and do not collapse them into one summary.
+Never combine a durable project rule or implementation-plan change with an
+independent dated todo in one summary. A plan/rule and a dated reply,
+investigation, submission, or follow-up are separate future uses; such output
+is invalid and must be retried as separate gate candidates. A date that is an
+intrinsic milestone of the same project plan may remain in its project summary.
+An explicit implementation plan or plan adjustment must use type project;
+preserve an existing update target's type when it is the same project plan.
 Return no prose, markdown fences, comments, or trailing text."""
 
 
@@ -322,6 +349,18 @@ MIXED_PROJECT_SCOPES_CORRECTION = (
     "details. global plus one project and valid domain/portfolio parent scopes "
     "are allowed; do not remove those parent scopes merely to pass validation. "
     "Return only the strict JSON object."
+)
+
+
+MIXED_FUTURE_USE_CORRECTION = (
+    "Previous output violated: mixed_future_use. Keep every candidate and "
+    "summary atomic. Split a durable project rule or implementation-plan "
+    "change from an independent dated todo such as a reply, investigation, "
+    "submission, or follow-up; preserve each part's own evidence and project "
+    "scope. A date intrinsic to the same implementation plan may remain in "
+    "that project candidate. Return separate gate candidates or return "
+    "NO_CHANGE for a part with no independent future use. Return only the "
+    "strict JSON object."
 )
 
 

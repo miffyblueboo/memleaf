@@ -94,6 +94,7 @@ _MODEL_VALIDATION_DETAILS = frozenset(
         "source_shape",
         "todo_fields",
         "relative_time",
+        "mixed_future_use",
         "other_schema_violation",
     }
 )

@@ -126,7 +126,7 @@ class StageB2BTest(unittest.TestCase):
             user=f"user {turn}",
             assistant=f"assistant {turn}",
         )
-        candidate = self.candidate("candidate-" + turn, [user_key])
+        candidate = self.candidate("candidate-" + turn, [user_key], type=type)
         summary_extra = dict(extra or {})
         backend.responses.extend(
             [

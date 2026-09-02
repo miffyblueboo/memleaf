@@ -284,7 +284,7 @@ class HermesProviderTests(unittest.TestCase):
 
     def test_provider_warns_with_one_line_update_when_core_versions_differ(self) -> None:
         client = FakeClient(responses=[{"stats": True}])
-        client.server_version = "0.2.13"
+        client.server_version = "0.2.14"
         provider = provider_module.MemleafMemoryProvider()
         with patch.object(provider_module, "_resolve_command", return_value="memleaf-mcp"), \
              patch.object(provider_module, "_MCPClient", return_value=client), \
@@ -303,11 +303,11 @@ class HermesProviderTests(unittest.TestCase):
 
     def test_provider_does_not_warn_when_core_versions_match(self) -> None:
         client = FakeClient(responses=[{"stats": True}])
-        client.server_version = "0.2.13"
+        client.server_version = "0.2.14"
         provider = provider_module.MemleafMemoryProvider()
         with patch.object(provider_module, "_resolve_command", return_value="memleaf-mcp"), \
              patch.object(provider_module, "_MCPClient", return_value=client), \
-             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.13"), \
+             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.14"), \
              patch.object(provider_module.logger, "warning") as warning:
             provider.initialize(
                 "version-match-session",
@@ -324,7 +324,7 @@ class HermesProviderTests(unittest.TestCase):
         provider = provider_module.MemleafMemoryProvider()
         with patch.object(provider_module, "_resolve_command", return_value="memleaf-mcp"), \
              patch.object(provider_module, "_MCPClient", return_value=client), \
-             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.13"), \
+             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.14"), \
              patch.object(provider_module.logger, "warning") as warning:
             provider.initialize(
                 "version-missing-session",
@@ -1878,6 +1878,44 @@ class HermesProviderTests(unittest.TestCase):
             provider.sync_turn("visible user", "visible assistant", session_id="relative-time-session")
         output = "\n".join(call.args[0] % call.args[1:] for call in info.call_args_list)
         self.assertIn("validation_detail=relative_time", output)
+        self.assertIn("attempt_count=3", output)
+
+    def test_mixed_future_use_validation_detail_is_preserved_and_logged(self) -> None:
+        value = {
+            "isError": True,
+            "structuredContent": {
+                "error": {
+                    "code": "model_invalid_response",
+                    "stage": "gate",
+                    "validation_reason": "schema_violation",
+                    "validation_detail": "mixed_future_use",
+                    "attempt_count": 3,
+                }
+            },
+        }
+        fields = provider_module._mcp_error_fields(value)
+        self.assertIsNotNone(fields)
+        self.assertEqual(fields[4], "mixed_future_use")
+        error = provider_module._MCPToolError(
+            code="model_invalid_response",
+            stage="gate",
+            validation_reason="schema_violation",
+            validation_detail="mixed_future_use",
+            attempt_count=3,
+        )
+        self.assertEqual(error.validation_detail, "mixed_future_use")
+
+        provider = self.provider(
+            responses=[
+                {"stored": True},
+                {"stored": True},
+                value,
+            ]
+        )
+        with patch.object(provider_module.logger, "info") as info:
+            provider.sync_turn("visible user", "visible assistant", session_id="mixed-future-use-session")
+        output = "\n".join(call.args[0] % call.args[1:] for call in info.call_args_list)
+        self.assertIn("validation_detail=mixed_future_use", output)
         self.assertIn("attempt_count=3", output)
 
     def test_capture_failure_skips_process_and_does_not_escape_provider(self) -> None:

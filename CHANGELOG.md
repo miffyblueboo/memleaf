@@ -2,6 +2,17 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.14 — 2026-09-02
+
+- Reject a permanent-memory candidate that combines a durable project rule or
+  implementation-plan change with an independent dated todo, while preserving
+  multiple dated milestones that belong to one project plan.
+- Normalize explicit implementation plans and plan adjustments to `project`
+  without promoting adjacent mail, attachment, meeting, or archive records.
+- Keep the gate-selected type immutable through summarization for both CREATE
+  and UPDATE, preserve multiple legal update candidates, and expose the new
+  `mixed_future_use` diagnostic through the Hermes provider.
+
 ## 0.2.13 — 2026-09-02
 
 - Preserve the full active project-plan body, stable title, and retrieval

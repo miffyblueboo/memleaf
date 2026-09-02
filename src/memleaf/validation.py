@@ -75,6 +75,7 @@ MODEL_VALIDATION_DETAILS = frozenset(
         "source_shape",
         "todo_fields",
         "relative_time",
+        "mixed_future_use",
         "other_schema_violation",
     )
 )
@@ -375,6 +376,229 @@ _AGGREGATE_COUNT = re.compile(
     r"|(?:completed|pending|assigned|new|overdue)\s*[:：]?\s*\d+",
     re.IGNORECASE,
 )
+
+
+# These are intentionally narrow, high-signal markers.  The gate is still
+# responsible for deciding whether a candidate is worth retaining; these
+# helpers only protect the write boundary from a known class of semantic
+# contracts that cannot safely be represented by one memory.
+_PROJECT_PLAN_MARKERS = (
+    "实施计划",
+    "项目计划",
+    "实施方案",
+    "项目方案",
+    "计划调整",
+    "调整计划",
+    "调整实施计划",
+    "重新压实计划",
+    "重新压实实施计划",
+    "重新制定计划",
+    "部署计划",
+    "上线计划",
+    "implementation plan",
+    "project plan",
+    "implementation schedule",
+    "plan adjustment",
+    "adjust the plan",
+    "revise the plan",
+    "rebaseline the plan",
+)
+_ADJACENT_PLAN_RECORD_MARKERS = (
+    "邮件",
+    "附件",
+    "会议纪要",
+    "会议记录",
+    "启动会",
+    "存档",
+    "归档",
+    "email",
+    "mail",
+    "attachment",
+    "meeting minutes",
+    "meeting record",
+    "archive",
+)
+_PROJECT_RULE_MARKERS = (
+    "项目要求",
+    "项目约束",
+    "交付要求",
+    "技术路线",
+    "长期要求",
+    "长期约束",
+    "统一规范",
+    "固定规则",
+    "以后",
+    "project requirement",
+    "project constraint",
+    "delivery requirement",
+    "technical approach",
+)
+_DATED_TODO_MARKERS = (
+    "待办",
+    "排查",
+    "答复",
+    "回复",
+    "提交",
+    "跟进",
+    "提醒",
+    "联系",
+    "发给",
+    "发送",
+    "处理",
+    "确认",
+    "整改",
+    "修复",
+    "回访",
+    "催办",
+    "反馈",
+    "完成",
+    "补充材料",
+    "提供",
+    "todo",
+    "deadline",
+    "due",
+    "follow up",
+    "follow-up",
+)
+_INDEPENDENT_TODO_MARKERS = tuple(
+    marker for marker in _DATED_TODO_MARKERS if marker != "完成"
+)
+_PLAN_MILESTONE_MARKERS = (
+    "计划",
+    "上线日期",
+    "交付日期",
+    "完成日期",
+    "工期",
+    "工作日",
+    "里程碑",
+    "上线",
+    "验收",
+    "交付",
+    "迁移",
+    "milestone",
+)
+_PLAN_STAGE_TEXT = re.compile(
+    r"(?:第[一二三四五六七八九十百\d]+阶段|阶段[一二三四五六七八九十百\d]+|"
+    r"phase\s*(?:one|two|three|four|five|\d+))",
+    re.IGNORECASE,
+)
+_CALENDAR_TEXT = re.compile(
+    rf"(?:{_RELATIVE_DATE_TOKEN}|"
+    r"(?<![A-Za-z\d./-])(?:\d{4}[/\-](?:0?[1-9]|1[0-2])[/\-](?:0?[1-9]|[12]\d|3[01])|"
+    r"(?:\d{4}\s*年\s*)?(?:0?[1-9]|1[0-2])\s*月\s*(?:0?[1-9]|[12]\d|3[01])\s*日?)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_project_plan_text(value: Any) -> bool:
+    """Return whether text explicitly describes a project plan or adjustment."""
+
+    if not isinstance(value, str):
+        return False
+    folded = value.casefold()
+    # Only a record whose own label/phrase is a plan mail, attachment, meeting
+    # record, or archive is adjacent.  A durable plan may still mention that
+    # an attachment must be migrated, an email sent, or a meeting held.
+    compact = re.sub(r"[\s:：，,；;。.!！?？()（）\[\]【】_-]+", "", folded)
+    plan_markers = tuple(
+        re.sub(r"\s+", "", marker.casefold()) for marker in _PROJECT_PLAN_MARKERS
+    )
+    adjacent_markers = tuple(
+        re.sub(r"\s+", "", marker.casefold())
+        for marker in _ADJACENT_PLAN_RECORD_MARKERS
+    )
+    direct_adjacent = any(
+        f"{plan}{adjacent}" in compact or f"{adjacent}{plan}" in compact
+        for plan in plan_markers
+        for adjacent in adjacent_markers
+    )
+    archived_plan = any(
+        f"{plan}已{archive}" in compact or f"已{archive}{plan}" in compact
+        for plan in plan_markers
+        for archive in ("存档", "归档", "archive")
+    )
+    sent_plan_mail = bool(
+        re.search(
+            r"(?:已发送|发送|sent|sentto).{0,12}"
+            r"(?:实施计划|项目计划|实施方案|项目方案|部署计划|上线计划|"
+            r"implementationplan|projectplan|implementationschedule)"
+            r"(?:邮件|email|mail)",
+            compact,
+            re.IGNORECASE,
+        )
+    )
+    if direct_adjacent or archived_plan or sent_plan_mail:
+        return False
+    return any(marker in folded for marker in _PROJECT_PLAN_MARKERS)
+
+
+def _split_future_use_clauses(value: str) -> list[str]:
+    # Semicolons, sentence boundaries, and explicit contrast/conjunction
+    # markers are the only boundaries used here.  Commas are deliberately not
+    # boundaries because implementation plans commonly enumerate milestones.
+    return [
+        part.strip()
+        for part in re.split(
+            r"[;；。！？!?\n]+|(?:同时|另外|此外|其次|并且|并要求|还需|另需|in addition|separately)",
+            value,
+            flags=re.IGNORECASE,
+        )
+        if part.strip()
+    ]
+
+
+def is_mixed_future_use_text(value: Any) -> bool:
+    """Detect a plan/rule combined with an independent dated todo.
+
+    This is a safety boundary, not a general-purpose classifier.  It only
+    returns true when the durable plan/rule and a strong dated action occur in
+    separate clauses.  A plan's own milestone or delivery date therefore
+    remains representable as one project memory.
+    """
+
+    if not isinstance(value, str):
+        return False
+    clauses = _split_future_use_clauses(value)
+    if len(clauses) < 2:
+        return False
+    durable_indexes = {
+        index
+        for index, clause in enumerate(clauses)
+        if is_project_plan_text(clause)
+        or any(marker in clause.casefold() for marker in _PROJECT_RULE_MARKERS)
+    }
+    if not durable_indexes:
+        return False
+    plan_milestone_context = any(
+        any(marker in clauses[index].casefold() for marker in ("里程碑", "milestone"))
+        for index in durable_indexes
+    )
+    plan_stage_context = sum(bool(_PLAN_STAGE_TEXT.search(clause)) for clause in clauses) >= 2
+    todo_indexes = {
+        index
+        for index, clause in enumerate(clauses)
+        if _CALENDAR_TEXT.search(clause)
+        and any(marker in clause.casefold() for marker in _DATED_TODO_MARKERS)
+        and not (
+            "完成" in clause
+            and any(marker in clause.casefold() for marker in _PLAN_MILESTONE_MARKERS)
+            and not any(
+                marker in clause.casefold() for marker in _INDEPENDENT_TODO_MARKERS
+            )
+        )
+        and not (
+            (plan_milestone_context or plan_stage_context)
+            and "完成" in clause
+            and not any(
+                marker in clause.casefold() for marker in _INDEPENDENT_TODO_MARKERS
+            )
+        )
+        # A second clause that is itself the project plan is a plan milestone,
+        # not evidence of a second future-use object.
+        and not is_project_plan_text(clause)
+    }
+    return bool(todo_indexes - durable_indexes)
 
 
 def is_aggregate_operational_text(value: Any) -> bool:
@@ -910,6 +1134,23 @@ def validate_gate_output(
             raise ModelOutputError("duplicate candidate cannot be worth remembering", validation_detail="invalid_flags")
         if item["worth"] and candidate_type is None:
             raise ModelOutputError("worth candidate must have a type", validation_detail="invalid_type")
+        if item["worth"] and is_mixed_future_use_text(item["memory"]):
+            raise ModelOutputError(
+                "one candidate combines independent future uses",
+                validation_detail="mixed_future_use",
+            )
+        # A clearly named implementation plan/plan adjustment is a project
+        # memory, even when the model labels it as a generic fact.  Keep todo
+        # candidates intact: a task list that merely mentions a plan is still
+        # an actionable todo, while fact/event/other are the common accidental
+        # labels observed for durable plan changes.
+        if (
+            item["worth"]
+            and candidate_type in {"fact", "event", "other"}
+            and is_project_plan_text(item["memory"])
+        ):
+            item["type"] = "project"
+            candidate_type = "project"
         if "update_memory_id" in item and "duplicate_memory_id" in item:
             raise ModelOutputError(
                 "a candidate cannot set both duplicate_memory_id and update_memory_id",
@@ -1117,10 +1358,32 @@ def validate_summarize_output(
     _string(item["title"], "title")
     _string(item["body"], "body", multiline=True)
     _reject_relative_calendar_expression(item)
+    if is_mixed_future_use_text(f"{item['title']}\n{item['body']}"):
+        raise ModelOutputError(
+            "one summary combines independent future uses",
+            validation_detail="mixed_future_use",
+        )
     item["tags"] = _string_list(item["tags"], "tags")
     candidate_type = item["type"]
     if not isinstance(candidate_type, str) or candidate_type not in MEMORY_TYPES:
         raise ModelOutputError("invalid memory type", validation_detail="invalid_type")
+    inferred_project_type = (
+        candidate_type in {"fact", "event", "other"}
+        and is_project_plan_text(f"{item['title']}\n{item['body']}")
+    )
+    if inferred_project_type:
+        if expected_type is not None and expected_type != "project":
+            raise ModelOutputError(
+                "project plan summary cannot use a non-project gate type",
+                validation_detail="invalid_type",
+            )
+        if expected_target_type is not None and expected_target_type != "project":
+            raise ModelOutputError(
+                "project plan summary cannot update a non-project target",
+                validation_detail="invalid_type",
+            )
+        candidate_type = "project"
+        item["type"] = candidate_type
     if expected_type is not None and candidate_type != expected_type:
         raise ModelOutputError(
             "summary type differs from gate candidate",
@@ -1375,6 +1638,8 @@ __all__ = [
     "parse_strict_json",
     "is_aggregate_operational_text",
     "is_attachment_followup_only_text",
+    "is_project_plan_text",
+    "is_mixed_future_use_text",
     "normalize_relative_calendar_text",
     "parse_summarize_output",
     "parse_summary_output",

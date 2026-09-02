@@ -34,6 +34,7 @@ from .prompts import (
     DUPLICATE_TARGET_CORRECTION,
     GATE_TYPE_CORRECTION,
     JSON_CORRECTION,
+    MIXED_FUTURE_USE_CORRECTION,
     MIXED_PROJECT_SCOPES_CORRECTION,
     RELATIVE_TIME_CORRECTION,
     GATE_SYSTEM,
@@ -66,6 +67,7 @@ from .validation import (
     normalize_relative_calendar_text,
     is_aggregate_operational_text,
     is_attachment_followup_only_text,
+    is_project_plan_text,
 )
 from .vault import safe_component
 
@@ -599,6 +601,8 @@ class Processor:
             return DUPLICATE_TARGET_CORRECTION
         if hint == "mixed_project_scopes":
             return MIXED_PROJECT_SCOPES_CORRECTION
+        if hint == "mixed_future_use":
+            return MIXED_FUTURE_USE_CORRECTION
         if stage == "gate" and hint == "update_target_type_mismatch":
             return UPDATE_TARGET_TYPE_CORRECTION
         if stage == "gate" and hint == "invalid_type":
@@ -1696,22 +1700,18 @@ class Processor:
 
     @staticmethod
     def _is_project_plan_title(value: Any) -> bool:
-        text = normalize_term(value) if isinstance(value, str) else ""
-        return any(
-            marker in text
-            for marker in ("实施计划", "项目计划", "implementation plan", "project plan")
-        )
+        return is_project_plan_text(value)
 
     @staticmethod
     def _is_adjacent_plan_record(value: Any) -> bool:
         text = normalize_term(value) if isinstance(value, str) else ""
-        return any(
+        return bool(text) and any(
             marker in text
             for marker in (
                 "已发送", "发送", "邮件", "附件", "存档", "会议", "启动会", "纪要",
                 "sent", "email", "mail", "attachment", "archive", "meeting", "minutes",
             )
-        )
+        ) and not is_project_plan_text(value)
 
     @classmethod
     def _merge_additive_project_plan_update(
@@ -2335,20 +2335,13 @@ class Processor:
                         expected_scopes=candidate["scopes"],
                         expected_scope_source=candidate["scope_source"],
                         allow_no_change=True,
-                        expected_type=(
-                            candidate.get("type")
-                            if (
-                                gate_update_target is not None
-                                and gate_target_type == candidate.get("type")
-                            )
-                            else None
-                        ),
+                        # The summarize stage may not reinterpret a gate
+                        # candidate, including CREATE candidates.  Updates
+                        # additionally retain the active target's immutable
+                        # type below.
+                        expected_type=candidate.get("type"),
                         expected_update_memory_id=gate_update_target,
-                        expected_target_type=(
-                            gate_target_type
-                            if gate_target_type == candidate.get("type")
-                            else None
-                        ),
+                        expected_target_type=gate_target_type,
                     ),
                     diagnostic_context={
                         "source": turn.source,
