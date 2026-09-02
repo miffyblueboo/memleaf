@@ -303,11 +303,11 @@ class HermesProviderTests(unittest.TestCase):
 
     def test_provider_does_not_warn_when_core_versions_match(self) -> None:
         client = FakeClient(responses=[{"stats": True}])
-        client.server_version = "0.2.17"
+        client.server_version = "0.2.18"
         provider = provider_module.MemleafMemoryProvider()
         with patch.object(provider_module, "_resolve_command", return_value="memleaf-mcp"), \
              patch.object(provider_module, "_MCPClient", return_value=client), \
-             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.17"), \
+             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.18"), \
              patch.object(provider_module.logger, "warning") as warning:
             provider.initialize(
                 "version-match-session",
@@ -324,7 +324,7 @@ class HermesProviderTests(unittest.TestCase):
         provider = provider_module.MemleafMemoryProvider()
         with patch.object(provider_module, "_resolve_command", return_value="memleaf-mcp"), \
              patch.object(provider_module, "_MCPClient", return_value=client), \
-             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.17"), \
+             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.18"), \
              patch.object(provider_module.logger, "warning") as warning:
             provider.initialize(
                 "version-missing-session",
