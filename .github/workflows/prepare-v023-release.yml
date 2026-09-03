@@ -1,0 +1,43 @@
+name: Prepare v0.2.23 release metadata
+
+on:
+  push:
+    branches:
+      - fix/v0.2.23-scope-mixed-evidence
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Prepare metadata
+        run: python tools/prepare_v023_release.py
+      - name: Sanity checks
+        run: |
+          python -m compileall -q src tests examples
+          python - <<'PY'
+          import pathlib, re
+          from memleaf import __version__
+          assert __version__ == '0.2.23'
+          assert 'version = "0.2.23"' in pathlib.Path('pyproject.toml').read_text(encoding='utf-8')
+          assert 'version: 0.2.23' in pathlib.Path('src/memleaf/hermes_provider/plugin.yaml').read_text(encoding='utf-8')
+          assert re.search(r'^## 0\.2\.23 — 2026-09-03$', pathlib.Path('CHANGELOG.md').read_text(encoding='utf-8'), re.M)
+          PY
+          git diff --check
+      - name: Commit release metadata
+        shell: bash
+        run: |
+          rm -f .github/workflows/prepare-v023-release.yml tools/prepare_v023_release.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "release: prepare v0.2.23"
+          git push origin HEAD:fix/v0.2.23-scope-mixed-evidence
