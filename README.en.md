@@ -4,8 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.19.**
-> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.2.19 is distributed through PyPI.
+> **Version: 0.2.20.**
+> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.2.20 is distributed through PyPI.
 > **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.
 
 ## Project scope
@@ -79,6 +79,9 @@ Additional rules:
 - An explicit user request can call `remember`, but the content is still normalized, checked, and deduplicated.
 - Model, parsing, write, or index failures keep the inbox and processing watermark retryable.
 - Automatic cleanup has a 24-hour safety period; a failed processing attempt does not delete the original capture.
+
+
+For current todos, all unfinished work, urgent items, or work due in a date range, use `list_todos`. It covers all scopes by default; continue until `has_more=false`, then read every matching todo body with the same `retrieval_id`. Provenance fields such as `source`, `session_id`, and `turn_id` never filter permanent knowledge visibility.
 
 ## Installation
 

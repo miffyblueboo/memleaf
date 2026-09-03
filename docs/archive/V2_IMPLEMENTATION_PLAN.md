@@ -21,7 +21,7 @@
 | --- | --- | --- |
 | `scope_catalog(cursor?, limit?)` | `scopes:[{scope,parent,aliases}], has_more, next_cursor` | 每页最多 20 项、2000 字符；Scope ID 不截断 |
 | `search(query, scope?, cursor?, limit?)` | 默认 `status:found/no_match, results:[{memory_id,title,scopes}], has_more, next_cursor` | 每页最多 20 项、4000 字符；不再受旧 context 的 3 项限制 |
-| `read(memory_id, offset?, max_chars?, expected_version?, retrieval_id?)` | 保留版本化分页正文 | 每页最多 2000 正文字符；受管理轮次累计最多 3 个 ID、6000 字符 |
+| `read(memory_id, offset?, max_chars?, expected_version?, retrieval_id?)` | 保留版本化分页正文 | 每页最多 2000 正文字符；v0.2.20 起取消每轮 3 个 ID / 6000 字符聚合阻断，计数仅作审计 |
 | Python `search(view='full')`、旧 `context` | 保留兼容调用 | 不用于新的自动注入；显式兼容不是自动读预算绕过方式 |
 
 补充约束：
@@ -84,7 +84,7 @@
 
 - 修改前基线：`PYTHONPATH=src $HOME/memleaf/.venv/bin/python -m unittest discover -s tests`，300 tests，全部通过。
 - 当前工作区完整回归：同一命令共 345 tests，全部通过；`compileall` 与 `git diff --check` 通过。
-- 宿主/门控定向回归共 69 tests，覆盖 Codex continuation、实际搜索结果观察、失败降级、待补 Scope 提示、Hermes Soft Gate 与清单失败提示；短期账本 9 tests 覆盖 24 小时 TTL、256 轮上限、身份隔离及并发 3 ID/6000 字符预算。
+- 宿主/门控定向回归共 69 tests，覆盖 Codex continuation、实际搜索结果观察、失败降级、待补 Scope 提示、Hermes Soft Gate 与清单失败提示；短期账本 9 tests 覆盖 24 小时 TTL、256 轮上限、身份隔离及并发读取审计（旧 3 ID/6000 字符预算已在 v0.2.20 取消）。
 - 真实 stdio MCP 隔离测试覆盖 Scope 清单、候选分页、Hermes 轮次标识、进程重连后共享预算、畸形结果与安全错误；宿主事件回放不是实际 Codex 聊天。
 - 真实模型隔离回归：使用现有模型连接、仅虚构项目数据，甲→乙复用 ID，旧状态进入 history；第三轮纯查询写入 0 条，knowledge/history 字节保持不变。三轮 process 均成功。这不是 Hermes 聊天验收。
 - 真正独立的 Hermes venv 加载检查通过：环境中没有 memleaf Core 包、无 PYTHONPATH，使用公开 MemoryProvider 接口成功导入工作区插件；未启动聊天、未修改宿主配置。

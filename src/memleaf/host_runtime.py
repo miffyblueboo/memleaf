@@ -28,6 +28,7 @@ from .retrieval_gate import (
     find_turn,
     mark_degraded,
     observe_search,
+    observe_todo_list,
     request_gate_retry,
     validate_turn,
 )
@@ -40,8 +41,12 @@ _GATE_RETRY_REASON = (
     "a no-match result is acceptable."
 )
 _GATE_ERROR_REASON = (
-    "The memleaf search did not complete. Retry the memleaf search once before "
+    "The memleaf retrieval did not complete. Retry the memleaf memory tool once before "
     "answering; do not treat this error as no match."
+)
+_TODO_PAGINATION_REASON = (
+    "The global todo directory is incomplete. Continue memleaf list_todos with the returned "
+    "next_cursor until has_more=false before answering."
 )
 
 
@@ -250,6 +255,38 @@ class HostRuntime:
             return False
         return True
 
+    def observe_todo_list(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        status: str,
+        call_id: str,
+        supplied_retrieval_id: Any,
+        filter_key: str,
+        cursor: str | None,
+        has_more: bool,
+        next_cursor: str | None,
+    ) -> bool:
+        retrieval_id = self._retrieval_id(session_id, turn_id)
+        if retrieval_id is None or supplied_retrieval_id != retrieval_id or not isinstance(call_id, str) or not call_id:
+            return False
+        try:
+            observe_todo_list(
+                self.vault,
+                retrieval_id,
+                status,
+                call_id,
+                filter_key=filter_key,
+                cursor=cursor,
+                has_more=has_more,
+                next_cursor=next_cursor,
+                current_source=self.host,
+            )
+        except RetrievalGateError:
+            return False
+        return True
+
     def complete_turn(
         self,
         *,
@@ -277,7 +314,8 @@ class HostRuntime:
                 if gate_state.get("status") == "DEGRADED":
                     degraded = True
 
-            if gate_state is not None and gate_state.get("status") in {"NOT_SEARCHED", "ERROR"}:
+            todo_pending = gate_state is not None and gate_state.get("todo_list_pending") is True
+            if gate_state is not None and (gate_state.get("status") in {"NOT_SEARCHED", "ERROR"} or todo_pending):
                 retries = int(gate_state.get("gate_retries", 0) or 0)
                 if retries < MAX_GATE_RETRIES:
                     try:
@@ -286,7 +324,9 @@ class HostRuntime:
                         pass
                     else:
                         reason = (
-                            _GATE_ERROR_REASON
+                            _TODO_PAGINATION_REASON
+                            if todo_pending
+                            else _GATE_ERROR_REASON
                             if gate_state.get("status") == "ERROR"
                             else _GATE_RETRY_REASON
                         )

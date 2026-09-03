@@ -88,27 +88,26 @@ class V2MCPFlowTest(unittest.TestCase):
         for scope in catalog["scopes"]:
             self.assertEqual(set(scope), {"scope", "parent", "aliases"})
 
-    def test_managed_read_budget_is_shared_across_stdio_reconnects(self):
-        for index in range(4):
+    def test_managed_read_audit_allows_many_reads_across_stdio_reconnects(self):
+        for index in range(8):
             self.service.create_memory(memory_id=f"budget-{index}", title=f"Item {index}", body="字" * 2200)
         retrieval_id = begin_turn(self.service.vault, "codex", "session", "turn")
         observe_search(self.service.vault, retrieval_id, "found", "budget-search")
-        for index in range(3):
+        for index in range(4):
             page = self.success("read", memory_id=f"budget-{index}", retrieval_id=retrieval_id, max_chars=99999)
             self.assertEqual(len(page["body"]), 2000)
         self.process.close()
         self.process = MCPProcess(self.service.vault.root)
         self.addCleanup(self.process.close)
-        denied = self.call("read", memory_id="budget-3", retrieval_id=retrieval_id)
-        self.assertTrue(denied["isError"])
-        self.assertEqual(self.service.read("budget-3").hit_count, 0)
-        self.assertNotIn("body", denied["structuredContent"])
+        for index in range(4, 8):
+            page = self.success("read", memory_id=f"budget-{index}", retrieval_id=retrieval_id)
+            self.assertEqual(len(page["body"]), 2000)
+        state = validate_turn(self.service.vault, retrieval_id)
+        self.assertEqual(state["read_count"], 8)
+        self.assertGreater(state["read_chars"], 6000)
         bypass = self.call("search", query="Item", view="full", retrieval_id=retrieval_id)
         self.assertTrue(bypass["isError"])
         self.assertEqual(bypass["structuredContent"]["error"]["code"], "retrieval_full_view_forbidden")
-        another = begin_turn(self.service.vault, "codex", "session", "next-turn")
-        observe_search(self.service.vault, another, "found", "another-read-search")
-        self.assertEqual(len(self.success("read", memory_id="budget-3", retrieval_id=another)["body"]), 2000)
 
     def test_missing_or_stale_retrieval_id_is_not_new_budget(self):
         self.service.create_memory(memory_id="private", title="Private", body="PRIVATE_BODY")

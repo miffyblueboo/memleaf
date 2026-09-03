@@ -32,6 +32,7 @@ from .retrieval_gate import (
     find_pending_continuation,
     mark_degraded,
     observe_search,
+    todo_filter_key,
     request_gate_retry,
     validate_turn,
 )
@@ -306,7 +307,11 @@ def _handle_codex_pre_tool(
     turn_id: str | None,
 ) -> dict[str, Any]:
     tool_name = _field(event, "tool_name", "toolName")
-    if not (_codex_memleaf_tool(tool_name, "search") or _codex_memleaf_tool(tool_name, "read")):
+    if not (
+        _codex_memleaf_tool(tool_name, "search")
+        or _codex_memleaf_tool(tool_name, "list_todos")
+        or _codex_memleaf_tool(tool_name, "read")
+    ):
         return {}
     if session_id is None or turn_id is None:
         return {}
@@ -385,26 +390,70 @@ def _codex_search_status(value: Any) -> str:
     return "error"
 
 
+
+def _codex_todo_result(value: Any) -> tuple[str, bool, str | None]:
+    result = _json_tool_result(value)
+    if not isinstance(result, Mapping) or result.get("isError") is True or "error" in result:
+        return "error", False, None
+    status = result.get("status")
+    items = result.get("results")
+    has_more = result.get("has_more")
+    next_cursor = result.get("next_cursor")
+    if status not in {"found", "no_match"} or not isinstance(items, list) or not isinstance(has_more, bool):
+        return "error", False, None
+    if not all(
+        isinstance(item, Mapping)
+        and set(item) == {"memory_id", "title", "due_date"}
+        and isinstance(item.get("memory_id"), str) and bool(item.get("memory_id"))
+        and isinstance(item.get("title"), str) and bool(item.get("title"))
+        and (item.get("due_date") is None or isinstance(item.get("due_date"), str))
+        for item in items
+    ):
+        return "error", False, None
+    if (has_more and not isinstance(next_cursor, str)) or (not has_more and next_cursor is not None):
+        return "error", False, None
+    if status == "found" and not items:
+        return "error", False, None
+    if status == "no_match" and items:
+        return "error", False, None
+    return status, has_more, next_cursor if isinstance(next_cursor, str) else None
+
+
 def _handle_codex_post_tool(
     runtime: HostRuntime,
     event: Mapping[str, Any],
     session_id: str | None,
     turn_id: str | None,
 ) -> dict[str, Any]:
-    if not _codex_memleaf_tool(_field(event, "tool_name", "toolName"), "search"):
-        return {}
-    if session_id is None or turn_id is None:
+    tool_name = _field(event, "tool_name", "toolName")
+    is_search = _codex_memleaf_tool(tool_name, "search")
+    is_todos = _codex_memleaf_tool(tool_name, "list_todos")
+    if not (is_search or is_todos) or session_id is None or turn_id is None:
         return {}
     tool_input = _field(event, "tool_input", "toolInput")
     call_id = _field(event, "tool_use_id", "toolUseId")
     if not isinstance(tool_input, Mapping) or not isinstance(call_id, str):
         return {}
-    runtime.observe_search(
+    if is_search:
+        runtime.observe_search(
+            session_id=session_id,
+            turn_id=turn_id,
+            status=_codex_search_status(_field(event, "tool_response", "toolResponse")),
+            call_id=call_id,
+            supplied_retrieval_id=tool_input.get("retrieval_id"),
+        )
+        return {}
+    status, has_more, next_cursor = _codex_todo_result(_field(event, "tool_response", "toolResponse"))
+    runtime.observe_todo_list(
         session_id=session_id,
         turn_id=turn_id,
-        status=_codex_search_status(_field(event, "tool_response", "toolResponse")),
+        status=status,
         call_id=call_id,
         supplied_retrieval_id=tool_input.get("retrieval_id"),
+        filter_key=todo_filter_key(tool_input),
+        cursor=tool_input.get("cursor") if isinstance(tool_input.get("cursor"), str) else None,
+        has_more=has_more,
+        next_cursor=next_cursor,
     )
     return {}
 

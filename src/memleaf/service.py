@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import base64
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
@@ -631,6 +633,9 @@ class Memleaf:
             body: str,
             version: str,
             count_hit: bool,
+            memory_type: str = "other",
+            status: str | None = None,
+            due_date: str | None = None,
             record: _Record | None = None,
         ) -> dict[str, Any]:
             if expected_version is not None and expected_version != version:
@@ -661,6 +666,9 @@ class Memleaf:
                 "has_more": has_more,
                 "total_chars": total_chars,
                 "version": version,
+                "type": memory_type,
+                "status": status,
+                "due_date": due_date,
             }
 
         with self.vault.lock():
@@ -675,6 +683,9 @@ class Memleaf:
                     body=memory.body,
                     version=_memory_version(memory),
                     count_hit=record.area == "knowledge",
+                    memory_type=memory.type,
+                    status=(memory.status or "active") if memory.type == "todo" else memory.status,
+                    due_date=memory.due_date,
                     record=record,
                 )
 
@@ -989,6 +1000,157 @@ class Memleaf:
                 limit=page_limit,
                 fingerprint=fingerprint,
             )
+
+    @staticmethod
+    def _todo_date(value: str | None, field: str) -> date | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            raise ValueError(f"{field} must be YYYY-MM-DD")
+        try:
+            parsed = date.fromisoformat(value)
+        except ValueError as error:
+            raise ValueError(f"{field} must be YYYY-MM-DD") from error
+        if parsed.isoformat() != value:
+            raise ValueError(f"{field} must be YYYY-MM-DD")
+        return parsed
+
+    @staticmethod
+    def _todo_is_asap(memory: Memory) -> bool:
+        text = "\n".join([memory.title, memory.body, *memory.tags, *memory.keywords]).casefold()
+        return any(marker in text for marker in ("尽快", "紧急", "优先处理", "asap", "urgent"))
+
+    @staticmethod
+    def _bounded_todo_page(
+        candidates: list[dict[str, Any]],
+        *,
+        start: int,
+        limit: int,
+        fingerprint: str,
+    ) -> dict[str, Any]:
+        selected: list[dict[str, Any]] = []
+        index = start
+        while index < len(candidates) and len(selected) < limit:
+            next_index = index + 1
+            has_more = next_index < len(candidates)
+            next_cursor = (
+                _encode_page_cursor("active_todos", fingerprint, next_index)
+                if has_more
+                else None
+            )
+            proposed = {
+                "status": "found",
+                "results": selected + [candidates[index]],
+                "has_more": has_more,
+                "next_cursor": next_cursor,
+            }
+            if payload_chars(proposed) > MAX_SEARCH_CANDIDATE_CHARS:
+                if not selected:
+                    raise RetrievalError("search_result_too_large", "todo result exceeds the response budget")
+                break
+            selected.append(candidates[index])
+            index = next_index
+        has_more = index < len(candidates)
+        return {
+            "status": "found",
+            "results": selected,
+            "has_more": has_more,
+            "next_cursor": _encode_page_cursor("active_todos", fingerprint, index) if has_more else None,
+        }
+
+    def list_todos(
+        self,
+        *,
+        status: str = "active",
+        scope: str | Iterable[str] | None = None,
+        due_from: str | None = None,
+        due_to: str | None = None,
+        include_overdue: bool = True,
+        include_unscheduled: bool = True,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Enumerate current todo memories globally, independent of source session or agent."""
+
+        if status not in {"active", "completed", "cancelled", "all"}:
+            raise ValueError("invalid todo status")
+        if type(include_overdue) is not bool or type(include_unscheduled) is not bool:
+            raise ValueError("todo inclusion flags must be booleans")
+        lower = self._todo_date(due_from, "due_from")
+        upper = self._todo_date(due_to, "due_to")
+        if lower is not None and upper is not None and lower > upper:
+            raise ValueError("due_from must not be after due_to")
+        page_limit = self._page_limit(limit, MAX_SEARCH_CANDIDATE_ITEMS, MAX_SEARCH_CANDIDATE_ITEMS)
+        scope_value = self._scope_query_values(scope)
+        with self.vault.lock():
+            self._recover_compaction_unlocked()
+            records = [record for record in self._read_memories_unlocked("knowledge") if record.memory.type == "todo"]
+            if scope_value is not None:
+                try:
+                    requested = normalize_scopes(scope_value, field="todo scope")
+                except ScopeError as error:
+                    raise RetrievalError("invalid_scope", "todo scope is invalid") from error
+                if not requested:
+                    raise RetrievalError("invalid_scope", "todo scope is invalid")
+                ranked = filter_by_scope([record.memory for record in records], requested, self.vault.config())
+                allowed_ids = {memory.memory_id for memory, _rank in ranked}
+                records = [record for record in records if record.memory.memory_id in allowed_ids]
+
+            today = date.today()
+            filtered: list[tuple[tuple[Any, ...], _Record]] = []
+            for record in records:
+                memory = record.memory
+                current_status = memory.status or "active"
+                if status != "all" and current_status != status:
+                    continue
+                parsed_due = self._todo_date(memory.due_date, "due_date") if memory.due_date is not None else None
+                if parsed_due is None:
+                    if not include_unscheduled:
+                        continue
+                    bucket = 3 if self._todo_is_asap(memory) else 4
+                    sort_key = (bucket, date.max, memory.title.casefold(), memory.memory_id)
+                else:
+                    in_range = (lower is None or parsed_due >= lower) and (upper is None or parsed_due <= upper)
+                    overdue = include_overdue and parsed_due < today and (upper is None or parsed_due <= upper)
+                    if (lower is not None or upper is not None) and not (in_range or overdue):
+                        continue
+                    bucket = 0 if parsed_due < today else 1 if parsed_due == today else 2
+                    sort_key = (bucket, parsed_due, memory.title.casefold(), memory.memory_id)
+                filtered.append((sort_key, record))
+
+            filtered.sort(key=lambda item: item[0])
+            ordered = [record for _key, record in filtered]
+            candidates = [
+                {
+                    "memory_id": record.memory.memory_id,
+                    "title": directory_entry(record.memory).title,
+                    "due_date": record.memory.due_date,
+                }
+                for record in ordered
+            ]
+            fingerprint = _page_fingerprint(
+                {
+                    "filters": {
+                        "status": status,
+                        "scope": scope_value,
+                        "due_from": due_from,
+                        "due_to": due_to,
+                        "include_overdue": include_overdue,
+                        "include_unscheduled": include_unscheduled,
+                    },
+                    "records": [
+                        {
+                            "memory_id": record.memory.memory_id,
+                            "version": _memory_version(record.memory),
+                        }
+                        for record in ordered
+                    ],
+                }
+            )
+            start = _decode_page_cursor(cursor, kind="active_todos", fingerprint=fingerprint, maximum=len(candidates))
+            if not candidates:
+                return {"status": "no_match", "results": [], "has_more": False, "next_cursor": None}
+            return self._bounded_todo_page(candidates, start=start, limit=page_limit, fingerprint=fingerprint)
 
     @staticmethod
     def _scope_query_values(scope: str | Iterable[str] | None) -> str | list[str] | None:

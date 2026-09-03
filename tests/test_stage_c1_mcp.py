@@ -104,7 +104,7 @@ class StageC1MCPTest(unittest.TestCase):
         testcase.assertEqual(result["resultType"], "complete")
         testcase.assertEqual(
             result["_meta"]["io.modelcontextprotocol/serverInfo"],
-            {"name": "memleaf", "version": "0.2.19"},
+            {"name": "memleaf", "version": "0.2.20"},
         )
         return result
 
@@ -176,6 +176,7 @@ class StageC1MCPTest(unittest.TestCase):
                 "context",
                 "scope_catalog",
                 "search",
+                "list_todos",
                 "read",
                 "process",
                 "remember",
@@ -282,7 +283,7 @@ class StageC1MCPTest(unittest.TestCase):
         listed = process.send(
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": list_params}
         )
-        self.assertEqual(len(self.assert_modern_result(self, listed)["tools"]), 11)
+        self.assertEqual(len(self.assert_modern_result(self, listed)["tools"]), 12)
         called = process.send(
             {
                 "jsonrpc": "2.0",
@@ -310,6 +311,7 @@ class StageC1MCPTest(unittest.TestCase):
             "context": {"query"},
             "scope_catalog": set(),
             "search": {"query", "retrieval_id"},
+            "list_todos": {"retrieval_id"},
             "read": {"memory_id", "retrieval_id"},
             "process": set(),
             "remember": set(),
@@ -513,7 +515,7 @@ class StageC1MCPTest(unittest.TestCase):
         self.assertEqual(len(first["body"]), 2000)
         self.assertEqual(set(first), {
             "memory_id", "title", "scopes", "body", "offset", "next_offset",
-            "has_more", "total_chars", "version",
+            "has_more", "total_chars", "version", "type", "status", "due_date",
         })
         page = first
         body = page["body"]
