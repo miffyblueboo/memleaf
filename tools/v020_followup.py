@@ -97,7 +97,7 @@ keys_new = '{"memory_id", "title", "scopes", "body", "offset", "next_offset", "h
 edit("tests/test_context_budget.py", keys_old, keys_new, minimum=2)
 
 edit("tests/test_pypi_install.py", "version: 0.2.19", "version: 0.2.20")
-edit("tests/test_stage_c3_packaging.py", '"0.2.19"', '"0.2.20")
+edit("tests/test_stage_c3_packaging.py", '"0.2.19"', '"0.2.20"')
 edit("tests/test_stage_c1_mcp.py", '"version": "0.2.19"', '"version": "0.2.20"')
 edit(
     "tests/test_stage_c1_mcp.py",
