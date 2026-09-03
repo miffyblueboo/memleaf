@@ -70,18 +70,28 @@ replace_once(
 # Keep the historical defer-only regression focused on an unsafe split: the
 # extra unclassified clause means deterministic splitting must refuse it while
 # the valid sibling still commits.
-replace_once(
-    "tests/test_extraction_quality_regressions.py",
-    '''            memory=(
+path = Path("tests/test_extraction_quality_regressions.py")
+text = path.read_text(encoding="utf-8")
+start = text.find("    def test_repeated_mixed_future_use_defers_only_bad_candidate")
+end = text.find("\n    def ", start + 8)
+if start < 0:
+    raise SystemExit("legacy mixed-future-use regression not found")
+if end < 0:
+    end = len(text)
+section = text[start:end]
+old = '''            memory=(
                 "金元顺安实施计划采用达梦和东方通，并要求部署测试环境在"
                 "2026-09-10前完成。"
             ),
-''',
-    '''            memory=(
-                "金元顺安实施计划采用达梦和东方通；背景说明仍待整理；"
+'''
+new = '''            memory=(
+                "金元顺安实施计划采用达梦和东方通；背景说明暂未定稿；"
                 "并要求部署测试环境在2026-09-10前完成。"
             ),
-''',
-)
+'''
+if section.count(old) != 1:
+    raise SystemExit(f"legacy mixed section expected one candidate, found {section.count(old)}")
+section = section.replace(old, new, 1)
+path.write_text(text[:start] + section + text[end:], encoding="utf-8")
 
 print("v0.2.23 logic refinements applied")
