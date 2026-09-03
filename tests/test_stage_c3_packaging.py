@@ -146,10 +146,10 @@ class StageC3PackagingTests(unittest.TestCase):
             self.skipTest("repository workflows are not included in the source distribution")
         workflow = workflow_path.read_text(encoding="utf-8")
         self.assertIn('gh release view "$TAG"', workflow)
-        self.assertIn('--json targetCommitish --jq \' .targetCommitish\''.replace(" ", ""), workflow.replace(" ", ""))
+        self.assertIn('--json targetCommitish --jq \'.targetCommitish\'', workflow)
         self.assertIn(
-            'gh api "repos/${GITHUB_REPOSITORY}/commits/${TAG}" --jq \' .sha\''.replace(" ", ""),
-            workflow.replace(" ", ""),
+            'gh api "repos/${GITHUB_REPOSITORY}/commits/${TAG}" --jq \'.sha\'',
+            workflow,
         )
         self.assertIn('test "$target_sha" = "$RELEASE_SHA"', workflow)
         self.assertIn("gh release upload", workflow)
