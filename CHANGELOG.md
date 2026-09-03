@@ -2,6 +2,14 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.23 — 2026-09-03
+
+- Add a strict `scope_correction` transaction for explicit cross-project corrections without weakening ordinary UPDATE scope isolation: uniquely recover the wrong active target, reuse its `memory_id` when appropriate, or retire it to history with `invalidated_reason: scope_correction` and `superseded_by` when a correct active survivor already exists.
+- Deterministically split same-project `mixed_future_use` candidates after bounded model retries only when every clause is safely classifiable as durable project/fact state or an unfinished todo; ambiguous fragments remain deferred and valid siblings continue independently.
+- Add bounded mail-tool evidence capture limited to message ID, subject, sender and sender domain, plus private per-scope domain identifiers; a unique domain/scope conflict defers extraction instead of writing a wrongly attributed project memory, while full tool output remains excluded.
+- Preserve global `list_todos` pagination and unlimited aggregate managed reads from 0.2.20; no source/session ownership filter or aggregate read quota is reintroduced.
+- Hermes still uses its existing Soft Gate in this package release. Generic fail-closed pre-final retrieval enforcement requires a Hermes host lifecycle hook and is tracked upstream in NousResearch/hermes-agent#101973.
+
 ## 0.2.22 — 2026-09-03
 
 - Safely split valid multi-project `unscoped` aggregate candidates using only
