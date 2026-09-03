@@ -2,6 +2,14 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.20 — 2026-09-03
+
+- Add `list_todos` for complete active todo retrieval across all scopes with stable pagination, date/status filtering, and current-turn retrieval gating.
+- Remove the managed-turn 3-memory / 6000-character aggregate read block while retaining the 2000-character page limit and audit counters.
+- Add first-class `todo.due_date` (`YYYY-MM-DD`) with evidence-grounded date normalization, update/history/compaction propagation, and legacy Markdown compatibility.
+- Improve automatic extraction so concrete unfinished actions become atomic todos and durable rules remain project/fact memories; mixed rule/action candidates are split or safely deferred without blocking valid siblings.
+- Keep permanent `knowledge/` globally visible to all sessions and supported Agents sharing the same Vault; provenance fields never filter active memory visibility.
+
 ## 0.2.19 — 2026-09-03
 
 - Keep Hermes `<untrusted_tool_result>` search audit status synchronized with

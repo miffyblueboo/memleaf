@@ -176,11 +176,14 @@ emit one candidate per independently changed memory and set each exact
 update_memory_id; never select one target and silently omit the others. Do not
 target adjacent sent-mail, attachment, meeting, or archive records unless the
 current evidence changes their own future-use topic.
-An explicit implementation plan, project implementation plan, or plan
-adjustment is type project. Do not label it fact merely because it came from
-an email or because no existing project memory was retrieved. Keep an actual
-todo as todo only when its future use is the action itself, not the durable
-plan it mentions.
+An explicit implementation plan, project implementation plan, or durable plan
+adjustment is type project. A concrete unfinished action to repair, investigate,
+prepare material, reply, provide feedback, submit, confirm, deploy, migrate,
+adjust, or follow up is type todo when its future use is the action itself. A
+request such as adjusting an implementation plan according to numbered feedback
+is a todo, not a durable project fact. When one passage contains both a durable
+rule/plan and an unfinished action, emit separate project/fact and todo candidates;
+never discard both merely to avoid mixed_future_use.
 Return no prose, markdown fences, comments, or trailing text."""
 
 
@@ -262,9 +265,12 @@ session_id, turn_id, conversation_title, and evidence_event_ids; event_key and
 all evidence_event_ids must be copied exactly from the supplied current events,
 never from a turn_id, event_id, generated ID, or invented value. Optional fields
 are memory_id, update_memory_id, aliases, keywords, evidence_event_ids,
-shadow_native_ids, scope_operations, scope_source, status, and completed_at.
-status and completed_at are only for type=todo; status is active, completed,
-or cancelled, and completed requires completed_at. Preserve uncertainty
+shadow_native_ids, scope_operations, scope_source, status, completed_at, and due_date.
+status, completed_at, and due_date are only for type=todo; status is active, completed,
+or cancelled, completed requires completed_at, and due_date is null/omitted when no
+explicit deadline exists or an absolute YYYY-MM-DD supported by current evidence.
+Never guess a due date. On an update, omit due_date to preserve the existing deadline;
+use due_date=null only when current evidence explicitly removes the deadline. Preserve uncertainty
 instead of asserting unsupported facts. By default shadow_native_ids and
 scope_operations are empty; only use them when current user evidence supports
 the operation. Keep only the smallest confirmed content needed for the one
@@ -306,8 +312,9 @@ independent dated todo in one summary. A plan/rule and a dated reply,
 investigation, submission, or follow-up are separate future uses; such output
 is invalid and must be retried as separate gate candidates. A date that is an
 intrinsic milestone of the same project plan may remain in its project summary.
-An explicit implementation plan or plan adjustment must use type project;
-preserve an existing update target's type when it is the same project plan.
+An explicit durable implementation plan or plan adjustment must use type project;
+preserve an existing update target's type when it is the same project plan. Concrete
+unfinished execution actions remain todo even when they mention an implementation plan.
 Return no prose, markdown fences, comments, or trailing text."""
 
 
@@ -447,7 +454,8 @@ COMPACT_SYSTEM = """You are memleaf's memory compactor. Return JSON only.
 Merge only the supplied low-priority memories when they express compatible
 information. Return an object with a memories array; [] is a safe no-op.
 Each replacement must contain title, body, tags, type, scopes, scope_source,
-aliases, keywords, and source_memory_ids. source_memory_ids must be a
+aliases, keywords, and source_memory_ids. A todo may also contain status, completed_at,
+and due_date; never merge multiple independent todo source memories into one replacement. source_memory_ids must be a
 non-empty, non-overlapping subset of the supplied memory IDs. Do not include
 memory IDs, sources, timestamps, counters, or history fields; the core creates
 those. Never consume or alter a supplied memory that is not named by a

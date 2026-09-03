@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -64,6 +64,7 @@ class Memory:
     last_hit_at: Optional[str] = None
     status: Optional[str] = None
     completed_at: Optional[str] = None
+    due_date: Optional[str] = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -86,6 +87,15 @@ class Memory:
             raise ValueError("memory status must be a string")
         if self.completed_at is not None and not isinstance(self.completed_at, str):
             raise ValueError("memory completed_at must be a string")
+        if self.due_date is not None:
+            if not isinstance(self.due_date, str) or len(self.due_date) != 10:
+                raise ValueError("memory due_date must be YYYY-MM-DD")
+            try:
+                parsed_due_date = date.fromisoformat(self.due_date)
+            except ValueError as error:
+                raise ValueError("memory due_date must be YYYY-MM-DD") from error
+            if parsed_due_date.isoformat() != self.due_date or self.type != "todo":
+                raise ValueError("memory due_date requires a todo and YYYY-MM-DD")
 
     @classmethod
     def new(
@@ -120,6 +130,7 @@ class Memory:
             last_hit_at=metadata.pop("last_hit_at", None),
             status=metadata.pop("status", None),
             completed_at=metadata.pop("completed_at", None),
+            due_date=metadata.pop("due_date", None),
             extra=metadata,
         )
 
@@ -144,6 +155,7 @@ class Memory:
             "last_hit_at",
             "status",
             "completed_at",
+            "due_date",
         }
         missing = [key for key in ("memory_id", "title", "body") if key not in value]
         if missing:
@@ -165,6 +177,7 @@ class Memory:
             last_hit_at=value.get("last_hit_at"),
             status=value.get("status"),
             completed_at=value.get("completed_at"),
+            due_date=value.get("due_date"),
             extra={key: item for key, item in value.items() if key not in known},
         )
 
@@ -205,6 +218,8 @@ class Memory:
             metadata["status"] = self.status
         if self.completed_at is not None:
             metadata["completed_at"] = self.completed_at
+        if self.due_date is not None:
+            metadata["due_date"] = self.due_date
         for key, value in self.extra.items():
             metadata.setdefault(key, value)
         return metadata

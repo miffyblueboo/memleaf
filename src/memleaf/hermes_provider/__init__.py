@@ -268,8 +268,9 @@ def _scope_context(
         "<memleaf-scope-map>\n"
         "Available memleaf memory scopes. For every visible user turn, call "
         "memleaf MCP search at least once using the current conversation and "
-        "this map. Search returns a directory; read only the selected memory "
-        "when needed. A no-match result is valid.\n"
+        "this map. Use list_todos instead of relevance search for global current-todo questions. "
+        "Search/list_todos return directories; read only the selected memory when needed for ordinary "
+        "relevance queries; for global todo queries, read every matching todo item. A no-match result is valid.\n"
     )
     if isinstance(retrieval_id, str) and retrieval_id:
         prefix = (
@@ -421,11 +422,12 @@ def _hermes_search_status(value: Any) -> str:
                 return "error"
             valid_results = all(
                 isinstance(item, Mapping)
-                and set(item) == {"memory_id", "title"}
+                and set(item) in ({"memory_id", "title"}, {"memory_id", "title", "due_date"})
                 and isinstance(item.get("memory_id"), str)
                 and bool(item.get("memory_id"))
                 and isinstance(item.get("title"), str)
                 and bool(item.get("title"))
+                and ("due_date" not in item or item.get("due_date") is None or isinstance(item.get("due_date"), str))
                 for item in results
             )
             if not valid_results:
@@ -1953,8 +1955,12 @@ class MemleafMemoryProvider(MemoryProvider):
             "read(memory_id, retrieval_id) when its body is needed, carrying the "
             "current turn's retrieval_id exactly as supplied; a missing or mismatched "
             "token is a read failure, never a reason to fall back to a file tool. "
-            "Read more only if needed, and do not read all entries to filter unrelated "
-            "items. Hermes has a soft "
+            "Read more only if needed; for ordinary relevance queries, do not read all entries to filter unrelated items. "
+            "When the user asks for current "
+            "todos, all unfinished work, urgent work, or work due in a time range, call memleaf MCP "
+            "list_todos instead of relevance search; omit scope for a global query, follow every "
+            "next_cursor until has_more=false, and read every matching todo body with the same retrieval_id. "
+            "Never exclude a todo because another Hermes session or another Agent created it. Hermes has a soft "
             "observer only: do not claim a search happened unless the visible tool "
             "messages show it. Visible Hermes "
             "turns are durably captured into the local memleaf inbox. Automatic "
@@ -2155,7 +2161,7 @@ class MemleafMemoryProvider(MemoryProvider):
         search_results_used: set[int] = set()
         search_ordinal = 0
         for call in calls:
-            if call.get("name") != "mcp__memleaf__search":
+            if call.get("name") not in {"mcp__memleaf__search", "mcp__memleaf__list_todos"}:
                 continue
             search_ordinal += 1
             arguments = call.get("arguments")

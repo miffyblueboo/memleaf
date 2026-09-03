@@ -101,25 +101,24 @@ class RetrievalGateTests(unittest.TestCase):
         observe_search(self.vault, second, "found", "current-search", current_source="hermes")
         self.assertEqual("FOUND", validate_turn(self.vault, second)["status"])
 
-    def test_read_budget_is_three_ids_and_six_thousand_body_chars(self) -> None:
+    def test_read_audit_does_not_limit_ids_or_total_chars(self) -> None:
         retrieval_id = begin_turn(self.vault, "codex", "session", "turn-1")
-        observe_search(self.vault, retrieval_id, "found", "read-budget-search")
+        observe_search(self.vault, retrieval_id, "found", "read-audit-search")
         calls: list[int] = []
 
         def reader(allowed_chars: int):
             calls.append(allowed_chars)
             return {"body": "x" * allowed_chars}
 
-        for index in range(MAX_READ_ITEMS):
+        for index in range(8):
             page = guarded_read(self.vault, retrieval_id, f"mem-{index}", reader)
             self.assertEqual(MAX_READ_PAGE_CHARS, len(page["body"]))
-        with self.assertRaises(RetrievalGateError) as error:
-            guarded_read(self.vault, retrieval_id, "mem-3", reader)
-        self.assertEqual("retrieval_read_budget_exceeded", error.exception.code)
         state = validate_turn(self.vault, retrieval_id)
-        self.assertEqual(MAX_READ_ITEMS, state["read_count"])
-        self.assertEqual(MAX_READ_CHARS, state["read_chars"])
-        self.assertEqual([MAX_READ_PAGE_CHARS] * MAX_READ_ITEMS, calls)
+        self.assertEqual(8, state["read_count"])
+        self.assertEqual(8 * MAX_READ_PAGE_CHARS, state["read_chars"])
+        self.assertEqual([MAX_READ_PAGE_CHARS] * 8, calls)
+        self.assertIsNone(MAX_READ_ITEMS)
+        self.assertIsNone(MAX_READ_CHARS)
 
     def test_failed_or_empty_read_does_not_consume_budget(self) -> None:
         retrieval_id = begin_turn(self.vault, "codex", "session", "turn-1")

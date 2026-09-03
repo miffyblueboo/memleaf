@@ -58,7 +58,7 @@ class FakeRunner:
                 )
             return CommandResult(0, "")
         if "test" in command:
-            return CommandResult(0, "Connected (12ms)\nTools discovered: 11\n")
+            return CommandResult(0, "Connected (12ms)\nTools discovered: 12\n")
         if "add" in command:
             if self.fail_add:
                 return CommandResult(1, stderr="failed")

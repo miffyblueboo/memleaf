@@ -182,7 +182,7 @@ class ContextBudgetTests(unittest.TestCase):
         first = self.service.read_page(memory.memory_id, max_chars=37)
         self.assertIsNotNone(first)
         self.assertEqual(
-            {"memory_id", "title", "scopes", "body", "offset", "next_offset", "has_more", "total_chars", "version"},
+            {"memory_id", "title", "scopes", "body", "offset", "next_offset", "has_more", "total_chars", "version", "type", "status", "due_date"},
             set(first),
         )
         self.assertLessEqual(len(first["body"]), 37)
@@ -201,7 +201,7 @@ class ContextBudgetTests(unittest.TestCase):
         self.assertEqual(body, "".join(pages))
         self.assertEqual(1, self.service.read(memory.memory_id).hit_count)
         self.assertEqual(
-            {"memory_id", "title", "scopes", "body", "offset", "next_offset", "has_more", "total_chars", "version"},
+            {"memory_id", "title", "scopes", "body", "offset", "next_offset", "has_more", "total_chars", "version", "type", "status", "due_date"},
             set(page),
         )
 

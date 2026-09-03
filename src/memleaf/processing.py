@@ -67,6 +67,7 @@ from .validation import (
     normalize_relative_calendar_text,
     is_aggregate_operational_text,
     is_attachment_followup_only_text,
+    is_actionable_todo_text,
     is_mixed_future_use_text,
     is_project_plan_text,
 )
@@ -390,6 +391,7 @@ _DIAGNOSTIC_SUMMARY_ALLOWED = frozenset(
         "evidence_event_ids",
         "status",
         "completed_at",
+        "due_date",
         "shadow_native_ids",
         "scope_operations",
     )
@@ -692,7 +694,7 @@ def _normalize_summary_dates(
         return raw
     normalized = dict(parsed)
     changed = False
-    for field in ("title", "body"):
+    for field in ("title", "body", "due_date"):
         value = normalized.get(field)
         if not isinstance(value, str):
             continue
@@ -703,6 +705,36 @@ def _normalize_summary_dates(
     if not changed:
         return raw
     return json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+
+
+
+def _grounded_due_dates(turn: InboxTurn) -> set[str]:
+    """Return absolute dates actually supported by current visible evidence."""
+
+    result: set[str] = set()
+    for event in turn.events:
+        timestamp = _parse_time(event.timestamp)
+        if timestamp is None or not isinstance(event.content, str):
+            continue
+        normalized = normalize_relative_calendar_text(event.content, timestamp) or event.content
+        for value in re.findall(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)", normalized):
+            try:
+                parsed = datetime.strptime(value, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            result.add(parsed.isoformat())
+        for year, month, day in re.findall(r"(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?", event.content):
+            try:
+                parsed = datetime(
+                    int(year) if year else timestamp.year,
+                    int(month),
+                    int(day),
+                    tzinfo=timezone.utc,
+                ).date()
+            except ValueError:
+                continue
+            result.add(parsed.isoformat())
+    return result
 
 
 def _native_result(value: Any) -> list[dict[str, Any]]:
@@ -2229,6 +2261,9 @@ class Processor:
             "scopes": list(scopes),
             "aliases": list(summary.get("aliases", [])) if isinstance(summary.get("aliases", []), list) else [],
             "keywords": list(summary.get("keywords", [])) if isinstance(summary.get("keywords", []), list) else [],
+            "status": summary.get("status"),
+            "completed_at": summary.get("completed_at"),
+            "due_date": summary.get("due_date"),
         }
         return value
 
@@ -2372,6 +2407,7 @@ class Processor:
                     related_native_ids=related_native_ids,
                     related_memory_ids=related_memory_ids,
                     scope_registry=validation_scope_registry,
+                    allowed_due_dates=_grounded_due_dates(turn),
                     allow_no_change=False,
                 ),
                 diagnostic_context={
@@ -2952,6 +2988,7 @@ class Processor:
                         scope_registry=validation_scope_registry,
                         expected_scopes=candidate["scopes"],
                         expected_scope_source=candidate["scope_source"],
+                        allowed_due_dates=_grounded_due_dates(turn),
                         allow_no_change=recovery is None,
                         # The summarize stage may not reinterpret a gate
                         # candidate, including CREATE candidates. Updates

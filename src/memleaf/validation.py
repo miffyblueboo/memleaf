@@ -74,6 +74,8 @@ MODEL_VALIDATION_DETAILS = frozenset(
         "reason_too_long",
         "source_shape",
         "todo_fields",
+        "invalid_due_date",
+        "due_date_not_grounded",
         "relative_time",
         "mixed_future_use",
         "other_schema_violation",
@@ -165,6 +167,7 @@ _COMPACT_FIELDS = frozenset(
         "source_memory_ids",
         "status",
         "completed_at",
+        "due_date",
     )
 )
 _MAX_SCOPE_OPERATION_COUNT = 16
@@ -503,6 +506,49 @@ _CALENDAR_TEXT = re.compile(
 )
 
 
+
+_ACTION_VERBS = (
+    "修复", "整改", "排查", "准备", "反馈", "回复", "提交", "确认", "部署", "迁移",
+    "调整", "跟进", "处理", "补充", "发送", "提供", "review", "reply", "submit",
+    "confirm", "deploy", "migrate", "fix", "investigate", "prepare", "follow up",
+)
+_ACTION_PREFIXES = (
+    "需要", "需", "待", "请", "必须", "务必", "尽快", "尚需", "还需", "未完成",
+    "need to", "needs to", "must", "todo", "to-do", "pending",
+)
+_ACTION_PLAN_ADJUST = re.compile(
+    r"(?:需要|需|待|请|尽快|按\s*\d+\s*[点项条]|根据\s*\d+\s*[点项条]).{0,20}(?:调整|修改|更新|完善).{0,20}(?:计划|方案)",
+    re.IGNORECASE,
+)
+
+
+def is_actionable_todo_text(value: Any) -> bool:
+    """Recognize high-signal unfinished actions without classifying stable rules."""
+
+    if not isinstance(value, str) or not value.strip():
+        return False
+    folded = value.casefold()
+    if _ACTION_PLAN_ADJUST.search(value):
+        return True
+    has_action = any(marker in folded for marker in _ACTION_VERBS)
+    has_prefix = any(marker in folded for marker in _ACTION_PREFIXES)
+    has_deadline = bool(_CALENDAR_TEXT.search(value)) and any(
+        marker in folded for marker in ("前完成", "之前完成", "截止", "截至", " by ", "before ")
+    )
+    return has_action and (has_prefix or has_deadline)
+
+
+def _validated_due_date(value: Any) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise ModelOutputError("invalid todo due_date", validation_detail="invalid_due_date")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as error:
+        raise ModelOutputError("invalid todo due_date", validation_detail="invalid_due_date") from error
+    if parsed.isoformat() != value:
+        raise ModelOutputError("invalid todo due_date", validation_detail="invalid_due_date")
+    return value
+
 def is_project_plan_text(value: Any) -> bool:
     """Return whether text explicitly describes a project plan or adjustment."""
 
@@ -590,8 +636,10 @@ def is_mixed_future_use_text(value: Any) -> bool:
     todo_indexes = {
         index
         for index, clause in enumerate(clauses)
-        if _CALENDAR_TEXT.search(clause)
-        and any(marker in clause.casefold() for marker in _DATED_TODO_MARKERS)
+        if (
+            (_CALENDAR_TEXT.search(clause) and any(marker in clause.casefold() for marker in _DATED_TODO_MARKERS))
+            or is_actionable_todo_text(clause)
+        )
         and not (
             "完成" in clause
             and any(marker in clause.casefold() for marker in _PLAN_MILESTONE_MARKERS)
@@ -1156,6 +1204,25 @@ def validate_gate_output(
                 "one candidate combines independent future uses",
                 validation_detail="mixed_future_use",
             )
+        if (
+            item["worth"]
+            and (
+                (
+                    candidate_type in {"fact", "event", "other"}
+                    and is_actionable_todo_text(item["memory"])
+                    and (
+                        not is_project_plan_text(item["memory"])
+                        or _ACTION_PLAN_ADJUST.search(item["memory"])
+                    )
+                )
+                or (
+                    candidate_type == "project"
+                    and _ACTION_PLAN_ADJUST.search(item["memory"])
+                )
+            )
+        ):
+            item["type"] = "todo"
+            candidate_type = "todo"
         # A clearly named implementation plan/plan adjustment is a project
         # memory, even when the model labels it as a generic fact.  Keep todo
         # candidates intact: a task list that merely mentions a plan is still
@@ -1336,6 +1403,7 @@ def validate_summarize_output(
     expected_target_type: str | None = None,
     expected_scopes: Iterable[Any] | None = None,
     expected_scope_source: str | None = None,
+    allowed_due_dates: Iterable[str] | None = None,
     allow_no_change: bool = False,
 ) -> dict[str, Any]:
     """Validate one atomic memory summary; this function has no filesystem effects."""
@@ -1366,6 +1434,7 @@ def validate_summarize_output(
         "evidence_event_ids",
         "status",
         "completed_at",
+        "due_date",
         "shadow_native_ids",
         "scope_operations",
     }
@@ -1505,6 +1574,14 @@ def validate_summarize_output(
             raise ModelOutputError("completed_at requires completed todo", validation_detail="todo_fields")
     if item.get("status") == "completed" and "completed_at" not in item:
         raise ModelOutputError("completed todo requires completed_at", validation_detail="todo_fields")
+    if "due_date" in item and item["due_date"] is not None:
+        if candidate_type != "todo":
+            raise ModelOutputError("due_date requires todo", validation_detail="todo_fields")
+        item["due_date"] = _validated_due_date(item["due_date"])
+        if allowed_due_dates is not None:
+            grounded = {value for value in allowed_due_dates if isinstance(value, str)}
+            if item["due_date"] not in grounded:
+                raise ModelOutputError("todo due_date is not grounded by current evidence", validation_detail="due_date_not_grounded")
     return item
 
 
@@ -1520,6 +1597,7 @@ def parse_summarize_output(
     expected_target_type: str | None = None,
     expected_scopes: Iterable[Any] | None = None,
     expected_scope_source: str | None = None,
+    allowed_due_dates: Iterable[str] | None = None,
     allow_no_change: bool = False,
 ) -> dict[str, Any]:
     try:
@@ -1540,6 +1618,7 @@ def parse_summarize_output(
             expected_target_type=expected_target_type,
             expected_scopes=expected_scopes,
             expected_scope_source=expected_scope_source,
+            allowed_due_dates=allowed_due_dates,
             allow_no_change=allow_no_change,
         )
     except ModelOutputError as error:
@@ -1624,6 +1703,10 @@ def validate_compact_output(
                 raise ModelOutputError("compact completed_at requires completed todo")
         if item.get("status") == "completed" and "completed_at" not in item:
             raise ModelOutputError("compact completed todo requires completed_at")
+        if "due_date" in item and item["due_date"] is not None:
+            if item["type"] != "todo":
+                raise ModelOutputError("compact due_date requires todo")
+            item["due_date"] = _validated_due_date(item["due_date"])
         normalized.append(item)
     return {"memories": normalized}
 
@@ -1657,6 +1740,7 @@ __all__ = [
     "parse_strict_json",
     "is_aggregate_operational_text",
     "is_attachment_followup_only_text",
+    "is_actionable_todo_text",
     "is_project_plan_text",
     "is_mixed_future_use_text",
     "normalize_relative_calendar_text",

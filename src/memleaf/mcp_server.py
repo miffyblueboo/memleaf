@@ -28,6 +28,8 @@ from .retrieval_gate import (
     begin_turn,
     guarded_read,
     observe_search,
+    observe_todo_list,
+    todo_filter_key,
     validate_current_turn,
     validate_turn,
 )
@@ -60,10 +62,11 @@ INSTRUCTIONS = (
     "Use read(memory_id) on the best matching entry before relying on a past fact. Read more only "
     "when needed, not every entry to filter unrelated items. You may refine the query/scope and "
     "search again. Pass the host-provided retrieval_id to search and read; never invent or replace "
-    "it to reset a budget. Managed turns permit at most 3 distinct memory IDs and 6000 returned body "
-    "characters. MCP read requires retrieval_id and a current FOUND search; NO_MATCH, ERROR, "
-    "and DEGRADED turns cannot read. A budget error requires stopping further reads in this turn, "
-    "not a different tool. "
+    "it. Managed reads have no aggregate ID/character quota; read every relevant memory needed for "
+    "the user's question while keeping each read page at 2000 characters. MCP read requires retrieval_id "
+    "and a current FOUND search or list_todos result; NO_MATCH, ERROR, and DEGRADED turns cannot read. "
+    "For global current-todo questions use list_todos rather than relevance search, omit scope to cover "
+    "all scopes, follow next_cursor until has_more=false, then read every matching todo body. "
     "Legacy context is an explicit compatibility interface, not an alternative to this "
     "scope/search/read flow. Managed MCP search is directory-only and rejects view=full; "
     "Python full-result search remains compatible. Without host integration, tools remain an explicit fallback only; "
@@ -203,6 +206,28 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                 "retrieval_id": {"type": "string"},
             },
             required=["query", "retrieval_id"],
+        ),
+    },
+    {
+        "name": "list_todos",
+        "description": (
+            "Enumerate current memleaf todo memories by status/date across all scopes by default. "
+            "This is not relevance search. Continue with next_cursor until has_more=false, then read "
+            "the matching todo bodies with the same retrieval_id."
+        ),
+        "inputSchema": _object_schema(
+            {
+                "status": {"type": "string", "enum": ["active", "completed", "cancelled", "all"]},
+                "scope": _text_or_texts_schema(),
+                "due_from": {"type": "string"},
+                "due_to": {"type": "string"},
+                "include_overdue": {"type": "boolean"},
+                "include_unscheduled": {"type": "boolean"},
+                "cursor": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1},
+                "retrieval_id": {"type": "string"},
+            },
+            required=["retrieval_id"],
         ),
     },
     {
@@ -439,7 +464,23 @@ def _read_page_result(value: Any) -> dict[str, Any] | None:
             raise ValueError("invalid read continuation")
     elif value["next_offset"] is not None or end != value["total_chars"]:
         raise ValueError("invalid read final page")
-    return {name: _jsonable(value[name]) for name in fields if name in value}
+    result = {name: _jsonable(value[name]) for name in fields if name in value}
+    memory_type = value.get("type")
+    status = value.get("status")
+    due_date = value.get("due_date")
+    if memory_type is not None and not isinstance(memory_type, str):
+        raise ValueError("invalid read memory type")
+    if status is not None and not isinstance(status, str):
+        raise ValueError("invalid read todo status")
+    if due_date is not None and not isinstance(due_date, str):
+        raise ValueError("invalid read todo due date")
+    if "type" in value:
+        result["type"] = memory_type
+    if "status" in value:
+        result["status"] = status
+    if "due_date" in value:
+        result["due_date"] = due_date
+    return result
 
 
 def _catalog_result(value: Any) -> dict[str, Any]:
@@ -703,6 +744,34 @@ def _observe_mcp_search(
     )
 
 
+
+def _observe_mcp_todos(
+    service: Memleaf,
+    state: Mapping[str, Any] | None,
+    value: Mapping[str, Any] | None,
+    request_id: Any,
+    arguments: Mapping[str, Any],
+) -> None:
+    if state is None:
+        return
+    status = value.get("status") if isinstance(value, Mapping) else "error"
+    if status not in {"found", "no_match"}:
+        status = "error"
+    has_more = value.get("has_more") if isinstance(value, Mapping) else False
+    next_cursor = value.get("next_cursor") if isinstance(value, Mapping) else None
+    observe_todo_list(
+        service.vault,
+        state["retrieval_id"],
+        status,
+        _mcp_search_call_id(request_id),
+        filter_key=todo_filter_key(arguments),
+        cursor=arguments.get("cursor") if isinstance(arguments.get("cursor"), str) else None,
+        has_more=has_more if isinstance(has_more, bool) else False,
+        next_cursor=next_cursor if isinstance(next_cursor, str) else None,
+        current_source="hermes",
+    )
+
+
 def _invoke_tool(
     service: Memleaf,
     name: str,
@@ -712,7 +781,7 @@ def _invoke_tool(
 ) -> dict[str, Any]:
     if name not in _TOOL_BY_NAME:
         raise _InvalidParams
-    if name in {"read", "search"} and (
+    if name in {"read", "search", "list_todos"} and (
         not isinstance(arguments, dict) or "retrieval_id" not in arguments
     ):
         return _tool_error(RetrievalGateError("retrieval_id_required"))
@@ -772,6 +841,22 @@ def _invoke_tool(
                 _observe_mcp_search(service, managed_state, value, request_id)
             except Exception as error:
                 # A managed result is not successful until the gate records it.
+                return _tool_error(error)
+        elif name == "list_todos":
+            retrieval_id = args.pop("retrieval_id", None)
+            managed_state = _managed_search_state(service, retrieval_id)
+            observed_args = dict(args)
+            try:
+                value = service.list_todos(**args)
+            except Exception as error:
+                try:
+                    _observe_mcp_todos(service, managed_state, None, request_id, observed_args)
+                except Exception as observe_error:
+                    return _tool_error(observe_error)
+                return _tool_error(error)
+            try:
+                _observe_mcp_todos(service, managed_state, value, request_id, observed_args)
+            except Exception as error:
                 return _tool_error(error)
         elif name == "read":
             # Keep the protocol boundary hard-capped even if a caller sends a

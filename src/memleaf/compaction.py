@@ -40,6 +40,7 @@ def _content_mapping(value: Memory | Mapping[str, Any]) -> dict[str, Any]:
             "keywords": list(value.keywords),
             "status": value.status,
             "completed_at": value.completed_at,
+            "due_date": value.due_date,
         }
     if not isinstance(value, Mapping):
         raise ValueError("memory content must be a memory or mapping")
@@ -54,6 +55,7 @@ def _content_mapping(value: Memory | Mapping[str, Any]) -> dict[str, Any]:
         "keywords": list(value.get("keywords", [])),
         "status": value.get("status"),
         "completed_at": value.get("completed_at"),
+        "due_date": value.get("due_date"),
     }
 
 
@@ -423,6 +425,7 @@ class Compactor:
                     "keywords",
                     "status",
                     "completed_at",
+                    "due_date",
                 )
             },
         }
@@ -511,6 +514,7 @@ class Compactor:
             last_hit_at=self._last_hit(source_memories),
             status=status,
             completed_at=summary.get("completed_at"),
+            due_date=summary.get("due_date"),
             extra=extra,
         )
         raw = memory.to_markdown()
@@ -540,6 +544,7 @@ class Compactor:
             and left.sources == right.sources
             and left.status == right.status
             and left.completed_at == right.completed_at
+            and left.due_date == right.due_date
             and left_extra == right_extra
         )
 
@@ -591,6 +596,8 @@ class Compactor:
         replacements: list[_Replacement] = []
         for summary in output["memories"]:
             source_ids = tuple(summary["source_memory_ids"])
+            if summary.get("type") == "todo" and len(source_ids) != 1:
+                raise CompactionError("independent todos cannot be merged by compaction")
             try:
                 source_candidates = [by_id[source_id.casefold()] for source_id in source_ids]
             except KeyError as error:
@@ -638,6 +645,7 @@ class Compactor:
             last_hit_at=source.memory.last_hit_at,
             status=source.memory.status,
             completed_at=source.memory.completed_at,
+            due_date=source.memory.due_date,
             extra=extra,
         )
         return history_id, historical, historical.to_markdown()

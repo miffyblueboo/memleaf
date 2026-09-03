@@ -4,8 +4,8 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **当前版本：0.2.19。**
-> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.2.19 通过 PyPI 分发。
+> **当前版本：0.2.20。**
+> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.2.20 通过 PyPI 分发。
 > **当前版本支持 Hermes 和 Codex。** Antigravity（反重力）不检测、不安装、不配置。
 
 ## 项目定位
@@ -50,12 +50,14 @@ memleaf 不会把整个 Vault 或整段历史对话自动塞进模型上下文�
 4. 只有需要引用事实时，才使用同一轮返回的 `retrieval_id` 调用 `read`；
 5. 根据读取到的关键记忆回答，不把所有候选全部读完。
 
+当用户询问当前待办、所有未完成工作、紧急事项或某个日期范围内必须完成的事项时，使用 `list_todos`，默认覆盖所有 Scope；持续分页直到 `has_more=false`，再用同一个 `retrieval_id` 读取所有匹配待办正文。`source/session_id/turn_id` 只用于来源追踪，不参与永久 knowledge 可见性。
+
 当前限制：
 
 - Scope Map 最多 20 项、约 2000 字符；
 - search 候选单页最多 20 项、约 4000 字符；
 - read 单页正文最多 2000 字符；
-- 受管理轮次最多读取 3 个不同记忆、累计 6000 个正文字符；
+- 同一受管理轮次可继续读取所有与问题相关的记忆；`read_count`/`read_chars` 仅用于审计，不再作为阻断配额；
 - `retrieval_id` 必须属于当前轮次，且必须先有成功的 `search` 才能 `read`；
 - `found`、`no_match` 和工具错误是不同状态，错误不能被伪装成无匹配；
 - `context()` 和 Python `search(view="full")` 作为兼容接口保留，但不属于自动检索路径。
@@ -138,12 +140,12 @@ python -m pip install -U memleaf && python -m memleaf install
 4. 激活 `memory.provider=memleaf`；
 5. 通过 Hermes 官方 CLI 配置 memleaf MCP；
 6. 配置 MCP lazy/idle 生命周期；
-7. 验证 MCP Server 能发现 11 个工具；
+7. 验证 MCP Server 能发现 12 个工具；
 8. 写入本地 Agent 状态索引。
 
 完成后重启 Hermes。
 
-如果没有检测到 Hermes、无法取得完整模型路由、Provider 激活失败或 MCP 的 11 工具验证失败，安装会明确返回失败，不会把未完成的接入报告为成功。
+如果没有检测到 Hermes、无法取得完整模型路由、Provider 激活失败或 MCP 的 12 工具验证失败，安装会明确返回失败，不会把未完成的接入报告为成功。
 
 仓库中的 `install.sh` 保留给源码开发、离线源码安装和故障排查；普通 PyPI 用户不需要执行它。
 

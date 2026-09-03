@@ -24,7 +24,7 @@ from .base import (
 
 
 _MCP_IDLE_TIMEOUT_SECONDS = 60
-_MCP_EXPECTED_TOOL_COUNT = 11
+_MCP_EXPECTED_TOOL_COUNT = 12
 
 
 def hermes_home_for_platform(

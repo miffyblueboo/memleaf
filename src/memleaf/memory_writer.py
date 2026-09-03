@@ -82,6 +82,7 @@ class MemoryWriter:
             and (ignore_sources or left.sources == right.sources)
             and left.status == right.status
             and left.completed_at == right.completed_at
+            and left.due_date == right.due_date
             and left_extra == right_extra
         )
 
@@ -263,9 +264,15 @@ class MemoryWriter:
         summary = request["summary"]
         memory_id = existing.memory_id if existing is not None else request["memory_id"]
         created = existing.created if existing is not None else now
-        status = summary.get("status")
+        status = summary.get("status") if "status" in summary else (existing.status if existing is not None else None)
         if summary["type"] == "todo" and status is None:
             status = "active"
+        due_date = summary.get("due_date") if "due_date" in summary else (existing.due_date if existing is not None else None)
+        completed_at = (
+            summary.get("completed_at")
+            if "completed_at" in summary
+            else existing.completed_at if existing is not None and status == "completed" else None
+        )
         extra = dict(existing.extra) if existing is not None else {}
         extra["source"] = request["turn"].source
         if request.get("explicit_remember") is True:
@@ -287,7 +294,8 @@ class MemoryWriter:
             hit_count=existing.hit_count if existing is not None else 0,
             last_hit_at=existing.last_hit_at if existing is not None else None,
             status=status,
-            completed_at=summary.get("completed_at"),
+            completed_at=completed_at,
+            due_date=due_date,
             extra=extra,
         )
 
@@ -315,6 +323,7 @@ class MemoryWriter:
             last_hit_at=existing.last_hit_at,
             status=existing.status,
             completed_at=existing.completed_at,
+            due_date=existing.due_date,
             extra=dict(existing.extra),
         )
 
@@ -356,6 +365,7 @@ class MemoryWriter:
             last_hit_at=old.last_hit_at,
             status=old.status,
             completed_at=old.completed_at,
+            due_date=old.due_date,
             extra=extra,
         )
         path = self.service.vault.memory_path(history_id, "history")

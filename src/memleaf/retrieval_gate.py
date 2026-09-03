@@ -20,8 +20,9 @@ from .vault import Vault
 
 
 MAX_GATE_RETRIES = 2
-MAX_READ_ITEMS = 3
-MAX_READ_CHARS = 6000
+# Deprecated compatibility symbols. They are audit-only and no longer enforce a per-turn cap.
+MAX_READ_ITEMS = None
+MAX_READ_CHARS = None
 MAX_READ_PAGE_CHARS = 2000
 GATE_TTL_SECONDS = 24 * 60 * 60
 MAX_LEDGER_ENTRIES = 256
@@ -38,6 +39,7 @@ _SAFE_ERROR_MESSAGES = {
     "retrieval_search_required": "a successful search is required before reading memory",
     "retrieval_call_id_invalid": "retrieval tool call id is invalid",
     "retrieval_read_budget_exceeded": "retrieval read budget exceeded",
+    "retrieval_todo_pagination_mismatch": "todo pagination does not match the current retrieval chain",
     "retrieval_full_view_forbidden": "use directory search followed by bounded read",
     "retrieval_reader_invalid": "retrieval reader returned an invalid result",
     "retrieval_ledger_unavailable": "retrieval gate state is unavailable",
@@ -179,6 +181,8 @@ def _public_state(retrieval_id: str, entry: Mapping[str, Any]) -> dict[str, Any]
         "gate_retries": int(entry.get("gate_retries", 0) or 0),
         "read_count": read_count,
         "read_chars": int(entry.get("read_chars", 0) or 0),
+        "todo_list_pending": entry.get("todo_list_pending") is True,
+        "todo_list_pages": int(entry.get("todo_list_pages", 0) or 0),
         "expires_at": entry.get("expires_at"),
     }
 
@@ -227,6 +231,10 @@ def begin_turn(
             "continuation_pending": False,
             "continuation_marker": "",
             "turn_aliases": [],
+            "todo_list_pending": False,
+            "todo_list_pages": 0,
+            "todo_list_filter_hash": "",
+            "todo_list_expected_cursor_hash": "",
         }
         _prune_entries(entries, now)
         _write_ledger(path, ledger)
@@ -451,6 +459,96 @@ def observe_search(
         _write_ledger(path, ledger)
 
 
+
+def todo_filter_key(arguments: Mapping[str, Any]) -> str:
+    """Return a stable, non-secret description of list_todos filters for chain validation."""
+
+    payload = {
+        "status": arguments.get("status", "active"),
+        "scope": arguments.get("scope"),
+        "due_from": arguments.get("due_from"),
+        "due_to": arguments.get("due_to"),
+        "include_overdue": arguments.get("include_overdue", True),
+        "include_unscheduled": arguments.get("include_unscheduled", True),
+    }
+    import json
+
+    return json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
+
+
+def _optional_hash(value: Any) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str) or len(value) > 4096 or "\x00" in value:
+        raise RetrievalGateError("retrieval_todo_pagination_mismatch")
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def observe_todo_list(
+    vault: Vault | Path | str,
+    retrieval_id: str,
+    status: str,
+    call_id: str,
+    *,
+    filter_key: str,
+    cursor: str | None,
+    has_more: bool,
+    next_cursor: str | None,
+    current_source: str | None = None,
+) -> None:
+    """Record one real list_todos page and enforce a single current-turn cursor chain."""
+
+    retrieval_id = _retrieval_id(retrieval_id)
+    if status not in _SEARCH_STATUSES or type(has_more) is not bool or not isinstance(filter_key, str):
+        raise RetrievalGateError("retrieval_status_invalid")
+    _identity(call_id, "call_id")
+    if current_source is not None:
+        current_source = _identity(current_source, "source")
+    call_hash = hashlib.sha256(call_id.encode("utf-8")).hexdigest()
+    filter_hash = hashlib.sha256(filter_key.encode("utf-8")).hexdigest()
+    cursor_hash = _optional_hash(cursor)
+    next_hash = _optional_hash(next_cursor)
+    if status == "no_match" and has_more:
+        raise RetrievalGateError("retrieval_status_invalid")
+    if status == "found" and has_more and not next_hash:
+        raise RetrievalGateError("retrieval_status_invalid")
+    root = _coerce_vault(vault)
+    path = _ledger_path(root)
+    with _with_lock(root):
+        ledger = _read_ledger(path)
+        entry = _entry_for(ledger, retrieval_id)
+        if current_source is not None and not _is_current_entry(ledger["entries"], retrieval_id, entry, current_source):
+            raise RetrievalGateError("retrieval_turn_mismatch")
+        seen = entry.get("seen_call_hashes")
+        if not isinstance(seen, list):
+            seen = []
+        if call_hash in seen:
+            return
+        pending = entry.get("todo_list_pending") is True
+        previous_filter = entry.get("todo_list_filter_hash") if isinstance(entry.get("todo_list_filter_hash"), str) else ""
+        expected_cursor = entry.get("todo_list_expected_cursor_hash") if isinstance(entry.get("todo_list_expected_cursor_hash"), str) else ""
+        if status != "error":
+            if cursor_hash:
+                if not pending or previous_filter != filter_hash or expected_cursor != cursor_hash:
+                    raise RetrievalGateError("retrieval_todo_pagination_mismatch")
+            else:
+                if pending and previous_filter and previous_filter != filter_hash:
+                    raise RetrievalGateError("retrieval_todo_pagination_mismatch")
+                entry["todo_list_pages"] = 0
+            entry["todo_list_filter_hash"] = filter_hash
+            entry["todo_list_pages"] = int(entry.get("todo_list_pages", 0) or 0) + 1
+            entry["todo_list_pending"] = bool(has_more)
+            entry["todo_list_expected_cursor_hash"] = next_hash if has_more else ""
+        entry["status"] = {"found": "FOUND", "no_match": "NO_MATCH", "error": "ERROR"}[status]
+        seen = [item for item in seen if isinstance(item, str)][-255:]
+        seen.append(call_hash)
+        entry["seen_call_hashes"] = seen
+        entry["search_attempts"] = int(entry.get("search_attempts", 0) or 0) + 1
+        entry["continuation_pending"] = False
+        ledger["entries"][retrieval_id] = entry
+        _write_ledger(path, ledger)
+
+
 def request_gate_retry(vault: Vault | Path | str, retrieval_id: str) -> int:
     """Record one Stop continuation request and return its 1-based count."""
 
@@ -528,13 +626,7 @@ def guarded_read(
     *,
     current_source: str | None = None,
 ) -> Mapping[str, Any] | None:
-    """Read one page under the per-turn distinct-id and character budgets.
-
-    The lock is held while invoking ``reader``.  The reader must only access
-    the memory store; it must not call back into this module.  Keeping the
-    reservation and the actual page read in one critical section prevents two
-    concurrent host tool calls from spending the same remaining budget.
-    """
+    """Read one bounded page while keeping per-turn read counters for audit only."""
 
     retrieval_id = _retrieval_id(retrieval_id)
     memory_id = _identity(memory_id, "memory_id")
@@ -556,26 +648,18 @@ def guarded_read(
             read_ids = []
         read_ids = [item for item in read_ids if isinstance(item, str)]
         read_chars = int(entry.get("read_chars", 0) or 0)
-        if read_chars >= MAX_READ_CHARS:
-            raise RetrievalGateError("retrieval_read_budget_exceeded")
-        if memory_id not in read_ids and len(read_ids) >= MAX_READ_ITEMS:
-            raise RetrievalGateError("retrieval_read_budget_exceeded")
-        allowed_chars = min(MAX_READ_PAGE_CHARS, MAX_READ_CHARS - read_chars)
-        # A failed read does not reserve an id or consume characters.  Keep
-        # the reader's typed error intact (for example a version mismatch) so
-        # the MCP adapter can return its existing safe recovery code.
-        result = reader(allowed_chars)
+        result = reader(MAX_READ_PAGE_CHARS)
         if result is None:
             return None
         if not isinstance(result, Mapping):
             raise RetrievalGateError("retrieval_reader_invalid")
         body = result.get("body")
-        if not isinstance(body, str) or len(body) > allowed_chars:
+        if not isinstance(body, str) or len(body) > MAX_READ_PAGE_CHARS:
             raise RetrievalGateError("retrieval_reader_invalid")
         if body:
             if memory_id not in read_ids:
                 read_ids.append(memory_id)
-            entry["read_ids"] = read_ids[-MAX_READ_ITEMS:]
+            entry["read_ids"] = read_ids
             entry["read_chars"] = read_chars + len(body)
         ledger["entries"][retrieval_id] = entry
         _write_ledger(path, ledger)
@@ -599,6 +683,8 @@ __all__ = [
     "guarded_read",
     "mark_degraded",
     "observe_search",
+    "observe_todo_list",
+    "todo_filter_key",
     "request_gate_retry",
     "validate_current_turn",
     "validate_turn",
