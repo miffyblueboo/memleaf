@@ -108,6 +108,11 @@ _UNTRUSTED_TOOL_RESULT_TAG = "<untrusted_tool_result"
 _UNTRUSTED_TOOL_RESULT_END = "</untrusted_tool_result>"
 
 
+_MAX_MAIL_EVIDENCE_ITEMS = 8
+_MAIL_ADDRESS_RE = re.compile(r"(?i)([A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,63}))")
+_MAIL_TOOL_RE = re.compile(r"(?:gmail|outlook|mail|email)", re.IGNORECASE)
+
+
 class _MCPToolError(RuntimeError):
     """Safe structured model error returned by the local MCP boundary."""
 
@@ -1152,6 +1157,83 @@ def _resolve_command(config: Mapping[str, Any]) -> Optional[str]:
     )
 
 
+def _bounded_mail_evidence(messages: Optional[List[Dict[str, Any]]]) -> list[dict[str, str]]:
+    """Extract only message id/subject/sender/domain from visible mail tool results."""
+
+    calls = _visible_tool_calls(messages)
+    results = _visible_tool_results(messages)
+    used: set[int] = set()
+    output: list[dict[str, str]] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+
+    def add_record(mapping: Mapping[str, Any]) -> None:
+        if len(output) >= _MAX_MAIL_EVIDENCE_ITEMS:
+            return
+        lowered = {str(key).casefold(): value for key, value in mapping.items()}
+        message_id = next((lowered.get(key) for key in ("message_id", "messageid", "id") if isinstance(lowered.get(key), (str, int))), None)
+        subject = next((lowered.get(key) for key in ("subject", "title") if isinstance(lowered.get(key), str)), None)
+        sender = next((lowered.get(key) for key in ("sender", "from", "from_address", "from_email", "email") if isinstance(lowered.get(key), str)), None)
+        domain = next((lowered.get(key) for key in ("domain", "sender_domain") if isinstance(lowered.get(key), str)), None)
+        if isinstance(sender, str):
+            match = _MAIL_ADDRESS_RE.search(sender)
+            if match and not domain:
+                domain = match.group(2)
+        item: dict[str, str] = {}
+        for key, value, limit in (
+            ("message_id", message_id, 160),
+            ("subject", subject, 320),
+            ("sender", sender, 320),
+            ("domain", domain, 253),
+        ):
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text or any(ch in text for ch in "\x00\r\n"):
+                continue
+            if key == "domain":
+                text = text.casefold().lstrip("@")
+                if not re.fullmatch(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", text):
+                    continue
+            item[key] = text[:limit]
+        if "domain" not in item:
+            return
+        fingerprint = tuple(sorted(item.items()))
+        if fingerprint not in seen:
+            seen.add(fingerprint)
+            output.append(item)
+
+    def visit(value: Any, depth: int = 0) -> None:
+        if depth > 4 or len(output) >= _MAX_MAIL_EVIDENCE_ITEMS:
+            return
+        decoded = _decode_hermes_tool_result(value)
+        if decoded is _MISSING_TOOL_RESULT:
+            return
+        if decoded is not value:
+            visit(decoded, depth + 1)
+            return
+        if isinstance(value, Mapping):
+            add_record(value)
+            for child in value.values():
+                if isinstance(child, (Mapping, list, tuple)):
+                    visit(child, depth + 1)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child, depth + 1)
+
+    ordinal = 0
+    for call in calls:
+        name = call.get("name")
+        if not isinstance(name, str) or not _MAIL_TOOL_RE.search(name):
+            continue
+        ordinal += 1
+        payload = _tool_result_for_call(call, calls, results, used)
+        if payload is not _CALL_FAILED:
+            visit(payload)
+        if len(output) >= _MAX_MAIL_EVIDENCE_ITEMS:
+            break
+    return output
+
+
 class MemleafMemoryProvider(MemoryProvider):
     """Use the local memleaf vault as Hermes' single external provider."""
 
@@ -2115,7 +2197,15 @@ class MemleafMemoryProvider(MemoryProvider):
         )
         return result
 
-    def _capture_visible(self, *, session_id: str, turn_id: str, role: str, content: str) -> bool:
+    def _capture_visible(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        role: str,
+        content: str,
+        tool_evidence: Optional[List[Dict[str, str]]] = None,
+    ) -> bool:
         result = self._call(
             "capture",
             {
@@ -2126,6 +2216,7 @@ class MemleafMemoryProvider(MemoryProvider):
                 "content": content,
                 "record": True,
                 "visible": True,
+                **({"tool_evidence": tool_evidence} if tool_evidence else {}),
             },
             stage=f"capture_{role}",
             session_id=session_id,
@@ -2414,12 +2505,14 @@ class MemleafMemoryProvider(MemoryProvider):
                     self._last_retrieval_observation = observation
                     self._last_retrieval_audit = str(audit_state.get("status") or "SEARCH_UNKNOWN")
                 lineage_ready = self._retry_pending_lineage(effective_session)
+                mail_evidence = _bounded_mail_evidence(messages)
                 for role, content in visible_events:
                     if not self._capture_visible(
                         session_id=effective_session,
                         turn_id=turn_id,
                         role=role,
                         content=content,
+                        tool_evidence=mail_evidence if role == "assistant" else None,
                     ):
                         return
                 if not self._auto_process:

@@ -14,7 +14,8 @@ class ScopeError(ValueError):
 
 _SCOPE_KEY = re.compile(r"^(domain|portfolio|project):([^\s/:\\\x00\r\n]+)$")
 _ASCII_TERM = re.compile(r"[a-z0-9]+(?:[ ._-][a-z0-9]+)*")
-_NODE_FIELDS = frozenset(("aliases", "paths", "parent", "children"))
+_NODE_FIELDS = frozenset(("aliases", "paths", "identifiers", "parent", "children"))
+_DOMAIN_IDENTIFIER = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$", re.IGNORECASE)
 
 
 def validate_scope_key(value: Any, *, allow_special: bool = True) -> str:
@@ -62,6 +63,20 @@ def _string_list(value: Any, field: str) -> list[str]:
     return result
 
 
+
+def _domain_identifier_list(value: Any) -> list[str]:
+    values = _string_list(value, "identifiers")
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        domain = item.strip().casefold().lstrip("@")
+        if not _DOMAIN_IDENTIFIER.fullmatch(domain):
+            raise ScopeError("invalid scope identifiers")
+        if domain not in seen:
+            seen.add(domain)
+            result.append(domain)
+    return result
+
 def _validate_node(scope: str, raw: Any) -> dict[str, Any]:
     if not isinstance(raw, Mapping):
         raise ScopeError("scope node must be a mapping")
@@ -70,6 +85,7 @@ def _validate_node(scope: str, raw: Any) -> dict[str, Any]:
     node = dict(raw)
     aliases = _string_list(node["aliases"], "aliases") if "aliases" in node else []
     paths = _string_list(node["paths"], "paths") if "paths" in node else []
+    identifiers = _domain_identifier_list(node["identifiers"]) if "identifiers" in node else []
     parent = node.get("parent")
     if parent is not None:
         try:
@@ -95,6 +111,8 @@ def _validate_node(scope: str, raw: Any) -> dict[str, Any]:
         node["aliases"] = aliases
     if "paths" in node:
         node["paths"] = paths
+    if "identifiers" in node:
+        node["identifiers"] = identifiers
     if "parent" in node:
         node["parent"] = parent
     if "children" in node:
@@ -285,6 +303,38 @@ def project_scope_matches_text(query: Any, config: Mapping[str, Any]) -> list[st
     return sorted(matches, key=str.casefold)
 
 
+
+def project_scopes_for_domains(domains: Iterable[str], config: Mapping[str, Any]) -> list[str]:
+    """Resolve bounded mail-domain evidence to configured project scopes.
+
+    Identifiers are private configuration metadata. They are intentionally not
+    projected into the Scope Map or model prompts.
+    """
+
+    registry = validate_scope_registry(config.get("scopes", {}) if isinstance(config, Mapping) else {})
+    normalized: set[str] = set()
+    for raw in domains:
+        if not isinstance(raw, str):
+            continue
+        value = raw.strip().casefold().lstrip("@")
+        if _DOMAIN_IDENTIFIER.fullmatch(value):
+            normalized.add(value)
+    matches: set[str] = set()
+    for scope, node in registry.items():
+        if not scope.startswith("project:"):
+            continue
+        identifiers = node.get("identifiers", [])
+        if not isinstance(identifiers, list):
+            continue
+        for identifier in identifiers:
+            if not isinstance(identifier, str):
+                continue
+            key = identifier.casefold()
+            if any(domain == key or domain.endswith("." + key) for domain in normalized):
+                matches.add(scope)
+                break
+    return sorted(matches, key=str.casefold)
+
 def _resolved_path(value: str | Path, *, base_dir: Path | None = None) -> Path:
     path = Path(value).expanduser()
     if not path.is_absolute() and base_dir is not None:
@@ -332,6 +382,7 @@ __all__ = [
     "ScopeError",
     "normalize_scopes",
     "project_scope_matches_text",
+    "project_scopes_for_domains",
     "register_scope_nodes",
     "resolve_project_path_scope",
     "resolve_query_project_scope",

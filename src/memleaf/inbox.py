@@ -13,7 +13,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from .index import EVENT_V2_BLOCK, extract_event_metadata
 
@@ -32,6 +32,7 @@ class InboxEvent:
     content: str
     turn_id: Optional[str] = None
     timestamp: Optional[str] = None
+    tool_evidence: tuple[dict[str, str], ...] = ()
     legacy: bool = False
 
     @property
@@ -107,6 +108,30 @@ def _event_metadata(text: str) -> list[dict[str, Any]]:
     return result
 
 
+
+def _bounded_tool_evidence(value: Any) -> tuple[dict[str, str], ...]:
+    if not isinstance(value, list):
+        return ()
+    allowed = {"message_id", "subject", "sender", "domain"}
+    result: list[dict[str, str]] = []
+    for raw in value[:8]:
+        if not isinstance(raw, Mapping) or set(raw) - allowed:
+            continue
+        item = {
+            str(key): str(field)
+            for key, field in raw.items()
+            if key in allowed
+            and isinstance(field, str)
+            and field
+            and "\x00" not in field
+            and "\r" not in field
+            and "\n" not in field
+            and len(field) <= 320
+        }
+        if item:
+            result.append(item)
+    return tuple(result)
+
 def parse_inbox_text(
     text: str,
     *,
@@ -180,6 +205,7 @@ def parse_inbox_text(
                     content=str(metadata.get("content", "")),
                     turn_id=display_turn_id if isinstance(display_turn_id, str) else None,
                     timestamp=metadata.get("timestamp") if isinstance(metadata.get("timestamp"), str) else None,
+                    tool_evidence=_bounded_tool_evidence(metadata.get("tool_evidence")),
                     legacy=not groupable,
                 )
             )
@@ -195,6 +221,7 @@ def parse_inbox_text(
                 content=str(metadata.get("content", "")),
                 turn_id=display_turn_id,
                 timestamp=metadata.get("timestamp") if isinstance(metadata.get("timestamp"), str) else None,
+                tool_evidence=_bounded_tool_evidence(metadata.get("tool_evidence")),
             )
         )
 

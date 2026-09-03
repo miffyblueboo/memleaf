@@ -6,7 +6,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 from .index import (
     EVENT_CONTENT,
@@ -27,6 +27,45 @@ from .vault import Vault, safe_component
 def _timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
+
+
+_MAIL_EVIDENCE_FIELDS = frozenset({"message_id", "subject", "sender", "domain"})
+_MAIL_DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$", re.IGNORECASE)
+_MAX_MAIL_EVIDENCE_ITEMS = 8
+_MAX_MAIL_EVIDENCE_TEXT = 320
+
+
+def _normalize_tool_evidence(value: Any) -> list[dict[str, str]]:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("tool evidence must be a list")
+    result: list[dict[str, str]] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    for raw in list(value)[:_MAX_MAIL_EVIDENCE_ITEMS]:
+        if not isinstance(raw, Mapping) or set(raw) - _MAIL_EVIDENCE_FIELDS:
+            raise ValueError("invalid tool evidence record")
+        item: dict[str, str] = {}
+        for key in _MAIL_EVIDENCE_FIELDS:
+            field = raw.get(key)
+            if field is None:
+                continue
+            if not isinstance(field, str) or not field.strip() or any(ch in field for ch in "\x00\r\n"):
+                raise ValueError("invalid tool evidence field")
+            text = redact_text(field.strip())[:_MAX_MAIL_EVIDENCE_TEXT]
+            if key == "domain":
+                text = text.casefold().lstrip("@")
+                if not _MAIL_DOMAIN_RE.fullmatch(text):
+                    raise ValueError("invalid tool evidence domain")
+            item[key] = text
+        if not item:
+            continue
+        fingerprint = tuple(sorted(item.items()))
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        result.append(item)
+    return result
 
 def _event_id(source: str, session_id: str, turn_id: str, role: str, event_id: Optional[str]) -> str:
     if event_id is not None:
@@ -149,6 +188,7 @@ def _append_event(
     event_digest: str,
     event_turn_key: str,
     turn_index: int,
+    tool_evidence: list[dict[str, str]] | None = None,
 ) -> str:
     timestamp = _timestamp()
     if not existing:
@@ -168,6 +208,8 @@ def _append_event(
         "turn_index": turn_index,
         "timestamp": timestamp,
     }
+    if tool_evidence:
+        metadata["tool_evidence"] = [dict(item) for item in tool_evidence]
     metadata_line = json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return (
         f"{updated}{EVENT_START}\n"
@@ -207,6 +249,7 @@ def capture_event(
     event_id: Optional[str] = None,
     record: bool = True,
     visible: bool = True,
+    tool_evidence: Any = None,
 ) -> CaptureResult:
     """Capture one visible event; all persisted text is redacted first."""
 
@@ -222,6 +265,7 @@ def capture_event(
     resolved_turn_key = turn_key(turn_id)
     persisted_turn_id = _safe_turn_id(turn_id)
     safe_content = escape_event_markers(redact_text(content))
+    safe_tool_evidence = _normalize_tool_evidence(tool_evidence)
     if not record or not visible or role not in ("user", "assistant"):
         return CaptureResult(resolved_event_id, stored=False, duplicate=False, content=safe_content)
 
@@ -266,6 +310,7 @@ def capture_event(
             resolved_event_key,
             resolved_turn_key,
             turn_index,
+            safe_tool_evidence,
         )
         atomic_write_text(path, updated)
 

@@ -212,8 +212,8 @@ class ExtractionQualityRegressionTests(unittest.TestCase):
             "mixed-repeated",
             [user_key, assistant_key],
             memory=(
-                "金元顺安实施计划采用达梦和东方通，并要求部署测试环境在"
-                "2026-09-10前完成。"
+                "金元顺安实施计划采用达梦和东方通；背景说明暂未定稿；"
+                "并要求部署测试环境在2026-09-10前完成。"
             ),
             type="project",
             scopes=project_scope,
