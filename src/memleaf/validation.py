@@ -662,6 +662,46 @@ def is_mixed_future_use_text(value: Any) -> bool:
     return bool(todo_indexes - durable_indexes)
 
 
+
+def split_mixed_future_use_text(value: Any) -> list[tuple[str, str]] | None:
+    """Safely split one same-scope durable rule/plan plus unfinished action.
+
+    Every clause must classify exactly once. Ambiguous or unclassified text
+    returns ``None`` so the existing deferred-candidate safety boundary stays
+    intact.
+    """
+
+    if not isinstance(value, str):
+        return None
+    clauses = _split_future_use_clauses(value)
+    if len(clauses) < 2:
+        return None
+    result: list[tuple[str, str]] = []
+    durable_count = 0
+    todo_count = 0
+    for clause in clauses:
+        folded = clause.casefold()
+        plan = is_project_plan_text(clause)
+        explicit_plan_adjustment = bool(_ACTION_PLAN_ADJUST.search(clause))
+        todo = (
+            (bool(_CALENDAR_TEXT.search(clause)) and any(marker in folded for marker in _DATED_TODO_MARKERS))
+            or is_actionable_todo_text(clause)
+        ) and (not plan or explicit_plan_adjustment)
+        durable = (plan and not explicit_plan_adjustment) or any(
+            marker in folded for marker in _PROJECT_RULE_MARKERS
+        )
+        if durable == todo:
+            return None
+        if todo:
+            result.append((clause, "todo"))
+            todo_count += 1
+        else:
+            result.append((clause, "project" if is_project_plan_text(clause) else "fact"))
+            durable_count += 1
+    if not durable_count or not todo_count:
+        return None
+    return result
+
 def is_aggregate_operational_text(value: Any) -> bool:
     """Recognize a combined operational digest, not one concrete work item.
 
@@ -1728,6 +1768,7 @@ parse_summary_output = parse_summarize_output
 
 
 __all__ = [
+    "split_mixed_future_use_text",
     "MEMORY_TYPES",
     "MODEL_VALIDATION_DETAILS",
     "MODEL_VALIDATION_REASONS",

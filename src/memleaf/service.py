@@ -216,6 +216,7 @@ class Memleaf:
         *,
         record: bool = True,
         visible: bool = True,
+        tool_evidence: Any = None,
     ) -> CaptureResult:
         """Capture one visible user/assistant event into inbox."""
 
@@ -229,6 +230,7 @@ class Memleaf:
             event_id=event_id,
             record=record,
             visible=visible,
+            tool_evidence=tool_evidence,
         )
 
     def session_lineage(

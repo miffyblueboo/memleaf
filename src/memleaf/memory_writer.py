@@ -160,6 +160,26 @@ class MemoryWriter:
         duplicate_ids: set[str] = set()
         memory_ids: set[str] = set()
         for request in requests:
+            correction = request.get("scope_correction")
+            if isinstance(correction, Mapping) and correction.get("survivor_memory_id"):
+                target_id = correction.get("target_memory_id")
+                survivor_id = correction.get("survivor_memory_id")
+                if not isinstance(target_id, str) or not isinstance(survivor_id, str) or target_id == survivor_id:
+                    raise self._preflight_error("invalid scope correction targets")
+                target_record = active.get(target_id)
+                survivor_record = active.get(survivor_id)
+                if target_record is None or survivor_record is None:
+                    raise self._preflight_error("scope correction target is not active")
+                target_memory = getattr(target_record, "memory", target_record)
+                survivor_memory = getattr(survivor_record, "memory", survivor_record)
+                if not isinstance(target_memory, Memory) or not isinstance(survivor_memory, Memory):
+                    raise self._preflight_error("scope correction memory is invalid")
+                if target_memory.type != survivor_memory.type or survivor_memory.type != request["summary"].get("type"):
+                    raise self._preflight_error("scope correction type mismatch")
+                if request.get("memory_id") != survivor_id:
+                    raise self._preflight_error("scope correction survivor id mismatch")
+                active.pop(target_id, None)
+                continue
             summary = request["summary"]
             duplicate_id = request.get("duplicate_memory_id")
             if duplicate_id is not None:
@@ -338,7 +358,14 @@ class MemoryWriter:
             values = [scope for scope in values if scope != "unscoped"]
         return values or ["global"]
 
-    def _write_history(self, old: Memory, *, superseded_by: str, archived_at: str) -> str:
+    def _write_history(
+        self,
+        old: Memory,
+        *,
+        superseded_by: str,
+        archived_at: str,
+        invalidated_reason: str | None = None,
+    ) -> str:
         history_id = self._history_id(old)
         extra = dict(old.extra)
         extra.update(
@@ -348,6 +375,8 @@ class MemoryWriter:
                 "archived_at": archived_at,
             }
         )
+        if invalidated_reason is not None:
+            extra["invalidated_reason"] = invalidated_reason
         historical = Memory(
             memory_id=history_id,
             title=old.title,
@@ -390,6 +419,32 @@ class MemoryWriter:
         active_records: Mapping[str, Any] | None = None,
     ) -> Memory:
         active = active_records if active_records is not None else self._active_records()
+        correction = request.get("scope_correction")
+        if isinstance(correction, Mapping) and correction.get("survivor_memory_id"):
+            target_id = correction.get("target_memory_id")
+            survivor_id = correction.get("survivor_memory_id")
+            target_record = active.get(target_id)
+            survivor_record = active.get(survivor_id)
+            if target_record is None or survivor_record is None:
+                raise ModelOutputError("scope correction target is not active")
+            target = getattr(target_record, "memory", target_record)
+            survivor = getattr(survivor_record, "memory", survivor_record)
+            if not isinstance(target, Memory) or not isinstance(survivor, Memory):
+                raise ModelOutputError("scope correction memory is invalid")
+            self._write_history(
+                target,
+                superseded_by=survivor.memory_id,
+                archived_at=now,
+                invalidated_reason="scope_correction",
+            )
+            path = self.service.vault.memory_path(target.memory_id, "knowledge")
+            if path.is_symlink():
+                raise ModelOutputError("unsafe knowledge path")
+            if path.exists():
+                path.unlink()
+            if isinstance(active, dict):
+                active.pop(target.memory_id, None)
+            return survivor
         duplicate_id = request.get("duplicate_memory_id")
         if duplicate_id is not None:
             existing_record = active.get(duplicate_id)
@@ -448,7 +503,14 @@ class MemoryWriter:
             self.last_noop_memory_ids.add(request["memory_id"])
             return existing
         if existing is not None:
-            self._write_history(existing, superseded_by=desired.memory_id, archived_at=now)
+            correction = request.get("scope_correction")
+            invalidated_reason = "scope_correction" if isinstance(correction, Mapping) else None
+            self._write_history(
+                existing,
+                superseded_by=desired.memory_id,
+                archived_at=now,
+                invalidated_reason=invalidated_reason,
+            )
         path = self.service.vault.memory_path(desired.memory_id, "knowledge")
         if path.is_symlink():
             raise ModelOutputError("unsafe knowledge path")

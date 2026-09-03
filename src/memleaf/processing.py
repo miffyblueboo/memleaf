@@ -53,6 +53,7 @@ from .retrieval import candidate_matches_query, filter_by_scope, normalize_term
 from .scope_state import (
     ScopeError,
     normalize_scopes,
+    project_scopes_for_domains,
     register_scope_nodes,
 )
 from .scope_maintenance import ScopeMaintainer, ScopeMaintenanceError, scope_registry_projection
@@ -70,6 +71,7 @@ from .validation import (
     is_actionable_todo_text,
     is_mixed_future_use_text,
     is_project_plan_text,
+    split_mixed_future_use_text,
 )
 from .vault import safe_component
 
@@ -139,6 +141,13 @@ _REWORK_ACTION_MARKERS = (
     "完善", "修订", "重新", "更新", "rework", "revise", "redraw", "fix", "update", "change",
 )
 
+
+
+_SCOPE_CORRECTION_MARKER_RE = re.compile(
+    r"(?:不是|并非|不属于|归错|归属错误|错误归属|应属于|应该属于|改归|改为|纠正为|"
+    r"wrong\s+(?:project|scope)|belongs?\s+to|correct\s+(?:project|scope))",
+    re.IGNORECASE,
+)
 
 def _completion_match_is_declarative(folded: str, match: re.Match[str]) -> bool:
     """Keep rework recovery limited to an explicit completion statement."""
@@ -2209,6 +2218,208 @@ class Processor:
                     return None
         return None
 
+    def _turn_evidence_project_scope(
+        self,
+        turn: InboxTurn,
+        config: Mapping[str, Any],
+    ) -> str | None:
+        domains: list[str] = []
+        for event in turn.events:
+            for item in getattr(event, "tool_evidence", ()):
+                if isinstance(item, Mapping) and isinstance(item.get("domain"), str):
+                    domains.append(item["domain"])
+        matches = project_scopes_for_domains(domains, config)
+        return matches[0] if len(matches) == 1 else None
+
+    def _scope_evidence_conflict(
+        self,
+        candidate: Mapping[str, Any],
+        turn: InboxTurn,
+        config: Mapping[str, Any],
+    ) -> bool:
+        evidence_scope = self._turn_evidence_project_scope(turn, config)
+        if evidence_scope is None or candidate.get("worth") is not True:
+            return False
+        selected = [
+            value
+            for value in candidate.get("scopes", [])
+            if isinstance(value, str) and value.startswith("project:")
+        ]
+        return bool(selected) and all(value.casefold() != evidence_scope.casefold() for value in selected)
+
+    @staticmethod
+    def _scope_terms_present(text: str, scope: str, config: Mapping[str, Any]) -> bool:
+        terms = [scope, scope.partition(":")[2]]
+        node = config.get("scopes", {}).get(scope) if isinstance(config.get("scopes", {}), Mapping) else None
+        if isinstance(node, Mapping) and isinstance(node.get("aliases"), list):
+            terms.extend(item for item in node["aliases"] if isinstance(item, str))
+        folded = text.casefold()
+        return any(term.casefold() in folded for term in terms if term)
+
+    def _scope_correction_plan(
+        self,
+        candidate: Mapping[str, Any],
+        turn: InboxTurn,
+        config: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Authorize one explicit cross-project correction without guessing.
+
+        The current user turn must name exactly two configured project scopes
+        under explicit correction wording. A model-provided target is checked
+        against that evidence; when it is omitted, Core may recover exactly one
+        same-type, same-topic active memory from the explicitly named old
+        scope. Zero or multiple matches stay deferred rather than becoming a
+        cross-scope CREATE.
+        """
+
+        if candidate.get("worth") is not True or not isinstance(candidate.get("type"), str):
+            return None
+        new_projects = [
+            value for value in candidate.get("scopes", [])
+            if isinstance(value, str) and value.startswith("project:")
+        ]
+        if len(new_projects) != 1:
+            return None
+        new_scope = new_projects[0]
+        user_text = " ".join(
+            event.content for event in turn.events
+            if event.role == "user" and isinstance(event.content, str)
+        ).strip()
+        if not user_text or not _SCOPE_CORRECTION_MARKER_RE.search(user_text):
+            return None
+        scopes = config.get("scopes", {}) if isinstance(config.get("scopes", {}), Mapping) else {}
+        mentioned = [
+            scope for scope in scopes
+            if isinstance(scope, str)
+            and scope.startswith("project:")
+            and self._scope_terms_present(user_text, scope, config)
+        ]
+        mentioned = list(dict.fromkeys(mentioned))
+        if len(mentioned) != 2 or all(scope.casefold() != new_scope.casefold() for scope in mentioned):
+            return None
+        old_scope = next(scope for scope in mentioned if scope.casefold() != new_scope.casefold())
+
+        topic = str(candidate.get("memory") or "")
+        removable_terms: list[str] = []
+        for scope in (old_scope, new_scope):
+            removable_terms.extend((scope, scope.partition(":")[2]))
+            node = scopes.get(scope)
+            if isinstance(node, Mapping) and isinstance(node.get("aliases"), list):
+                removable_terms.extend(item for item in node["aliases"] if isinstance(item, str))
+        for term in sorted({item for item in removable_terms if item}, key=len, reverse=True):
+            topic = re.sub(re.escape(term), " ", topic, flags=re.IGNORECASE)
+        topic = re.sub(r"[\s:：，,；;。.!！?？()（）\[\]【】_-]+", " ", topic).strip()
+        if len(normalize_term(topic)) < 4:
+            return {
+                "target_memory_id": None,
+                "old_scope": old_scope,
+                "new_scope": new_scope,
+                "survivor_memory_id": None,
+                "ambiguous": True,
+                "unresolved": True,
+            }
+
+        try:
+            with self.service.vault.lock():
+                records = self.service._read_memories_unlocked("knowledge")
+        except (OSError, UnicodeError, ValueError, TypeError):
+            return None
+        eligible_old: list[Memory] = []
+        eligible_new: list[Memory] = []
+        for record in records:
+            memory = record.memory
+            if memory.type != candidate.get("type"):
+                continue
+            if filter_by_scope([memory], [old_scope], config) and candidate_matches_query(memory, topic):
+                eligible_old.append(memory)
+            if filter_by_scope([memory], [new_scope], config) and candidate_matches_query(memory, topic):
+                eligible_new.append(memory)
+
+        target_id = candidate.get("update_memory_id")
+        target: Memory | None = None
+        if isinstance(target_id, str) and target_id:
+            selected = self._active_memory_by_id(target_id)
+            if (
+                selected is not None
+                and selected.type == candidate.get("type")
+                and any(memory.memory_id.casefold() == selected.memory_id.casefold() for memory in eligible_old)
+            ):
+                target = selected
+            else:
+                return {
+                    "target_memory_id": None,
+                    "old_scope": old_scope,
+                    "new_scope": new_scope,
+                    "survivor_memory_id": None,
+                    "ambiguous": True,
+                    "unresolved": True,
+                }
+        elif len(eligible_old) == 1:
+            target = eligible_old[0]
+        else:
+            return {
+                "target_memory_id": None,
+                "old_scope": old_scope,
+                "new_scope": new_scope,
+                "survivor_memory_id": None,
+                "ambiguous": True,
+                "unresolved": True,
+            }
+
+        survivors = [
+            memory for memory in eligible_new
+            if memory.memory_id.casefold() != target.memory_id.casefold()
+        ]
+        return {
+            "target_memory_id": target.memory_id,
+            "old_scope": old_scope,
+            "new_scope": new_scope,
+            "survivor_memory_id": survivors[0].memory_id if len(survivors) == 1 else None,
+            "ambiguous": len(survivors) > 1,
+            "unresolved": False,
+        }
+
+    def _scope_correction_request(
+        self,
+        candidate: Mapping[str, Any],
+        turn: InboxTurn,
+        plan: Mapping[str, Any],
+        *,
+        conversation_title: str,
+        native_refs: Iterable[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        survivor_id = plan.get("survivor_memory_id")
+        survivor = self._active_memory_by_id(survivor_id)
+        if survivor is None:
+            raise ProcessingError("scope correction survivor disappeared")
+        summary = {
+            "title": survivor.title,
+            "body": survivor.body,
+            "tags": list(survivor.tags),
+            "type": survivor.type,
+            "scopes": list(survivor.scopes),
+            "scope_source": survivor.scope_source,
+            "aliases": list(survivor.aliases),
+            "keywords": list(survivor.keywords),
+            "sources": [],
+            "scope_operations": [],
+            "status": survivor.status,
+            "completed_at": survivor.completed_at,
+            "due_date": survivor.due_date,
+        }
+        return {
+            "summary": summary,
+            "turn": turn,
+            "candidate_id": str(candidate["candidate_id"]),
+            "memory_id": survivor.memory_id,
+            "event_key": turn.event_keys[0] if turn.event_keys else "",
+            "turn_id": "",
+            "conversation_title": conversation_title,
+            "explicit_remember": False,
+            "native_refs": [dict(item) for item in native_refs if isinstance(item, Mapping)],
+            "scope_correction": dict(plan),
+        }
+
     def _target_relation(
         self,
         candidate: Mapping[str, Any],
@@ -2757,6 +2968,7 @@ class Processor:
         target_relations: dict[str, str] = {}
         unknown_target_ids: set[str] = set()
         candidate_level_target_ids: set[str] = set()
+        scope_correction_plans: dict[str, dict[str, Any]] = {}
 
         def parse_gate(raw: str) -> dict[str, Any]:
             nonlocal gate_attempt_count
@@ -2766,6 +2978,7 @@ class Processor:
             target_relations.clear()
             unknown_target_ids.clear()
             candidate_level_target_ids.clear()
+            scope_correction_plans.clear()
             raw_for_parse = (
                 _normalize_final_gate_raw(raw, validation_scope_registry)
                 if gate_attempt_count >= 3
@@ -2844,6 +3057,24 @@ class Processor:
                 parsed = dict(parsed)
                 parsed["candidates"] = split_candidates
 
+            prepared_candidates: list[dict[str, Any]] = []
+            for candidate in parsed["candidates"]:
+                item = dict(candidate)
+                if self._scope_evidence_conflict(item, turn, validation_scope_registry):
+                    item["_defer_reason"] = "scope_conflict"
+                plan = self._scope_correction_plan(item, turn, validation_scope_registry)
+                if plan is not None:
+                    item.pop("duplicate_memory_id", None)
+                    item["duplicate"] = False
+                    if isinstance(plan.get("target_memory_id"), str):
+                        item["update_memory_id"] = plan["target_memory_id"]
+                    else:
+                        item.pop("update_memory_id", None)
+                    scope_correction_plans[str(item["candidate_id"]).casefold()] = plan
+                prepared_candidates.append(item)
+            parsed = dict(parsed)
+            parsed["candidates"] = prepared_candidates
+
             invalid_targets: dict[str, set[str]] = {}
             type_mismatches: set[str] = set()
             for candidate in parsed["candidates"]:
@@ -2855,11 +3086,16 @@ class Processor:
                 if not target_fields:
                     continue
                 candidate_id = candidate["candidate_id"].casefold()
-                relation = self._target_relation(
-                    candidate,
-                    turn=turn,
-                    scope_directory=scope_directory,
-                    scope_directory_complete=scope_directory_complete,
+                correction = scope_correction_plans.get(candidate_id)
+                relation = (
+                    _TARGET_SAME_USE
+                    if correction is not None and not correction.get("ambiguous")
+                    else self._target_relation(
+                        candidate,
+                        turn=turn,
+                        scope_directory=scope_directory,
+                        scope_directory_complete=scope_directory_complete,
+                    )
                 )
                 target_relations[candidate_id] = relation
                 if relation == _TARGET_NOT_RELATED:
@@ -2909,8 +3145,12 @@ class Processor:
                 # duplicate has no independent fact to write and is dropped.
                 candidates: list[dict[str, Any]] = []
                 for candidate in parsed["candidates"]:
-                    fields = invalid_targets.get(candidate["candidate_id"].casefold())
-                    mismatch = candidate["candidate_id"].casefold() in type_mismatches
+                    candidate_key = candidate["candidate_id"].casefold()
+                    fields = invalid_targets.get(candidate_key)
+                    mismatch = candidate_key in type_mismatches
+                    if candidate_key in scope_correction_plans:
+                        fields = None
+                        mismatch = False
                     if mismatch:
                         # A type mismatch is never repaired by changing the
                         # target type.  If the target still serves the same
@@ -2951,15 +3191,28 @@ class Processor:
                 parsed = dict(parsed)
                 parsed["candidates"] = candidates
             if gate_attempt_count >= 3:
-                # Mixed future-use is still a hard safety boundary.  After
-                # the bounded correction attempts, retain only the affected
-                # candidate for deferred retry so valid siblings can commit;
-                # no mixed body can reach summarize or persistence.
                 marked_candidates: list[dict[str, Any]] = []
                 for candidate in parsed["candidates"]:
                     item = dict(candidate)
                     if item.get("worth") and is_mixed_future_use_text(item.get("memory")):
-                        item["_defer_reason"] = "mixed_future_use"
+                        split = split_mixed_future_use_text(item.get("memory"))
+                        if split is None:
+                            item["_defer_reason"] = "mixed_future_use"
+                            marked_candidates.append(item)
+                            continue
+                        base_id = str(item.get("candidate_id", "candidate"))
+                        for index, (fragment, fragment_type) in enumerate(split, start=1):
+                            child = dict(item)
+                            digest = hashlib.sha256(fragment.encode("utf-8")).hexdigest()[:8]
+                            child["candidate_id"] = f"{base_id}:future-{index}-{digest}"
+                            child["memory"] = fragment
+                            child["type"] = fragment_type
+                            child["duplicate"] = False
+                            child.pop("duplicate_memory_id", None)
+                            child.pop("update_memory_id", None)
+                            child.pop("_defer_reason", None)
+                            marked_candidates.append(child)
+                        continue
                     marked_candidates.append(item)
                 parsed = dict(parsed)
                 parsed["candidates"] = marked_candidates
@@ -3159,13 +3412,26 @@ class Processor:
                 candidate = dict(candidate)
                 candidate.pop("_force_create", None)
             recovery = recovery_by_candidate.get(candidate_id_key)
+            correction_plan = scope_correction_plans.get(candidate_id_key)
             detached_update_target_id = detached_update_target_ids.get(candidate_id_key)
             defer_reason = candidate.get("_defer_reason")
-            if isinstance(defer_reason, str) and defer_reason == "mixed_future_use":
+            if isinstance(defer_reason, str) and defer_reason in {"mixed_future_use", "scope_conflict"}:
                 self._defer_candidate(
                     turn_ref,
                     candidate,
                     defer_reason,
+                    scopes=candidate.get("scopes"),
+                )
+                continue
+            if correction_plan is not None and correction_plan.get("ambiguous"):
+                self._defer_candidate(
+                    turn_ref,
+                    candidate,
+                    (
+                        "scope_correction_unresolved"
+                        if correction_plan.get("unresolved")
+                        else "scope_correction_ambiguous"
+                    ),
                     scopes=candidate.get("scopes"),
                 )
                 continue
@@ -3201,6 +3467,7 @@ class Processor:
                 scope_directory is not None
                 and not scope_directory_complete
                 and detached_update_target_id is None
+                and correction_plan is None
                 and (
                     candidate["worth"] or has_target
                 )
@@ -3218,6 +3485,7 @@ class Processor:
                 and scope_ambiguous
                 and not has_target
                 and detached_update_target_id is None
+                and correction_plan is None
             ):
                 self._defer_candidate(
                     turn_ref,
@@ -3262,6 +3530,22 @@ class Processor:
                     else None
                 ),
             )
+            if correction_plan is not None:
+                priority_ids = [
+                    correction_plan.get("target_memory_id"),
+                    correction_plan.get("survivor_memory_id"),
+                ]
+                for priority_id in reversed(priority_ids):
+                    memory = self._active_memory_by_id(priority_id)
+                    if memory is None:
+                        continue
+                    if not any(
+                        isinstance(item, Mapping)
+                        and isinstance(item.get("memory_id"), str)
+                        and item["memory_id"].casefold() == memory.memory_id.casefold()
+                        for item in candidate_related
+                    ):
+                        candidate_related.insert(0, memory.to_dict())
             if recovery is not None:
                 recovery_target = self._active_memory_by_id(recovery[1])
                 if recovery_target is not None and not any(
@@ -3280,7 +3564,7 @@ class Processor:
                         and item["memory_id"].casefold() == detached_update_target_id.casefold()
                     )
                 ]
-            if not force_create:
+            if not force_create and correction_plan is None:
                 candidate = self._infer_update_target(candidate, candidate_related)
             defer_reason = candidate.pop("_defer_reason", None)
             if defer_reason:
@@ -3295,13 +3579,17 @@ class Processor:
                 None,
             )
             if target_field is not None:
-                relation = self._target_relation(
-                    candidate,
-                    turn=turn,
-                    scope_directory=(
-                        scope_directory if detached_update_target_id is None else None
-                    ),
-                    scope_directory_complete=scope_directory_complete,
+                relation = (
+                    _TARGET_SAME_USE
+                    if correction_plan is not None and not correction_plan.get("ambiguous")
+                    else self._target_relation(
+                        candidate,
+                        turn=turn,
+                        scope_directory=(
+                            scope_directory if detached_update_target_id is None else None
+                        ),
+                        scope_directory_complete=scope_directory_complete,
+                    )
                 )
                 if relation == _TARGET_UNKNOWN:
                     self._defer_candidate(
@@ -3340,6 +3628,20 @@ class Processor:
                             scopes=candidate_scopes,
                         )
                         continue
+            if correction_plan is not None and correction_plan.get("survivor_memory_id"):
+                requests.append(
+                    self._scope_correction_request(
+                        candidate,
+                        turn,
+                        correction_plan,
+                        conversation_title=title,
+                        native_refs=candidate_native_refs,
+                    )
+                )
+                for observed_scope in candidate.get("scopes", []):
+                    if isinstance(observed_scope, str) and observed_scope != "unscoped" and observed_scope not in observed_scopes:
+                        observed_scopes.append(observed_scope)
+                continue
             candidate_native_ids = [item["native_id"] for item in candidate_native_refs]
             all_candidate_memory_ids: list[str] = []
             same_type_update_memory_ids: list[str] = []
@@ -3538,6 +3840,8 @@ class Processor:
                 conversation_title=title,
                 native_refs=candidate_native_refs,
             )
+            if correction_plan is not None:
+                pending_request["scope_correction"] = dict(correction_plan)
             current_turn_request_ids.add(pending_request["memory_id"].casefold())
             summary_update_target = summary.get("update_memory_id")
             final_is_create = not (

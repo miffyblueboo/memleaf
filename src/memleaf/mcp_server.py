@@ -138,6 +138,17 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                 "event_id": {"type": "string"},
                 "record": {"type": "boolean"},
                 "visible": {"type": "boolean"},
+                "tool_evidence": {
+                    "type": "array",
+                    "items": _object_schema(
+                        {
+                            "message_id": {"type": "string"},
+                            "subject": {"type": "string"},
+                            "sender": {"type": "string"},
+                            "domain": {"type": "string"},
+                        }
+                    ),
+                },
             },
             required=["source", "session_id", "turn_id", "role", "content"],
         ),

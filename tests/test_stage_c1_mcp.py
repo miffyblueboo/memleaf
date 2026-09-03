@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 
-from memleaf import Memleaf
+from memleaf import Memleaf, __version__
 from memleaf.llm import ModelError
 from memleaf.mcp_server import _tool_error
 from memleaf.retrieval_gate import begin_turn, observe_search
@@ -104,7 +104,7 @@ class StageC1MCPTest(unittest.TestCase):
         testcase.assertEqual(result["resultType"], "complete")
         testcase.assertEqual(
             result["_meta"]["io.modelcontextprotocol/serverInfo"],
-            {"name": "memleaf", "version": "0.2.22"},
+            {"name": "memleaf", "version": __version__},
         )
         return result
 
