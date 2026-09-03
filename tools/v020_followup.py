@@ -14,9 +14,8 @@ def edit(path: str, old: str, new: str, *, minimum: int = 1) -> None:
     target.write_text(text.replace(old, new), encoding="utf-8")
 
 
-# Keep durable project/risk/rule records as project. Only the known execution-plan
-# adjustment shape is deterministically corrected from project -> todo; ordinary
-# actionable fact/event/other candidates may still be normalized to todo.
+# Keep durable project/risk/rule records as project. Only a clearly execution-oriented
+# plan adjustment is corrected to todo; a project-plan statement itself remains project.
 edit(
     "src/memleaf/validation.py",
     '''        if (
@@ -33,6 +32,10 @@ edit(
                 (
                     candidate_type in {"fact", "event", "other"}
                     and is_actionable_todo_text(item["memory"])
+                    and (
+                        not is_project_plan_text(item["memory"])
+                        or _ACTION_PLAN_ADJUST.search(item["memory"])
+                    )
                 )
                 or (
                     candidate_type == "project"
@@ -71,7 +74,8 @@ edit(
 )
 
 # Preserve legacy wording relied on by provider compatibility tests while making
-# the all-todo exception explicit.
+# the all-todo exception explicit. Scope Map text must not contain the word "body"
+# because it is itself the proof that no concrete memory body was injected.
 edit(
     "src/memleaf/hermes_provider/__init__.py",
     '''        "this map. Use list_todos instead of relevance search for global current-todo questions. "
@@ -79,7 +83,7 @@ edit(
 ''',
     '''        "this map. Use list_todos instead of relevance search for global current-todo questions. "
         "Search/list_todos return directories; read only the selected memory when needed for ordinary "
-        "relevance queries; for global todo queries, read every matching todo body. A no-match result is valid.\\n"
+        "relevance queries; for global todo queries, read every matching todo item. A no-match result is valid.\\n"
 ''',
 )
 edit(
@@ -124,6 +128,15 @@ edit(
     '''            "search": {"query", "retrieval_id"},
             "list_todos": {"retrieval_id"},
             "read": {"memory_id", "retrieval_id"},
+''',
+)
+edit(
+    "tests/test_stage_c1_mcp.py",
+    '''            "memory_id", "title", "scopes", "body", "offset", "next_offset",
+            "has_more", "total_chars", "version",
+''',
+    '''            "memory_id", "title", "scopes", "body", "offset", "next_offset",
+            "has_more", "total_chars", "version", "type", "status", "due_date",
 ''',
 )
 edit("tests/test_stage_c2_init.py", "Tools discovered: 11", "Tools discovered: 12")
