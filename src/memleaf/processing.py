@@ -2262,56 +2262,121 @@ class Processor:
         turn: InboxTurn,
         config: Mapping[str, Any],
     ) -> dict[str, Any] | None:
-        """Authorize exactly one explicit cross-project correction transaction."""
+        """Authorize one explicit cross-project correction without guessing.
 
-        target_id = candidate.get("update_memory_id")
-        if candidate.get("worth") is not True or not isinstance(target_id, str) or not target_id:
-            return None
-        target = self._active_memory_by_id(target_id)
-        if target is None or target.type != candidate.get("type"):
+        The current user turn must name exactly two configured project scopes
+        under explicit correction wording. A model-provided target is checked
+        against that evidence; when it is omitted, Core may recover exactly one
+        same-type, same-topic active memory from the explicitly named old
+        scope. Zero or multiple matches stay deferred rather than becoming a
+        cross-scope CREATE.
+        """
+
+        if candidate.get("worth") is not True or not isinstance(candidate.get("type"), str):
             return None
         new_projects = [
             value for value in candidate.get("scopes", [])
             if isinstance(value, str) and value.startswith("project:")
         ]
-        old_projects = [value for value in target.scopes if isinstance(value, str) and value.startswith("project:")]
-        if len(new_projects) != 1 or len(old_projects) != 1:
+        if len(new_projects) != 1:
             return None
-        old_scope, new_scope = old_projects[0], new_projects[0]
-        if old_scope.casefold() == new_scope.casefold():
-            return None
+        new_scope = new_projects[0]
         user_text = " ".join(
             event.content for event in turn.events
             if event.role == "user" and isinstance(event.content, str)
         ).strip()
         if not user_text or not _SCOPE_CORRECTION_MARKER_RE.search(user_text):
             return None
-        if not self._scope_terms_present(user_text, old_scope, config):
+        scopes = config.get("scopes", {}) if isinstance(config.get("scopes", {}), Mapping) else {}
+        mentioned = [
+            scope for scope in scopes
+            if isinstance(scope, str)
+            and scope.startswith("project:")
+            and self._scope_terms_present(user_text, scope, config)
+        ]
+        mentioned = list(dict.fromkeys(mentioned))
+        if len(mentioned) != 2 or all(scope.casefold() != new_scope.casefold() for scope in mentioned):
             return None
-        if not self._scope_terms_present(user_text, new_scope, config):
-            return None
+        old_scope = next(scope for scope in mentioned if scope.casefold() != new_scope.casefold())
 
-        survivor_ids: list[str] = []
+        topic = str(candidate.get("memory") or "")
+        removable_terms: list[str] = []
+        for scope in (old_scope, new_scope):
+            removable_terms.extend((scope, scope.partition(":")[2]))
+            node = scopes.get(scope)
+            if isinstance(node, Mapping) and isinstance(node.get("aliases"), list):
+                removable_terms.extend(item for item in node["aliases"] if isinstance(item, str))
+        for term in sorted({item for item in removable_terms if item}, key=len, reverse=True):
+            topic = re.sub(re.escape(term), " ", topic, flags=re.IGNORECASE)
+        topic = re.sub(r"[\s:：，,；;。.!！?？()（）\[\]【】_-]+", " ", topic).strip()
+        if len(normalize_term(topic)) < 4:
+            return {
+                "target_memory_id": None,
+                "old_scope": old_scope,
+                "new_scope": new_scope,
+                "survivor_memory_id": None,
+                "ambiguous": True,
+                "unresolved": True,
+            }
+
         try:
             with self.service.vault.lock():
                 records = self.service._read_memories_unlocked("knowledge")
         except (OSError, UnicodeError, ValueError, TypeError):
             return None
+        eligible_old: list[Memory] = []
+        eligible_new: list[Memory] = []
         for record in records:
             memory = record.memory
-            if memory.memory_id.casefold() == target.memory_id.casefold() or memory.type != target.type:
+            if memory.type != candidate.get("type"):
                 continue
-            if not filter_by_scope([record], [new_scope], config):
-                continue
-            if candidate_matches_query(memory, str(candidate.get("memory", ""))):
-                survivor_ids.append(memory.memory_id)
-        survivor_ids = list(dict.fromkeys(survivor_ids))
+            if filter_by_scope([memory], [old_scope], config) and candidate_matches_query(memory, topic):
+                eligible_old.append(memory)
+            if filter_by_scope([memory], [new_scope], config) and candidate_matches_query(memory, topic):
+                eligible_new.append(memory)
+
+        target_id = candidate.get("update_memory_id")
+        target: Memory | None = None
+        if isinstance(target_id, str) and target_id:
+            selected = self._active_memory_by_id(target_id)
+            if (
+                selected is not None
+                and selected.type == candidate.get("type")
+                and any(memory.memory_id.casefold() == selected.memory_id.casefold() for memory in eligible_old)
+            ):
+                target = selected
+            else:
+                return {
+                    "target_memory_id": None,
+                    "old_scope": old_scope,
+                    "new_scope": new_scope,
+                    "survivor_memory_id": None,
+                    "ambiguous": True,
+                    "unresolved": True,
+                }
+        elif len(eligible_old) == 1:
+            target = eligible_old[0]
+        else:
+            return {
+                "target_memory_id": None,
+                "old_scope": old_scope,
+                "new_scope": new_scope,
+                "survivor_memory_id": None,
+                "ambiguous": True,
+                "unresolved": True,
+            }
+
+        survivors = [
+            memory for memory in eligible_new
+            if memory.memory_id.casefold() != target.memory_id.casefold()
+        ]
         return {
             "target_memory_id": target.memory_id,
             "old_scope": old_scope,
             "new_scope": new_scope,
-            "survivor_memory_id": survivor_ids[0] if len(survivor_ids) == 1 else None,
-            "ambiguous": len(survivor_ids) > 1,
+            "survivor_memory_id": survivors[0].memory_id if len(survivors) == 1 else None,
+            "ambiguous": len(survivors) > 1,
+            "unresolved": False,
         }
 
     def _scope_correction_request(
@@ -3001,7 +3066,10 @@ class Processor:
                 if plan is not None:
                     item.pop("duplicate_memory_id", None)
                     item["duplicate"] = False
-                    item["update_memory_id"] = plan["target_memory_id"]
+                    if isinstance(plan.get("target_memory_id"), str):
+                        item["update_memory_id"] = plan["target_memory_id"]
+                    else:
+                        item.pop("update_memory_id", None)
                     scope_correction_plans[str(item["candidate_id"]).casefold()] = plan
                 prepared_candidates.append(item)
             parsed = dict(parsed)
@@ -3359,7 +3427,11 @@ class Processor:
                 self._defer_candidate(
                     turn_ref,
                     candidate,
-                    "scope_correction_ambiguous",
+                    (
+                        "scope_correction_unresolved"
+                        if correction_plan.get("unresolved")
+                        else "scope_correction_ambiguous"
+                    ),
                     scopes=candidate.get("scopes"),
                 )
                 continue

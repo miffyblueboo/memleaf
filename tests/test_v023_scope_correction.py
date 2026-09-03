@@ -92,6 +92,27 @@ class V023ScopeCorrectionTests(unittest.TestCase):
         self.assertIsNone(processor._scope_correction_plan(candidate, no_correction, self.service.vault.config()))
         self.assertEqual("NOT_RELATED", processor._target_relation(candidate, turn=no_correction))
 
+    def test_explicit_scope_correction_recovers_unique_old_target_when_model_omits_id(self) -> None:
+        old = self._memory("mem-targetless", "project:兴银理财", "流程要求使用双人复核")
+        turn = self._turn("之前归错客户了，不是兴银理财，是鑫元基金；流程要求仍是使用双人复核。")
+        candidate = {
+            "candidate_id": "targetless", "memory": "鑫元基金流程要求使用双人复核", "worth": True,
+            "duplicate": False, "type": "project", "scopes": ["project:鑫元基金"],
+            "scope_source": "model", "evidence_event_ids": list(turn.event_keys),
+        }
+        plan = Processor(self.service)._scope_correction_plan(candidate, turn, self.service.vault.config())
+        self.assertIsNotNone(plan)
+        self.assertEqual(old.memory_id, plan["target_memory_id"])
+        self.assertFalse(plan["ambiguous"])
+        self.assertFalse(plan["unresolved"])
+
+        self._memory("mem-targetless-2", "project:兴银理财", "流程要求使用双人复核并留痕")
+        ambiguous = Processor(self.service)._scope_correction_plan(candidate, turn, self.service.vault.config())
+        self.assertIsNotNone(ambiguous)
+        self.assertTrue(ambiguous["ambiguous"])
+        self.assertTrue(ambiguous["unresolved"])
+        self.assertIsNone(ambiguous["target_memory_id"])
+
     def test_existing_correct_survivor_retires_wrong_active_to_history(self) -> None:
         wrong = self._memory("mem-wrong2", "project:兴银理财", "流程要求使用双人复核")
         correct = self._memory("mem-correct2", "project:鑫元基金", "鑫元基金流程要求使用双人复核")
