@@ -15,10 +15,10 @@ replacement = '''    def _scope_correction_plan(
         """Authorize one explicit cross-project correction without guessing.
 
         The current user turn must name exactly two configured project scopes
-        under explicit correction wording.  A model-provided target is checked
+        under explicit correction wording. A model-provided target is checked
         against that evidence; when it is omitted, Core may recover exactly one
         same-type, same-topic active memory from the explicitly named old
-        scope.  Zero or multiple matches stay deferred rather than becoming a
+        scope. Zero or multiple matches stay deferred rather than becoming a
         cross-scope CREATE.
         """
 
@@ -80,9 +80,9 @@ replacement = '''    def _scope_correction_plan(
             memory = record.memory
             if memory.type != candidate.get("type"):
                 continue
-            if filter_by_scope([record], [old_scope], config) and candidate_matches_query(memory, topic):
+            if filter_by_scope([memory], [old_scope], config) and candidate_matches_query(memory, topic):
                 eligible_old.append(memory)
-            if filter_by_scope([record], [new_scope], config) and candidate_matches_query(memory, topic):
+            if filter_by_scope([memory], [new_scope], config) and candidate_matches_query(memory, topic):
                 eligible_new.append(memory)
 
         target_id = candidate.get("update_memory_id")
@@ -132,8 +132,6 @@ replacement = '''    def _scope_correction_plan(
 '''
 path.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
 
-# Avoid writing a None update target into a parsed candidate; unresolved
-# correction plans are retained only to force candidate-local defer.
 path = Path("src/memleaf/processing.py")
 text = path.read_text(encoding="utf-8")
 old = '''                if plan is not None:
@@ -155,7 +153,6 @@ if text.count(old) != 1:
     raise SystemExit(f"processing correction staging block occurrences={text.count(old)}")
 path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
-# Distinguish unresolved from multi-survivor ambiguity in audit diagnostics.
 path = Path("src/memleaf/processing.py")
 text = path.read_text(encoding="utf-8")
 old = '''            if correction_plan is not None and correction_plan.get("ambiguous"):
@@ -184,8 +181,6 @@ if text.count(old) != 1:
     raise SystemExit(f"processing defer block occurrences={text.count(old)}")
 path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
-# Extend the regression: the model may omit update_memory_id and Core must
-# still recover exactly one explicitly named old-scope target.
 path = Path("tests/test_v023_scope_correction.py")
 text = path.read_text(encoding="utf-8")
 marker = '''    def test_existing_correct_survivor_retires_wrong_active_to_history(self) -> None:
