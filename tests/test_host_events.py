@@ -782,10 +782,16 @@ class HostEventTests(unittest.TestCase):
         self.assertEqual("diagnostic", result.status)
         self.assertFalse((external / "hooks.json").exists())
 
-    def test_host_event_command_quotes_interpreter_and_vault(self) -> None:
+    def test_posix_host_event_command_quotes_interpreter_and_vault(self) -> None:
         interpreter = self.root / "venv with space" / "bin" / "python"
         vault = self.root / "vault with space"
-        command = host_event_command("codex", "Stop", vault, interpreter=interpreter)
+        command = host_event_command(
+            "codex",
+            "Stop",
+            vault,
+            interpreter=interpreter,
+            platform="posix",
+        )
         self.assertEqual(str(interpreter), shlex.split(command)[0])
         self.assertIn("-m memleaf.cli host-event codex Stop", command)
         self.assertIn("vault with space", shlex.split(command)[-1])
