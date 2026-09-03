@@ -1,0 +1,55 @@
+name: apply-v020-fix-v3
+
+on:
+  push:
+    branches:
+      - fix/global-active-todo-v020
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Align patch runner with baseline
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tools/apply_v020_fix.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              '    if count != 1:\n        raise RuntimeError(f"{path}: expected one occurrence, found {count}: {old[:80]!r}")',
+              '    if count < 1:\n        raise RuntimeError(f"{path}: expected at least one occurrence, found {count}: {old[:80]!r}")',
+              1,
+          )
+          needle = 'expected_scope_source=candidate.get(\\"scope_source\\")'
+          replacement = 'expected_scope_source=candidate[\\"scope_source\\"]'
+          if needle not in text:
+              raise SystemExit('processing scope-source patch needle not found')
+          text = text.replace(needle, replacement, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+      - name: Apply patch
+        run: python tools/apply_v020_fix.py
+      - name: Compile
+        run: python -m compileall -q src tests
+      - name: Run full tests
+        run: PYTHONPATH=src python -m unittest discover -s tests
+      - name: Check diff
+        run: git diff --check
+      - name: Remove staging helpers
+        run: rm tools/apply_v020_fix.py .ci-trigger-v020 .github/workflows/apply-v020-fix.yml .github/workflows/apply-v020-fix-v2.yml .github/workflows/apply-v020-fix-v3.yml
+      - name: Commit validated changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "release: v0.2.20"
+          git push origin HEAD:fix/global-active-todo-v020
