@@ -25,8 +25,8 @@ jobs:
           python -m compileall -q src tests examples
           python - <<'PY'
           import pathlib, re
-          from memleaf import __version__
-          assert __version__ == '0.2.23'
+          init_text = pathlib.Path('src/memleaf/__init__.py').read_text(encoding='utf-8')
+          assert '__version__ = "0.2.23"' in init_text
           assert 'version = "0.2.23"' in pathlib.Path('pyproject.toml').read_text(encoding='utf-8')
           assert 'version: 0.2.23' in pathlib.Path('src/memleaf/hermes_provider/plugin.yaml').read_text(encoding='utf-8')
           assert re.search(r'^## 0\.2\.23 — 2026-09-03$', pathlib.Path('CHANGELOG.md').read_text(encoding='utf-8'), re.M)
