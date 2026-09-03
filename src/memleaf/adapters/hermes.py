@@ -24,7 +24,8 @@ from .base import (
 
 
 _MCP_IDLE_TIMEOUT_SECONDS = 60
-_MCP_EXPECTED_TOOL_COUNT = 12
+MCP_EXPECTED_TOOL_COUNT = 12
+_MCP_EXPECTED_TOOL_COUNT = MCP_EXPECTED_TOOL_COUNT
 
 
 def hermes_home_for_platform(
@@ -417,7 +418,7 @@ class HermesAdapter:
         self,
         detection: Detection | None = None,
         *,
-        expected_tools: int = _MCP_EXPECTED_TOOL_COUNT,
+        expected_tools: int = MCP_EXPECTED_TOOL_COUNT,
     ) -> bool:
         """Run the official MCP test and require the expected tool count."""
 

@@ -8,7 +8,8 @@ import unittest
 from unittest import mock
 
 from memleaf import __version__, cli
-from memleaf.adapters.hermes import HermesAdapter
+from memleaf.adapters.hermes import HermesAdapter, MCP_EXPECTED_TOOL_COUNT
+from memleaf.mcp_server import _TOOLS
 from memleaf.installer import (
     _copy_provider,
     _hermes_home,
@@ -21,6 +22,12 @@ from memleaf.installer import (
 
 
 class PyPIInstallTests(unittest.TestCase):
+    def test_hermes_installer_tool_count_matches_public_mcp_contract(self) -> None:
+        from memleaf import installer
+
+        self.assertEqual(MCP_EXPECTED_TOOL_COUNT, len(_TOOLS))
+        self.assertEqual(installer.MCP_EXPECTED_TOOL_COUNT, len(_TOOLS))
+
     def test_packaged_provider_can_be_copied_without_importing_hermes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="memleaf-pypi-provider-") as temporary:
             hermes_home = Path(temporary) / ".hermes"
@@ -81,7 +88,7 @@ class PyPIInstallTests(unittest.TestCase):
 
             self.assertTrue(target.is_dir())
             self.assertFalse(target.is_symlink())
-            self.assertIn("version: 0.2.20", (target / "plugin.yaml").read_text(encoding="utf-8"))
+            self.assertIn("version: 0.2.21", (target / "plugin.yaml").read_text(encoding="utf-8"))
 
     def test_windows_hermes_paths_follow_official_native_layout(self) -> None:
         with tempfile.TemporaryDirectory(prefix="memleaf-win-paths-") as temporary:

@@ -1,6 +1,6 @@
 """Local-first Markdown memory core for AI agents."""
 
-__version__ = "0.2.20"
+__version__ = "0.2.21"
 
 from .config import DEFAULT_CONFIG, default_config, load_config, save_config
 from .frontmatter import FrontmatterError, dump_frontmatter, dump_yaml, load_yaml, parse_frontmatter
