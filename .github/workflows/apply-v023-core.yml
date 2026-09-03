@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   patch-and-test:
-    if: github.event.head_commit.message == 'chore: run v0.2.23 core repair'
+    if: ${{ startsWith(github.event.head_commit.message, 'chore: run v0.2.23 core repair') }}
     runs-on: ubuntu-24.04
     steps:
       - name: Check out branch
@@ -36,7 +36,7 @@ jobs:
             tests.test_global_todo_acceptance \
             tests.test_hermes_provider
       - name: Run full suite
-        run: python -m unittest discover -s tests -p 'test_*.py' -v
+        run: python -m unittest discover -s tests -p "test_*.py" -v
       - name: Check diff
         run: git diff --check
       - name: Commit validated repair
