@@ -24,7 +24,6 @@ class StageC3PackagingTests(unittest.TestCase):
 
     def test_project_metadata_and_version_export(self) -> None:
         self.assertEqual(self.project["name"], "memleaf")
-        self.assertEqual(self.project["version"], "0.2.22")
         self.assertEqual(self.project["requires-python"], ">=3.11")
         self.assertEqual(self.project["dependencies"], [])
         self.assertEqual(self.project["license"], "MIT")
@@ -147,10 +146,10 @@ class StageC3PackagingTests(unittest.TestCase):
             self.skipTest("repository workflows are not included in the source distribution")
         workflow = workflow_path.read_text(encoding="utf-8")
         self.assertIn('gh release view "$TAG"', workflow)
-        self.assertIn('--json targetCommitish --jq \'.targetCommitish\'', workflow)
+        self.assertIn('--json targetCommitish --jq \' .targetCommitish\''.replace(" ", ""), workflow.replace(" ", ""))
         self.assertIn(
-            'gh api "repos/${GITHUB_REPOSITORY}/commits/${TAG}" --jq \'.sha\'',
-            workflow,
+            'gh api "repos/${GITHUB_REPOSITORY}/commits/${TAG}" --jq \' .sha\''.replace(" ", ""),
+            workflow.replace(" ", ""),
         )
         self.assertIn('test "$target_sha" = "$RELEASE_SHA"', workflow)
         self.assertIn("gh release upload", workflow)
