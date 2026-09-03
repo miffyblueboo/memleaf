@@ -1,0 +1,158 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+def replace_once(path: str, old: str, new: str) -> None:
+    target = Path(path)
+    text = target.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count != 1:
+        raise RuntimeError(f"{path}: expected one occurrence, found {count}: {old!r}")
+    target.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def replace_all(path: str, old: str, new: str, *, minimum: int = 1) -> None:
+    target = Path(path)
+    text = target.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count < minimum:
+        raise RuntimeError(f"{path}: expected at least {minimum} occurrences, found {count}: {old!r}")
+    target.write_text(text.replace(old, new), encoding="utf-8")
+
+
+# One canonical Hermes MCP count. Keep the private alias for compatibility,
+# while making both the adapter default and installer use the public constant.
+replace_once(
+    "src/memleaf/adapters/hermes.py",
+    "_MCP_IDLE_TIMEOUT_SECONDS = 60\n_MCP_EXPECTED_TOOL_COUNT = 12\n",
+    "_MCP_IDLE_TIMEOUT_SECONDS = 60\nMCP_EXPECTED_TOOL_COUNT = 12\n_MCP_EXPECTED_TOOL_COUNT = MCP_EXPECTED_TOOL_COUNT\n",
+)
+replace_once(
+    "src/memleaf/adapters/hermes.py",
+    "expected_tools: int = _MCP_EXPECTED_TOOL_COUNT,",
+    "expected_tools: int = MCP_EXPECTED_TOOL_COUNT,",
+)
+
+replace_once(
+    "src/memleaf/installer.py",
+    "from .adapters.hermes import HermesAdapter, hermes_home_for_platform\n",
+    "from .adapters.hermes import (\n    HermesAdapter,\n    MCP_EXPECTED_TOOL_COUNT,\n    hermes_home_for_platform,\n)\n",
+)
+replace_once("src/memleaf/installer.py", "\n_EXPECTED_TOOLS = 11\n", "\n")
+replace_once(
+    "src/memleaf/installer.py",
+    "expected_tools=_EXPECTED_TOOLS",
+    "expected_tools=MCP_EXPECTED_TOOL_COUNT",
+)
+replace_once(
+    "src/memleaf/installer.py",
+    '"reason": "Hermes MCP test did not confirm 11 tools",',
+    '"reason": f"Hermes MCP test did not confirm {MCP_EXPECTED_TOOL_COUNT} tools",',
+)
+
+# Regression invariant: the installer and adapter count must match the actual
+# public MCP tuple, preventing a future added tool from silently breaking install.
+replace_once(
+    "tests/test_pypi_install.py",
+    "from memleaf.adapters.hermes import HermesAdapter\n",
+    "from memleaf.adapters.hermes import HermesAdapter, MCP_EXPECTED_TOOL_COUNT\nfrom memleaf.mcp_server import _TOOLS\n",
+)
+replace_once(
+    "tests/test_pypi_install.py",
+    "class PyPIInstallTests(unittest.TestCase):\n",
+    "class PyPIInstallTests(unittest.TestCase):\n"
+    "    def test_hermes_installer_tool_count_matches_public_mcp_contract(self) -> None:\n"
+    "        from memleaf import installer\n\n"
+    "        self.assertEqual(MCP_EXPECTED_TOOL_COUNT, len(_TOOLS))\n"
+    "        self.assertEqual(installer.MCP_EXPECTED_TOOL_COUNT, len(_TOOLS))\n\n",
+)
+
+# Correct the English release contract left stale in v0.2.20.
+replace_once(
+    "README.en.md",
+    "- managed turn: at most 3 distinct memory IDs and 6,000 body characters in total;",
+    "- managed turn: all relevant memories may be read; `read_count` and `read_chars` are audit-only and do not block valid reads;",
+)
+replace_once(
+    "README.en.md",
+    "7. Verify that the MCP server exposes all 11 tools.",
+    "7. Verify that the MCP server exposes all 12 tools.",
+)
+replace_once(
+    "README.en.md",
+    "or the 11-tool MCP verification fails,",
+    "or the 12-tool MCP verification fails,",
+)
+replace_once(
+    "README.en.md",
+    "The server currently exposes 11 tools:",
+    "The server currently exposes 12 tools:",
+)
+replace_once(
+    "README.en.md",
+    "| `search` | Return a bounded candidate directory and `found`/`no_match` status |\n| `read` |",
+    "| `search` | Return a bounded candidate directory and `found`/`no_match` status |\n"
+    "| `list_todos` | Enumerate current todo memories across scopes with status/date filters and pagination |\n"
+    "| `read` |",
+)
+replace_once(
+    "README.en.md",
+    "Tool errors, Scope conflicts, and exhausted read budgets must be handled as such.",
+    "Tool errors, Scope conflicts, retrieval-turn violations, and read page/version errors must be handled as such.",
+)
+
+# Release metadata.
+replace_once("pyproject.toml", 'version = "0.2.20"', 'version = "0.2.21"')
+replace_once("src/memleaf/__init__.py", '__version__ = "0.2.20"', '__version__ = "0.2.21"')
+replace_once("src/memleaf/hermes_provider/plugin.yaml", "version: 0.2.20", "version: 0.2.21")
+replace_once("README.md", "> **当前版本：0.2.20。**", "> **当前版本：0.2.21。**")
+replace_once("README.md", "memleaf 0.2.20 通过 PyPI 分发。", "memleaf 0.2.21 通过 PyPI 分发。")
+replace_once("README.en.md", "> **Version: 0.2.20.**", "> **Version: 0.2.21.**")
+replace_once("README.en.md", "memleaf 0.2.20 is distributed through PyPI.", "memleaf 0.2.21 is distributed through PyPI.")
+
+for test_path in (
+    "tests/test_pypi_install.py",
+    "tests/test_stage_c1_mcp.py",
+    "tests/test_stage_c3_packaging.py",
+):
+    replace_all(test_path, "0.2.20", "0.2.21")
+
+changelog = Path("CHANGELOG.md")
+text = changelog.read_text(encoding="utf-8")
+marker = "## 0.2.20 — 2026-09-03\n"
+section = (
+    "## 0.2.21 — 2026-09-03\n\n"
+    "- Fix `memleaf install` for Hermes after the 12th MCP tool was added: the installer now uses the adapter's canonical tool-count constant instead of a stale private `11`.\n"
+    "- Add a regression invariant that compares the Hermes installer count with the actual public MCP tool tuple, preventing future tool additions from silently breaking installation self-checks.\n"
+    "- Correct the English README's stale 11-tool and 3-memory/6000-character descriptions so the published documentation matches the v0.2 retrieval contract.\n\n"
+)
+if marker not in text or "## 0.2.21 — 2026-09-03" in text:
+    raise RuntimeError("CHANGELOG.md release insertion point is invalid")
+changelog.write_text(text.replace(marker, section + marker, 1), encoding="utf-8")
+
+# Fail closed if current source/tests/readmes still carry the superseded release
+# number or the stale installer tool-count wording. CHANGELOG keeps history.
+stale: list[str] = []
+for root in (Path("src"), Path("tests")):
+    for path in root.rglob("*"):
+        if path.is_file() and path.suffix in {".py", ".yaml", ".md", ".toml"}:
+            try:
+                value = path.read_text(encoding="utf-8")
+            except UnicodeError:
+                continue
+            if "0.2.20" in value:
+                stale.append(f"old-version:{path}")
+for path in (Path("README.md"), Path("README.en.md")):
+    value = path.read_text(encoding="utf-8")
+    if "0.2.20" in value:
+        stale.append(f"old-version:{path}")
+    if "11 tools" in value or "11-tool" in value:
+        stale.append(f"old-tool-count:{path}")
+installer_text = Path("src/memleaf/installer.py").read_text(encoding="utf-8")
+if "_EXPECTED_TOOLS = 11" in installer_text or "confirm 11 tools" in installer_text:
+    stale.append("old-installer-count:src/memleaf/installer.py")
+if stale:
+    raise RuntimeError("stale release contract remains:\n" + "\n".join(stale))
+
+print("v0.2.21 hotfix applied")
