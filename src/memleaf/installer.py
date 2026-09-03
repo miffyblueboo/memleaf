@@ -19,14 +19,17 @@ from typing import Any
 from . import __version__
 from .adapters.base import update_agents_index
 from .adapters.codex import CodexAdapter
-from .adapters.hermes import HermesAdapter, hermes_home_for_platform
+from .adapters.hermes import (
+    HermesAdapter,
+    MCP_EXPECTED_TOOL_COUNT,
+    hermes_home_for_platform,
+)
 from .cli import _home_from_environment, _prepare_model_route
 from .locking import atomic_write_json
 from .native_registration import ensure_hermes_native_sources
 from .vault import Vault
 
 
-_EXPECTED_TOOLS = 11
 _PROVIDER_VERSION_RE = re.compile(r"^version:\s*([^\s#]+)\s*(?:#.*)?$", re.MULTILINE)
 
 
@@ -401,14 +404,14 @@ def install_hermes(*, vault_path: Path | None = None) -> dict[str, Any]:
             "provider": str(provider_path),
             "model": model,
         }
-    if not adapter.test_mcp(detection, expected_tools=_EXPECTED_TOOLS):
+    if not adapter.test_mcp(detection, expected_tools=MCP_EXPECTED_TOOL_COUNT):
         update_agents_index(
             vault.agents_index_path,
             {"hermes": {"mcp_status": "failed", "mcp_availability": "unavailable"}},
         )
         return {
             "status": "failure",
-            "reason": "Hermes MCP test did not confirm 11 tools",
+            "reason": f"Hermes MCP test did not confirm {MCP_EXPECTED_TOOL_COUNT} tools",
             "core_version": core_version,
             "provider_version": provider_version,
             "vault": str(vault.root),

@@ -4,8 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.20.**
-> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.2.20 is distributed through PyPI.
+> **Version: 0.2.21.**
+> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.2.21 is distributed through PyPI.
 > **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.
 
 ## Project scope
@@ -55,7 +55,7 @@ Current limits:
 - Scope Map: at most 20 items and approximately 2,000 characters per page;
 - search candidates: at most 20 items and approximately 4,000 characters per page;
 - one read page: at most 2,000 body characters;
-- managed turn: at most 3 distinct memory IDs and 6,000 body characters in total;
+- managed turn: all relevant memories may be read; `read_count` and `read_chars` are audit-only and do not block valid reads;
 - `retrieval_id` must belong to the current turn, and a successful `search` is required before `read`;
 - `found`, `no_match`, and tool errors are distinct states; an error must not be reported as no match;
 - `context()` and Python `search(view="full")` remain available for compatibility, but are not part of the automatic retrieval path.
@@ -141,12 +141,12 @@ Both installation paths automatically:
 4. Activate `memory.provider=memleaf`.
 5. Configure the memleaf MCP entry through Hermes' official CLI.
 6. Configure MCP lazy/idle lifecycle settings.
-7. Verify that the MCP server exposes all 11 tools.
+7. Verify that the MCP server exposes all 12 tools.
 8. Record the local Agent integration status.
 
 Restart Hermes after installation.
 
-If Hermes cannot be detected, no complete model route can be configured, Provider activation fails, or the 11-tool MCP verification fails, the installer returns an explicit failure rather than reporting an incomplete integration as successful.
+If Hermes cannot be detected, no complete model route can be configured, Provider activation fails, or the 12-tool MCP verification fails, the installer returns an explicit failure rather than reporting an incomplete integration as successful.
 
 The repository `install.sh` remains for source development, offline source installation, and troubleshooting. Normal PyPI users do not need to run it.
 
@@ -243,7 +243,7 @@ python -m memleaf.mcp_server --vault "$HOME/.memleaf"
 
 Without `--vault`, the server uses `~/.memleaf`; `MEMLEAF_VAULT` can also specify the Vault. In normal use the server does not need to be kept running manually: Hermes or Codex starts it on demand. stdout contains only JSON-RPC messages so logs do not corrupt the protocol stream.
 
-The server currently exposes 11 tools:
+The server currently exposes 12 tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -251,6 +251,7 @@ The server currently exposes 11 tools:
 | `context` | Compatibility directory; not used by the automatic retrieval path |
 | `scope_catalog` | Return Scopes, parents, and aliases without memory bodies |
 | `search` | Return a bounded candidate directory and `found`/`no_match` status |
+| `list_todos` | Enumerate current todo memories across scopes with status/date filters and pagination |
 | `read` | Read a selected memory body in pages using the current `retrieval_id` |
 | `process` | Process complete inbox turns under the admission rules |
 | `remember` | Create or update memory after an explicit request |
@@ -259,7 +260,7 @@ The server currently exposes 11 tools:
 | `rebuild_index` | Rebuild local derived indexes |
 | `stats` | Return Vault counts and diagnostic statistics |
 
-Search results are clues; a title alone is not a business fact. Managed retrieval must use the same `retrieval_id` for `search → read`. Tool errors, Scope conflicts, and exhausted read budgets must be handled as such.
+Search results are clues; a title alone is not a business fact. Managed retrieval must use the same `retrieval_id` for `search → read`. Tool errors, Scope conflicts, retrieval-turn violations, and read page/version errors must be handled as such.
 
 ## Python API
 

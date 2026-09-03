@@ -2,6 +2,12 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.21 — 2026-09-03
+
+- Fix `memleaf install` for Hermes after the 12th MCP tool was added: the installer now uses the adapter's canonical tool-count constant instead of a stale private `11`.
+- Add a regression invariant that compares the Hermes installer count with the actual public MCP tool tuple, preventing future tool additions from silently breaking installation self-checks.
+- Correct the English README's stale 11-tool and 3-memory/6000-character descriptions so the published documentation matches the v0.2 retrieval contract.
+
 ## 0.2.20 — 2026-09-03
 
 - Add `list_todos` for complete active todo retrieval across all scopes with stable pagination, date/status filtering, and current-turn retrieval gating.
