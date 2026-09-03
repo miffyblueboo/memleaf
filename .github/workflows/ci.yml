@@ -44,30 +44,47 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install package and build tools
+        shell: pwsh
         run: |
           python -m pip install --upgrade pip build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Compile source and tests
         run: python -m compileall -q src tests examples
       - name: Run Windows installation tests
+        shell: pwsh
         run: |
           python -m unittest discover -s tests -p 'test_pypi_install.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s tests -p 'test_upgrade_preserves_vault.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s tests -p 'test_credential_safety.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s tests -p 'test_hermes_stdio_transport.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s tests -p 'test_stage_c3_packaging.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s tests -p 'test_codex_install.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run Windows host lifecycle and memory semantics acceptance
+        shell: pwsh
         run: |
           python -m unittest tests.test_hermes_provider tests.test_hermes_stdio_transport -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest tests.test_codex_install tests.test_host_events tests.test_v2_host_flow tests.test_v2_mcp_flow -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest tests.test_cross_host_acceptance tests.test_maintenance_v2 tests.test_retrieval_v2 tests.test_session_lineage -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Smoke-test installed commands and Vault
         shell: pwsh
         run: |
           memleaf --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           memleaf-mcp --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -c "from pathlib import Path; import tempfile; from memleaf import Memleaf; d=tempfile.TemporaryDirectory(); m=Memleaf.initialize(Path(d.name)/'vault'); assert m.stats()['knowledge'] == 0; d.cleanup()"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Validate PowerShell installer syntax
         shell: pwsh
         run: |
