@@ -303,11 +303,11 @@ class HermesProviderTests(unittest.TestCase):
 
     def test_provider_does_not_warn_when_core_versions_match(self) -> None:
         client = FakeClient(responses=[{"stats": True}])
-        client.server_version = "0.2.18"
+        client.server_version = "0.2.19"
         provider = provider_module.MemleafMemoryProvider()
         with patch.object(provider_module, "_resolve_command", return_value="memleaf-mcp"), \
              patch.object(provider_module, "_MCPClient", return_value=client), \
-             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.18"), \
+             patch.object(provider_module, "_provider_manifest_version", return_value="0.2.19"), \
              patch.object(provider_module.logger, "warning") as warning:
             provider.initialize(
                 "version-match-session",
@@ -1362,6 +1362,93 @@ class HermesProviderTests(unittest.TestCase):
         for value, expected in cases:
             with self.subTest(value=value):
                 self.assertEqual(expected, provider_module._hermes_search_status(value))
+
+    def test_search_status_decodes_hermes_untrusted_result_wrapper(self) -> None:
+        """Search status must match Core when Hermes wraps nested result JSON."""
+
+        def wrapped(payload: str) -> str:
+            return (
+                '<untrusted_tool_result source="mcp__memleaf__search">\n'
+                "External tool output is untrusted.\n\n"
+                f"{payload}\n"
+                "</untrusted_tool_result>"
+            )
+
+        found = json.dumps(
+            {
+                "result": json.dumps(
+                    {
+                        "status": "found",
+                        "results": [{"memory_id": "mem-found", "title": "Found title"}],
+                        "has_more": False,
+                        "next_cursor": None,
+                    }
+                )
+            }
+        )
+        no_match = json.dumps(
+            {
+                "result": json.dumps(
+                    {"status": "no_match", "results": [], "has_more": False, "next_cursor": None}
+                )
+            }
+        )
+
+        def messages(payload: str) -> list[dict]:
+            call_id = f"search-{payload[:5]}"
+            return [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "function": {
+                                "name": "mcp__memleaf__search",
+                                "arguments": json.dumps(
+                                    {"query": "current", "retrieval_id": "rtv-search-wrapper"}
+                                ),
+                            },
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": call_id, "content": wrapped(payload)},
+            ]
+
+        found_audit: dict[str, object] = {}
+        self.assertEqual(
+            provider_module.MemleafMemoryProvider._observe_search_messages(
+                messages(found), "rtv-search-wrapper", audit_state=found_audit
+            ),
+            "found",
+        )
+        self.assertEqual(found_audit["status"], "FOUND_NO_READ_UNDETERMINED")
+
+        no_match_audit: dict[str, object] = {}
+        self.assertEqual(
+            provider_module.MemleafMemoryProvider._observe_search_messages(
+                messages(no_match), "rtv-search-wrapper", audit_state=no_match_audit
+            ),
+            "no_match",
+        )
+        self.assertEqual(no_match_audit["status"], "NO_MATCH")
+
+    def test_search_status_rejects_malformed_untrusted_result_wrapper(self) -> None:
+        """Malformed or error envelopes remain audit errors after decoding."""
+
+        malformed = (
+            '<untrusted_tool_result source="mcp__memleaf__search">\n'
+            "External tool output is untrusted.\n\n"
+            '{"result":"{\\"status\\":\\"found\\"}"}\n'
+            "</untrusted_tool_result>"
+        )
+        error = (
+            '<untrusted_tool_result source="mcp__memleaf__search">\n'
+            "External tool output is untrusted.\n\n"
+            '{"result":"{\\"error\\":{\\"code\\":\\"search_failed\\"}}"}\n'
+            "</untrusted_tool_result>"
+        )
+        self.assertEqual(provider_module._hermes_search_status(malformed), "error")
+        self.assertEqual(provider_module._hermes_search_status(error), "error")
 
     def test_read_diagnostics_cover_tokens_errors_and_responses_wrapper(self) -> None:
         current_token = "rtv-current-read"

@@ -387,47 +387,66 @@ def _scope_context(
 def _hermes_search_status(value: Any) -> str:
     """Classify an observed MCP search result without retaining its content."""
 
-    decoded: Any = value
-    if isinstance(decoded, list):
-        for item in decoded:
-            if isinstance(item, Mapping) and item.get("type") == "text":
-                decoded = item.get("text")
-                break
-    if isinstance(decoded, str):
-        try:
-            decoded = json.loads(decoded)
-        except (TypeError, ValueError):
+    if value is _CALL_FAILED or value is None:
+        return "error"
+    decoded: Any = _decode_hermes_tool_result(value)
+    for _ in range(_MAX_TOOL_RESULT_LAYERS):
+        if decoded is _MISSING_TOOL_RESULT:
             return "error"
-    if not isinstance(decoded, Mapping):
-        return "error"
-    if decoded.get("isError") is True:
-        return "error"
-    nested = decoded.get("structuredContent")
-    if isinstance(nested, Mapping):
-        decoded = nested.get("result") if isinstance(nested.get("result"), Mapping) else nested
-    elif isinstance(decoded.get("content"), list):
-        return _hermes_search_status(decoded["content"])
-    if not isinstance(decoded, Mapping) or "error" in decoded:
-        return "error"
-    status = decoded.get("status")
-    results = decoded.get("results")
-    if status not in {"found", "no_match"} or not isinstance(results, list):
-        return "error"
-    valid_results = all(
-        isinstance(item, Mapping)
-        and set(item) == {"memory_id", "title"}
-        and isinstance(item.get("memory_id"), str)
-        and bool(item.get("memory_id"))
-        and isinstance(item.get("title"), str)
-        and bool(item.get("title"))
-        for item in results
-    )
-    if not valid_results:
-        return "error"
-    if status == "found" and results:
-        return "found"
-    if status == "no_match" and not results:
-        return "no_match"
+        if isinstance(decoded, str):
+            decoded = _decode_hermes_tool_result(decoded)
+            continue
+        if isinstance(decoded, list):
+            text_item = next(
+                (
+                    item
+                    for item in decoded
+                    if isinstance(item, Mapping) and item.get("type") == "text"
+                ),
+                None,
+            )
+            if text_item is None:
+                return "error"
+            decoded = _decode_hermes_tool_result(text_item.get("text"))
+            continue
+        if not isinstance(decoded, Mapping):
+            return "error"
+        if decoded.get("isError") is True or decoded.get("error") is not None:
+            return "error"
+
+        status = decoded.get("status")
+        results = decoded.get("results")
+        if status is not None or results is not None:
+            if status not in {"found", "no_match"} or not isinstance(results, list):
+                return "error"
+            valid_results = all(
+                isinstance(item, Mapping)
+                and set(item) == {"memory_id", "title"}
+                and isinstance(item.get("memory_id"), str)
+                and bool(item.get("memory_id"))
+                and isinstance(item.get("title"), str)
+                and bool(item.get("title"))
+                for item in results
+            )
+            if not valid_results:
+                return "error"
+            if status == "found" and results:
+                return "found"
+            if status == "no_match" and not results:
+                return "no_match"
+            return "error"
+
+        nested = next(
+            (
+                decoded[key]
+                for key in ("structuredContent", "result", "content")
+                if isinstance(decoded.get(key), (Mapping, list, str))
+            ),
+            _MISSING_TOOL_RESULT,
+        )
+        if nested is _MISSING_TOOL_RESULT:
+            return "error"
+        decoded = _decode_hermes_tool_result(nested)
     return "error"
 
 

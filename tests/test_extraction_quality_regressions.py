@@ -14,7 +14,7 @@ from pathlib import Path
 
 from memleaf import Memleaf
 from memleaf.index import event_key
-from memleaf.validation import parse_gate_output
+from memleaf.validation import ModelOutputError, parse_gate_output
 
 
 class QueueBackend:
@@ -198,6 +198,147 @@ class ExtractionQualityRegressionTests(unittest.TestCase):
             ),
             "project constraint and deadline todo were merged into one memory",
         )
+
+    def test_repeated_mixed_future_use_defers_only_bad_candidate(self):
+        """A third mixed-use failure must not discard a valid sibling candidate."""
+
+        user_key, assistant_key = self.capture_turn(
+            "repeated-mixed-future-use",
+            user="请记录本轮确认的项目要求。",
+            assistant="系统采用达梦数据库；部署测试环境的任务必须在2026-09-10前完成。",
+        )
+        project_scope = ["project:金元顺安"]
+        mixed = candidate(
+            "mixed-repeated",
+            [user_key, assistant_key],
+            memory=(
+                "金元顺安实施计划采用达梦和东方通，并要求部署测试环境在"
+                "2026-09-10前完成。"
+            ),
+            type="project",
+            scopes=project_scope,
+        )
+        valid = candidate(
+            "valid-sibling",
+            [user_key, assistant_key],
+            memory="本轮确认系统采用达梦数据库。",
+            type="fact",
+            scopes=["global"],
+        )
+        backend = QueueBackend(
+            [
+                gate([mixed, valid]),
+                gate([mixed, valid]),
+                gate([mixed, valid]),
+                summary(
+                    user_key,
+                    title="系统数据库选型",
+                    body="本轮确认系统采用达梦数据库。",
+                    type="fact",
+                    scopes=["global"],
+                ),
+            ]
+        )
+
+        result = self.service.process(
+            source="hermes",
+            session_id="repeated-mixed-future-use",
+            model=backend,
+        )
+
+        self.assertEqual(result["processed_turns"], 1)
+        self.assertEqual(result["memories_written"], 1)
+        self.assertEqual(len(self.active_memories()), 1)
+        self.assertEqual(self.active_memories()[0].body, "本轮确认系统采用达梦数据库。")
+        self.assertEqual(
+            [call["purpose"] for call in backend.calls],
+            ["gate", "gate", "gate", "summarize"],
+        )
+        processed = json.loads(
+            self.service.vault.processed_index_path.read_text(encoding="utf-8")
+        )
+        state = processed["sessions"]["hermes/repeated-mixed-future-use"]
+        self.assertEqual(state["processing"]["status"], "idle")
+        self.assertEqual(result["deferred_candidates"], 1)
+        self.assertEqual(
+            state["processed_turns"][0]["deferred_candidates"][0]["candidate_id"],
+            "mixed-repeated",
+        )
+        self.assertEqual(
+            state["processed_turns"][0]["deferred_candidates"][0]["reason"],
+            "mixed_future_use",
+        )
+        self.assertTrue(
+            (
+                self.service.vault.inbox_path
+                / "hermes"
+                / "repeated-mixed-future-use.md"
+            ).is_file()
+        )
+
+        retry_backend = QueueBackend(
+            [
+                gate([mixed, valid]),
+                gate([mixed, valid]),
+                gate([mixed, valid]),
+                summary(
+                    user_key,
+                    title="系统数据库选型",
+                    body="本轮确认系统采用达梦数据库。",
+                    type="fact",
+                    scopes=["global"],
+                ),
+            ]
+        )
+        retry = self.service.process(
+            source="hermes",
+            session_id="repeated-mixed-future-use",
+            scope="global",
+            model=retry_backend,
+        )
+        self.assertEqual(retry["processed_turns"], 1)
+        self.assertEqual(retry["memory_ids"], [])
+        self.assertEqual(retry["memories_written"], 0)
+        self.assertEqual(len(self.active_memories()), 1)
+        self.assertEqual(retry["deferred_candidates"], 1)
+
+    def test_repeated_mixed_future_use_does_not_swallow_other_schema_errors(self):
+        """The final mixed-use fallback must preserve unrelated validation failures."""
+
+        user_key, assistant_key = self.capture_turn(
+            "repeated-mixed-with-invalid-type",
+            user="请记录本轮确认的项目要求。",
+            assistant="系统采用达梦数据库；部署测试环境的任务必须在2026-09-10前完成。",
+        )
+        mixed = candidate(
+            "mixed-repeated",
+            [user_key, assistant_key],
+            memory=(
+                "金元顺安实施计划采用达梦和东方通，并要求部署测试环境在"
+                "2026-09-10前完成。"
+            ),
+            type="project",
+            scopes=["project:金元顺安"],
+        )
+        invalid = candidate(
+            "invalid-sibling",
+            [user_key, assistant_key],
+            memory="本轮确认系统采用达梦数据库。",
+            type="unsupported-type",
+            scopes=["global"],
+        )
+        backend = QueueBackend([gate([mixed, invalid])] * 3)
+
+        with self.assertRaises(ModelOutputError) as raised:
+            self.service.process(
+                source="hermes",
+                session_id="repeated-mixed-with-invalid-type",
+                model=backend,
+            )
+
+        self.assertEqual(getattr(raised.exception, "validation_detail", None), "invalid_type")
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate"] * 3)
+        self.assertEqual(self.active_memories(), [])
 
     def test_fact_label_for_existing_project_plan_is_corrected_before_update(self):
         """A plan update keeps the active project type and exact target ID."""

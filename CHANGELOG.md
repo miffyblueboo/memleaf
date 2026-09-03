@@ -2,6 +2,15 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.19 — 2026-09-03
+
+- Keep Hermes `<untrusted_tool_result>` search audit status synchronized with
+  Core for `FOUND` and `NO_MATCH` results using bounded, strict decoding;
+  malformed and error envelopes remain audit errors.
+- After three `mixed_future_use` gate responses, defer only the affected
+  candidate so valid candidates from the same turn can continue processing;
+  mixed content is never persisted and unrelated schema violations still fail.
+
 ## 0.2.18 — 2026-09-02
 
 - Register Hermes native `MEMORY.md` and `USER.md` as private, read-only native sources during supported install/upgrade flows while preserving custom native source configuration.

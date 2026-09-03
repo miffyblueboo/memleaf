@@ -67,6 +67,7 @@ from .validation import (
     normalize_relative_calendar_text,
     is_aggregate_operational_text,
     is_attachment_followup_only_text,
+    is_mixed_future_use_text,
     is_project_plan_text,
 )
 from .vault import safe_component
@@ -2414,6 +2415,7 @@ class Processor:
                 related_memory_ids=gate_related_memory_ids,
                 scope_registry=validation_scope_registry,
                 enforce_model_scope_grounding=gate_attempt_count < 3,
+                allow_mixed_future_use=gate_attempt_count >= 3,
             )
             if gate_attempt_count >= 3:
                 candidates = []
@@ -2564,6 +2566,19 @@ class Processor:
                         candidates.append(independent)
                 parsed = dict(parsed)
                 parsed["candidates"] = candidates
+            if gate_attempt_count >= 3:
+                # Mixed future-use is still a hard safety boundary.  After
+                # the bounded correction attempts, retain only the affected
+                # candidate for deferred retry so valid siblings can commit;
+                # no mixed body can reach summarize or persistence.
+                marked_candidates: list[dict[str, Any]] = []
+                for candidate in parsed["candidates"]:
+                    item = dict(candidate)
+                    if item.get("worth") and is_mixed_future_use_text(item.get("memory")):
+                        item["_defer_reason"] = "mixed_future_use"
+                    marked_candidates.append(item)
+                parsed = dict(parsed)
+                parsed["candidates"] = marked_candidates
             return parsed
 
         gate = self._complete_json_stage(
@@ -2647,6 +2662,15 @@ class Processor:
             candidate_id_key = str(candidate.get("candidate_id", "")).casefold()
             recovery = recovery_by_candidate.get(candidate_id_key)
             detached_update_target_id = detached_update_target_ids.get(candidate_id_key)
+            defer_reason = candidate.get("_defer_reason")
+            if isinstance(defer_reason, str) and defer_reason == "mixed_future_use":
+                self._defer_candidate(
+                    turn_ref,
+                    candidate,
+                    defer_reason,
+                    scopes=candidate.get("scopes"),
+                )
+                continue
             if candidate.get("worth") and (
                 (read_only_query and recovery is None)
                 or _automatic_transient_memory(candidate.get("memory"))

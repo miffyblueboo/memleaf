@@ -1086,6 +1086,7 @@ def validate_gate_output(
     related_memory_types: Mapping[str, Any] | None = None,
     scope_registry: Mapping[str, Any] | None = None,
     enforce_model_scope_grounding: bool = True,
+    allow_mixed_future_use: bool = False,
 ) -> dict[str, Any]:
     """Validate and return a normalized gate object without writing anything."""
 
@@ -1146,7 +1147,11 @@ def validate_gate_output(
             raise ModelOutputError("duplicate candidate cannot be worth remembering", validation_detail="invalid_flags")
         if item["worth"] and candidate_type is None:
             raise ModelOutputError("worth candidate must have a type", validation_detail="invalid_type")
-        if item["worth"] and is_mixed_future_use_text(item["memory"]):
+        if (
+            item["worth"]
+            and is_mixed_future_use_text(item["memory"])
+            and not allow_mixed_future_use
+        ):
             raise ModelOutputError(
                 "one candidate combines independent future uses",
                 validation_detail="mixed_future_use",
@@ -1263,6 +1268,7 @@ def parse_gate_output(
     related_memory_types: Mapping[str, Any] | None = None,
     scope_registry: Mapping[str, Any] | None = None,
     enforce_model_scope_grounding: bool = True,
+    allow_mixed_future_use: bool = False,
 ) -> dict[str, Any]:
     try:
         parsed = parse_strict_json(raw)
@@ -1279,6 +1285,7 @@ def parse_gate_output(
             related_memory_types=related_memory_types,
             scope_registry=scope_registry,
             enforce_model_scope_grounding=enforce_model_scope_grounding,
+            allow_mixed_future_use=allow_mixed_future_use,
         )
     except ModelOutputError as error:
         if error.validation_reason is None:

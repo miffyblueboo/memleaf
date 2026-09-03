@@ -4,8 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.18.**
-> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.2.18 is distributed through PyPI.
+> **Version: 0.2.19.**
+> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.2.19 is distributed through PyPI.
 > **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.
 
 ## Project scope
