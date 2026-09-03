@@ -123,6 +123,140 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
     def inbox_exists(self, session):
         return (self.service.vault.inbox_path / "hermes" / f"{session}.md").is_file()
 
+    def test_final_retry_splits_grounded_multi_project_aggregate_per_candidate(self):
+        """One bad aggregate must not block independently grounded projects."""
+
+        user_key, assistant_key = self.capture_turn(
+            "multi-project-aggregate",
+            user=(
+                "alpha 项目实施计划新增提前部署测试环境要求；"
+                "beta 项目需补充网络拓扑图；"
+                "gamma 负责人已确认由乙负责。"
+            ),
+            assistant="已按项目分别整理本轮事项。",
+        )
+        aggregate = candidate(
+            "multi-project-aggregate",
+            [user_key, assistant_key],
+            memory=(
+                "alpha 项目实施计划新增提前部署测试环境要求；"
+                "beta 项目需补充网络拓扑图；"
+                "gamma 负责人已确认由乙负责。"
+            ),
+            type="fact",
+            scopes=["project:alpha"],
+        )
+        backend = QueueBackend(
+            [
+                gate([aggregate]),
+                gate([aggregate]),
+                gate([aggregate]),
+                summary(
+                    user_key,
+                    title="alpha 项目实施计划",
+                    body="alpha 项目实施计划新增提前部署测试环境要求。",
+                    type="project",
+                    scopes=["project:alpha"],
+                ),
+                summary(
+                    user_key,
+                    title="beta 网络拓扑图",
+                    body="beta 项目需补充网络拓扑图。",
+                    type="todo",
+                    scopes=["project:beta"],
+                ),
+                summary(
+                    user_key,
+                    title="gamma 负责人",
+                    body="gamma 负责人已确认由乙负责。",
+                    type="fact",
+                    scopes=["project:gamma"],
+                ),
+            ]
+        )
+
+        result = self.service.process(
+            source="hermes", session_id="multi-project-aggregate", model=backend
+        )
+
+        self.assertEqual(result["memories_written"], 3)
+        memories = self.active()
+        self.assertEqual(
+            {memory.scopes[0] for memory in memories},
+            {"project:alpha", "project:beta", "project:gamma"},
+        )
+        self.assertEqual(result["deferred_candidates"], 0)
+        self.assertEqual(
+            [call["purpose"] for call in backend.calls],
+            ["gate", "gate", "gate", "summarize", "summarize", "summarize"],
+        )
+
+    def test_first_valid_insufficient_context_aggregate_is_split(self):
+        """A valid unscoped aggregate is split without spending gate retries."""
+
+        user_key, assistant_key = self.capture_turn(
+            "first-response-aggregate",
+            user=(
+                "alpha 负责人当前为甲；"
+                "beta 负责人当前为乙；"
+                "gamma 负责人当前为丙。"
+            ),
+            assistant="已按项目分别整理本轮事项。",
+        )
+        aggregate = candidate(
+            "first-response-aggregate",
+            [user_key, assistant_key],
+            memory=(
+                "alpha 负责人当前为甲；"
+                "beta 负责人当前为乙；"
+                "gamma 负责人当前为丙。"
+            ),
+            type="fact",
+            scopes=["unscoped"],
+            scope_source="insufficient_context",
+        )
+        backend = QueueBackend(
+            [
+                gate([aggregate]),
+                summary(
+                    user_key,
+                    title="alpha 负责人",
+                    body="alpha 负责人当前为甲。",
+                    type="fact",
+                    scopes=["project:alpha"],
+                ),
+                summary(
+                    user_key,
+                    title="beta 负责人",
+                    body="beta 负责人当前为乙。",
+                    type="fact",
+                    scopes=["project:beta"],
+                ),
+                summary(
+                    user_key,
+                    title="gamma 负责人",
+                    body="gamma 负责人当前为丙。",
+                    type="fact",
+                    scopes=["project:gamma"],
+                ),
+            ]
+        )
+
+        result = self.service.process(
+            source="hermes", session_id="first-response-aggregate", model=backend
+        )
+
+        self.assertEqual(result["memories_written"], 3)
+        self.assertEqual(result["deferred_candidates"], 0)
+        self.assertEqual(
+            {memory.scopes[0] for memory in self.active()},
+            {"project:alpha", "project:beta", "project:gamma"},
+        )
+        self.assertEqual(
+            [call["purpose"] for call in backend.calls],
+            ["gate", "summarize", "summarize", "summarize"],
+        )
+
     def test_unrelated_fact_target_is_removed_and_project_plan_is_created(self):
         """A plan aimed at an unrelated fact survives three gate retries as CREATE."""
 

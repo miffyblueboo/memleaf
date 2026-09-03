@@ -509,7 +509,8 @@ _CALENDAR_TEXT = re.compile(
 
 _ACTION_VERBS = (
     "修复", "整改", "排查", "准备", "反馈", "回复", "提交", "确认", "部署", "迁移",
-    "调整", "跟进", "处理", "补充", "发送", "提供", "review", "reply", "submit",
+    "调整", "跟进", "处理", "补充", "发送", "提供", "改", "重画", "重做", "标明", "标出",
+    "review", "reply", "submit",
     "confirm", "deploy", "migrate", "fix", "investigate", "prepare", "follow up",
 )
 _ACTION_PREFIXES = (

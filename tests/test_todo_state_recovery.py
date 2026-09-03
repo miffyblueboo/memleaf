@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from memleaf import Memleaf
+from memleaf.config import save_config
 from memleaf.index import event_key
 
 
@@ -118,6 +119,17 @@ class TodoStateRecoveryTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assert_no_transition(text, name=f"future-{index}")
 
+    def test_unfinished_delivery_actions_do_not_complete(self):
+        for index, text in enumerate(
+            (
+                "鑫元基金需要提交架构评审方案",
+                "鑫元基金等待反馈",
+                "鑫元基金请发送材料",
+            )
+        ):
+            with self.subTest(text=text):
+                self.assert_no_transition(text, name=f"unfinished-action-{index}")
+
     def test_assistant_only_completion_does_not_complete(self):
         self.assert_no_transition(
             "鑫元基金的架构评审文档现在是什么状态？",
@@ -159,6 +171,120 @@ class TodoStateRecoveryTest(unittest.TestCase):
         self.assertEqual(result["memory_ids"], [old.memory_id])
         self.assertEqual(service.read(old.memory_id).status, "cancelled")
         self.assertIsNone(service.read(old.memory_id).completed_at)
+
+    def test_completed_delivery_and_customer_rework_are_separate_writes(self):
+        backend = QueueBackend([])
+        service = Memleaf(Path(self.tmp.name) / "completion-rework", model=backend)
+        config = service.vault.config()
+        config["scopes"] = {"project:鑫元基金": {"aliases": ["鑫元"]}}
+        save_config(service.vault.config_path, config)
+        old = self.add_todo(service)
+        with patch("memleaf.capture._timestamp", return_value="2026-09-03T09:21:51Z"):
+            user_key = self.add_turn(
+                service,
+                "鑫元基金我已经给了版了，他们上午回复说还是有两个地方要改，"
+                "网络拓扑图没画好，数据架构分层之间访问协议要标出来",
+            )
+        backend.responses.extend(
+            [
+                self.gate([]),
+                self.summary(user_key),
+                json.dumps(
+                    {
+                        "title": "鑫元基金客户返工要求",
+                        "body": "客户要求重新绘制网络拓扑图，并标明数据架构分层之间的访问协议。",
+                        "tags": ["todo"],
+                        "type": "todo",
+                        "scopes": ["project:鑫元基金"],
+                        "scope_source": "model",
+                        "sources": [{"event_key": user_key}],
+                    },
+                    ensure_ascii=False,
+                ),
+            ]
+        )
+
+        result = service.process(source="hermes", session_id="session", model=backend)
+
+        self.assertEqual(result["memories_written"], 2)
+        self.assertEqual(service.read(old.memory_id).status, "completed")
+        self.assertEqual(service.read(old.memory_id).completed_at, "2026-09-03T09:21:51Z")
+        active = service._read_memories_unlocked("knowledge")
+        rework = [record.memory for record in active if record.memory.memory_id != old.memory_id]
+        self.assertEqual(len(rework), 1)
+        self.assertEqual(rework[0].type, "todo")
+        self.assertEqual(rework[0].status, "active")
+        self.assertIn("网络拓扑图", rework[0].body)
+        self.assertEqual(
+            [call["purpose"] for call in backend.calls],
+            ["gate", "summarize", "summarize"],
+        )
+
+        replay = service.process(source="hermes", session_id="session", model=backend)
+
+        self.assertEqual(replay["processed_turns"], 0)
+        self.assertEqual(replay["memories_written"], 0)
+        self.assertEqual(service.read(old.memory_id).status, "completed")
+        self.assertEqual(
+            len(service._read_memories_unlocked("knowledge")),
+            2,
+        )
+        self.assertEqual(
+            [call["purpose"] for call in backend.calls],
+            ["gate", "summarize", "summarize"],
+        )
+
+    def test_generic_customer_rework_candidate_is_reused_without_network_specific_rules(self):
+        backend = QueueBackend([])
+        service = Memleaf(Path(self.tmp.name) / "generic-rework", model=backend)
+        config = service.vault.config()
+        config["scopes"] = {"project:鑫元基金": {"aliases": ["鑫元"]}}
+        save_config(service.vault.config_path, config)
+        old = self.add_todo(service)
+        with patch("memleaf.capture._timestamp", return_value="2026-09-03T09:21:51Z"):
+            user_key = self.add_turn(
+                service,
+                "鑫元基金的文档已经交付了，客户要求修改封面并补充审批流程。",
+            )
+        gate_candidate = {
+            "candidate_id": "customer-rework",
+            "memory": "鑫元基金客户返工：修改封面并补充审批流程",
+            "evidence_event_ids": [user_key],
+            "duplicate": False,
+            "worth": True,
+            "type": "todo",
+            "scopes": ["project:鑫元基金"],
+            "scope_source": "model",
+        }
+        backend.responses.extend(
+            [
+                self.gate([gate_candidate]),
+                self.summary(user_key),
+                json.dumps(
+                    {
+                        "title": "鑫元基金客户返工要求",
+                        "body": "客户要求修改封面并补充审批流程。",
+                        "tags": ["todo"],
+                        "type": "todo",
+                        "scopes": ["project:鑫元基金"],
+                        "scope_source": "model",
+                        "sources": [{"event_key": user_key}],
+                    },
+                    ensure_ascii=False,
+                ),
+            ]
+        )
+
+        result = service.process(source="hermes", session_id="session", model=backend)
+
+        self.assertEqual(result["memories_written"], 2)
+        self.assertEqual(service.read(old.memory_id).status, "completed")
+        active = service._read_memories_unlocked("knowledge")
+        rework = [record.memory for record in active if record.memory.memory_id != old.memory_id]
+        self.assertEqual(len(rework), 1)
+        self.assertIn("修改封面", rework[0].body)
+        self.assertIn("审批流程", rework[0].body)
+        self.assertEqual(result["deferred_candidates"], 0)
 
 
 if __name__ == "__main__":

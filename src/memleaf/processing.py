@@ -108,7 +108,14 @@ _EXECUTION_RECEIPT_RE = re.compile(
     re.IGNORECASE,
 )
 _TODO_COMPLETION_RE = re.compile(
-    r"(?:完成|做完|办完|搞定|处理完|closed|completed|finished|done)",
+    r"(?:"
+    r"(?:已|已经|刚刚|刚才)\s*(?:完成|做完|办完|搞定|处理完|交付|提交|反馈|发送|提供)(?:了|啦)?"
+    r"(?:版|版本|文档|材料|文件|方案|附件|答复|回复|反馈)?|"
+    r"(?:完成|做完|办完|搞定|处理完)(?:了|啦)?|"
+    r"(?:交付|提交|反馈|发送|提供)了(?:版|版本|文档|材料|文件|方案|附件|答复|回复|反馈)?|"
+    r"(?:给|交|发)了(?:版|版本|文档|材料|文件|方案|附件|答复|回复|反馈)?|"
+    r"(?:closed|completed|finished|done)"
+    r")",
     re.IGNORECASE,
 )
 _TODO_CANCEL_RE = re.compile(
@@ -117,6 +124,7 @@ _TODO_CANCEL_RE = re.compile(
 )
 _TODO_NEGATION_MARKERS = (
     "还没", "没有", "未", "尚未", "没", "not", "never", "will", "would", "准备", "打算", "计划", "将要", "会", "要",
+    "需要", "需", "待", "请", "必须", "务必", "尽快", "尚需", "还需", "等待",
 )
 _TODO_UNCERTAINTY_MARKERS = (
     "应该", "可能", "大概", "似乎", "不确定", "也许", "好像", "probably", "perhaps", "maybe", "seems", "not sure",
@@ -125,6 +133,252 @@ _TODO_CONFIRMATION_RE = re.compile(
     r"(?:对吗|对不对|是吗|正确吗|是不是|是否(?=(?:已|已经|完成|正确|这样|发|做|弄)))"
 )
 _TODO_QUERY_SUFFIXES = ("吗", "么", "？", "?", "呢")
+_REWORK_ACTION_MARKERS = (
+    "要改", "需要改", "需改", "还要", "重画", "重做", "重绘", "没画好", "标出来", "标明",
+    "修改", "修复", "整改", "补充", "补上", "补齐", "调整", "改下", "改一下", "改成", "更改",
+    "完善", "修订", "重新", "更新", "rework", "revise", "redraw", "fix", "update", "change",
+)
+
+
+def _completion_match_is_declarative(folded: str, match: re.Match[str]) -> bool:
+    """Keep rework recovery limited to an explicit completion statement."""
+
+    start, end = match.span()
+    prefix = folded[max(0, start - 8) : start]
+    suffix = folded[end : end + 4]
+    if any(value in prefix for value in _TODO_NEGATION_MARKERS + _TODO_UNCERTAINTY_MARKERS):
+        return False
+    if any(suffix.startswith(value) for value in _TODO_QUERY_SUFFIXES) or re.match(
+        r"^(?:了|啦)?(?:吗|么|呢|[?？])", suffix
+    ):
+        return False
+    if _TODO_CONFIRMATION_RE.search(prefix) or _TODO_CONFIRMATION_RE.search(folded[end:]):
+        return False
+    match_text = match.group(0).casefold()
+    return bool(
+        any(value in prefix for value in ("已", "已经", "刚刚", "刚才", "i ", "i've", "has ", "was "))
+        or match_text.startswith(("已", "已经", "刚刚", "刚才"))
+        or any(value in match_text for value in ("了", "啦"))
+        or suffix.startswith(("了", "啦", ".", "!", "！", ",", "，", ";", "；"))
+        or match_text in {"completed", "finished", "done", "closed", "cancelled", "canceled", "aborted"}
+    )
+
+
+def _project_scope_occurrences(
+    text: str,
+    scope_registry: Mapping[str, Any] | None,
+) -> list[tuple[int, int, str]] | None:
+    """Return ordered, candidate-local project-name matches.
+
+    This is intentionally conservative: only names and aliases from the
+    configured registry are considered, and an overlapping occurrence that
+    maps to different projects makes deterministic splitting unsafe.
+    """
+
+    if not isinstance(text, str) or not text.strip() or not isinstance(scope_registry, Mapping):
+        return []
+    folded = text.casefold()
+    terms: list[tuple[str, str]] = []
+    for scope, node in scope_registry.items():
+        if not isinstance(scope, str) or not scope.startswith("project:"):
+            continue
+        name = scope.partition(":")[2]
+        raw_terms = [name, scope]
+        if isinstance(node, Mapping) and isinstance(node.get("aliases"), list):
+            raw_terms.extend(item for item in node["aliases"] if isinstance(item, str))
+        for raw_term in raw_terms:
+            term = raw_term.casefold().strip()
+            if term:
+                terms.append((term, scope))
+    occurrences: list[tuple[int, int, str]] = []
+    for term, scope in terms:
+        start = 0
+        while True:
+            position = folded.find(term, start)
+            if position < 0:
+                break
+            end = position + len(term)
+            ascii_term = all(char.isascii() and (char.isalnum() or char in " _-") for char in term)
+            if ascii_term:
+                before = folded[position - 1] if position else ""
+                after = folded[end] if end < len(folded) else ""
+                if (before.isascii() and before.isalnum()) or (after.isascii() and after.isalnum()):
+                    start = end
+                    continue
+            occurrences.append((position, end, scope))
+            start = end
+    if not occurrences:
+        return []
+    occurrences.sort(key=lambda item: (item[0], -(item[1] - item[0]), item[2].casefold()))
+    selected: list[tuple[int, int, str]] = []
+    for occurrence in occurrences:
+        if selected and occurrence[0] < selected[-1][1]:
+            previous = selected[-1]
+            if occurrence[0] == previous[0] and occurrence[1] == previous[1] and occurrence[2].casefold() != previous[2].casefold():
+                return None
+            # Longest term wins for aliases nested in a canonical name.
+            continue
+        selected.append(occurrence)
+    return selected
+
+
+def _project_fragment_is_usable(
+    fragment: str,
+    scope: str,
+    scope_registry: Mapping[str, Any] | None,
+) -> bool:
+    """Require enough project-local text before splitting an aggregate."""
+
+    if not isinstance(fragment, str):
+        return False
+    terms = [scope, scope.partition(":")[2]]
+    node = scope_registry.get(scope) if isinstance(scope_registry, Mapping) else None
+    if isinstance(node, Mapping) and isinstance(node.get("aliases"), list):
+        terms.extend(item for item in node["aliases"] if isinstance(item, str))
+    residual = fragment
+    for term in sorted({item for item in terms if item}, key=len, reverse=True):
+        residual = re.sub(re.escape(term), "", residual, flags=re.IGNORECASE)
+    residual = re.sub(r"[\s\t\r\n,，;；:：、和与及以及]+", "", residual)
+    # A name-only mention ("A 和 B 均有更新") is not safely separable;
+    # concrete task/plan text is normally longer than this threshold.
+    return len(residual) >= 3
+
+
+def _project_candidate_can_split(
+    text: str,
+    scope_registry: Mapping[str, Any] | None,
+) -> bool:
+    occurrences = _project_scope_occurrences(text, scope_registry)
+    if occurrences is None or len({item[2].casefold() for item in occurrences}) < 2:
+        return False
+    for index, occurrence in enumerate(occurrences):
+        start = 0 if index == 0 else occurrence[0]
+        end = occurrences[index + 1][0] if index + 1 < len(occurrences) else len(text)
+        fragment = text[start:end].strip(" \t\r\n;；,，")
+        if not _project_fragment_is_usable(fragment, occurrence[2], scope_registry):
+            return False
+    return True
+
+
+def _split_model_project_candidate(
+    candidate: Mapping[str, Any],
+    scope_registry: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Split a final-retry aggregate into candidate-local project memories."""
+
+    if (
+        candidate.get("worth") is not True
+        or candidate.get("scope_source") not in {"model", "insufficient_context"}
+        or not isinstance(candidate.get("memory"), str)
+    ):
+        return [dict(candidate)]
+    text = candidate["memory"]
+    occurrences = _project_scope_occurrences(text, scope_registry)
+    if occurrences is None or len({item[2].casefold() for item in occurrences}) < 2:
+        if occurrences and len(occurrences) == 1:
+            # A mixed/unknown scope label can still be recovered when this
+            # candidate names exactly one project itself.
+            item = dict(candidate)
+            item["scopes"] = [occurrences[0][2]]
+            item["scope_source"] = "model"
+            item.pop("duplicate_memory_id", None)
+            return [item]
+        return [dict(candidate)]
+    if not _project_candidate_can_split(text, scope_registry):
+        return [dict(candidate)]
+
+    groups: dict[str, list[str]] = {}
+    for index, occurrence in enumerate(occurrences):
+        start = 0 if index == 0 else occurrence[0]
+        end = occurrences[index + 1][0] if index + 1 < len(occurrences) else len(text)
+        fragment = text[start:end].strip(" \t\r\n;；,，")
+        if fragment:
+            groups.setdefault(occurrence[2].casefold(), []).append(fragment)
+    if len(groups) < 2:
+        return [dict(candidate)]
+
+    result: list[dict[str, Any]] = []
+    base_id = str(candidate.get("candidate_id", "candidate"))
+    for index, (scope_key, fragments) in enumerate(groups.items(), start=1):
+        item = dict(candidate)
+        scope = next(occurrence[2] for occurrence in occurrences if occurrence[2].casefold() == scope_key)
+        item["candidate_id"] = f"{base_id}:project-{index}-{hashlib.sha256(scope_key.encode('utf-8')).hexdigest()[:8]}"
+        item["memory"] = "；".join(fragments)
+        item["scopes"] = [scope]
+        item["scope_source"] = "model"
+        # A target selected for the aggregate cannot safely be inherited by
+        # every fragment.  Candidate-level lookup below can recover a unique
+        # same-use target for each fragment.
+        item.pop("duplicate_memory_id", None)
+        item.pop("update_memory_id", None)
+        item["duplicate"] = False
+        if is_actionable_todo_text(item["memory"]):
+            item["type"] = "todo"
+        elif is_project_plan_text(item["memory"]):
+            item["type"] = "project"
+        elif item.get("type") == "project":
+            # Gate validation may have promoted the aggregate because one
+            # sibling contained a plan marker.  Re-infer this fragment rather
+            # than leaking that sibling's type into an unrelated fact.
+            item["type"] = "fact"
+        result.append(item)
+    return result or [dict(candidate)]
+
+
+def _normalize_final_gate_raw(
+    raw: str,
+    scope_registry: Mapping[str, Any] | None,
+) -> str:
+    """Make a final-retry aggregate parseable without weakening validation.
+
+    Gate validation must reject mixed project scopes on a single candidate.
+    On the final bounded retry, mark only a candidate that names multiple
+    registered projects as temporarily unscoped; the caller then attempts a
+    deterministic candidate-local split.  Invalid JSON and all other schema
+    shapes remain untouched and therefore retain the strict retry behavior.
+    """
+
+    try:
+        parsed = parse_strict_json(raw)
+    except ModelOutputError:
+        return raw
+    if not isinstance(parsed, Mapping) or not isinstance(parsed.get("candidates"), list):
+        return raw
+    changed = False
+    candidates: list[Any] = []
+    for candidate in parsed["candidates"]:
+        if not isinstance(candidate, Mapping):
+            candidates.append(candidate)
+            continue
+        item = dict(candidate)
+        if (
+            item.get("scope_source") == "model"
+            and item.get("worth") is True
+            and isinstance(item.get("memory"), str)
+        ):
+            selected_scopes = {
+                value.casefold()
+                for value in item.get("scopes", [])
+                if isinstance(value, str) and value.partition(":")[0] == "project"
+            }
+            occurrences = _project_scope_occurrences(item["memory"], scope_registry)
+            occurrence_scopes = {
+                value.casefold()
+                for _start, _end, value in (occurrences or [])
+            }
+            if len(occurrence_scopes) > 1 and _project_candidate_can_split(
+                item["memory"],
+                scope_registry,
+            ):
+                item["scopes"] = ["unscoped"]
+                item["scope_source"] = "insufficient_context"
+                changed = True
+        candidates.append(item)
+    if not changed:
+        return raw
+    normalized = dict(parsed)
+    normalized["candidates"] = candidates
+    return json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
 
 
 def _explicit_todo_state_change(
@@ -173,14 +427,17 @@ def _explicit_todo_state_change(
                 # rejected here.
                 if _TODO_CONFIRMATION_RE.search(prefix) or _TODO_CONFIRMATION_RE.search(folded[end:]):
                     continue
+                match_text = match.group(0).casefold()
                 # A bare English "done"/"completed" is declarative.  For
                 # Chinese verbs require either a completion particle or an
                 # explicit completed-state prefix to avoid matching a future
                 # action such as "完成计划".
                 if state in {"completed", "cancelled"} and not (
                     any(value in prefix for value in ("已", "已经", "刚刚", "刚才", "i ", "i've", "has ", "was "))
+                    or match_text.startswith(("已", "已经", "刚刚", "刚才"))
                     or suffix.startswith(("了", "啦", ".", "!", "！", ",", "，", ";", "；"))
-                    or match.group(0).casefold() in {"completed", "finished", "done", "closed", "cancelled", "canceled", "aborted"}
+                    or any(value in match_text for value in ("了", "啦"))
+                    or match_text in {"completed", "finished", "done", "closed", "cancelled", "canceled", "aborted"}
                 ):
                     continue
                 event_states.add(state)
@@ -369,6 +626,70 @@ def _todo_state_recovery_candidate(
         "update_memory_id": target.memory_id,
     }
     return candidate, state, target.memory_id, completed_at
+
+
+def _completion_rework_candidate(
+    events: Iterable[Mapping[str, Any]],
+    scope_registry: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Extract new work that follows an explicit completed-delivery statement.
+
+    A single user message may close yesterday's todo and immediately report a
+    new customer revision.  The model often collapses those into one
+    candidate; keeping the deterministic extraction here prevents the close
+    transition from swallowing the new action.
+    """
+
+    for event in events:
+        if str(event.get("role", "")).casefold() != "user":
+            continue
+        content = event.get("content")
+        event_key_value = event.get("event_key")
+        if not isinstance(content, str) or not content.strip() or not isinstance(event_key_value, str):
+            continue
+        folded_content = content.casefold()
+        matches = list(_TODO_COMPLETION_RE.finditer(folded_content))
+        if not matches:
+            continue
+        for match in matches:
+            if not _completion_match_is_declarative(folded_content, match):
+                continue
+            tail = content[match.end() :].strip(" \t\r\n，,；;。.!！?？:：")
+            tail = re.sub(r"^[了啦]\s*[，,；;。.!！?？:：]?\s*", "", tail)
+            tail = re.sub(
+                r"^(?:了)?[，,；;]?\s*(?:他们|客户|对方)(?:上午|下午|今天|刚刚)?(?:回复|反馈|说)(?:是|有|称|说)?[：:，,；;]?",
+                "",
+                tail,
+                flags=re.IGNORECASE,
+            ).strip(" \t\r\n，,；;。.!！?？:：")
+            folded = tail.casefold()
+            if not tail or not any(marker in folded for marker in _REWORK_ACTION_MARKERS):
+                continue
+            occurrences = _project_scope_occurrences(content, scope_registry)
+            if occurrences is None:
+                continue
+            scope_values = list(dict.fromkeys(item[2] for item in occurrences))
+            if len(scope_values) != 1:
+                continue
+            scope = scope_values[0]
+            scope_name = scope.partition(":")[2]
+            if scope_name.casefold() not in tail.casefold():
+                tail = f"{scope_name}：{tail}"
+            candidate_id = "todo-rework-" + hashlib.sha256(
+                f"{event_key_value}|{tail}".encode("utf-8")
+            ).hexdigest()[:16]
+            return {
+                "candidate_id": candidate_id,
+                "memory": tail,
+                "evidence_event_ids": [event_key_value],
+                "duplicate": False,
+                "worth": True,
+                "type": "todo",
+                "scopes": [scope],
+                "scope_source": "model",
+                "_force_create": True,
+            }
+    return None
 
 
 _DIAGNOSTIC_CANDIDATE_ALLOWED = _DIAGNOSTIC_CANDIDATE_REQUIRED | frozenset(
@@ -2445,8 +2766,13 @@ class Processor:
             target_relations.clear()
             unknown_target_ids.clear()
             candidate_level_target_ids.clear()
+            raw_for_parse = (
+                _normalize_final_gate_raw(raw, validation_scope_registry)
+                if gate_attempt_count >= 3
+                else raw
+            )
             parsed = parse_gate_output(
-                raw,
+                raw_for_parse,
                 current_event_keys=turn.event_keys,
                 related_memory_ids=gate_related_memory_ids,
                 scope_registry=validation_scope_registry,
@@ -2495,6 +2821,28 @@ class Processor:
                     candidates.append(candidate)
                 parsed = dict(parsed)
                 parsed["candidates"] = candidates
+
+            # A model may explicitly mark an aggregate as insufficiently
+            # grounded on its first response.  It is already valid gate JSON,
+            # so waiting for a retry would defer the whole turn unnecessarily.
+            # Split only on project names found in this candidate's own text;
+            # unknown or ambiguous fragments remain candidate-local deferred
+            # work below.
+            if gate_attempt_count >= 3 or any(
+                candidate.get("scope_source") == "insufficient_context"
+                for candidate in parsed["candidates"]
+                if isinstance(candidate, Mapping)
+            ):
+                split_candidates: list[dict[str, Any]] = []
+                for candidate in parsed["candidates"]:
+                    split_candidates.extend(
+                        _split_model_project_candidate(
+                            candidate,
+                            validation_scope_registry,
+                        )
+                    )
+                parsed = dict(parsed)
+                parsed["candidates"] = split_candidates
 
             invalid_targets: dict[str, set[str]] = {}
             type_mismatches: set[str] = set()
@@ -2641,61 +2989,175 @@ class Processor:
         # uniquely related active todo; all other gate decisions stay intact.
         todo_state_recovery = _todo_state_recovery_candidate(events, related)
         recovery_by_candidate: dict[str, tuple[str, str, str]] = {}
+        recovery_target_id: str | None = None
+        recovery_candidate_value: dict[str, Any] | None = None
         if todo_state_recovery is not None:
             recovery_candidate, recovery_state, recovery_target_id, recovery_completed_at = todo_state_recovery
-            matching_index = next(
-                (
-                    index
-                    for index, item in enumerate(gate["candidates"])
-                    if isinstance(item, Mapping)
-                    and (
-                        item.get("update_memory_id") == recovery_target_id
-                        or item.get("duplicate_memory_id") == recovery_target_id
-                    )
-                ),
-                None,
+            recovery_candidate_value = dict(recovery_candidate)
+            recovery_candidate_id = recovery_candidate["candidate_id"].casefold()
+            recovery_by_candidate[recovery_candidate_id] = (
+                recovery_state,
+                recovery_target_id,
+                recovery_completed_at,
             )
-            if matching_index is not None:
-                existing_candidate = gate["candidates"][matching_index]
-                if (
-                    isinstance(existing_candidate, Mapping)
-                    and existing_candidate.get("update_memory_id") == recovery_target_id
-                    and existing_candidate.get("type") == "todo"
-                    and existing_candidate.get("worth") is True
-                    and existing_candidate.get("duplicate") is False
-                ):
-                    recovery_by_candidate[str(existing_candidate["candidate_id"]).casefold()] = (
-                        recovery_state,
-                        recovery_target_id,
-                        recovery_completed_at,
+
+            # Always use the deterministic recovery candidate for the old
+            # target.  A model candidate that points at that target may be a
+            # project/fact or an aggregate containing the new customer
+            # revision; retaining it would either trigger a type mismatch or
+            # overwrite the completion with the rework.
+            recovery_key = recovery_target_id.casefold()
+            gate["candidates"] = [
+                item
+                for item in gate["candidates"]
+                if not (
+                    isinstance(item, Mapping)
+                    and any(
+                        isinstance(item.get(field), str)
+                        and item[field].casefold() == recovery_key
+                        for field in ("update_memory_id", "duplicate_memory_id")
                     )
-                else:
-                    # A duplicate or mismatched candidate cannot represent a
-                    # state transition. Replace only that target's candidate.
-                    gate["candidates"] = [
-                        item
-                        for index, item in enumerate(gate["candidates"])
-                        if index != matching_index
-                    ]
-                    gate["candidates"].append(recovery_candidate)
-                    recovery_by_candidate[recovery_candidate["candidate_id"].casefold()] = (
-                        recovery_state,
-                        recovery_target_id,
-                        recovery_completed_at,
-                    )
-            else:
-                gate["candidates"].append(recovery_candidate)
-                recovery_by_candidate[recovery_candidate["candidate_id"].casefold()] = (
-                    recovery_state,
-                    recovery_target_id,
-                    recovery_completed_at,
                 )
+            ]
+            gate["candidates"].insert(0, recovery_candidate_value)
+
+        force_create_candidate_ids: set[str] = set()
+        completion_rework = (
+            _completion_rework_candidate(events, validation_scope_registry)
+            if todo_state_recovery is not None
+            else None
+        )
+        if completion_rework is not None:
+            rework_text = normalize_term(completion_rework.get("memory", ""))
+            rework_scope_keys = {
+                value.casefold()
+                for value in completion_rework.get("scopes", [])
+                if isinstance(value, str) and value.partition(":")[0] == "project"
+            }
+            rework_evidence_keys = {
+                value.casefold()
+                for value in completion_rework.get("evidence_event_ids", [])
+                if isinstance(value, str)
+            }
+            exact_matches: list[dict[str, Any]] = []
+            fallback_matches: list[dict[str, Any]] = []
+            for item in gate["candidates"]:
+                if not isinstance(item, Mapping) or item.get("worth") is not True:
+                    continue
+                if str(item.get("candidate_id", "")).casefold() in recovery_by_candidate:
+                    continue
+                candidate_text = normalize_term(item.get("memory", ""))
+                candidate_evidence = {
+                    value.casefold()
+                    for value in item.get("evidence_event_ids", [])
+                    if isinstance(value, str)
+                }
+                candidate_scope_keys = {
+                    value.casefold()
+                    for value in item.get("scopes", [])
+                    if isinstance(value, str) and value.partition(":")[0] == "project"
+                }
+                if (
+                    not rework_text
+                    or not rework_evidence_keys.intersection(candidate_evidence)
+                    or candidate_scope_keys != rework_scope_keys
+                ):
+                    continue
+                full_text_match = (
+                    rework_text in candidate_text or candidate_text in rework_text
+                )
+                if full_text_match:
+                    exact_matches.append(dict(item))
+                elif (
+                    item.get("type") == "todo"
+                    or is_actionable_todo_text(item.get("memory"))
+                ) and any(marker in candidate_text for marker in _REWORK_ACTION_MARKERS):
+                    fallback_matches.append(dict(item))
+
+            # Prefer one model candidate that clearly covers the deterministic
+            # tail.  Otherwise accept one same-event/same-project actionable
+            # todo; multiple ambiguous candidates are replaced by the
+            # deterministic full tail so they cannot coexist as duplicates.
+            matched_candidates = exact_matches or fallback_matches
+            exact_ids = {
+                str(value.get("candidate_id", "")).casefold()
+                for value in exact_matches
+            }
+            fallback_ids = {
+                str(value.get("candidate_id", "")).casefold()
+                for value in fallback_matches
+            }
+            discard_ids = set(exact_ids)
+            if len(exact_matches) == 1:
+                selected_text = normalize_term(exact_matches[0].get("memory", ""))
+                discard_ids.update(
+                    str(value.get("candidate_id", "")).casefold()
+                    for value in fallback_matches
+                    if (
+                        selected_text
+                        and normalize_term(value.get("memory", ""))
+                        and (
+                            normalize_term(value.get("memory", "")) in selected_text
+                            or selected_text in normalize_term(value.get("memory", ""))
+                        )
+                    )
+                )
+            elif len(exact_matches) > 1 or len(fallback_matches) > 1:
+                discard_ids.update(fallback_ids)
+            rework_candidates: list[dict[str, Any]] = []
+            found_rework = len(matched_candidates) == 1
+            selected_id = (
+                str(matched_candidates[0].get("candidate_id", "")).casefold()
+                if found_rework
+                else ""
+            )
+            for item in gate["candidates"]:
+                if not isinstance(item, Mapping):
+                    continue
+                candidate_item = dict(item)
+                candidate_id_key = str(candidate_item.get("candidate_id", "")).casefold()
+                if candidate_id_key in discard_ids:
+                    if found_rework and candidate_id_key == selected_id:
+                        candidate_item.pop("update_memory_id", None)
+                        candidate_item.pop("duplicate_memory_id", None)
+                        candidate_item["duplicate"] = False
+                        candidate_item["type"] = "todo"
+                        candidate_item["scopes"] = list(completion_rework["scopes"])
+                        candidate_item["scope_source"] = completion_rework["scope_source"]
+                        candidate_item.pop("_defer_reason", None)
+                        candidate_item["_force_create"] = True
+                        force_create_candidate_ids.add(candidate_id_key)
+                        rework_candidates.append(candidate_item)
+                    # Ambiguous model matches are discarded in favor of the
+                    # deterministic fallback appended below.
+                    continue
+                rework_candidates.append(candidate_item)
+            if not found_rework:
+                rework_candidates.append(dict(completion_rework))
+                force_create_candidate_ids.add(completion_rework["candidate_id"].casefold())
+            # Keep the deterministic completion first, then any independent
+            # rework candidate(s), followed by unrelated gate decisions.
+            recovery_ids = set(recovery_by_candidate)
+            gate["candidates"] = [
+                item
+                for item in rework_candidates
+                if str(item.get("candidate_id", "")).casefold() not in recovery_ids
+            ]
+            if recovery_candidate_value is not None:
+                gate["candidates"].insert(0, recovery_candidate_value)
         requests: list[dict[str, Any]] = []
         observed_scopes: list[str] = []
         current_turn_request_ids: set[str] = set()
         read_only_query = _automatic_read_only_query(events)
         for candidate in gate["candidates"]:
             candidate_id_key = str(candidate.get("candidate_id", "")).casefold()
+            force_create = (
+                candidate_id_key in force_create_candidate_ids
+                or candidate.get("_force_create") is True
+            )
+            if force_create:
+                candidate = dict(candidate)
+                candidate.pop("_force_create", None)
             recovery = recovery_by_candidate.get(candidate_id_key)
             detached_update_target_id = detached_update_target_ids.get(candidate_id_key)
             defer_reason = candidate.get("_defer_reason")
@@ -2818,7 +3280,8 @@ class Processor:
                         and item["memory_id"].casefold() == detached_update_target_id.casefold()
                     )
                 ]
-            candidate = self._infer_update_target(candidate, candidate_related)
+            if not force_create:
+                candidate = self._infer_update_target(candidate, candidate_related)
             defer_reason = candidate.pop("_defer_reason", None)
             if defer_reason:
                 self._defer_candidate(turn_ref, candidate, defer_reason)

@@ -2,6 +2,20 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.22 — 2026-09-03
+
+- Safely split valid multi-project `unscoped` aggregate candidates using only
+  project names grounded in each candidate, so one ambiguous fragment no
+  longer blocks valid project-local siblings.
+- Persist explicit completion of an existing todo separately from new
+  customer rework, preserving immutable targets and making replay idempotent.
+- Require declarative completion language before closing todos, avoiding false
+  completion for future actions such as needing to submit, waiting for
+  feedback, or being asked to send materials.
+- Keep Hermes from claiming permanent persistence before automatic processing
+  succeeds; only a successful explicit remember/update result authorizes that
+  claim.
+
 ## 0.2.21 — 2026-09-03
 
 - Fix `memleaf install` for Hermes after the 12th MCP tool was added: the installer now uses the adapter's canonical tool-count constant instead of a stale private `11`.

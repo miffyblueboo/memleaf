@@ -2259,6 +2259,11 @@ class HermesProviderTests(unittest.TestCase):
         self.assertIn("best project/identifier match", prompt)
         self.assertIn("read more only if needed", prompt)
         self.assertIn("do not read all entries to filter unrelated items", prompt)
+        self.assertIn("after your final answer", prompt)
+        self.assertIn("successful explicit remember or update tool result", prompt)
+        self.assertIn("记好了", prompt)
+        self.assertIn("已落库", prompt)
+        self.assertIn("current conversation", prompt)
 
     def test_core_process_schema_retry_is_single_provider_call(self) -> None:
         """Provider delegates bounded schema retries to the public process API."""
