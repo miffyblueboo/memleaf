@@ -1,0 +1,22 @@
+name: Source export
+
+on:
+  push:
+    branches:
+      - fix/hermes-install-runtime-conflicts
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: memleaf-source
+          include-hidden-files: true
+          path: |
+            .
+            !.git
