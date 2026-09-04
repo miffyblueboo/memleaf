@@ -660,12 +660,16 @@ def _restore_snapshot(snapshot: _PathSnapshot) -> None:
 
 
 def _rollback_snapshots(snapshots: list[_PathSnapshot]) -> str:
-    try:
-        for snapshot in reversed(snapshots):
+    failed = False
+    for snapshot in reversed(snapshots):
+        try:
             _restore_snapshot(snapshot)
-    except Exception:
-        return "failed"
-    return "completed"
+        except Exception:
+            # Continue restoring the remaining paths. The Provider directory is
+            # restored first, and a failure there must not prevent config.yaml
+            # or memleaf.json from being put back.
+            failed = True
+    return "failed" if failed else "completed"
 
 
 def _failure_result(

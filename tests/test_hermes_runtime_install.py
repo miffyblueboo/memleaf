@@ -14,9 +14,11 @@ from memleaf import __version__, cli
 from memleaf.adapters.base import CommandResult, ConfigureResult, Detection
 from memleaf.hermes_runtime import HermesMcpInspection, inspect_hermes_mcp
 from memleaf.installer import (
+    _PathSnapshot,
     _choose_hermes_mcp_command,
     _configure_hermes_mcp_entry,
     _memleaf_mcp_command,
+    _rollback_snapshots,
     install_hermes,
 )
 
@@ -419,6 +421,30 @@ class HermesRuntimePolicyTests(unittest.TestCase):
             )
         self.assertEqual(existing, selected)
         self.assertEqual("selected", details["selection_status"])
+
+
+class HermesRollbackTests(unittest.TestCase):
+    def test_one_restore_failure_does_not_skip_remaining_snapshots(self) -> None:
+        snapshots = [
+            _PathSnapshot(Path("config.yaml"), "missing"),
+            _PathSnapshot(Path("memleaf.json"), "missing"),
+            _PathSnapshot(Path("provider"), "missing"),
+        ]
+        calls: list[Path] = []
+
+        def restore(snapshot: _PathSnapshot) -> None:
+            calls.append(snapshot.path)
+            if snapshot.path == Path("provider"):
+                raise OSError("provider restore failed")
+
+        with mock.patch("memleaf.installer._restore_snapshot", side_effect=restore):
+            status = _rollback_snapshots(snapshots)
+
+        self.assertEqual("failed", status)
+        self.assertEqual(
+            [Path("provider"), Path("memleaf.json"), Path("config.yaml")],
+            calls,
+        )
 
 
 class HermesInstallerTransactionTests(unittest.TestCase):
