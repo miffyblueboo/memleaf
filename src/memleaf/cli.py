@@ -6,6 +6,8 @@ import argparse
 import getpass
 import json
 import os
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -65,6 +67,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="host to configure (default: hermes)",
     )
     install.add_argument("--vault", type=Path, default=None, help="vault directory")
+    install.add_argument(
+        "--mcp-runtime",
+        choices=("auto", "current", "existing"),
+        default="auto",
+        help=(
+            "Hermes only: fail on a second memleaf runtime (auto), migrate to "
+            "this installation (current), or retain a version-matched configured runtime (existing)"
+        ),
+    )
     install.add_argument("--json", action="store_true", help="emit one JSON result")
     host_event = commands.add_parser(
         "host-event",
@@ -87,6 +98,96 @@ def _configure_stdio_utf8() -> None:
             continue
 
 
+def _format_command(command: Sequence[object]) -> str:
+    values = [str(item) for item in command]
+    return subprocess.list2cmdline(values) if os.name == "nt" else shlex.join(values)
+
+
+def _print_install_failure(output: dict, *, host: str) -> None:
+    print(
+        f"memleaf install failed: {output.get('reason', 'unknown error')}",
+        file=sys.stderr,
+    )
+    stage = output.get("stage")
+    if isinstance(stage, str) and stage:
+        print(f"failed stage: {stage}", file=sys.stderr)
+
+    if host == "hermes" and output.get("core_version") is not None:
+        provider_version = output.get("provider_version")
+        if output.get("provider_updated"):
+            provider_text = provider_version or "unknown"
+        elif provider_version:
+            provider_text = f"not changed (rejected candidate {provider_version})"
+        else:
+            provider_text = "not changed"
+        print(
+            "memleaf versions: "
+            f"core={output.get('core_version') or 'unknown'}, "
+            f"Hermes provider={provider_text}",
+            file=sys.stderr,
+        )
+
+    runtime = output.get("mcp_runtime")
+    if isinstance(runtime, dict):
+        config_path = runtime.get("config_path")
+        configured = runtime.get("configured_command")
+        current = runtime.get("current_command") or runtime.get("expected_command")
+        existing_version = runtime.get("existing_version")
+        if config_path:
+            print(f"Hermes config: {config_path}", file=sys.stderr)
+        if configured:
+            print(f"configured MCP runtime: {configured}", file=sys.stderr)
+        if current:
+            print(f"current memleaf runtime: {current}", file=sys.stderr)
+        if existing_version:
+            print(f"configured MCP version: {existing_version}", file=sys.stderr)
+
+    mcp = output.get("mcp")
+    if isinstance(mcp, dict):
+        mcp_reason = mcp.get("reason")
+        if isinstance(mcp_reason, str) and mcp_reason and mcp_reason != output.get("reason"):
+            print(f"MCP detail: {mcp_reason}", file=sys.stderr)
+        config_path = mcp.get("config_path")
+        if config_path and not (
+            isinstance(runtime, dict) and config_path == runtime.get("config_path")
+        ):
+            print(f"Hermes config: {config_path}", file=sys.stderr)
+        backup_path = mcp.get("backup_path")
+        if backup_path:
+            print(f"config backup: {backup_path}", file=sys.stderr)
+
+    rollback = output.get("rollback_status")
+    if rollback == "completed":
+        print("Hermes configuration was restored to its pre-install state.", file=sys.stderr)
+    elif rollback == "failed":
+        print(
+            "WARNING: automatic rollback failed; inspect the reported Hermes paths before restarting.",
+            file=sys.stderr,
+        )
+
+    user_action = output.get("user_action")
+    if output.get("user_action_required") and isinstance(user_action, str) and user_action:
+        print(f"action required: {user_action}", file=sys.stderr)
+
+    commands = output.get("recovery_commands")
+    if isinstance(commands, list) and commands:
+        print("recovery commands:", file=sys.stderr)
+        for command in commands:
+            if isinstance(command, list) and command:
+                print(f"  {_format_command(command)}", file=sys.stderr)
+
+    diagnostic = ["python", "-m", "memleaf", "install", "--host", host]
+    if host == "hermes" and isinstance(runtime, dict):
+        policy = runtime.get("policy")
+        if policy in {"current", "existing"}:
+            diagnostic.extend(["--mcp-runtime", policy])
+    diagnostic.append("--json")
+    print(
+        f"Run `{_format_command(diagnostic)}` for the complete diagnostic result.",
+        file=sys.stderr,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     _configure_stdio_utf8()
     parser = build_parser()
@@ -96,8 +197,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             output = _init(args)
         elif args.command == "install":
             from .installer import install_codex, install_hermes
-            installer = install_codex if args.host == "codex" else install_hermes
-            output = installer(vault_path=args.vault)
+
+            if args.host == "codex":
+                if args.mcp_runtime != "auto":
+                    output = {
+                        "status": "failure",
+                        "stage": "arguments",
+                        "reason": "--mcp-runtime applies only to Hermes installations",
+                        "vault": str(args.vault) if args.vault is not None else None,
+                    }
+                else:
+                    output = install_codex(vault_path=args.vault)
+            else:
+                install_kwargs = {"vault_path": args.vault}
+                if args.mcp_runtime != "auto":
+                    install_kwargs["mcp_runtime"] = args.mcp_runtime
+                output = install_hermes(**install_kwargs)
         elif args.command == "host-event":
             output = _host_event(args)
         else:  # pragma: no cover - argparse requires a known subcommand.
@@ -116,7 +231,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if getattr(args, "json", False):
             print(json.dumps({"error": "initialization failed"}, ensure_ascii=False))
         else:
-            print("memleaf init failed", file=sys.stderr)
+            action = getattr(args, "command", "init")
+            print(f"memleaf {action} failed unexpectedly", file=sys.stderr)
         return 1
 
     if args.command == "host-event":
@@ -139,22 +255,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             if output.get("vault_source") == "hermes_config":
                 print("Preserved the Vault from the existing Hermes memleaf configuration.")
             if args.host == "hermes":
+                runtime = output.get("mcp_runtime")
+                if isinstance(runtime, dict) and runtime.get("selected_command"):
+                    print(f"Hermes MCP runtime: {runtime['selected_command']}")
                 print("Restart Hermes to use memleaf.")
             elif output.get("user_action_required"):
                 print(f"Codex action required: {output.get('user_action')}")
             if output.get("model", {}).get("status") == "not_configured":
                 print("Configure a memleaf model route before using automatic processing.")
         else:
-            if args.host == "hermes" and (
-                output.get("core_version") is not None
-                or output.get("provider_version") is not None
-            ):
-                print(
-                    "memleaf versions: "
-                    f"core={output.get('core_version') or 'unknown'}, "
-                    f"Hermes provider={output.get('provider_version') or 'unknown'}"
-                )
-            print(f"memleaf install failed: {output.get('reason', 'unknown error')}", file=sys.stderr)
+            _print_install_failure(output, host=args.host)
         return 0 if output.get("status") in {"configured", "already_configured"} else 2
     if args.json:
         print(json.dumps(output, ensure_ascii=False, sort_keys=True))
@@ -309,7 +419,7 @@ def _prepare_model_route(
     candidate = discovery.selected
     diagnostics = list(discovery.diagnostics)
     if candidate is None:
-        # An existing direct route is a safe idempotency fallback.  It is not
+        # An existing direct route is a safe idempotency fallback. It is not
         # reported as a host discovery result and never appears with its key.
         candidate = _existing_memleaf_route(requested_vault / "config.yaml")
     if candidate is None and not dry_run and not non_interactive and sys.stdin.isatty():
