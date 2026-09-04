@@ -154,10 +154,12 @@ Vault. Once changes begin, it snapshots:
 
 If MCP persistence, MCP lifecycle configuration, the 12-tool test, Provider
 copy/version validation, Provider activation, or native-source registration
-fails, those Hermes paths are restored to their pre-install state. The failure
-output reports the exact stage, nested MCP reason, runtime paths, backup path,
-rollback result, and recovery commands. Use `--json` for the complete
-machine-readable result.
+fails, those Hermes paths are restored to their pre-install state. Each
+snapshot is restored independently: a failure on one path does not prevent the
+remaining paths from being attempted, and any incomplete restoration is
+reported as `rollback_status=failed`. The failure output reports the exact
+stage, nested MCP reason, runtime paths, backup path, rollback result, and
+recovery commands. Use `--json` for the complete machine-readable result.
 
 ---
 
