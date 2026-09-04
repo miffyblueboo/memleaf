@@ -1,0 +1,207 @@
+        config = root / "hermes" / "config.yaml"
+        vault = root / "vault"
+        command = root / "venv" / "bin" / "memleaf-mcp"
+        vault.mkdir()
+        command.parent.mkdir(parents=True)
+        command.write_text("", encoding="utf-8")
+        detection = Detection(
+            agent="hermes",
+            detected=True,
+            confidence="high",
+            executable="hermes",
+            config_path=str(config),
+            status="detected",
+        )
+        return temporary, root, config, vault, command, detection
+
+    def test_persists_with_config_set_and_reads_back(self) -> None:
+        temporary, _, config, vault, command, detection = self._fixture()
+        with temporary:
+            config.parent.mkdir(parents=True)
+            config.write_text(json.dumps({"other": "keep"}), encoding="utf-8")
+            runner = _ConfigSetRunner(config)
+            adapter = SimpleNamespace(
+                config_path=config,
+                platform=os.name,
+                runner=runner,
+                env={},
+            )
+
+            result = _configure_hermes_mcp_entry(
+                adapter,
+                detection,
+                vault,
+                str(command),
+                allow_runtime_migration=False,
+            )
+
+            self.assertEqual("configured", result.status)
+            self.assertEqual(4, len(runner.calls))
+            self.assertTrue(all(call[1:3] == ["config", "set"] for call in runner.calls))
+            self.assertFalse(any("add" in call for call in runner.calls))
+            value = json.loads(config.read_text(encoding="utf-8"))
+            self.assertEqual("keep", value["other"])
+            self.assertEqual(str(command), value["mcp_servers"]["memleaf"]["command"])
+            self.assertEqual(
+                ["--vault", str(vault.resolve())],
+                value["mcp_servers"]["memleaf"]["args"],
+            )
+
+    def test_zero_exit_without_persistence_is_failure(self) -> None:
+        temporary, _, config, vault, command, detection = self._fixture()
+        with temporary:
+            config.parent.mkdir(parents=True)
+            config.write_text(json.dumps({"other": "keep"}), encoding="utf-8")
+            runner = _ConfigSetRunner(config, persist=False)
+            adapter = SimpleNamespace(
+                config_path=config,
+                platform=os.name,
+                runner=runner,
+                env={},
+            )
+
+            result = _configure_hermes_mcp_entry(
+                adapter,
+                detection,
+                vault,
+                str(command),
+                allow_runtime_migration=False,
+            )
+
+            self.assertEqual("failure", result.status)
+            self.assertIn("not confirmed", result.reason)
+            self.assertNotIn("mcp_servers", json.loads(config.read_text(encoding="utf-8")))
+
+    def test_runtime_migration_requires_explicit_permission(self) -> None:
+        temporary, root, config, vault, command, detection = self._fixture()
+        with temporary:
+            old = root / "source" / ".venv" / "bin" / "memleaf-mcp"
+            old.parent.mkdir(parents=True)
+            old.write_text("", encoding="utf-8")
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                json.dumps(
+                    {
+                        "mcp_servers": {
+                            "memleaf": {
+                                "command": str(old),
+                                "args": ["--vault", str(vault)],
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = _ConfigSetRunner(config)
+            adapter = SimpleNamespace(
+                config_path=config,
+                platform=os.name,
+                runner=runner,
+                env={},
+            )
+
+            refused = _configure_hermes_mcp_entry(
+                adapter,
+                detection,
+                vault,
+                str(command),
+                allow_runtime_migration=False,
+            )
+            accepted = _configure_hermes_mcp_entry(
+                adapter,
+                detection,
+                vault,
+                str(command),
+                allow_runtime_migration=True,
+            )
+
+            self.assertEqual("diagnostic", refused.status)
+            self.assertEqual("configured", accepted.status)
+
+
+class HermesRuntimeDiscoveryTests(unittest.TestCase):
+    def test_current_python_scripts_win_over_another_runtime_on_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="memleaf-runtime-discovery-") as temporary:
+            root = Path(temporary)
+            scripts = root / "current" / "bin"
+            path_runtime = root / "source" / ".venv" / "bin"
+            scripts.mkdir(parents=True)
+            path_runtime.mkdir(parents=True)
+            name = "memleaf-mcp.exe" if os.name == "nt" else "memleaf-mcp"
+            current = scripts / name
+            other = path_runtime / name
+            current.write_text("", encoding="utf-8")
+            other.write_text("", encoding="utf-8")
+
+            with mock.patch(
+                "memleaf.installer.sysconfig.get_path",
+                return_value=str(scripts),
+            ), mock.patch(
+                "memleaf.installer.site.USER_BASE",
+                str(root / "user"),
+            ), mock.patch(
+                "memleaf.installer.shutil.which",
+                return_value=str(other),
+            ):
+                selected = _memleaf_mcp_command()
+
+            self.assertEqual(current.resolve(), selected)
+
+
+class HermesRuntimePolicyTests(unittest.TestCase):
+    def test_auto_stops_on_second_runtime_without_executing_it(self) -> None:
+        current = Path("/managed/bin/memleaf-mcp")
+        inspection = HermesMcpInspection(
+            status="runtime_conflict",
+            reason="different runtime",
+            config_path="/home/.hermes/config.yaml",
+            expected_command=str(current),
+            configured_command="/source/.venv/bin/memleaf-mcp",
+            configured_vault="/vault",
+        )
+        with mock.patch("memleaf.installer._probe_memleaf_runtime_version") as probe:
+            selected, details = _choose_hermes_mcp_command(
+                inspection,
+                current,
+                policy="auto",
+                core_version=__version__,
+            )
+        self.assertIsNone(selected)
+        self.assertEqual("requires_explicit_choice", details["selection_status"])
+        probe.assert_not_called()
+
+    def test_existing_policy_requires_matching_version(self) -> None:
+        current = Path("/managed/bin/memleaf-mcp")
+        existing = "/source/.venv/bin/memleaf-mcp"
+        inspection = HermesMcpInspection(
+            status="runtime_conflict",
+            reason="different runtime",
+            config_path="/home/.hermes/config.yaml",
+            expected_command=str(current),
+            configured_command=existing,
+            configured_vault="/vault",
+        )
+        with mock.patch(
+            "memleaf.installer._probe_memleaf_runtime_version",
+            return_value=("0.0.1", None),
+        ):
+            selected, details = _choose_hermes_mcp_command(
+                inspection,
+                current,
+                policy="existing",
+                core_version=__version__,
+            )
+        self.assertIsNone(selected)
+        self.assertEqual("version_mismatch", details["selection_status"])
+
+        with mock.patch(
+            "memleaf.installer._probe_memleaf_runtime_version",
+            return_value=(__version__, None),
+        ):
+            selected, details = _choose_hermes_mcp_command(
+                inspection,
+                current,
+                policy="existing",
+                core_version=__version__,
+            )
+        self.assertEqual(existing, selected)

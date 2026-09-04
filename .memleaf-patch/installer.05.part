@@ -1,0 +1,191 @@
+                    user_action="Inspect the MCP process error, then rerun the installer.",
+                    recovery_commands=[
+                        [detection.executable, "mcp", "list"],
+                        [detection.executable, "mcp", "test", "memleaf"],
+                    ],
+                    mark_mcp_failed=True,
+                )
+
+            try:
+                provider_path = _copy_provider(hermes_home)
+            except Exception as error:
+                raise _HermesInstallFailure(
+                    "provider_copy",
+                    "Hermes MemoryProvider files could not be installed safely",
+                ) from error
+            provider_version = _provider_manifest_version(provider_path)
+            if provider_version != core_version:
+                raise _HermesInstallFailure(
+                    "provider_version",
+                    (
+                        "Hermes provider version mismatch after copy: "
+                        f"core={core_version}, provider={provider_version or 'unknown'}"
+                    ),
+                )
+            try:
+                _write_provider_config(provider_config, Path(selected_command), vault.root)
+            except Exception as error:
+                raise _HermesInstallFailure(
+                    "provider_config",
+                    "Hermes memleaf provider configuration could not be written safely",
+                ) from error
+
+            activated = _run(
+                [detection.executable, "config", "set", "memory.provider", "memleaf"]
+            )
+            if activated.returncode != 0 or not _verify_provider(detection.executable):
+                raise _HermesInstallFailure(
+                    "provider_activation",
+                    "Hermes MemoryProvider could not be activated",
+                )
+            try:
+                native_registration = ensure_hermes_native_sources(vault, hermes_home)
+            except Exception as error:
+                raise _HermesInstallFailure(
+                    "native_sources",
+                    "Hermes native memory sources could not be registered safely",
+                ) from error
+        except _HermesInstallFailure as error:
+            failure = error
+        except Exception:
+            failure = _HermesInstallFailure(
+                "host_transaction",
+                "an unexpected Hermes installation error occurred",
+                mcp=configured.to_dict() if configured is not None else None,
+            )
+
+        if failure is not None:
+            rollback = _rollback_snapshots(snapshots)
+            if failure.mark_mcp_failed:
+                update_agents_index(
+                    vault.agents_index_path,
+                    {"hermes": {"mcp_status": "failed", "mcp_availability": "unavailable"}},
+                )
+            return _failure_result(
+                stage=failure.stage,
+                reason=failure.reason,
+                core_version=core_version,
+                provider_version=provider_version,
+                provider_updated=rollback == "failed",
+                vault=vault.root,
+                vault_source=vault_source,
+                model=model,
+                provider=provider_path,
+                mcp=failure.mcp,
+                mcp_runtime=runtime_details,
+                user_action=failure.user_action,
+                recovery_commands=failure.recovery_commands,
+                rollback_status=rollback,
+            )
+
+    update_agents_index(
+        vault.agents_index_path,
+        {
+            "hermes": {
+                "agent": "hermes",
+                "detected": True,
+                "confidence": "high",
+                "reason": "PyPI-installed memleaf provider is active and MCP test passed",
+                "executable": str(Path(detection.executable).resolve()),
+                "config_path": str(provider_config.resolve()),
+                "status": "configured",
+                "provider_status": "active",
+                "mcp_status": "active",
+                "mcp_availability": "available",
+                "user_action_required": False,
+            }
+        },
+    )
+    return {
+        "status": "configured",
+        "reason": "memleaf is fully configured for Hermes",
+        "core_version": core_version,
+        "provider_version": provider_version,
+        "provider_updated": True,
+        "vault": str(vault.root),
+        "vault_source": vault_source,
+        "provider": str(provider_path),
+        "mcp_command": selected_command,
+        "mcp_runtime": runtime_details,
+        "model": model,
+        "native_sources": native_registration,
+    }
+
+
+def install_codex(*, vault_path: Path | None = None) -> dict[str, Any]:
+    """Explicitly configure the Codex host without changing Codex model settings."""
+
+    home = _home_from_environment()
+    adapter = CodexAdapter(home=home, env=os.environ)
+    detection = adapter.detect()
+    if not detection.detected or detection.confidence != "high" or not detection.executable:
+        return {"status": "failure", "reason": "Codex executable was not found", "vault": None}
+
+    try:
+        selected_vault, vault_source = _select_codex_vault_path(
+            home=home,
+            hermes_home=_hermes_home(home),
+            adapter=adapter,
+            detection=detection,
+            vault_path=vault_path,
+        )
+    except RuntimeError as error:
+        conflict = str(error).startswith("vault_conflict:")
+        return {
+            "status": "diagnostic" if conflict else "failure",
+            "reason": "vault_conflict" if conflict else "existing host configuration is invalid",
+            "vault": None,
+        }
+    preflight = adapter.configure(detection, selected_vault, dry_run=True)
+    if preflight.status == "diagnostic":
+        return {
+            "status": "diagnostic",
+            "reason": preflight.reason,
+            "vault": str(selected_vault),
+            "vault_source": vault_source,
+            "codex": preflight.to_dict(),
+        }
+
+    vault = Vault.initialize(selected_vault)
+    model = _prepare_model_route(
+        vault.root,
+        home=home,
+        dry_run=False,
+        non_interactive=True,
+        skip_discovery=True,
+    )
+    configured = adapter.configure(detection, vault.root, attempt=True)
+    update_agents_index(vault.agents_index_path, {"codex": configured.to_dict()})
+    if configured.status not in {"configured", "already_configured"}:
+        return {
+            "status": configured.status,
+            "reason": configured.reason,
+            "vault": str(vault.root),
+            "vault_source": vault_source,
+            "model": model,
+            "codex": configured.to_dict(),
+        }
+    model_ready = model.get("status") in {"configured", "already_configured"}
+    actions: list[str] = []
+    if configured.user_action_required and configured.user_action:
+        actions.append(configured.user_action)
+    if not model_ready:
+        actions.append(
+            "Configure an independent memleaf Model Route for this Vault before relying on "
+            "automatic memory extraction. Codex model/provider settings are intentionally "
+            "not used or modified."
+        )
+    return {
+        "status": configured.status,
+        "reason": configured.reason,
+        "vault": str(vault.root),
+        "vault_source": vault_source,
+        "model": model,
+        "processing_status": "ready" if model_ready else "model_route_required",
+        "codex": configured.to_dict(),
+        "user_action_required": bool(actions),
+        "user_action": " ".join(actions) if actions else None,
+    }
+
+
+__all__ = ["install_codex", "install_hermes"]

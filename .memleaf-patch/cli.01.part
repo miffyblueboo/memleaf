@@ -1,0 +1,206 @@
+"""The small, non-interactive memleaf initialization CLI."""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import os
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+from typing import Sequence
+
+from . import __version__
+from .adapters.base import (
+    ConfigureResult,
+    Detection,
+    result_from_detection,
+    update_agents_index,
+)
+from .adapters.hermes import HermesAdapter
+from .credentials import credential_text
+from .config import load_config
+from .model_discovery import ModelCandidate, discover_models, manual_candidate, write_model_config
+from .vault import Vault
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="memleaf")
+    parser.add_argument("--version", action="version", version=__version__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    init = commands.add_parser("init", help="initialize a vault and the Hermes MCP adapter")
+    init.add_argument("--vault", type=Path, default=None, help="vault directory")
+    init.add_argument("--all", action="store_true", help="diagnose all supported hosts, even uncertain ones")
+    init.add_argument(
+        "--defaults",
+        action="store_true",
+        help="use non-interactive defaults (accepted for scriptable setup)",
+    )
+    init.add_argument("--dry-run", action="store_true", help="show planned changes without writing")
+    init.add_argument("--json", action="store_true", help="emit one JSON result")
+    init.add_argument(
+        "--no-codex",
+        action="store_true",
+        help="compatibility no-op; use install --host codex for explicit Codex setup",
+    )
+    init.add_argument("--no-hermes", action="store_true", help="disable Hermes setup")
+    init.add_argument(
+        "--no-antigravity",
+        action="store_true",
+        help="accepted for compatibility; Antigravity is currently unsupported",
+    )
+    init.add_argument(
+        "--no-model-discovery",
+        action="store_true",
+        help="skip host model discovery (an existing memleaf route is still preserved)",
+    )
+    install = commands.add_parser(
+        "install",
+        help="install memleaf for Hermes (default) or an explicitly selected host",
+    )
+    install.add_argument(
+        "--host",
+        choices=("hermes", "codex"),
+        default="hermes",
+        help="host to configure (default: hermes)",
+    )
+    install.add_argument("--vault", type=Path, default=None, help="vault directory")
+    install.add_argument(
+        "--mcp-runtime",
+        choices=("auto", "current", "existing"),
+        default="auto",
+        help=(
+            "Hermes only: fail on a second memleaf runtime (auto), migrate to "
+            "this installation (current), or retain a version-matched configured runtime (existing)"
+        ),
+    )
+    install.add_argument("--json", action="store_true", help="emit one JSON result")
+    host_event = commands.add_parser(
+        "host-event",
+        help="host lifecycle hook entry",
+    )
+    host_event.add_argument("host", choices=("codex", "antigravity"))
+    host_event.add_argument("event", nargs="?", default=None)
+    host_event.add_argument("--vault", type=Path, default=None, help=argparse.SUPPRESS)
+    return parser
+
+
+def _configure_stdio_utf8() -> None:
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="strict")
+        except (OSError, ValueError):
+            continue
+
+
+def _format_command(command: Sequence[object]) -> str:
+    values = [str(item) for item in command]
+    return subprocess.list2cmdline(values) if os.name == "nt" else shlex.join(values)
+
+
+def _print_install_failure(output: dict, *, host: str) -> None:
+    print(
+        f"memleaf install failed: {output.get('reason', 'unknown error')}",
+        file=sys.stderr,
+    )
+    stage = output.get("stage")
+    if isinstance(stage, str) and stage:
+        print(f"failed stage: {stage}", file=sys.stderr)
+
+    if host == "hermes" and output.get("core_version") is not None:
+        provider_version = output.get("provider_version")
+        if output.get("provider_updated"):
+            provider_text = provider_version or "unknown"
+        elif provider_version:
+            provider_text = f"not changed (rejected candidate {provider_version})"
+        else:
+            provider_text = "not changed"
+        print(
+            "memleaf versions: "
+            f"core={output.get('core_version') or 'unknown'}, "
+            f"Hermes provider={provider_text}",
+            file=sys.stderr,
+        )
+
+    runtime = output.get("mcp_runtime")
+    if isinstance(runtime, dict):
+        config_path = runtime.get("config_path")
+        configured = runtime.get("configured_command")
+        current = runtime.get("current_command") or runtime.get("expected_command")
+        existing_version = runtime.get("existing_version")
+        if config_path:
+            print(f"Hermes config: {config_path}", file=sys.stderr)
+        if configured:
+            print(f"configured MCP runtime: {configured}", file=sys.stderr)
+        if current:
+            print(f"current memleaf runtime: {current}", file=sys.stderr)
+        if existing_version:
+            print(f"configured MCP version: {existing_version}", file=sys.stderr)
+
+    mcp = output.get("mcp")
+    if isinstance(mcp, dict):
+        mcp_reason = mcp.get("reason")
+        if isinstance(mcp_reason, str) and mcp_reason and mcp_reason != output.get("reason"):
+            print(f"MCP detail: {mcp_reason}", file=sys.stderr)
+        config_path = mcp.get("config_path")
+        if config_path and not (
+            isinstance(runtime, dict) and config_path == runtime.get("config_path")
+        ):
+            print(f"Hermes config: {config_path}", file=sys.stderr)
+        backup_path = mcp.get("backup_path")
+        if backup_path:
+            print(f"config backup: {backup_path}", file=sys.stderr)
+
+    rollback = output.get("rollback_status")
+    if rollback == "completed":
+        print("Hermes configuration was restored to its pre-install state.", file=sys.stderr)
+    elif rollback == "failed":
+        print(
+            "WARNING: automatic rollback failed; inspect the reported Hermes paths before restarting.",
+            file=sys.stderr,
+        )
+
+    user_action = output.get("user_action")
+    if output.get("user_action_required") and isinstance(user_action, str) and user_action:
+        print(f"action required: {user_action}", file=sys.stderr)
+
+    commands = output.get("recovery_commands")
+    if isinstance(commands, list) and commands:
+        print("recovery commands:", file=sys.stderr)
+        for command in commands:
+            if isinstance(command, list) and command:
+                print(f"  {_format_command(command)}", file=sys.stderr)
+
+    diagnostic = ["python", "-m", "memleaf", "install", "--host", host]
+    if host == "hermes" and isinstance(runtime, dict):
+        policy = runtime.get("policy")
+        if policy in {"current", "existing"}:
+            diagnostic.extend(["--mcp-runtime", policy])
+    diagnostic.append("--json")
+    print(
+        f"Run `{_format_command(diagnostic)}` for the complete diagnostic result.",
+        file=sys.stderr,
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    _configure_stdio_utf8()
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "init":
+            output = _init(args)
+        elif args.command == "install":
+            from .installer import install_codex, install_hermes
+
+            if args.host == "codex":
+                if args.mcp_runtime != "auto":
+                    output = {
+                        "status": "failure",
+                        "stage": "arguments",
+                        "reason": "--mcp-runtime applies only to Hermes installations",
