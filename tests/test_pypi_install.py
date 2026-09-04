@@ -43,32 +43,47 @@ class PyPIInstallTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="memleaf-pypi-version-mismatch-") as temporary:
             root = Path(temporary)
             home = root / "home"
+            hermes_home = root / ".hermes"
+            config_path = hermes_home / "config.yaml"
             vault_path = root / "vault"
-            provider_path = root / ".hermes" / "plugins" / "memleaf"
+            provider_path = hermes_home / "plugins" / "memleaf"
             provider_path.mkdir(parents=True)
             (provider_path / "plugin.yaml").write_text(
                 "name: memleaf\nversion: 0.2.9\n",
                 encoding="utf-8",
             )
-            detection = SimpleNamespace(detected=True, confidence="high", executable="hermes")
-            initialized = SimpleNamespace(root=vault_path)
+            detection = SimpleNamespace(
+                detected=True,
+                confidence="high",
+                executable="hermes",
+                config_path=str(config_path),
+            )
+            initialized = SimpleNamespace(
+                root=vault_path,
+                agents_index_path=vault_path / "_index" / "agents.json",
+            )
             model = {"status": "configured"}
             adapter = mock.Mock()
             adapter.detect.return_value = detection
+            adapter.config_path = config_path
+            adapter.platform = os.name
+            adapter.configure_mcp_lifecycle.return_value = True
+            adapter.test_mcp.return_value = True
+            configured = SimpleNamespace(
+                status="configured",
+                reason="configured",
+                to_dict=lambda: {"status": "configured", "reason": "configured"},
+            )
 
-            with mock.patch("memleaf.installer._home_from_environment", return_value=home), \
-                 mock.patch("memleaf.installer._select_vault_path", return_value=(vault_path, "default")), \
-                 mock.patch("memleaf.installer.Vault.initialize", return_value=initialized), \
-                 mock.patch("memleaf.installer._prepare_model_route", return_value=model), \
-                 mock.patch("memleaf.installer.HermesAdapter", return_value=adapter), \
-                 mock.patch("memleaf.installer._memleaf_mcp_command", return_value=root / "memleaf-mcp"), \
-                 mock.patch("memleaf.installer._copy_provider", return_value=provider_path), \
-                 mock.patch("memleaf.installer._write_provider_config") as write_config:
+            with mock.patch("memleaf.installer._home_from_environment", return_value=home),                  mock.patch("memleaf.installer._hermes_home", return_value=hermes_home),                  mock.patch("memleaf.installer._select_vault_path", return_value=(vault_path, "default")),                  mock.patch("memleaf.installer.Vault.initialize", return_value=initialized),                  mock.patch("memleaf.installer._prepare_model_route", return_value=model),                  mock.patch("memleaf.installer.HermesAdapter", return_value=adapter),                  mock.patch("memleaf.installer._memleaf_mcp_command", return_value=root / "memleaf-mcp"),                  mock.patch("memleaf.installer._configure_hermes_mcp_entry", return_value=configured),                  mock.patch("memleaf.installer._copy_provider", return_value=provider_path),                  mock.patch("memleaf.installer._write_provider_config") as write_config:
                 result = install_hermes()
 
             self.assertEqual("failure", result["status"])
+            self.assertEqual("provider_version", result["stage"])
             self.assertEqual(__version__, result["core_version"])
             self.assertEqual("0.2.9", result["provider_version"])
+            self.assertFalse(result["provider_updated"])
+            self.assertEqual("completed", result["rollback_status"])
             self.assertIn("version mismatch", result["reason"])
             write_config.assert_not_called()
 
