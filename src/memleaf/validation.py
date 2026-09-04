@@ -509,7 +509,7 @@ _CALENDAR_TEXT = re.compile(
 
 _ACTION_VERBS = (
     "修复", "整改", "排查", "准备", "反馈", "回复", "提交", "确认", "部署", "迁移",
-    "调整", "跟进", "处理", "补充", "发送", "提供", "改", "重画", "重做", "标明", "标出",
+    "调整", "跟进", "处理", "补充", "发送", "提供", "修正", "更正", "改", "重画", "重做", "标明", "标出",
     "review", "reply", "submit",
     "confirm", "deploy", "migrate", "fix", "investigate", "prepare", "follow up",
 )
@@ -728,7 +728,7 @@ _GENERIC_FOLLOWUP_MARKERS = (
     "follow up", "follow-up", "needs review", "to review",
 )
 _CONCRETE_ATTACHMENT_ACTION_MARKERS = (
-    "迁移", "部署", "修复", "整改", "逐项", "发送给", "发给", "抄送", "提交", "回复", "确认",
+    "迁移", "部署", "修复", "修正", "更正", "整改", "逐项", "发送给", "发给", "抄送", "提交", "回复", "确认",
     "负责人", "禁止", "必须", "以后", "归档至", "保存至", "migrate", "deploy", "fix",
     "remediate", "send to", "cc ", "owner", "must",
 )

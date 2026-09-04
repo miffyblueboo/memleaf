@@ -135,6 +135,14 @@ A PPT, attachment, material, document, or issue-list item described only as
 "needs follow-up/review/processing" has no independent action and normally has
 worth=false; keep it only when the evidence supplies a concrete remediation,
 owner, deadline, delivery rule, migration, or durable conclusion.
+A project-local statement that names an explicit quantity of unresolved
+repairs (for example, “摩根基金还有两个需修正的问题” or “2 items need
+repair”) is a concrete todo even when the detailed issue list is in an
+attachment; do not discard it as attachment-only. A generic “见附件/需跟进”
+without a quantity or remediation remains non-admissible.
+Inspecting a mailbox or email feed can introduce new customer facts and
+actions; it is not a pure query over existing memleaf memories merely because
+the user phrased the request as a question.
 An intermediate state such as a draft awaiting confirmation, preparation/
 processing status, temporary error, repeated confirmation, or unconfirmed
 suggestion normally has no independent future use and is worth=false. Keep one
@@ -216,7 +224,10 @@ still has a concrete future-use fact or action. If not, return exactly
 for temporary delegation, waiting for feedback, a one-off meeting arrangement with
 no durable outcome/decision/project constraint, or a subject/attachment-only item
 without a concrete impact or conclusion. Attachment sizes, mail/message IDs,
-and a generic "needs follow-up" phrase do not create such an impact.
+and a generic "needs follow-up" phrase do not create such an impact. A
+project-local explicit quantity of unresolved repairs remains a concrete todo
+even when its issue details are only in an attachment; a generic attachment
+or follow-up mention without that quantity/remediation remains NO_CHANGE.
 Explicit remember mode never permits NO_CHANGE and must return the normal summary
 object. When producing a normal automatic summary, copy the gate candidate's
 scopes exactly. scope_source may be omitted to inherit the gate value, but an

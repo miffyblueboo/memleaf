@@ -2,6 +2,17 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.25 — 2026-09-04
+
+- Keep global todo questions and cross-session recaps strictly read-only,
+  without creating memories, appending sources, or producing history; an
+  explicit user assertion before a follow-up question remains write-eligible.
+- Recover project-grounded, explicitly counted repair items omitted from a
+  mailbox extraction gate, split concrete detail lines into independent todos,
+  and reuse an existing same-scope item when it is an update.
+- Record compact candidate-level `CREATE`, `UPDATE`, `NO_CHANGE`, and
+  `DEFERRED` dispositions in the processed-turn ledger for auditable coverage.
+
 ## 0.2.24 — 2026-09-04
 
 - Make Hermes MCP installation reliably persistent: write `mcp_servers.memleaf` through Hermes' canonical `config set` interface, disable the entry while command/arguments are updated, then read `config.yaml` back and require an exact command plus `--vault` match before reporting success.

@@ -93,8 +93,17 @@ _DIAGNOSTIC_CANDIDATE_REQUIRED = frozenset(
 )
 
 _READ_ONLY_QUERY_MARKERS = (
-    "有没有", "有哪些", "是什么", "是谁", "多少", "查询", "查一下", "查下",
-    "看看", "查看", "汇总", "列出", "告诉我", "what", "which", "who", "show me",
+    "有没有", "有什么", "有哪些", "是什么", "是谁", "多少", "哪个", "哪些",
+    "什么时候", "何时", "如何", "怎么", "为什么", "是否", "能否", "可否",
+    "查询", "查一下", "查下", "看看", "看下", "查看", "汇总", "列出", "告诉我",
+    "what", "which", "who", "show me", "list",
+)
+# A mailbox scan is a query-shaped request, but its answer may contain new
+# external facts (for example, a customer asks for two fixes).  Do not apply
+# the pure-existing-memory no-write rule to those requests; the gate still
+# decides which individual facts/actions are durable.
+_EXTERNAL_SOURCE_QUERY_MARKERS = (
+    "邮箱", "收件箱", "mailbox", "inbox",
 )
 _USER_ASSERTION_MARKERS = (
     "已确认", "确认了", "已决定", "我决定", "改为", "更新为", "变更为", "以后",
@@ -139,6 +148,16 @@ _REWORK_ACTION_MARKERS = (
     "要改", "需要改", "需改", "还要", "重画", "重做", "重绘", "没画好", "标出来", "标明",
     "修改", "修复", "整改", "补充", "补上", "补齐", "调整", "改下", "改一下", "改成", "更改",
     "完善", "修订", "重新", "更新", "rework", "revise", "redraw", "fix", "update", "change",
+)
+_EXPLICIT_REPAIR_COUNT_RE = re.compile(
+    r"(?:\d+|[一二三四五六七八九十百千万两俩]+)\s*"
+    r"(?:个|项|条|处|点|件|问题|缺陷|模块)",
+    re.IGNORECASE,
+)
+_EXPLICIT_REPAIR_RE = re.compile(
+    r"(?:需|需要|须|待|仍需|还需|尚需|有待|要)\s*"
+    r"(?:修正|修复|改正|整改|修改|更正|补充|完善|fix|repair|remediate)",
+    re.IGNORECASE,
 )
 
 
@@ -480,14 +499,239 @@ def _automatic_read_only_query(events: Iterable[Mapping[str, Any]]) -> bool:
     if not user_text:
         return False
     folded = user_text.casefold()
-    query_prefix = re.sub(r"^(?:请|帮我|麻烦|请帮我)\s*", "", folded)
-    asks = "?" in user_text or "？" in user_text or any(
-        query_prefix.startswith(marker) or query_prefix.startswith(f"我{marker}")
-        for marker in _READ_ONLY_QUERY_MARKERS
+    query_prefix = folded
+    # Requests often stack polite prefixes ("请帮我看下…").  Strip them
+    # repeatedly so the actual interrogative is visible to the classifier.
+    while True:
+        stripped = re.sub(r"^(?:请|帮我|麻烦|请问|麻烦你)\s*", "", query_prefix)
+        if stripped == query_prefix:
+            break
+        query_prefix = stripped
+    interrogative_markers = {
+        "有没有", "有什么", "有哪些", "是什么", "是谁", "多少", "哪个", "哪些",
+        "什么时候", "何时", "如何", "怎么", "为什么", "是否", "能否", "可否",
+        "what", "which", "who",
+    }
+    imperative_markers = {
+        "查询", "查一下", "查下", "看看", "看下", "查看", "汇总", "列出", "告诉我",
+        "show me",
+    }
+    asks = bool(
+        re.search(r"[?？]", user_text)
+        or re.search(r"(?:吗|么|呢)\s*$", user_text)
+        or any(marker in query_prefix for marker in interrogative_markers)
+        or bool(re.search(r"\b(?:what|which|who|list)\b", query_prefix, flags=re.IGNORECASE))
+        or any(
+            re.search(
+                rf"(?:^|[。！？!?；;：:])\s*{re.escape(marker)}",
+                query_prefix,
+                flags=re.IGNORECASE,
+            )
+            for marker in imperative_markers
+        )
     )
     if not asks:
         return False
-    return not any(marker in folded for marker in _USER_ASSERTION_MARKERS)
+    # A mailbox read can surface new customer facts/actions.  It is not a
+    # query over existing knowledge, even though the user's wording is a
+    # question; let the gate admit concrete project-local items from it.
+    if any(marker in folded for marker in _EXTERNAL_SOURCE_QUERY_MARKERS):
+        return False
+
+    # An assertion-shaped phrase can be part of the requested result rather
+    # than a new fact.  For example, both “有什么是我必须完成的” and
+    # “我有哪些已确认的需求” are pure queries.  Conversely,
+    # “这个需求必须完成，什么时候开始？” contains a new
+    # assertion before the question and must remain write-eligible.
+    question_words = ("谁", "什么", "哪些", "哪个", "哪项", "多少", "吗", "么", "呢")
+    for marker in _USER_ASSERTION_MARKERS:
+        start = 0
+        while True:
+            position = folded.find(marker, start)
+            if position < 0:
+                break
+            suffix = folded[position + len(marker) :]
+            clause_start = max(
+                (folded.rfind(separator, 0, position) for separator in "。！？!?;；,，"),
+                default=-1,
+            ) + 1
+            later_separators = [
+                folded.find(separator, position + len(marker))
+                for separator in "。！？!?;；,，"
+            ]
+            clause_end = min(
+                (value for value in later_separators if value >= 0),
+                default=len(folded),
+            )
+            question_before = any(
+                folded.find(word, clause_start, position) >= 0
+                for word in interrogative_markers
+            )
+            question_after = marker == "必须" and any(
+                folded.find(word, position + len(marker), clause_end) >= 0
+                for word in (*interrogative_markers, *question_words)
+            )
+            if (
+                not question_before
+                and not question_after
+                and not any(suffix.startswith(word) for word in question_words)
+            ):
+                return False
+            start = position + len(marker)
+    return True
+
+
+def _repair_line_text(value: str) -> str:
+    """Keep a deterministic repair candidate focused on its action."""
+
+    text = re.sub(r"^\s*(?:[-*•]|\d+[.)、])\s*", "", value).strip()
+    text = re.sub(r"\*+", "", text)
+    text = re.sub(
+        r"[（(][^（）()]{0,120}(?:附件|文档|下载|邮件|message|attachment)[^（）()]{0,120}[）)]",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"(?:她|他|对方|客户)(?:说|反馈|回复)\s*[:：]?", "", text)
+    text = re.sub(r"[“\"]([^”\"]+)[”\"]", r"\1", text)
+    text = re.sub(r"\s+", " ", text).strip(" \t，,；;。.!！?？:：")
+    return text
+
+
+def _deterministic_project_repair_candidates(
+    events: Iterable[Mapping[str, Any]],
+    scope_registry: Mapping[str, Any] | None,
+    existing_candidates: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Recover explicit counted project repairs omitted by the gate.
+
+    Mailbox summaries frequently put the project name in a numbered heading
+    and the concrete repair count in the following bullet.  The normal gate
+    can conservatively discard that attachment-shaped bullet; this narrow
+    recovery only handles a candidate-local, registered project plus an
+    explicit quantity and an unfinished repair verb.  It never promotes a
+    generic attachment or follow-up line.
+    """
+
+    if not isinstance(scope_registry, Mapping):
+        return []
+    existing_topics: dict[str, list[str]] = {}
+    for candidate in existing_candidates:
+        if not isinstance(candidate, Mapping) or candidate.get("worth") is not True:
+            continue
+        text = candidate.get("memory")
+        if not isinstance(text, str):
+            continue
+        if not _EXPLICIT_REPAIR_COUNT_RE.search(text) or not _EXPLICIT_REPAIR_RE.search(text):
+            continue
+        occurrences = _project_scope_occurrences(text, scope_registry)
+        if occurrences is None:
+            continue
+        for _start, _end, scope in occurrences:
+            existing_topics.setdefault(scope.casefold(), []).append(normalize_term(text))
+
+    # Keep the extraction candidate-local.  A heading such as “6. 摩根基金”
+    # commonly precedes the actual repair bullet, so retain that scope until
+    # the next project heading (or a separator) and collect only explicit
+    # remediation bullets underneath a counted repair statement.
+    sections: list[tuple[str, str, str, list[str]]] = []
+    for event in events:
+        if str(event.get("role", "")).casefold() not in {"user", "assistant"}:
+            continue
+        content = event.get("content")
+        evidence_event_id = event.get("event_key")
+        if not isinstance(content, str) or not content.strip() or not isinstance(evidence_event_id, str):
+            continue
+        current_scope: str | None = None
+        aggregate_line: str | None = None
+        aggregate_scope: str | None = None
+        detail_lines: list[str] = []
+
+        def flush_section() -> None:
+            nonlocal aggregate_line, aggregate_scope, detail_lines
+            if aggregate_line is not None and aggregate_scope is not None:
+                sections.append(
+                    (evidence_event_id, aggregate_scope, aggregate_line, list(detail_lines))
+                )
+            aggregate_line = None
+            aggregate_scope = None
+            detail_lines = []
+
+        for line in content.splitlines():
+            line_text = line.strip()
+            if re.fullmatch(r"[-—]{3,}", line_text):
+                flush_section()
+                current_scope = None
+                continue
+            if not line_text:
+                continue
+            line_occurrences = _project_scope_occurrences(line_text, scope_registry)
+            line_scopes = list(dict.fromkeys(item[2] for item in (line_occurrences or [])))
+            if len(line_scopes) == 1:
+                if current_scope is not None and line_scopes[0].casefold() != current_scope.casefold():
+                    flush_section()
+                current_scope = line_scopes[0]
+            elif len(line_scopes) > 1:
+                flush_section()
+                current_scope = None
+            if _EXPLICIT_REPAIR_COUNT_RE.search(line_text) and _EXPLICIT_REPAIR_RE.search(line_text):
+                flush_section()
+                if current_scope is not None:
+                    aggregate_line = line_text
+                    aggregate_scope = current_scope
+                continue
+            # Only explicit repair/remediation language can turn a following
+            # bullet into an independent item.  Generic “见附件/需跟进” text
+            # remains outside this recovery path.
+            if (
+                aggregate_line is not None
+                and current_scope is not None
+                and current_scope.casefold() == aggregate_scope.casefold()
+                and _EXPLICIT_REPAIR_RE.search(line_text)
+            ):
+                detail_lines.append(line_text)
+        flush_section()
+
+    recovered: list[dict[str, Any]] = []
+    emitted_keys: set[tuple[str, str]] = set()
+    for evidence_event_id, scope, aggregate_line, detail_lines in sections:
+        lines = detail_lines or [aggregate_line]
+        scope_name = scope.partition(":")[2]
+        for line in lines:
+            cleaned = _repair_line_text(line)
+            if not cleaned:
+                continue
+            if scope_name.casefold() not in cleaned.casefold():
+                cleaned = f"{scope_name}：{cleaned}"
+            normalized = normalize_term(cleaned)
+            key = (scope.casefold(), normalized)
+            if not normalized or key in emitted_keys:
+                continue
+            # A model candidate covering this exact repair already has a
+            # normal UPDATE/NO_CHANGE path; do not create a sibling.  Other
+            # repairs in the same project remain independently recoverable.
+            if any(
+                normalized in existing_text or existing_text in normalized
+                for existing_text in existing_topics.get(scope.casefold(), [])
+            ):
+                continue
+            candidate_id = "email-repair-" + hashlib.sha256(
+                f"{evidence_event_id}|{scope}|{normalized}".encode("utf-8")
+            ).hexdigest()[:16]
+            recovered.append(
+                {
+                    "candidate_id": candidate_id,
+                    "memory": cleaned,
+                    "evidence_event_ids": [evidence_event_id],
+                    "duplicate": False,
+                    "worth": True,
+                    "type": "todo",
+                    "scopes": [scope],
+                    "scope_source": "model",
+                }
+            )
+            emitted_keys.add(key)
+    return recovered
 
 
 def _automatic_transient_memory(value: Any) -> bool:
@@ -1160,6 +1404,84 @@ class Processor:
         # exposing an uncommitted body outside this processor.
         self._planned_related: list[dict[str, Any]] = []
         self._deferred_by_turn: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        self._dispositions_by_turn: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+
+    def _record_disposition(
+        self,
+        turn_ref: tuple[str, str, str],
+        candidate: Mapping[str, Any],
+        disposition: str,
+        *,
+        reason: str | None = None,
+        memory_id: str | None = None,
+    ) -> None:
+        """Record a compact, candidate-level processing outcome.
+
+        The ledger deliberately keeps only the stable candidate id and the
+        outcome metadata.  Candidate text belongs in the inbox/model
+        diagnostics, not in the durable processing index.
+        """
+
+        candidate_id = candidate.get("candidate_id")
+        if not isinstance(candidate_id, str) or not candidate_id:
+            return
+        if disposition not in {"CREATE", "UPDATE", "NO_CHANGE", "DEFERRED"}:
+            return
+        value: dict[str, Any] = {
+            "candidate_id": candidate_id,
+            "disposition": disposition,
+        }
+        if isinstance(reason, str) and reason:
+            value["reason"] = reason
+        if isinstance(memory_id, str) and memory_id:
+            value["memory_id"] = memory_id
+        values = self._dispositions_by_turn.setdefault(turn_ref, [])
+        candidate_key = candidate_id.casefold()
+        for index, previous in enumerate(values):
+            if (
+                isinstance(previous, Mapping)
+                and isinstance(previous.get("candidate_id"), str)
+                and previous["candidate_id"].casefold() == candidate_key
+            ):
+                values[index] = value
+                return
+        values.append(value)
+
+    def _record_request_disposition(
+        self,
+        request: Mapping[str, Any],
+        disposition: str,
+        *,
+        reason: str | None = None,
+        memory_id: str | None = None,
+    ) -> None:
+        turn = request.get("turn")
+        if not isinstance(turn, InboxTurn):
+            return
+        self._record_disposition(
+            (turn.source, turn.session_id, turn.turn_key),
+            request,
+            disposition,
+            reason=reason,
+            memory_id=memory_id,
+        )
+
+    def _candidate_dispositions(
+        self,
+        snapshots: Iterable[_Snapshot] = (),
+    ) -> list[dict[str, Any]]:
+        """Return compact outcomes in the same order as processed turns."""
+
+        result: list[dict[str, Any]] = []
+        for snapshot in snapshots:
+            turn = snapshot.turn
+            turn_ref = (turn.source, turn.session_id, turn.turn_key)
+            result.extend(
+                dict(item)
+                for item in self._dispositions_by_turn.get(turn_ref, [])
+                if isinstance(item, Mapping)
+            )
+        return result
 
     def _resolve_backend(self, model: Any = None, router: Any = None) -> Any:
         backend = router if router is not None else model
@@ -2755,6 +3077,19 @@ class Processor:
         scopes: Optional[Iterable[str]] = None,
         scope_source: Any = _UNSET,
     ) -> None:
+        self._record_disposition(
+            turn_ref,
+            candidate,
+            "DEFERRED",
+            reason=reason,
+            memory_id=(
+                candidate.get("update_memory_id")
+                if isinstance(candidate.get("update_memory_id"), str)
+                else candidate.get("duplicate_memory_id")
+                if isinstance(candidate.get("duplicate_memory_id"), str)
+                else None
+            ),
+        )
         self._deferred_by_turn[turn_ref].append(
             {
                 "candidate_id": str(candidate["candidate_id"]),
@@ -3237,6 +3572,23 @@ class Processor:
                 "turn_index": turn.turn_index,
             },
         )
+        # A mailbox summary may put a project in a numbered heading and the
+        # concrete “N items need repair” action in its following bullet.  If
+        # the gate conservatively omits that attachment-shaped item, recover
+        # only this narrow, project-grounded action before candidate-level
+        # dedupe.  Pure existing-memory queries remain write-free.
+        if not _automatic_read_only_query(events):
+            recovered_repairs = _deterministic_project_repair_candidates(
+                events,
+                validation_scope_registry,
+                gate.get("candidates", []),
+            )
+            if recovered_repairs:
+                gate = dict(gate)
+                gate["candidates"] = [
+                    *gate.get("candidates", []),
+                    *recovered_repairs,
+                ]
         # A model may correctly treat the rest of a mixed turn as a query and
         # still miss the user's explicit completion update. Recover only one
         # uniquely related active todo; all other gate decisions stay intact.
@@ -3415,6 +3767,17 @@ class Processor:
             correction_plan = scope_correction_plans.get(candidate_id_key)
             detached_update_target_id = detached_update_target_ids.get(candidate_id_key)
             defer_reason = candidate.get("_defer_reason")
+            # A pure existing-memory query must not leave even a deferred
+            # candidate behind when the model mislabels its recap.  Explicit
+            # todo state recovery is the only write-eligible exception.
+            if read_only_query and recovery is None:
+                self._record_disposition(
+                    turn_ref,
+                    candidate,
+                    "NO_CHANGE",
+                    reason="read_only_query",
+                )
+                continue
             if isinstance(defer_reason, str) and defer_reason in {"mixed_future_use", "scope_conflict"}:
                 self._defer_candidate(
                     turn_ref,
@@ -3436,16 +3799,33 @@ class Processor:
                 )
                 continue
             if candidate.get("worth") and (
-                (read_only_query and recovery is None)
-                or _automatic_transient_memory(candidate.get("memory"))
+                _automatic_transient_memory(candidate.get("memory"))
             ):
+                self._record_disposition(
+                    turn_ref,
+                    candidate,
+                    "NO_CHANGE",
+                    reason="transient",
+                )
                 continue
             # A combined mailbox/daily digest is not an atomic memory.  If a
             # concrete action was worth retaining, the gate must emit it as
             # its own candidate; the aggregate shell itself is NO_CHANGE.
             if candidate.get("worth") and is_aggregate_operational_text(candidate.get("memory")):
+                self._record_disposition(
+                    turn_ref,
+                    candidate,
+                    "NO_CHANGE",
+                    reason="aggregate",
+                )
                 continue
             if candidate.get("worth") and is_attachment_followup_only_text(candidate.get("memory")):
+                self._record_disposition(
+                    turn_ref,
+                    candidate,
+                    "NO_CHANGE",
+                    reason="attachment_followup",
+                )
                 continue
             candidate_scopes = list(candidate["scopes"])
             # An automatic candidate with no reliable project attribution is
@@ -3709,6 +4089,20 @@ class Processor:
                             and observed_scope not in observed_scopes
                         ):
                             observed_scopes.append(observed_scope)
+                    self._record_disposition(
+                        turn_ref,
+                        candidate,
+                        "NO_CHANGE",
+                        reason="duplicate",
+                        memory_id=duplicate_memory_id,
+                    )
+                else:
+                    self._record_disposition(
+                        turn_ref,
+                        candidate,
+                        "NO_CHANGE",
+                        reason="not_worthy",
+                    )
                 continue
 
             gate_update_target = candidate.get("update_memory_id")
@@ -3797,14 +4191,37 @@ class Processor:
                 )
                 continue
             if summary.get("decision") == NO_CHANGE_DECISION:
+                self._record_disposition(
+                    turn_ref,
+                    candidate,
+                    "NO_CHANGE",
+                    reason="summary_no_change",
+                    memory_id=(
+                        summary.get("update_memory_id")
+                        if isinstance(summary.get("update_memory_id"), str)
+                        else None
+                    ),
+                )
                 continue
             if is_attachment_followup_only_text(
                 f"{summary.get('title', '')}\n{summary.get('body', '')}"
             ):
+                self._record_disposition(
+                    turn_ref,
+                    candidate,
+                    "NO_CHANGE",
+                    reason="attachment_followup",
+                )
                 continue
             if _automatic_transient_memory(
                 f"{summary.get('title', '')}\n{summary.get('body', '')}"
             ):
+                self._record_disposition(
+                    turn_ref,
+                    candidate,
+                    "NO_CHANGE",
+                    reason="transient",
+                )
                 continue
             if gate_update_target is not None:
                 summary_update_target = summary.get("update_memory_id")
@@ -3853,8 +4270,24 @@ class Processor:
                 candidate_related,
                 ignore_memory_ids=current_turn_request_ids,
             ):
+                self._record_disposition(
+                    turn_ref,
+                    candidate,
+                    "NO_CHANGE",
+                    reason="already_covered",
+                )
                 continue
             requests.append(pending_request)
+            self._record_disposition(
+                turn_ref,
+                candidate,
+                "UPDATE" if not final_is_create else "CREATE",
+                memory_id=(
+                    summary_update_target
+                    if not final_is_create
+                    else pending_request["memory_id"]
+                ),
+            )
             for observed_scope in summary["scopes"]:
                 if (
                     isinstance(observed_scope, str)
@@ -4074,6 +4507,34 @@ class Processor:
                 self.writer.last_metadata_merged = 0
                 self.writer.last_noop_memory_ids = set()
             noop_memory_ids = self.writer.last_noop_memory_ids
+            for request in all_requests:
+                request_memory_id = request.get("memory_id")
+                if request_memory_id not in noop_memory_ids:
+                    continue
+                duplicate_id = request.get("duplicate_memory_id")
+                summary = request.get("summary")
+                update_id = (
+                    summary.get("update_memory_id")
+                    if isinstance(summary, Mapping)
+                    else None
+                )
+                target_id = (
+                    duplicate_id
+                    if isinstance(duplicate_id, str) and duplicate_id
+                    else update_id
+                    if isinstance(update_id, str) and update_id
+                    else None
+                )
+                self._record_request_disposition(
+                    request,
+                    "NO_CHANGE",
+                    reason=(
+                        "duplicate"
+                        if isinstance(duplicate_id, str) and duplicate_id
+                        else "unchanged"
+                    ),
+                    memory_id=target_id,
+                )
             if prepared_scopes is not None:
                 try:
                     ScopeMaintainer(self.service).apply_unlocked(
@@ -4177,6 +4638,7 @@ class Processor:
                     entry.pop("deferred_candidates", None)
                     if not entry.get("cleanup_done_at"):
                         entry["eligible_cleanup_at"] = _add_hours(now, cleanup_hours)
+                entry["candidate_dispositions"] = self._candidate_dispositions([snapshot])
                 state["processed_turns"] = entries
                 watermark = max(_as_int(state.get("watermark"), 0), _as_int(snapshot.turn.turn_index, 0))
                 state["watermark"] = watermark
