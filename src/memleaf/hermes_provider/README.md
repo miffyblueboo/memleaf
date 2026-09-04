@@ -1,8 +1,8 @@
 # Memleaf memory provider for Hermes
 
 This is a Hermes user-level memory-provider plugin for the local memleaf vault.
-It is separate from the `memleaf-mcp` MCP server, but uses the same
-`~/.memleaf` directory and executable.
+It is separate from the `memleaf-mcp` MCP server, but uses the same Vault and
+must use a version-compatible memleaf runtime.
 
 The native provider supplies a bounded Scope Map (no memory titles or bodies),
 captures visible Hermes turns, and automatically processes complete turns.
@@ -28,11 +28,35 @@ The optional provider config is `~/.hermes/memleaf.json`:
 ```json
 {
   "vault": "~/.memleaf",
-  "command": "memleaf-mcp",
+  "command": "/absolute/path/to/memleaf-mcp",
   "timeout": 5,
-  "process_timeout": 300
+  "process_timeout": 300,
+  "auto_process": true
 }
 ```
+
+The separate persisted MCP entry uses the same executable and Vault:
+
+```yaml
+mcp_servers:
+  memleaf:
+    command: /absolute/path/to/memleaf-mcp
+    args:
+      - --vault
+      - /absolute/path/to/vault
+    enabled: true
+    lazy: true
+    idle_timeout_seconds: 60
+```
+
+Use `python -m memleaf install` to configure both entries. The installer writes
+the MCP entry through `hermes config set`, reads `config.yaml` back, and tests
+that all 12 tools are discoverable before it reports success. When two memleaf
+virtual environments are present, use `--mcp-runtime current` to migrate to the
+runtime executing the installer or `--mcp-runtime existing` to retain an
+already configured executable after an exact version check. See the
+[Hermes MCP runtime guide](https://github.com/miffyblueboo/memleaf/blob/main/docs/hermes-mcp-runtime.md)
+for the full multi-environment and manual-recovery procedure.
 
 Capture, stats, and context calls use the short `timeout`; model-backed
 processing uses `process_timeout` so a slow local model does not get mistaken
