@@ -2,6 +2,15 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.24 — 2026-09-04
+
+- Make Hermes MCP installation reliably persistent: write `mcp_servers.memleaf` through Hermes' canonical `config set` interface, disable the entry while command/arguments are updated, then read `config.yaml` back and require an exact command plus `--vault` match before reporting success.
+- Detect a same-Vault MCP entry that points at a different absolute memleaf runtime before changing Hermes. Add explicit `--mcp-runtime auto|current|existing` policies, prefer the current Python interpreter's scripts directory over `PATH`, and require an exact version check before retaining another environment.
+- Snapshot Hermes `config.yaml`, `memleaf.json`, and `plugins/memleaf` during installation; on a later failure, attempt every rollback target even when one restore fails, and report the failed paths together with the installation stage and recovery commands.
+- Improve human and JSON diagnostics for MCP persistence, runtime conflicts, lifecycle/test failures, and rollback results; document `memleaf-mcp --vault`, manual YAML, and the difference between Hermes connection discovery and final configuration persistence.
+- Make Windows CI fail immediately after every native command and keep POSIX command-rendering assertions platform-specific, preventing intermediate Windows test failures from being reported as green.
+- Leave memory extraction, CREATE/UPDATE/NO_CHANGE decisions, retrieval, injection, todo handling, and globally shared Vault visibility unchanged.
+
 ## 0.2.23 — 2026-09-03
 
 - Add a strict `scope_correction` transaction for explicit cross-project corrections without weakening ordinary UPDATE scope isolation: uniquely recover the wrong active target, reuse its `memory_id` when appropriate, or retire it to history with `invalidated_reason: scope_correction` and `superseded_by` when a correct active survivor already exists.
