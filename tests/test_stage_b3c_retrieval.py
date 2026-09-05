@@ -9,6 +9,9 @@ from memleaf.index import extract_wikilinks
 from memleaf.native_index import NativeIndexer
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class QueueBackend:
     provider = "fake"
     model = "b3c-test"

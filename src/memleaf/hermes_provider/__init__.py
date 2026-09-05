@@ -1234,7 +1234,7 @@ def _bounded_mail_evidence(messages: Optional[List[Dict[str, Any]]]) -> list[dic
     return output
 
 
-def _bounded_current_tool_evidence(messages: Optional[List[Dict[str, Any]]]) -> list[dict[str, str]]:
+def _bounded_current_tool_evidence(messages: Optional[List[Dict[str, Any]]], *, vault_root: Optional[Path] = None) -> list[dict[str, str]]:
     """Match current-turn results strictly by call ID, not tool name/order.
 
     Kept standard-library-only: Hermes can load this copied provider while the
@@ -1263,27 +1263,73 @@ def _bounded_current_tool_evidence(messages: Optional[List[Dict[str, Any]]]) -> 
         if len(matches) != 1:
             continue
         payload = matches[0].get("payload")
-        if isinstance(payload, Mapping) and (payload.get("isError") is True or payload.get("error")):
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (ValueError, TypeError):
+                pass
+        kind = "retrieved_memory" if (re.search(r"(?:^|[_.:/-])memleaf(?:$|[_.:/-])", name, re.I)
+            or _path_is_within(vault_root, _path_from_tool_arguments(call.get("arguments"))) is True) else "external_observation"
+        execution_error = isinstance(payload, Mapping) and payload.get("isError") is True
+
+        def record(value: Any, record_id: Optional[str] = None) -> Optional[dict[str, str]]:
+            try:
+                text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            except (TypeError, ValueError):
+                return None
+            if not text or "\x00" in text:
+                return None
+            partial = len(text) > 2000
+            item = {"tool_name": name[:320], "call_id": cid[:320], "kind": kind,
+                    "execution_status": "error" if execution_error else "success",
+                    "completeness": "partial" if partial else "complete", "schema_version": "2",
+                    "result_status": "truncated" if partial else "error" if execution_error else "success",
+                    "content": text[:2000]}
+            if isinstance(value, Mapping):
+                for key in ("record_id", "title", "message_id", "subject", "sender", "domain"):
+                    field = value.get(key)
+                    if isinstance(field, str) and field.strip() and not any(ch in field for ch in "\x00\r\n"):
+                        item[key] = field[:320]
+            if record_id is not None:
+                item["record_id"] = record_id
+            return item
+
+        original = record(payload)
+        if original is None:
             continue
-        try:
-            text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        except (TypeError, ValueError):
-            continue
-        if not text or "\x00" in text:
-            continue
-        item = {"tool_name": name[:320], "call_id": cid[:320],
-                "kind": "retrieved_memory" if re.search(r"(?:^|[_.:/-])memleaf(?:$|[_.:/-])", name, re.I) else "external_observation",
-                "result_status": "success" if len(text) <= 2000 else "truncated",
-                "content": text[:2000]}
-        if isinstance(payload, Mapping):
-            for key in ("record_id", "title", "message_id", "subject", "sender", "domain"):
-                value = payload.get(key)
-                if isinstance(value, str) and value.strip() and not any(ch in value for ch in "\x00\r\n"):
-                    item[key] = value[:320]
-        output.append(item)
+        collection, context = None, {}
+        if original["completeness"] == "partial" and not execution_error:
+            if isinstance(payload, list):
+                collection = payload
+            elif isinstance(payload, Mapping):
+                keys = [key for key in ("items", "records", "results") if isinstance(payload.get(key), list)]
+                if len(keys) == 1:
+                    collection = payload[keys[0]]
+                    context = {key: value for key, value in payload.items() if key != keys[0]}
+        if collection:
+            for index, value in enumerate(collection[:8]):
+                item = record({"context": context, "record": value}, f"result-record-{index}")
+                if item is not None:
+                    for field in ("message_id", "subject", "sender", "domain", "title"):
+                        field_value = value.get(field) if isinstance(value, Mapping) else None
+                        if not isinstance(field_value, str) or not field_value.strip():
+                            field_value = original.get(field)
+                        if isinstance(field_value, str) and field_value.strip() and not any(ch in field_value for ch in "\x00\r\n"):
+                            item[field] = field_value[:320]
+                    output.append(item)
+            if len(collection) > 8:
+                output.append({"tool_name": "evidence.inventory", "call_id": cid[:320],
+                    "record_id": "overflow", "kind": "unknown", "result_status": "truncated",
+                    "completeness": "partial", "execution_status": "success", "schema_version": "2",
+                    "omitted_count": str(len(collection) - 8), "content": "Additional structured observations exceeded the capture budget."})
+        else:
+            output.append(original)
         seen.add(cid)
-        if len(output) >= 8:
-            break
+    if len(output) > 8:
+        omitted = sum(int(row.get("omitted_count", "1")) for row in output[7:])
+        output = output[:7] + [{"tool_name": "evidence.inventory", "call_id": "overflow",
+            "kind": "unknown", "result_status": "truncated", "completeness": "partial",
+            "omitted_count": str(omitted), "content": "Additional host observations exceeded the capture budget."}]
     return output
 
 
@@ -1554,14 +1600,17 @@ class MemleafMemoryProvider(MemoryProvider):
             return
         with self._sync_lock:
             deferred = self._process_deferred_counts(processed)
+            unresolved = processed.get("unresolved_evidence_count", 0) if isinstance(processed, Mapping) else 0
+            unresolved = unresolved if type(unresolved) is int and unresolved >= 0 else 0
             self._last_auto_process_failure = None
-            if deferred is None or (deferred[0] <= 0 and deferred[1] <= 0):
+            if not unresolved and (deferred is None or (deferred[0] <= 0 and deferred[1] <= 0)):
                 self._last_auto_process_deferred = None
             else:
                 self._last_auto_process_deferred = {
                     "session_id": current_session,
-                    "deferred_candidates": deferred[0],
-                    "deferred_inbox_turns": deferred[1],
+                    "deferred_candidates": deferred[0] if deferred else 0,
+                    "deferred_inbox_turns": deferred[1] if deferred else 0,
+                    "unresolved_evidence_count": unresolved,
                 }
         if deferred is not None and (deferred[0] > 0 or deferred[1] > 0):
             logger.info(
@@ -2151,13 +2200,16 @@ class MemleafMemoryProvider(MemoryProvider):
                 return ""
             candidates = int(deferred.get("deferred_candidates", 0) or 0)
             turns = int(deferred.get("deferred_inbox_turns", 0) or 0)
-        if candidates <= 0 and turns <= 0:
+            unresolved = int(deferred.get("unresolved_evidence_count", 0) or 0)
+        if candidates <= 0 and turns <= 0 and unresolved <= 0:
             return ""
         return (
             "<memleaf-process-status>\n"
             f"Automatic memleaf processing completed with {candidates} deferred "
             f"candidate(s) across {turns} pending inbox turn(s) awaiting scope "
-            "clarification. Memory extraction is not fully complete; do not claim "
+            "clarification. "
+            f"There are {unresolved} unresolved evidence unit(s), including incomplete tool observations. "
+            "Memory extraction is not fully complete; do not claim "
             "that every captured turn was processed.\n"
             "</memleaf-process-status>"
         )
@@ -2558,7 +2610,7 @@ class MemleafMemoryProvider(MemoryProvider):
                     self._last_retrieval_observation = observation
                     self._last_retrieval_audit = str(audit_state.get("status") or "SEARCH_UNKNOWN")
                 lineage_ready = self._retry_pending_lineage(effective_session)
-                tool_evidence = _bounded_current_tool_evidence(messages)
+                tool_evidence = _bounded_current_tool_evidence(messages, vault_root=_resolve_vault(self._config()))
                 for role, content in visible_events:
                     if not self._capture_visible(
                         session_id=effective_session,

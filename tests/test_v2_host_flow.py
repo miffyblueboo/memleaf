@@ -13,6 +13,10 @@ from memleaf.retrieval_gate import find_turn, validate_turn
 from tests.test_stage_c1_mcp import MCPProcess
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+
+@semantic_fixture
 class EmptyGate:
     def complete(self, prompt, *, system="", purpose="", temperature=0):
         if purpose != "gate":

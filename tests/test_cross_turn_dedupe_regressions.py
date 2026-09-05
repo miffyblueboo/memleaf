@@ -10,6 +10,9 @@ from memleaf.index import event_key
 from memleaf.validation import is_mixed_future_use_text
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class QueueBackend:
     provider = "fake"
     model = "cross-turn-dedupe-regression"

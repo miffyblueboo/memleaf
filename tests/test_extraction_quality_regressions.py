@@ -17,6 +17,9 @@ from memleaf.index import event_key
 from memleaf.validation import ModelOutputError, parse_gate_output
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class QueueBackend:
     """Small deterministic backend used by all tests in this module."""
 

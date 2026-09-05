@@ -5,7 +5,24 @@ from __future__ import annotations
 
 GATE_SYSTEM = """You are memleaf's strict memory gate. Return exactly one strict JSON object.
 The root object has candidates (a list) and, when evidence units are supplied,
-coverage (one decision for every supplied unit). Never omit a supplied unit.
+coverage (one decision for every supplied unit) and evidence_bindings (exact
+original spans supporting each worthy candidate). Never omit a supplied unit.
+A binding is {"candidate_id":"id","claims":[{"unit_id":"supplied id","start":0,
+"end":5,"quote":"exact substring","role":"assertion"}]}. Offsets are Python
+Unicode string offsets relative to unit.text. You may omit BOTH start and end
+when quote occurs exactly once in that unit; Core resolves its exact position.
+Role is assertion, source_excerpt,
+or user_confirmation. Determine the semantic role from full context; local
+origin and syntax labels are hints only, not final judgments. A question is not
+an assertion; a hypothetical is not a fact. Actual documents in code/quote
+blocks can be source_excerpt, and an explicit adoption can be user_confirmation.
+A user confirmation must resolve to one concrete proposal, not everything in
+assistant context. Bind only the relevant assertion/document spans; never clip
+negation, uncertainty, ownership or conditionals. Physical source_role is set
+by the host and cannot be changed: assistant and retrieved-memory text cannot
+independently authorize new writes. Every bound unit's coverage must identify
+the same candidate. Semantic entailment and future value remain your job;
+valid offsets alone do not make a claim true.
 Use only facts supported by current user assertions or supplied external observations; do not turn
 assistant-only suggestions, plans, or uncertainty into facts. Every candidate
 has these required fields and JSON types: candidate_id (string), memory
@@ -557,6 +574,12 @@ def summarize_prompt(
     )
     if not explicit:
         prompt += (
+            "Final evidence re-check: the supplied events contain only admitted original spans. "
+            "Derive the final body and every new owner, date, obligation and state only from "
+            "these spans; existing target memories provide context, not new assertions. "
+            "Preserve negation, uncertainty, third-party ownership and user-confirmation scope. "
+            "Do not introduce details from assistant synthesis or general model knowledge. "
+            "Source references must use these admitted event keys only. "
             "Automatic admission re-check: if the candidate has no independent "
             "future-use fact or action after reviewing the evidence, return exactly "
             '{"decision":"NO_CHANGE"}; do not return an empty or partial memory object. '
@@ -629,7 +652,7 @@ is a write exemption. Assistant prose is context only, not new evidence. Bind
 each candidate to the supplied authoritative evidence units through coverage.
 A section heading scopes only its own children; a different unknown heading
 ends that context. Do not inherit the preceding project's ownership. Negative,
-completed, cancelled, quoted, hypothetical, or third-party-only tasks must not
+completed, cancelled, hypothetical/example-only, or third-party-only tasks must not
 become a new user active todo. A model omission must be DEFERRED, never replaced
 by a locally invented action. NO_CHANGE does not append sources or history.
 When units exist, candidates=[] STILL requires coverage for every unit.

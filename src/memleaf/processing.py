@@ -14,8 +14,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional
 
-from .admission import (analyze_turn_evidence, admission_reason, read_only_turn,
-    evidence_prompt, parse_coverage, split_gate_envelope, supporting_units)
+from .admission import (analyze_turn_evidence, admission_reason, read_only_turn, summary_evidence,
+    evidence_prompt, parse_coverage, split_gate_envelope, supporting_units,
+    split_semantic_envelope, validate_bindings, validate_coverage_bindings)
 from .capture import _safe_turn_id
 from .config import save_config
 from .index import EVENT_V2_BLOCK, event_key, extract_event_keys, turn_key
@@ -30,7 +31,7 @@ from .llm import (
 )
 from .locking import atomic_write_json, atomic_write_text, read_json
 from .memory_writer import MemoryWriter
-from .turn_plan import TurnPlan, content_digest
+from .turn_plan import dedup_digest, TurnPlan, FrozenTurn, content_digest, input_digest, revision_digest, turn_plan_key, turn_identity_key
 from .models import Memory, utc_now
 from .native_index import NativeIndexer
 from .prompts import (
@@ -90,7 +91,7 @@ _TARGET_NOT_RELATED = "NOT_RELATED"
 _TARGET_SAME_USE = "SAME_USE"
 _TARGET_UNKNOWN = "UNKNOWN"
 _DIAGNOSTIC_GATE_REQUIRED = frozenset(("candidates",))
-_DIAGNOSTIC_GATE_ALLOWED = frozenset(("candidates",))
+_DIAGNOSTIC_GATE_ALLOWED = frozenset(("candidates", "coverage", "evidence_bindings"))
 _DIAGNOSTIC_CANDIDATE_REQUIRED = frozenset(
     ("candidate_id", "memory", "evidence_event_ids", "duplicate", "worth", "type", "scopes", "scope_source")
 )
@@ -1673,6 +1674,13 @@ class Processor:
             for entry_index, raw_entry in enumerate(entries):
                 if not isinstance(raw_entry, dict) or raw_entry.get("cleanup_done_at"):
                     continue
+                if raw_entry.get("deferred_candidates") or raw_entry.get("deferred_evidence"):
+                    continue
+                pending = processed.get("pending_turn_plans", {})
+                state_source, _, state_session = state_key.partition("/")
+                entry_key = raw_entry.get("turn_key")
+                if isinstance(entry_key, str) and turn_identity_key(state_source, state_session, entry_key) in pending:
+                    continue
                 due = _parse_time(raw_entry.get("eligible_cleanup_at"))
                 if due is None or due > now_time:
                     continue
@@ -1785,8 +1793,7 @@ class Processor:
                         entry
                         for entry in processed_entries
                         if isinstance(entry, Mapping)
-                        and isinstance(entry.get("deferred_candidates"), list)
-                        and entry.get("deferred_candidates")
+                        and (entry.get("deferred_candidates") or entry.get("deferred_evidence"))
                     ]
                     deferred.sort(key=lambda entry: _as_int(entry.get("turn_index"), 0))
                     for entry in deferred:
@@ -2338,6 +2345,7 @@ class Processor:
 
     @staticmethod
     def _scope_terms_present(text: str, scope: str, config: Mapping[str, Any]) -> bool:
+        config = config if "scopes" in config else {"scopes": config}
         terms = [scope, scope.partition(":")[2]]
         node = config.get("scopes", {}).get(scope) if isinstance(config.get("scopes", {}), Mapping) else None
         if isinstance(node, Mapping) and isinstance(node.get("aliases"), list):
@@ -2376,6 +2384,7 @@ class Processor:
         ).strip()
         if not user_text or not _SCOPE_CORRECTION_MARKER_RE.search(user_text):
             return None
+        config = config if "scopes" in config else {"scopes": config}
         scopes = config.get("scopes", {}) if isinstance(config.get("scopes", {}), Mapping) else {}
         mentioned = [
             scope for scope in scopes
@@ -2479,8 +2488,13 @@ class Processor:
     ) -> dict[str, Any]:
         survivor_id = plan.get("survivor_memory_id")
         survivor = self._active_memory_by_id(survivor_id)
-        if survivor is None:
-            raise ProcessingError("scope correction survivor disappeared")
+        target = self._active_memory_by_id(plan.get("target_memory_id"))
+        if survivor is None or target is None:
+            raise ProcessingError("scope correction target disappeared")
+        plan = dict(plan)
+        plan.update(expected_history_id=MemoryWriter._history_id(target),
+                    expected_target_revision=revision_digest(target),
+                    expected_survivor_revision=revision_digest(survivor))
         summary = {
             "title": survivor.title,
             "body": survivor.body,
@@ -2507,6 +2521,7 @@ class Processor:
             "explicit_remember": False,
             "native_refs": [dict(item) for item in native_refs if isinstance(item, Mapping)],
             "scope_correction": dict(plan),
+            "evidence_unit_ids": list(candidate.get("evidence_unit_ids", [])),
         }
 
     def _target_relation(
@@ -3083,22 +3098,71 @@ class Processor:
             unknown_target_ids.clear()
             candidate_level_target_ids.clear()
             scope_correction_plans.clear()
+            raw, binding_value = split_semantic_envelope(raw)
             raw, coverage_value = split_gate_envelope(raw)
             raw_for_parse = (
                 _normalize_final_gate_raw(raw, validation_scope_registry)
                 if gate_attempt_count >= 3
                 else raw
             )
+            # An explicit scope correction can legitimately name an old-scope
+            # target absent from the ordinary new-scope directory. Authorize
+            # that one candidate/target pair before strict ID validation, not
+            # every cross-project reference appearing in the same batch.
+            allowed_corrections: dict[str, str] = {}
+            ordinary_ids = {value.casefold() for value in gate_related_memory_ids}
+            envelope = parse_strict_json(raw_for_parse)
+            raw_candidates = envelope.get("candidates") if isinstance(envelope, dict) else None
+            if isinstance(raw_candidates, list):
+                user_keys = {event.event_key for event in turn.events if event.role == "user"}
+                for raw_candidate in raw_candidates:
+                    if not isinstance(raw_candidate, dict):
+                        continue
+                    cid = raw_candidate.get("candidate_id")
+                    target_id = raw_candidate.get("update_memory_id")
+                    evidence = raw_candidate.get("evidence_event_ids")
+                    if (not isinstance(cid, str) or not isinstance(target_id, str)
+                        or target_id.casefold() in ordinary_ids
+                        or not isinstance(raw_candidate.get("memory"), str)
+                        or not isinstance(raw_candidate.get("scopes"), list)
+                        or not isinstance(evidence, list)
+                        or not any(isinstance(key, str) and key in user_keys for key in evidence)):
+                        continue
+                    correction = self._scope_correction_plan(raw_candidate, turn, validation_scope_registry)
+                    if (correction and not correction.get("ambiguous")
+                        and correction.get("target_memory_id") == target_id):
+                        allowed_corrections[cid.casefold()] = target_id
             parsed = parse_gate_output(
                 raw_for_parse,
                 current_event_keys=turn.event_keys,
-                related_memory_ids=gate_related_memory_ids,
+                related_memory_ids=[*gate_related_memory_ids, *allowed_corrections.values()],
                 scope_registry=validation_scope_registry,
                 enforce_model_scope_grounding=gate_attempt_count < 3,
                 allow_mixed_future_use=gate_attempt_count >= 3,
             )
-            coverage_rows = (parse_coverage(coverage_value, evidence_units, parsed["candidates"])
+            for item in parsed["candidates"]:
+                for field in ("duplicate_memory_id", "update_memory_id"):
+                    target_id = item.get(field)
+                    if isinstance(target_id, str) and target_id.casefold() not in ordinary_ids:
+                        if (field != "update_memory_id"
+                            or allowed_corrections.get(item["candidate_id"].casefold()) != target_id):
+                            raise ModelOutputError("target is not authorized for this candidate",
+                                                   validation_detail="invalid_update_target")
+            coverage_rows = (parse_coverage(coverage_value, evidence_units, parsed["candidates"], require_complete=False)
                              if coverage_value is not None else {})
+            if binding_value is not None:
+                bindings = validate_bindings(binding_value, evidence_units, parsed["candidates"])
+                for item in parsed["candidates"]:
+                    if item["candidate_id"] in bindings:
+                        claims = bindings[item["candidate_id"]]
+                        for claim in claims:
+                            row = coverage_rows.get(claim["unit_id"])
+                            if row is not None and (row["decision"] != "CANDIDATE"
+                                or item["candidate_id"] not in row["candidate_ids"]):
+                                raise ModelOutputError("binding contradicts coverage", validation_detail="invalid_evidence")
+                        item["_evidence_bindings"] = claims
+            validate_coverage_bindings(coverage_rows, evidence_units, parsed["candidates"])
+
             if gate_attempt_count >= 3:
                 candidates = []
                 for candidate in parsed["candidates"]:
@@ -3344,6 +3408,57 @@ class Processor:
                 "turn_index": turn.turn_index,
             },
         )
+        # One bounded, source-neutral coverage repair. This is NOT a writer:
+        # every returned candidate is parsed again by the same Gate boundary.
+        accounted = set(coverage_rows)
+        for initial in gate["candidates"]:
+            accounted.update(unit.unit_id for unit in supporting_units(initial, evidence_units))
+        missing = tuple(unit for unit in evidence_units if (unit.eligible or unit.origin == "user_document") and unit.unit_id not in accounted)
+        if missing:
+            saved_gate = deepcopy(gate)
+            saved_coverage = deepcopy(coverage_rows)
+            saved_maps = [deepcopy(value) for value in (detached_update_target_ids,
+                deferred_type_mismatch_ids, target_relations, unknown_target_ids,
+                candidate_level_target_ids, scope_correction_plans)]
+            try:
+                correction_raw = self._complete(backend,
+                    "Coverage correction: classify ONLY the supplied unresolved evidence units. "
+                    "Do not re-emit already handled items. Return the same Gate JSON contract.\n"
+                    + gate_prompt([], related_memories=gate_related, scope_background=scope_background,
+                                  scope_registry=scope_registry)
+                    + evidence_prompt(missing)
+                    + "\nAlready handled candidate IDs: "
+                    + json.dumps([item["candidate_id"] for item in gate["candidates"]]),
+                    system=GATE_SYSTEM, purpose="gate")
+                correction_raw, correction_bindings = split_semantic_envelope(correction_raw)
+                correction_raw, correction_coverage = split_gate_envelope(correction_raw)
+                correction_gate = parse_gate_output(correction_raw,
+                    current_event_keys=tuple(dict.fromkeys(unit.event_key for unit in missing)),
+                    related_memory_ids=gate_related_memory_ids, scope_registry=validation_scope_registry)
+                new_ids = {item["candidate_id"] for item in correction_gate["candidates"]}
+                if new_ids.intersection(item["candidate_id"] for item in gate["candidates"]):
+                    raise ModelOutputError("coverage correction reused a candidate id", validation_detail="duplicate_candidate_id")
+                if correction_bindings is not None:
+                    validate_bindings(correction_bindings, missing, correction_gate["candidates"])
+                new_coverage = (parse_coverage(correction_coverage, missing, correction_gate["candidates"],
+                                require_complete=False) if correction_coverage is not None else {})
+                public_candidates = [{key: value for key, value in item.items()
+                    if not key.startswith("_") and key != "evidence_unit_ids"} for item in gate["candidates"]]
+                old_bindings = [{"candidate_id": item["candidate_id"], "claims": item["_evidence_bindings"]}
+                    for item in gate["candidates"] if item.get("_evidence_bindings")]
+                merged = {"candidates": public_candidates + correction_gate["candidates"],
+                          "coverage": list(saved_coverage.values()) + list(new_coverage.values()),
+                          "evidence_bindings": old_bindings + (correction_bindings or [])}
+                gate = parse_gate(json.dumps(merged, ensure_ascii=False))
+            except (ModelError, ModelOutputError):
+                # A failed correction cannot invalidate already validated siblings.
+                gate = saved_gate
+                coverage_rows = saved_coverage
+                for current, old in zip((detached_update_target_ids, deferred_type_mismatch_ids,
+                    target_relations, unknown_target_ids, candidate_level_target_ids, scope_correction_plans), saved_maps):
+                    current.clear()
+                    current.update(old)
+
         # A model may correctly treat the rest of a mixed turn as a query and
         # still miss the user's explicit completion update. Recover only one
         # uniquely related active todo; all other gate decisions stay intact.
@@ -3354,6 +3469,13 @@ class Processor:
         if todo_state_recovery is not None:
             recovery_candidate, recovery_state, recovery_target_id, recovery_completed_at = todo_state_recovery
             recovery_candidate_value = dict(recovery_candidate)
+            state_bindings = []
+            for unit in evidence_units:
+                if unit.source_role == "user" and unit.event_key in recovery_candidate["evidence_event_ids"] and unit.eligible:
+                    state_bindings.append({"unit_id": unit.unit_id, "start": 0, "end": len(unit.text),
+                        "quote": unit.text, "role": "assertion"})
+            if state_bindings:
+                recovery_candidate_value["_evidence_bindings"] = state_bindings
             recovery_candidate_id = recovery_candidate["candidate_id"].casefold()
             recovery_by_candidate[recovery_candidate_id] = (
                 recovery_state,
@@ -3388,6 +3510,21 @@ class Processor:
             else None
         )
         if completion_rework is not None:
+            # This existing state-recovery path copies a literal post-completion
+            # tail. Bind only those copied clauses, never the completion clause
+            # or unrelated assistant text, to the common admission boundary.
+            rework_bindings = []
+            copied = str(completion_rework.get("memory", ""))
+            for unit in evidence_units:
+                quote = unit.text.strip(" \t\r\n，,；;。.!！?？:：")
+                if (unit.source_role == "user"
+                    and unit.event_key in completion_rework["evidence_event_ids"]
+                    and quote and quote in copied):
+                    start = unit.text.index(quote)
+                    rework_bindings.append({"unit_id": unit.unit_id, "start": start,
+                        "end": start + len(quote), "quote": quote, "role": "assertion"})
+            if rework_bindings:
+                completion_rework["_evidence_bindings"] = rework_bindings
             rework_text = normalize_term(completion_rework.get("memory", ""))
             rework_scope_keys = {
                 value.casefold()
@@ -3510,7 +3647,9 @@ class Processor:
         current_turn_request_ids: set[str] = set()
         read_only_query = read_only_turn(evidence_units)
         covered_unit_ids: set[str] = set()
+        covered_by_unit: dict[str, list[str]] = {}
         seen_candidates: set[tuple[Any, ...]] = set()
+        conflicting_targets: set[str] = set()
         for candidate in gate["candidates"]:
             candidate = dict(candidate)
             unit_ids = [uid for uid, row in coverage_rows.items()
@@ -3520,13 +3659,15 @@ class Processor:
             reason, support = admission_reason(candidate, evidence_units)
             candidate["evidence_unit_ids"] = [u.unit_id for u in support]
             covered_unit_ids.update(candidate["evidence_unit_ids"])
+            for uid in candidate["evidence_unit_ids"]:
+                covered_by_unit.setdefault(uid, []).append(candidate["candidate_id"])
             if reason is not None and candidate.get("worth"):
                 if reason in {"read_only_query", "quoted_or_example"}:
                     self._record_disposition(turn_ref, candidate, "NO_CHANGE", reason=reason)
                 else:
                     self._defer_candidate(turn_ref, candidate, reason, scopes=candidate.get("scopes", []))
                 continue
-            fingerprint = (normalize_term(str(candidate.get("memory", ""))),
+            fingerprint = (str(candidate.get("memory", "")).strip(),
                            candidate.get("type"), tuple(sorted(candidate.get("scopes", []))),
                            candidate.get("update_memory_id"), candidate.get("duplicate_memory_id"))
             if fingerprint in seen_candidates:
@@ -3552,7 +3693,7 @@ class Processor:
             # A pure existing-memory query must not leave even a deferred
             # candidate behind when the model mislabels its recap.  Explicit
             # todo state recovery is the only write-eligible exception.
-            if read_only_query and recovery is None:
+            if read_only_query and recovery is None and not candidate.get("_evidence_bindings"):
                 self._record_disposition(
                     turn_ref,
                     candidate,
@@ -3903,6 +4044,8 @@ class Processor:
                     None,
                 )
 
+            admitted_summary_events = summary_evidence(candidate, evidence_units, events=events)
+            admitted_summary_keys = tuple(dict.fromkeys(event["event_key"] for event in admitted_summary_events))
             try:
                 def parse_summary(raw: str) -> dict[str, Any]:
                     if recovery is not None and isinstance(raw, str):
@@ -3923,7 +4066,7 @@ class Processor:
                             raw = json.dumps(parsed_raw, ensure_ascii=False, separators=(",", ":"))
                     parsed = parse_summarize_output(
                         _normalize_summary_dates(raw, turn, candidate),
-                        current_event_keys=turn.event_keys,
+                        current_event_keys=admitted_summary_keys,
                         related_native_ids=candidate_native_ids,
                         related_memory_ids=same_type_update_memory_ids,
                         scope_registry=validation_scope_registry,
@@ -3941,11 +4084,17 @@ class Processor:
                     )
                     return parsed
 
+                target_revisions = {}
+                for related_item in candidate_related:
+                    if isinstance(related_item.get("memory_id"), str):
+                        target_memory = self._active_memory_by_id(related_item["memory_id"])
+                        if target_memory is not None:
+                            target_revisions[target_memory.memory_id] = revision_digest(target_memory)
                 summary = self._complete_json_stage(
                     backend,
                     summarize_prompt(
                         candidate,
-                        events,
+                        admitted_summary_events,
                         related_memories=candidate_related,
                         scope_background=candidate_scope_background,
                         scope_registry=scope_registry,
@@ -4059,19 +4208,25 @@ class Processor:
                     reason="already_covered",
                 )
                 continue
-            same_request = next((r for r in requests if
-                r.get("summary", {}).get("type") == summary.get("type")
-                and r.get("summary", {}).get("scopes") == summary.get("scopes")
-                and normalize_term(str(r.get("summary", {}).get("body", ""))) == normalize_term(summary["body"])
-                and r.get("summary", {}).get("status") == summary.get("status")
-                and r.get("summary", {}).get("due_date") == summary.get("due_date")), None)
+            same_request = next((r for r in requests
+                if dedup_digest(r.get("summary", {})) == dedup_digest(summary)), None)
             if same_request is not None:
                 self._record_disposition(turn_ref, candidate, "NO_CHANGE", reason="same_turn_duplicate")
                 continue
-            if summary_update_target and any(r.get("summary", {}).get("update_memory_id") == summary_update_target for r in requests):
+            competing = [r for r in requests if summary_update_target and
+                         r.get("summary", {}).get("update_memory_id") == summary_update_target]
+            if summary_update_target and (competing or summary_update_target in conflicting_targets):
+                conflicting_targets.add(summary_update_target)
+                for previous in competing:
+                    requests.remove(previous)
+                    self._defer_candidate(turn_ref, {"candidate_id": previous["candidate_id"],
+                        "scopes": previous["summary"]["scopes"], "scope_source": previous["summary"].get("scope_source")},
+                        "same_turn_target_conflict")
                 self._defer_candidate(turn_ref, candidate, "same_turn_target_conflict", scopes=candidate_scopes)
                 continue
             pending_request["evidence_unit_ids"] = list(candidate.get("evidence_unit_ids", []))
+            if summary_update_target:
+                pending_request["expected_revision"] = target_revisions.get(summary_update_target)
             requests.append(pending_request)
             self._record_disposition(
                 turn_ref,
@@ -4090,25 +4245,27 @@ class Processor:
                     and observed_scope not in observed_scopes
                 ):
                     observed_scopes.append(observed_scope)
+        if conflicting_targets and not requests:
+            raise ModelOutputError("no non-conflicting writes in turn", validation_detail="duplicate_update_target")
         evidence_dispositions = []
         for unit in evidence_units:
             row = coverage_rows.get(unit.unit_id)
-            if unit.unit_id in covered_unit_ids:
+            if unit.origin == "unknown":
+                # Completeness is a host fact, not a model semantic verdict.
+                # Even an explicit model NO_CHANGE cannot erase missing data.
+                decision, reason = "DEFERRED", "incomplete_tool_evidence"
+            elif unit.unit_id in covered_unit_ids:
                 decision, reason = "CANDIDATE", "candidate_checked"
             elif row is not None:
                 decision, reason = row["decision"], row.get("reason", "coverage_unresolved")
-            elif unit.eligible:
+            elif unit.eligible or unit.origin == "user_document":
                 decision, reason = "DEFERRED", "coverage_unresolved"
-            elif unit.origin == "unknown":
-                decision, reason = "DEFERRED", "incomplete_tool_evidence"
             else:
                 decision, reason = "NO_CHANGE", unit.origin
-            if decision == "DEFERRED":
-                marker = {"candidate_id": "coverage:" + unit.unit_id,
-                          "scopes": ["unscoped"], "scope_source": "insufficient_context"}
-                self._defer_candidate(turn_ref, marker, reason)
             evidence_dispositions.append({"unit_id": unit.unit_id, "event_key": unit.event_key,
-                                          "decision": decision, "reason": reason})
+                                          "decision": decision, "reason": reason,
+                "candidate_ids": list(dict.fromkeys(covered_by_unit.get(unit.unit_id, [])
+                    or (row.get("candidate_ids", []) if row else [])))})
         self._evidence_by_turn[turn_ref] = evidence_dispositions
         return requests, observed_scopes
 
@@ -4211,6 +4368,45 @@ class Processor:
                     turns += 1
                     candidates += sum(1 for item in deferred if isinstance(item, Mapping))
         return candidates, turns
+
+    def _validate_target_revisions_unlocked(self, requests: list[Mapping[str, Any]]) -> None:
+        active = self.writer._active_records()
+        written_targets: dict[str, tuple[str, str]] = {}
+        for request in requests:
+            correction = request.get("scope_correction")
+            if isinstance(correction, Mapping) and correction.get("survivor_memory_id"):
+                if self.writer.retirement_applied(correction, active):
+                    continue
+                for key, revision_key in (("target_memory_id", "expected_target_revision"),
+                                          ("survivor_memory_id", "expected_survivor_revision")):
+                    record = active.get(correction[key])
+                    current = getattr(record, "memory", record)
+                    expected = correction.get(revision_key)
+                    if current is None or (expected and revision_digest(current) != expected):
+                        raise ProcessingError("scope correction target changed before commit")
+                continue
+            target = request.get("summary", {}).get("update_memory_id")
+            turn = request["turn"]
+            owner = (turn.source, turn.session_id)
+            if not target:
+                if not request.get("duplicate_memory_id"):
+                    written_targets.setdefault(request["memory_id"], owner)
+                continue
+            if not request.get("expected_revision"):
+                continue
+            if target in written_targets:
+                if written_targets[target] != owner:
+                    raise ProcessingError("competing sessions selected one update target")
+                continue
+            written_targets[target] = owner
+            record = active.get(target)
+            current = getattr(record, "memory", record)
+            if current is None:
+                raise ProcessingError("update target disappeared before commit")
+            if MemoryWriter._request_already_applied(request, current):
+                continue
+            if revision_digest(current) != request["expected_revision"]:
+                raise ProcessingError("update target changed before commit; no stale overwrite")
 
     def _commit_success(
         self,
@@ -4316,14 +4512,42 @@ class Processor:
                         if current not in migrated:
                             migrated.append(current)
                     summary["scopes"] = migrated
+            active_effects: dict[str, str] = {}
+            for record in self.writer._active_records().values():
+                memory = getattr(record, "memory", record)
+                active_effects.setdefault(dedup_digest(memory.to_dict()), memory.memory_id)
+            for request in all_requests:
+                summary = request["summary"]
+                if (request.get("explicit_remember") or request.get("scope_correction")
+                    or request.get("duplicate_memory_id") or summary.get("update_memory_id")):
+                    continue
+                fingerprint = dedup_digest(summary)
+                existing_id = active_effects.get(fingerprint)
+                if existing_id and existing_id != request["memory_id"]:
+                    request["duplicate_memory_id"] = existing_id
+                else:
+                    active_effects[fingerprint] = request["memory_id"]
+            self._validate_target_revisions_unlocked(all_requests)
+            frozen = processed.setdefault("pending_turn_plans", {})
+            for snapshot in snapshots:
+                ref = (snapshot.turn.source, snapshot.turn.session_id, snapshot.turn.turn_key)
+                key = turn_plan_key(snapshot.turn)
+                relevant = [r for r in all_requests if r["turn"] == snapshot.turn]
+                if key not in frozen:
+                    frozen[key] = FrozenTurn.build(snapshot.turn, relevant,
+                        scopes=(observed_scopes or {}).get(ref, ()),
+                        candidates=self._dispositions_by_turn.get(ref, ()),
+                        evidence=self._evidence_by_turn.get(ref, ()),
+                        deferred=(deferred_candidates or {}).get(ref, ())).to_dict()
+            if len(json.dumps(frozen, ensure_ascii=False).encode()) > 16 * 1024 * 1024:
+                raise ProcessingError("pending write plans exceed safe storage budget")
             plan = TurnPlan.from_requests(all_requests)
             operations = processed.setdefault("pending_operations", {})
             previous_operation_ids = set(operations)
             for operation in plan.candidates:
                 operations.setdefault(operation.operation_id, operation.to_dict())
-            if plan.candidates:
-                # Persist write intent before knowledge/history mutation. The
-                # journal contains identifiers and digests, never source text.
+            if frozen or plan.candidates:
+                # Freeze final payloads before any knowledge/history mutation.
                 self._write_processed_unlocked(processed)
             if all_requests:
                 written = self.writer.write_many_unlocked(all_requests, now=now)
@@ -4450,12 +4674,21 @@ class Processor:
                     for item in deferred_values
                     if isinstance(item, Mapping)
                 ]
-                if deferred_values:
+                evidence_rows = self._evidence_by_turn.get(scope_key, [])
+                unresolved = [dict(row) for row in evidence_rows if row.get("decision") == "DEFERRED"]
+                if unresolved:
+                    entry["deferred_evidence"] = unresolved
+                else:
+                    entry.pop("deferred_evidence", None)
+                if deferred_values or unresolved:
                     # Keep the complete source turn available for a later
                     # explicit-scope retry.  A missing cleanup timestamp is
                     # intentional: deleting the inbox would discard the
                     # unresolved candidate before it can be retried.
-                    entry["deferred_candidates"] = deferred_values
+                    if deferred_values:
+                        entry["deferred_candidates"] = deferred_values
+                    else:
+                        entry.pop("deferred_candidates", None)
                     entry["eligible_cleanup_at"] = None
                     entry.pop("cleanup_done_at", None)
                 else:
@@ -4479,7 +4712,10 @@ class Processor:
                         pass
                     applied = (active is not None
                                and MemoryWriter._request_already_applied({"turn": snapshot.turn}, active)
-                               and content_digest(active.to_dict()) == operation.get("digest"))
+                               and (content_digest(active.to_dict()) == operation.get("digest")
+                                    or operation_id in previous_operation_ids))
+                    if operation.get("kind") == "scope_retirement":
+                        applied = self.writer.retirement_applied(operation["scope_correction"], self.writer._active_records())
                     if applied:
                         self._record_disposition(scope_key, operation, operation["disposition"],
                                                  memory_id=operation["memory_id"])
@@ -4492,6 +4728,7 @@ class Processor:
                     # Successful no-op intents are resolved too. A failed
                     # commit never reaches the final journal-clearing write.
                     operations.pop(operation_id, None)
+                processed.get("pending_turn_plans", {}).pop(turn_plan_key(snapshot.turn), None)
                 entry["candidate_dispositions"] = self._candidate_dispositions([snapshot])
                 entry["evidence_dispositions"] = self._evidence_by_turn.get(scope_key, [])
                 state["processed_turns"] = entries
@@ -4516,6 +4753,22 @@ class Processor:
                 for request, memory in zip(all_requests, written)
                 if request.get("memory_id") not in noop_memory_ids
             ]
+
+    def _coverage_result(self, source: str | None, session_id: str | None) -> dict[str, Any]:
+        with self.service.vault.lock():
+            processed = _read_processed(self.service.vault.processed_index_path)
+        unresolved = 0
+        partial = False
+        for key, state in processed.get("sessions", {}).items():
+            if source is not None and not key.startswith(source + "/"):
+                continue
+            if session_id is not None and key.partition("/")[2] != session_id:
+                continue
+            for entry in state.get("processed_turns", []):
+                unresolved += len(entry.get("deferred_evidence", []))
+                partial = partial or bool(entry.get("deferred_candidates") or entry.get("deferred_evidence"))
+        return {"execution_status": "ok", "coverage_status": "partial" if partial else "complete",
+                "unresolved_evidence_count": unresolved}
 
     def process(
         self,
@@ -4545,6 +4798,7 @@ class Processor:
                 session_id=session_id,
             )
             return {
+                **self._coverage_result(source, session_id),
                 "processed_turns": 0,
                 "memories_written": 0,
                 "memory_ids": [],
@@ -4554,7 +4808,7 @@ class Processor:
                 "deferred_inbox_turns": deferred_turns,
                 "compaction": self._auto_compact(model=model, router=router),
             }
-        backend = self._resolve_backend(model=model, router=router)
+        backend = None
         requests: list[dict[str, Any]] = []
         observed_scopes: dict[tuple[str, str, str], list[str]] = {}
         self._planned_related = []
@@ -4566,9 +4820,20 @@ class Processor:
                 with self.service.vault.lock():
                     processed = _read_processed(self.service.vault.processed_index_path)
                     state = self._state_for_snapshot_unlocked(snapshot, processed)
-                turn_requests, turn_scopes = self._collect_turn_outputs(
-                    backend, snapshot.turn, state, scope=scope
-                )
+                stored_plan = processed.get("pending_turn_plans", {}).get(turn_plan_key(snapshot.turn))
+                if stored_plan is not None:
+                    restored = FrozenTurn.restore(stored_plan, snapshot.turn)
+                    ref = (snapshot.turn.source, snapshot.turn.session_id, snapshot.turn.turn_key)
+                    turn_requests, turn_scopes = restored["requests"], restored["scopes"]
+                    self._dispositions_by_turn[ref] = restored["candidate_dispositions"]
+                    self._evidence_by_turn[ref] = restored["evidence_dispositions"]
+                    self._deferred_by_turn[ref] = restored["deferred_candidates"]
+                else:
+                    if backend is None:
+                        backend = self._resolve_backend(model=model, router=router)
+                    turn_requests, turn_scopes = self._collect_turn_outputs(
+                        backend, snapshot.turn, state, scope=scope
+                    )
                 requests.extend(turn_requests)
                 for request in turn_requests:
                     planned = self._planned_memory(request)
@@ -4591,12 +4856,17 @@ class Processor:
                 observed_scopes=observed_scopes,
                 deferred_candidates=self._deferred_by_turn,
             )
-            compaction = self._auto_compact(model=backend)
+            # A processed read-only/no-op turn must not trigger maintenance
+            # writes. Explicit maintenance and no-pending-turn processing keep
+            # their existing separate authorization.
+            compaction = (self._auto_compact(model=backend) if ids or self.writer.last_metadata_merged
+                          else {"status": "not_due", "reason": "no_memory_changes"})
             deferred_candidates, deferred_turns = self._deferred_counts(
                 source=source,
                 session_id=session_id,
             )
             return {
+                **self._coverage_result(source, session_id),
                 "processed_turns": len(snapshots),
                 "memories_written": len(ids),
                 "memory_ids": ids,
@@ -4737,21 +5007,23 @@ class Processor:
                 "deferred_inbox_turns": 0,
                 "compaction": self._auto_compact(model=model, router=router),
             }
-        backend = self._resolve_backend(model=model, router=router)
+        backend = None
         self._planned_related = []
         self._deferred_by_turn = {}
         try:
             with self.service.vault.lock():
                 processed = _read_processed(self.service.vault.processed_index_path)
                 state = self._state_for_snapshot_unlocked(snapshot, processed)
-            requests, turn_scopes = self._collect_turn_outputs(
-                backend,
-                turn,
-                state,
-                explicit=True,
-                explicit_candidate=candidate,
-                scope=normalized_scopes,
-            )
+            stored = processed.get("pending_turn_plans", {}).get(turn_plan_key(turn))
+            if stored is not None:
+                restored = FrozenTurn.restore(stored, turn)
+                requests, turn_scopes = restored["requests"], restored["scopes"]
+            else:
+                backend = self._resolve_backend(model=model, router=router)
+                requests, turn_scopes = self._collect_turn_outputs(
+                    backend, turn, state, explicit=True,
+                    explicit_candidate=candidate, scope=normalized_scopes,
+                )
             if normalized_scopes is not None:
                 turn_scopes = list(normalized_scopes)
             ids = self._commit_success(

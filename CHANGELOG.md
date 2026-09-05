@@ -2,6 +2,18 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.26 — Unreleased
+
+- Separate physical provenance from semantic role; validate exact candidate quotations and reject assistant-only/retrieved-memory authority. Remove whole-turn example suppression, lexical-overlap authorization and short-text bypasses.
+- Add one bounded source-neutral coverage correction. Keep evidence accounting separate from candidate outcomes and never let a model erase known missing/truncated observations.
+- Restrict automatic summarization to admitted spans and current admitted source keys, while preserving related memories as context.
+- Preserve complete bounded structured records and source metadata across Hermes/Codex; report overflow and retention loss explicitly.
+- Freeze complete write requests before mutation, replay without a fresh model call, verify target revisions under the Vault lock, and preserve actual UPDATE/scope-retirement audit outcomes.
+- Add exact same-turn/commit-time deduplication that includes task titles; keep conflicting updates from overwriting newer shared state.
+- Add local read-only audit and isolated process --dry-run, with bounded snapshots and concurrent-change detection.
+- Migrate deterministic test stubs to the explicit evidence protocol without weakening their update/history/failure assertions; add adversarial quotation, transport, concurrency, replay and inspection tests.
+- This is an unreleased candidate. Hosted-model semantic acceptance and cross-platform checks are reported separately, not inferred from scripted unit tests.
+
 ## 0.2.25 — 2026-09-04
 
 - Keep global todo questions and cross-session recaps strictly read-only,

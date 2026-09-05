@@ -94,6 +94,9 @@ class CoreClient:
         return None
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class E2EBackend:
     provider = "fake"
     model = "hermes-local-e2e"
@@ -2272,6 +2275,7 @@ class HermesProviderTests(unittest.TestCase):
         vault = self.root / "schema-retry-vault"
         service = Memleaf(vault)
 
+        @semantic_fixture
         class RetryModel:
             provider = "fake"
             model = "schema-retry"

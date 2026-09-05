@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .locking import atomic_write_json, read_json
-from .provenance import normalize_tool_evidence, observation_record
+from .provenance import observation_records, refers_to_vault, normalize_tool_evidence, observation_record
 from .retrieval_gate import (
     MAX_GATE_RETRIES,
     RetrievalGateError,
@@ -114,9 +114,11 @@ class HostRuntime:
         return stored or duplicate, stored
 
     def observe_external_tool(self, *, session_id: str, turn_id: str,
-                              tool_name: str, call_id: str, payload: Any) -> None:
-        record = observation_record(tool_name, call_id, payload)
-        if record is None:
+                              tool_name: str, call_id: str, payload: Any,
+                              tool_input: Any = None) -> None:
+        incoming = observation_records(tool_name, call_id, payload,
+            source_kind="retrieved_memory" if refers_to_vault(tool_input, self.vault.root) else None)
+        if not incoming:
             return
         retrieval_id = self._retrieval_id(session_id, turn_id)
         if retrieval_id is not None:
@@ -130,19 +132,42 @@ class HostRuntime:
             entry = self._normalize_host_entry(bucket.get(session_id))
             pending = entry.setdefault("tool_evidence", {})
             records = pending.setdefault(turn_id, [])
-            if not any(r.get("call_id") == record["call_id"] for r in records):
-                records.append(record)
-            pending[turn_id] = records[:8]
+            for record in incoming:
+                matching = [r for r in records if r.get("call_id") == record["call_id"]
+                            and r.get("record_id") == record.get("record_id")]
+                if not matching:
+                    records.append(record)
+                elif any(r.get("result_digest") != record.get("result_digest") for r in matching):
+                    for existing in matching:
+                        existing["kind"] = "unknown"
+                        existing["result_status"] = "unknown"
+                        existing["completeness"] = "partial"
+            pending[turn_id] = normalize_tool_evidence(records)
             # Bound pending turns independently of the global permanent Vault.
+            # Keep bounded loss tombstones rather than silently forgetting a
+            # not-yet-captured turn. Very old loss remains a session diagnostic.
+            lost = entry.setdefault("tool_evidence_lost", {})
             while len(pending) > 16:
-                pending.pop(next(iter(pending)))
+                evicted_id = next(iter(pending))
+                evicted = pending.pop(evicted_id)
+                lost[evicted_id] = sum(int(row.get("omitted_count", "1")) for row in evicted)
+            while len(lost) > 256:
+                lost.pop(next(iter(lost)))
+                entry["tool_evidence_earlier_loss"] = True
             bucket[session_id] = entry
             self._mirror_legacy_codex(state, session_id, entry)
             atomic_write_json(self.vault.host_ingest_path, state, mode=0o600)
 
     def _tool_evidence(self, session_id: str, turn_id: str) -> list[dict[str, str]]:
         entry = self._host_session(session_id)
-        return normalize_tool_evidence(entry.get("tool_evidence", {}).get(turn_id, []))
+        records = entry.get("tool_evidence", {}).get(turn_id, [])
+        lost = entry.get("tool_evidence_lost", {}).get(turn_id)
+        if lost is not None or (not records and entry.get("tool_evidence_earlier_loss")):
+            records = [*records, {"tool_name": "evidence.inventory", "call_id": "retention-overflow",
+                "kind": "unknown", "result_status": "truncated", "completeness": "partial",
+                "execution_status": "unknown", "omitted_count": str(lost or 1),
+                "content": "Pending tool observations exceeded retention; original evidence must be supplied again."}]
+        return normalize_tool_evidence(records)
 
     def process(self, **arguments: Any) -> Any:
         """Run the existing Core process path without changing extraction rules."""
@@ -412,7 +437,7 @@ class HostRuntime:
                 isinstance(processed.get(key), int)
                 and not isinstance(processed.get(key), bool)
                 and processed.get(key, 0) > 0
-                for key in ("deferred_candidates", "deferred_inbox_turns")
+                for key in ("deferred_candidates", "deferred_inbox_turns", "unresolved_evidence_count")
             )
         self._set_process_pending(session_id, False)
         return TurnCompletion(
@@ -498,6 +523,8 @@ class HostRuntime:
         return {
             "process_pending": pending,
             "injected_turn_ids": injected,
+            "tool_evidence_lost": dict(value.get("tool_evidence_lost", {})) if isinstance(value, Mapping) and isinstance(value.get("tool_evidence_lost"), Mapping) else {},
+            "tool_evidence_earlier_loss": isinstance(value, Mapping) and value.get("tool_evidence_earlier_loss") is True,
             "tool_evidence": dict(value.get("tool_evidence", {})) if isinstance(value, Mapping) and isinstance(value.get("tool_evidence"), Mapping) else {},
         }
 

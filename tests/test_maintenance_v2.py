@@ -22,6 +22,9 @@ from memleaf.processing import (
 from memleaf.prompts import SUMMARIZE_SYSTEM
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class QueueBackend:
     provider = "fake"
     model = "maintenance-v2-test"
@@ -861,7 +864,7 @@ class MaintenanceV2Tests(unittest.TestCase):
         def fail_final_processed(path, value):
             if path == self.service.vault.processed_index_path:
                 calls["processed"] += 1
-                if calls["processed"] == 2:
+                if value.get("sessions", {}).get("hermes/forward-recovery", {}).get("watermark", 0) >= 2 and value["sessions"]["hermes/forward-recovery"].get("processing", {}).get("status") == "idle":
                     raise OSError("injected final processed write failure")
             return original_atomic(path, value)
 

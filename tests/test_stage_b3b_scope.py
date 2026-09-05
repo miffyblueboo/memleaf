@@ -12,6 +12,9 @@ from memleaf.index import event_key
 from memleaf.processing import ProcessingError
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class QueueBackend:
     provider = "fake"
     model = "b3b-scope"

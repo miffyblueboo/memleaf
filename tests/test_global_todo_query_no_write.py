@@ -18,6 +18,9 @@ from memleaf.config import save_config
 from memleaf.index import event_key
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class QueueBackend:
     """Deterministic model queue for gate and summarize stages."""
 

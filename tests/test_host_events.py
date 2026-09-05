@@ -38,6 +38,9 @@ def _row(record_type: str, source: str, step_index: int, content: str, **extra: 
     return value
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class _QueueBackend:
     def __init__(self, responses: list[str]) -> None:
         self.responses = list(responses)

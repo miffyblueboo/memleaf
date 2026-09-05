@@ -14,6 +14,9 @@ from memleaf.scope_state import ScopeError, validate_scope_registry
 from memleaf.validation import ModelOutputError, validate_gate_output
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class QueueBackend:
     provider = "fake"
     model = "b3d-scope"
@@ -546,9 +549,9 @@ class StageB3DScopeMaintenanceTest(unittest.TestCase):
         def fail_final_processed(path, value):
             if path == self.service.vault.processed_index_path:
                 calls["processed"] += 1
-                # The first call is the processing claim.  The second is the
-                # post-commit watermark write, after config has been saved.
-                if calls["processed"] == 2:
+                # Target the final watermark commit, not the earlier claim
+                # or newly added pre-write plan journal.
+                if value.get("sessions", {}).get("codex/s", {}).get("watermark", 0) >= 1 and value["sessions"]["codex/s"].get("processing", {}).get("status") == "idle":
                     raise OSError("injected final processed write failure")
             return original_atomic(path, value)
 
@@ -580,7 +583,7 @@ class StageB3DScopeMaintenanceTest(unittest.TestCase):
         self.assertEqual(len(state["processed_turns"]), 1)
         self.assertEqual(
             [call["purpose"] for call in backend.calls],
-            ["gate", "summarize", "gate", "summarize"],
+            ["gate", "summarize"],  # Retry replays the frozen plan without model calls.
         )
 
 

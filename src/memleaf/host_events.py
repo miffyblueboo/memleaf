@@ -435,7 +435,8 @@ def _handle_codex_post_tool(
         if isinstance(tool_name, str) and isinstance(call_id, str):
             runtime.observe_external_tool(session_id=session_id, turn_id=turn_id,
                                           tool_name=tool_name, call_id=call_id,
-                                          payload=_field(event, "tool_response", "toolResponse"))
+                                          payload=_field(event, "tool_response", "toolResponse"),
+                                          tool_input=_field(event, "tool_input", "toolInput"))
         return {}
     tool_input = _field(event, "tool_input", "toolInput")
     call_id = _field(event, "tool_use_id", "toolUseId")

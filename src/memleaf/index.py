@@ -276,4 +276,6 @@ def build_processed_index(
     # write and final processed-turn commit. Dropping it falsifies replay audit.
     if isinstance(existing, Mapping) and isinstance(existing.get("pending_operations"), Mapping):
         value["pending_operations"] = deepcopy(dict(existing["pending_operations"]))
+    if isinstance(existing, Mapping) and isinstance(existing.get("pending_turn_plans"), Mapping):
+        value["pending_turn_plans"] = deepcopy(dict(existing["pending_turn_plans"]))
     return value

@@ -89,6 +89,8 @@ class _ErrorOpener:
         raise self.error
 
 
+from tests.semantic_fixtures import semantic_function
+
 class StageB1Test(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -231,6 +233,7 @@ class StageB1Test(unittest.TestCase):
         ]
         calls = []
 
+        @semantic_function
         def callback(prompt, **kwargs):
             calls.append((prompt, kwargs["purpose"]))
             return responses.pop(0)
@@ -323,6 +326,7 @@ class StageB1Test(unittest.TestCase):
         responses = [json.dumps(gate)] + [json.dumps(relative_summary)] * 3
         calls = []
 
+        @semantic_function
         def callback(prompt, **kwargs):
             calls.append(kwargs["purpose"])
             return responses.pop(0)
@@ -486,6 +490,7 @@ class StageB1Test(unittest.TestCase):
         ]
         calls = []
 
+        @semantic_function
         def callback(prompt, **kwargs):
             calls.append((prompt, kwargs))
             return responses.pop(0)
@@ -518,6 +523,7 @@ class StageB1Test(unittest.TestCase):
         responses = [invalid, invalid, invalid]
         calls = []
 
+        @semantic_function
         def callback(prompt, **kwargs):
             calls.append((prompt, kwargs))
             return responses.pop(0)

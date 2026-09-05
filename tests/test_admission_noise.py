@@ -14,6 +14,9 @@ from memleaf.prompts import GATE_SYSTEM, SUMMARIZE_SYSTEM, gate_prompt, summariz
 from memleaf.validation import ModelOutputError
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class QueueBackend:
     provider = "fake"
     model = "admission-noise-test"

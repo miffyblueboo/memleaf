@@ -9,6 +9,9 @@ from memleaf.config import save_config
 from memleaf.index import event_key
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class QueueBackend:
     def __init__(self, responses):
         self.responses = list(responses)

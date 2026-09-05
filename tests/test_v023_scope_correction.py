@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from memleaf.index import event_key
 from memleaf import Memleaf
 from memleaf.inbox import parse_inbox_text
 from memleaf.memory_writer import MemoryWriter
@@ -154,12 +155,15 @@ class V023ScopeCorrectionTests(unittest.TestCase):
         self.service.capture("hermes", "evidence", "t2", "user", "处理这封邮件", event_id="eu")
         self.service.capture(
             "hermes", "evidence", "t2", "assistant", "已查看", event_id="ea",
-            tool_evidence=[{"message_id": "99", "sender": "pm@xyamc.com", "domain": "xyamc.com"}],
+            tool_evidence=[{"message_id": "99", "sender": "pm@xyamc.com", "domain": "xyamc.com",
+                "tool_name": "mail.read", "call_id": "mail-99", "kind": "external_observation",
+                "result_status": "success", "content": "兴银理财流程调整"}],
         )
         text = self.service.vault.session_path("hermes", "evidence").read_text(encoding="utf-8")
         turn = next(turn for turn in parse_inbox_text(text, source="hermes", session_id="evidence") if turn.complete)
         candidate = {
             "candidate_id": "c3", "memory": "兴银理财流程调整", "worth": True,
+            "evidence_event_ids": [event_key("ea")],
             "duplicate": False, "type": "project", "scopes": ["project:兴银理财"], "scope_source": "model",
         }
         processor = Processor(self.service)

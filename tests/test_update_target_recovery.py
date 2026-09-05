@@ -19,6 +19,9 @@ from memleaf.config import save_config
 from memleaf.index import event_key
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class QueueBackend:
     provider = "fake"
     model = "update-target-recovery"

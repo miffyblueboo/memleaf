@@ -4,8 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.25.**
-> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. memleaf 0.2.25 is distributed through PyPI.
+> **Development candidate: 0.2.26 (not released).**
+> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. The published version remains 0.2.25; this branch's 0.2.26 is not published.
 > **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.
 
 ## Project scope
@@ -450,3 +450,21 @@ MIT; see [LICENSE](LICENSE).
 **memleaf**
 
 *Your memories, in files you own.*
+
+
+## General processing and read-only inspection (0.2.26 candidate)
+
+Dialogue, calendars, tickets, files, web results and other tools share the evidence, coverage and write path.
+Models interpret semantics; Core validates physical provenance and exact original quotations.
+A valid quotation establishes provenance, not the truth or entailment of a generated claim.
+
+```bash
+memleaf audit --vault /path/to/existing/vault --json
+memleaf process --vault /path/to/existing/vault --source hermes --session-id SESSION --dry-run --json
+```
+
+Audit is local/read-only, never calls a model, never infers producing versions and never repairs automatically.
+Dry-run executes the normal processor on a private temporary copy and may call the configured Model Route.
+It does not modify the source Vault; concurrent source changes invalidate the preview. There is no apply-preview mode.
+Execution success is separate from evidence completeness: `coverage_status=partial` reports unresolved work.
+See [general processing](docs/general-processing.md) for the protocol, limits and verification boundaries.

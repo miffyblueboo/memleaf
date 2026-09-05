@@ -4,8 +4,8 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **当前版本：0.2.25。**
-> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。memleaf 0.2.25 通过 PyPI 分发。
+> **开发候选：0.2.26（尚未发布）。**
+> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。已发布版本仍为 0.2.25；此修复分支的 0.2.26 尚未发布。
 > **当前版本支持 Hermes 和 Codex。** Antigravity（反重力）不检测、不安装、不配置。
 
 ## 项目定位
@@ -447,3 +447,23 @@ MIT，见 [LICENSE](LICENSE)。
 
 **memleaf**
 *Your memories, in files you own.*
+
+
+## 通用处理与只读验收（0.2.26 开发候选）
+
+邮件、日历、工单、文件、浏览器与普通对话共用证据准入、覆盖检查和写入路径。
+自动摘要只能使用获准引用的原文；助手复述和旧记忆回读不能单独授权新增写入。
+模型负责语义判断，代码验证来源和原文引用。通过引用校验并不保证模型的语义判断一定正确。
+
+```bash
+memleaf audit --vault /path/to/existing/vault --json
+memleaf process --vault /path/to/existing/vault --source hermes --session-id SESSION --dry-run --json
+```
+
+`audit` 完全本地、只读，不调用模型，不推断旧记忆由哪个版本创建，也不自动清理。
+`--dry-run` 在私有临时副本运行正常处理，可能调用配置的独立 Model Route；不会改写原 Vault。
+检测到原 Vault 并发变化时会拒绝输出可用预览。没有一键应用预览的功能。
+
+工具执行状态与证据完整性分别记录；超限、丢失或不完整内容不会被模型的 NO_CHANGE 升级为完整。
+执行成功但尚有未解决项时，结果显示 `coverage_status=partial`，并保留来源以供有界重试或补充证据。
+行为、限制、测试协议变更见 [通用处理说明](docs/general-processing.md)。

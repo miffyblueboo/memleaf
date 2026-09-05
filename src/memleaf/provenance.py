@@ -7,7 +7,7 @@ from .redaction import redact_text
 
 TOOL_EVIDENCE_FIELDS = frozenset({"message_id", "subject", "sender", "domain",
     "tool_name", "call_id", "record_id", "title", "kind", "result_status",
-    "content", "result_digest"})
+    "content", "result_digest", "execution_status", "completeness", "schema_version", "omitted_count"})
 MAX_ITEMS = 8
 MAX_TEXT = 320
 MAX_CONTENT = 2000
@@ -51,13 +51,23 @@ def normalize_tool_evidence(value: Any) -> list[dict[str, str]]:
             raise ValueError("invalid tool evidence kind")
         if "result_status" in item and item["result_status"] not in {"success", "error", "truncated", "unknown"}:
             raise ValueError("invalid tool result status")
+        if "execution_status" in item and item["execution_status"] not in {"success", "error", "unknown"}:
+            raise ValueError("invalid execution status")
+        if "completeness" in item and item["completeness"] not in {"complete", "partial", "missing"}:
+            raise ValueError("invalid evidence completeness")
+        if item.get("result_status") == "truncated":
+            item["completeness"] = "partial"
+        if "omitted_count" in item and (not item["omitted_count"].isascii()
+            or not item["omitted_count"].isdigit() or len(item["omitted_count"]) > 12):
+            raise ValueError("invalid omitted observation count")
         fingerprint = tuple(sorted(item.items()))
         if item and fingerprint not in seen:
             seen.add(fingerprint)
             result.append(item)
     if len(value) > MAX_ITEMS:
+        omitted = sum(int(row.get("omitted_count", "1")) if isinstance(row, Mapping) and str(row.get("omitted_count", "1")).isdigit() else 1 for row in value[MAX_ITEMS-1:])
         result = result[:MAX_ITEMS - 1]
-        result.append({"tool_name": "evidence.inventory", "call_id": "overflow",
+        result.append({"omitted_count": str(omitted), "completeness": "partial","tool_name": "evidence.inventory", "call_id": "overflow",
                        "kind": "unknown", "result_status": "truncated",
                        "content": "Additional tool observations exceeded the capture budget."})
     return result
@@ -72,8 +82,13 @@ def read_tool_evidence(value: Any) -> tuple[dict[str, str], ...]:
         try:
             result.extend(normalize_tool_evidence([raw]))
         except ValueError:
-            continue
-    return tuple(result)
+            result.append({"tool_name": "evidence.inventory", "call_id": "invalid", "kind": "unknown", "result_status": "unknown", "completeness": "missing", "content": "Invalid tool evidence could not be retained."})
+    if len(value) > MAX_ITEMS:
+        result.append({"tool_name": "evidence.inventory", "call_id": "overflow",
+            "kind": "unknown", "result_status": "truncated", "completeness": "partial",
+            "omitted_count": str(len(value) - MAX_ITEMS),
+            "content": "Additional stored observations exceeded the evidence budget."})
+    return tuple(normalize_tool_evidence(result))
 
 
 def observation_record(tool_name: str, call_id: str, payload: Any) -> dict[str, str] | None:
@@ -118,3 +133,128 @@ def observation_record(tool_name: str, call_id: str, payload: Any) -> dict[str, 
         return normalize_tool_evidence([record])[0]
     except (ValueError, IndexError):
         return None
+
+
+def refers_to_vault(arguments: Any, root: Any) -> bool:
+    """Recognize direct Vault-file reads without inspecting/executing commands."""
+    from pathlib import Path
+    from urllib.parse import urlparse, unquote
+    import ntpath
+
+    def inside(value: str) -> bool:
+        if value.startswith("file://"):
+            value = unquote(urlparse(value).path)
+        try:
+            # Windows paths are compared using Windows semantics even when a
+            # fixture or exported transcript is inspected on another platform.
+            if re.match(r"^[A-Za-z]:[/\\]", str(root)):
+                base = ntpath.normcase(ntpath.normpath(str(root)))
+                target = ntpath.normcase(ntpath.normpath(value))
+                return ntpath.isabs(target) and ntpath.commonpath([base, target]) == base
+            base = Path(root).expanduser().resolve()
+            candidate = Path(value).expanduser()
+            if not candidate.is_absolute():
+                return False
+            return candidate.resolve().is_relative_to(base)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def visit(value: Any, depth: int = 0) -> bool:
+        if depth > 4:
+            return False
+        if isinstance(value, Mapping):
+            for key, item in list(value.items())[:32]:
+                if key in {"path", "file", "file_path", "filepath", "filename", "directory", "uri"}:
+                    if isinstance(item, str) and inside(item):
+                        return True
+                if isinstance(item, (Mapping, list, tuple)) and visit(item, depth + 1):
+                    return True
+        elif isinstance(value, (list, tuple)):
+            return any(visit(item, depth + 1) for item in value[:32])
+        return False
+    return visit(arguments)
+
+
+def observation_records(tool_name: str, call_id: str, payload: Any, *,
+                        source_kind: str | None = None) -> list[dict[str, str]]:
+    """Retain bounded complete records and explicit incompleteness tombstones.
+
+    Collection splitting is structural, never keyed to email or another
+    business domain. Shared collection context remains with each child.
+    """
+    import json
+    if not isinstance(tool_name, str) or not tool_name or not isinstance(call_id, str) or not call_id:
+        return []
+    if source_kind is not None and source_kind not in {"retrieved_memory", "external_observation", "unknown"}:
+        raise ValueError("invalid observation source kind")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            pass
+    error = isinstance(payload, Mapping) and payload.get("isError") is True
+    kind = source_kind or ("retrieved_memory" if re.search(r"(?:^|[_.:/-])memleaf(?:$|[_.:/-])", tool_name, re.I)
+                           else "external_observation")
+
+    def record(value: Any, ident: str | None = None) -> dict[str, str] | None:
+        try:
+            text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return None
+        if not text or "\x00" in text:
+            return None
+        item = {"tool_name": tool_name, "call_id": call_id, "kind": kind,
+                "execution_status": "error" if error else "success", "completeness": "complete",
+                "schema_version": "2", "result_status": "error" if error else "success", "content": text}
+        if isinstance(value, Mapping):
+            for field in ("record_id", "title", "message_id", "subject", "sender", "domain"):
+                raw = value.get(field)
+                if isinstance(raw, str) and raw.strip() and not any(c in raw for c in "\x00\r\n"):
+                    item[field] = raw
+        if ident is not None:
+            item["record_id"] = ident
+        try:
+            return normalize_tool_evidence([item])[0]
+        except (ValueError, IndexError):
+            return None
+
+    if payload is None:
+        return []
+    # Prefer the native structured result; do not duplicate serialized content.
+    if not error and isinstance(payload, Mapping) and isinstance(payload.get("structuredContent"), Mapping):
+        payload = payload["structuredContent"]
+    original = record(payload)
+    if original is None:
+        return []
+    if original.get("completeness") == "complete" or error:
+        return [original]
+    collection, context = None, {}
+    if isinstance(payload, list):
+        collection = payload
+    elif isinstance(payload, Mapping):
+        keys = [key for key in ("items", "records", "results") if isinstance(payload.get(key), list)]
+        if len(keys) == 1:
+            collection = payload[keys[0]]
+            context = {key: value for key, value in payload.items() if key != keys[0]}
+    if not collection:
+        return [original]
+    output = []
+    for index, value in enumerate(collection[:MAX_ITEMS]):
+        item = record({"context": context, "record": value}, f"result-record-{index}")
+        if item is None:
+            item = {"tool_name": tool_name, "call_id": call_id, "record_id": f"result-record-{index}",
+                    "kind": "unknown", "result_status": "unknown", "execution_status": "success",
+                    "completeness": "missing", "content": "Tool record could not be retained safely."}
+        for field in ("message_id", "subject", "sender", "domain", "title"):
+            raw = value.get(field) if isinstance(value, Mapping) else None
+            if not isinstance(raw, str) or not raw.strip():
+                raw = original.get(field)
+            if isinstance(raw, str) and raw.strip() and not any(c in raw for c in "\x00\r\n"):
+                item[field] = raw
+        output.append(item)
+    if len(collection) > MAX_ITEMS:
+        output.append({"tool_name": tool_name, "call_id": call_id, "record_id": "overflow",
+            "kind": "unknown", "result_status": "truncated", "completeness": "partial",
+            "execution_status": "success", "omitted_count": str(len(collection) - MAX_ITEMS),
+            "content": "Additional structured observations exceeded the capture budget."})
+    return normalize_tool_evidence(output)

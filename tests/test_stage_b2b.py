@@ -14,6 +14,9 @@ from memleaf.processing import ProcessingError
 from memleaf.validation import ModelOutputError
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class QueueBackend:
     provider = "fake"
     model = "b2b-test"
@@ -427,7 +430,7 @@ class StageB2BTest(unittest.TestCase):
         def fail_processed(path, value):
             if path == service2.vault.processed_index_path:
                 calls["count"] += 1
-                if calls["count"] == 2:
+                if value.get("sessions", {}).get("codex/s", {}).get("watermark", 0) >= 2 and value["sessions"]["codex/s"].get("processing", {}).get("status") == "idle":
                     raise OSError("processed write failed")
             return original_atomic(path, value)
 

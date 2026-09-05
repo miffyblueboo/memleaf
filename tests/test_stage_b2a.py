@@ -18,6 +18,9 @@ from memleaf.prompts import RELATIVE_TIME_CORRECTION
 from memleaf.validation import ModelOutputError
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class QueueBackend:
     provider = "fake"
     model = "b2a-test"
@@ -631,17 +634,17 @@ class StageB2ATest(unittest.TestCase):
     def test_two_candidates_are_separate_deterministic_memories_and_repeat_is_noop(self):
         backend = QueueBackend()
         service = self.service(backend)
-        user_key, assistant_key = self.capture_turn(service)
+        user_key, assistant_key = self.capture_turn(service, user="A durable fact. A second durable fact.")
         backend.responses.extend(
             [
                 self.gate(
                     [
                         self.candidate("c1", [user_key]),
-                        self.candidate("c2", [assistant_key], memory="another durable fact"),
+                        self.candidate("c2", [user_key], memory="another durable fact"),
                     ]
                 ),
                 self.summary(user_key, title="First"),
-                self.summary(assistant_key, title="Second"),
+                self.summary(user_key, title="Second"),
             ]
         )
 
@@ -1993,7 +1996,7 @@ class StageB2ATest(unittest.TestCase):
         )
         valid = self.candidate(
             "valid-fact",
-            [assistant_key],
+            [user_key],
             memory="项目负责人已确认。",
             type="fact",
         )
@@ -2004,7 +2007,7 @@ class StageB2ATest(unittest.TestCase):
             type="todo",
         )
         good_summary = self.summary(
-            assistant_key,
+            user_key,
             title="项目负责人",
             body="项目负责人已确认。",
             type="fact",
@@ -2664,8 +2667,8 @@ class StageB2ATest(unittest.TestCase):
     def test_invalid_second_summary_does_not_write_first_summary(self):
         backend = QueueBackend()
         service = self.service(backend)
-        user_key, assistant_key = self.capture_turn(service)
-        candidates = [self.candidate("c1", [user_key]), self.candidate("c2", [assistant_key])]
+        user_key, assistant_key = self.capture_turn(service, user="A durable fact. A second durable fact.")
+        candidates = [self.candidate("c1", [user_key]), self.candidate("c2", [user_key], memory="A second durable fact")]
         backend.responses.extend(
             [
                 self.gate(candidates),
@@ -2686,15 +2689,15 @@ class StageB2ATest(unittest.TestCase):
         self.assertEqual(len(self.knowledge(service)), 0)
 
         backend.responses.extend(
-            [self.gate(candidates), self.summary(user_key, title="first"), self.summary(assistant_key, title="second")]
+            [self.gate(candidates), self.summary(user_key, title="first"), self.summary(user_key, title="second")]
         )
         self.assertEqual(service.process()["memories_written"], 2)
 
     def test_second_model_failure_does_not_advance_watermark(self):
         backend = QueueBackend()
         service = self.service(backend)
-        user_key, assistant_key = self.capture_turn(service)
-        candidates = [self.candidate("c1", [user_key]), self.candidate("c2", [assistant_key])]
+        user_key, assistant_key = self.capture_turn(service, user="A durable fact. A second durable fact.")
+        candidates = [self.candidate("c1", [user_key]), self.candidate("c2", [user_key], memory="A second durable fact")]
         backend.responses.extend(
             [self.gate(candidates), self.summary(user_key, title="first"), ModelError("second failed")]
         )
@@ -2733,9 +2736,9 @@ class StageB2ATest(unittest.TestCase):
     def test_partial_knowledge_write_is_retryable_without_duplicate_files(self):
         backend = QueueBackend()
         service = self.service(backend)
-        user_key, assistant_key = self.capture_turn(service)
-        candidates = [self.candidate("c1", [user_key]), self.candidate("c2", [assistant_key])]
-        responses = [self.gate(candidates), self.summary(user_key, title="first"), self.summary(assistant_key, title="second")]
+        user_key, assistant_key = self.capture_turn(service, user="A durable fact. A second durable fact.")
+        candidates = [self.candidate("c1", [user_key]), self.candidate("c2", [user_key], memory="A second durable fact")]
+        responses = [self.gate(candidates), self.summary(user_key, title="first"), self.summary(user_key, title="second")]
         backend.responses.extend(responses)
         import memleaf.memory_writer as memory_writer_module
 
@@ -2766,12 +2769,12 @@ class StageB2ATest(unittest.TestCase):
     def test_sources_are_core_generated_and_todo_defaults_active(self):
         backend = QueueBackend()
         service = self.service(backend)
-        user_key, assistant_key = self.capture_turn(service)
+        user_key, assistant_key = self.capture_turn(service, user="I need to submit the report.")
         backend.responses.extend(
             [
                 self.gate([self.candidate("todo", [user_key], type="todo")]),
                 self.summary(
-                    assistant_key,
+                    user_key,
                     title="Todo",
                     body="Do the thing",
                     type="todo",
