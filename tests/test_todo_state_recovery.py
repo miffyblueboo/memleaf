@@ -28,13 +28,16 @@ class TodoStateRecoveryTest(unittest.TestCase):
         return json.dumps({"candidates": candidates}, ensure_ascii=False)
 
     @staticmethod
-    def summary(event_key_value):
-        # Deliberately omit update_memory_id/status/completed_at.  The user
-        # declaration is the source of those deterministic state fields.
+    def summary(event_key_value, *, status="completed", completed_at="2026-09-02T09:21:51Z"):
+        # State and target are explicit MODEL outputs. No post-Gate rule fills
+        # omitted fields. Product assertions (stable ID, history, time) remain.
         return json.dumps(
             {
                 "title": "鑫元基金架构评审文档修改与反馈",
-                "body": "架构评审文档已完成并发出。",
+                "body": "架构评审文档已完成并发出。" if status == "completed" else "架构评审文档已取消。",
+                "update_memory_id": "todo-1",
+                "status": status,
+                **({"completed_at": completed_at} if status == "completed" else {}),
                 "tags": ["todo"],
                 "type": "todo",
                 "scopes": ["project:鑫元基金"],
@@ -43,6 +46,18 @@ class TodoStateRecoveryTest(unittest.TestCase):
             },
             ensure_ascii=False,
         )
+
+    @staticmethod
+    def state_candidate(key, *, cancelled=False):
+        return {"candidate_id": "state-change", "memory": "鑫元基金架构评审文档已取消。" if cancelled else "鑫元基金架构评审文档已完成。",
+            "evidence_event_ids": [key], "duplicate": False, "worth": True, "type": "todo",
+            "scopes": ["project:鑫元基金"], "scope_source": "model", "update_memory_id": "todo-1"}
+
+    @staticmethod
+    def missing_gate():
+        # No classification was supplied. Exercise the generic coverage repair,
+        # unlike an explicit NO_CHANGE which must not be overridden.
+        return json.dumps({"candidates": [], "coverage": [], "evidence_bindings": []})
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -76,7 +91,7 @@ class TodoStateRecoveryTest(unittest.TestCase):
                 service,
                 "鑫元基金的架构评审文档我已经完成了，发给他们了。还有什么事情要完成",
             )
-        backend.responses.extend([self.gate([]), self.summary(user_key)])
+        backend.responses.extend([self.missing_gate(), self.gate([self.state_candidate(user_key)]), self.summary(user_key)])
 
         result = service.process(source="hermes", session_id="session", model=backend)
 
@@ -88,7 +103,7 @@ class TodoStateRecoveryTest(unittest.TestCase):
         history = service._read_memories_unlocked("history")
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0].memory.extra["active_memory_id"], old.memory_id)
-        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "summarize"])
 
     def assert_no_transition(self, text, *, assistant="已收到。", name="no-transition"):
         backend = QueueBackend([self.gate([])])
@@ -167,7 +182,7 @@ class TodoStateRecoveryTest(unittest.TestCase):
         old = self.add_todo(service)
         with patch("memleaf.capture._timestamp", return_value="2026-09-02T09:21:51Z"):
             user_key = self.add_turn(service, "鑫元基金的架构评审文档不用做了。")
-        backend.responses.extend([self.gate([]), self.summary(user_key)])
+        backend.responses.extend([self.missing_gate(), self.gate([self.state_candidate(user_key, cancelled=True)]), self.summary(user_key, status="cancelled")])
 
         result = service.process(source="hermes", session_id="session", model=backend)
 
@@ -190,8 +205,11 @@ class TodoStateRecoveryTest(unittest.TestCase):
             )
         backend.responses.extend(
             [
-                self.gate([]),
-                self.summary(user_key),
+                self.gate([self.state_candidate(user_key), {
+                    "candidate_id": "rework", "memory": "鑫元基金需重新绘制网络拓扑图并标明访问协议。",
+                    "evidence_event_ids": [user_key], "duplicate": False, "worth": True, "type": "todo",
+                    "scopes": ["project:鑫元基金"], "scope_source": "model"}]),
+                self.summary(user_key, completed_at="2026-09-03T09:21:51Z"),
                 json.dumps(
                     {
                         "title": "鑫元基金客户返工要求",
@@ -261,8 +279,8 @@ class TodoStateRecoveryTest(unittest.TestCase):
         }
         backend.responses.extend(
             [
-                self.gate([gate_candidate]),
-                self.summary(user_key),
+                self.gate([self.state_candidate(user_key), gate_candidate]),
+                self.summary(user_key, completed_at="2026-09-03T09:21:51Z"),
                 json.dumps(
                     {
                         "title": "鑫元基金客户返工要求",

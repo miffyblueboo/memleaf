@@ -546,7 +546,7 @@ class StageB2BTest(unittest.TestCase):
         self.assertNotIn("cleanup_done_at", entry2)
         self.assertEqual(service2.process()["cleaned_turns"], 1)
 
-    def test_batch_duplicate_update_target_and_deterministic_collision_are_zero_write(self):
+    def test_unreconciled_updates_and_deterministic_collision_are_zero_write(self):
         backend = QueueBackend()
         service = self.make_service(backend)
         active, _, _ = self.process_create(service, backend, title="Original", body="old")
@@ -566,13 +566,17 @@ class StageB2BTest(unittest.TestCase):
                 self.gate(candidates),
                 self.summary(user_key, title="One", body="one", update_memory_id=active.memory_id),
                 self.summary(user_key, title="Two", body="two", update_memory_id=active.memory_id),
+                json.dumps({"decision": "DEFERRED", "candidate_ids": ["c1", "c2"],
+                    "reason": "conflicting_changes"}),
             ]
         )
-        with self.assertRaises(ModelOutputError):
-            service.process()
+        result = service.process()
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["deferred_candidates"], 2)
         self.assertEqual(self.active(service).body, "old")
         self.assertEqual(len(service.vault.list_markdown("history")), 0)
-        self.assertEqual(self.processed(service)["sessions"]["codex/s"]["watermark"], 1)
+        self.assertEqual(self.processed(service)["sessions"]["codex/s"]["watermark"], 2)
+        self.assertTrue(service.vault.session_path("codex", "s").exists())
 
         service2 = self.make_service(QueueBackend(), name="collision")
         backend2 = service2.router

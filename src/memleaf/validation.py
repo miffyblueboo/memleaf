@@ -1176,6 +1176,7 @@ def validate_gate_output(
     scope_registry: Mapping[str, Any] | None = None,
     enforce_model_scope_grounding: bool = True,
     allow_mixed_future_use: bool = False,
+    allow_shared_update_targets: bool = False,
 ) -> dict[str, Any]:
     """Validate and return a normalized gate object without writing anything."""
 
@@ -1205,7 +1206,7 @@ def validate_gate_output(
     }
     normalized: list[dict[str, Any]] = []
     candidate_ids: set[str] = set()
-    target_ids: set[str] = set()
+    target_ids: dict[str, str] = {}
     for candidate in candidates:
         if not isinstance(candidate, Mapping):
             raise ModelOutputError("each gate candidate must be an object", validation_detail="candidate_shape")
@@ -1344,12 +1345,14 @@ def validate_gate_output(
             target = item.get(target_field)
             if isinstance(target, str):
                 target_key = target.casefold()
-                if target_key in target_ids:
+                if target_key in target_ids and not (allow_shared_update_targets
+                    and target_field == "update_memory_id"
+                    and target_ids[target_key] == "update_memory_id"):
                     raise ModelOutputError(
                         "multiple gate candidates reference the same memory target; merge them into one candidate",
                         validation_detail="duplicate_update_target",
                     )
-                target_ids.add(target_key)
+                target_ids[target_key] = target_field
         if not isinstance(item["scope_source"], str) or item["scope_source"] not in SCOPE_SOURCES:
             raise ModelOutputError("invalid scope_source", validation_detail="invalid_scope_source")
         item["scopes"] = _scopes(item["scopes"], item["scope_source"])
@@ -1377,6 +1380,7 @@ def parse_gate_output(
     scope_registry: Mapping[str, Any] | None = None,
     enforce_model_scope_grounding: bool = True,
     allow_mixed_future_use: bool = False,
+    allow_shared_update_targets: bool = False,
 ) -> dict[str, Any]:
     try:
         parsed = parse_strict_json(raw)
@@ -1394,6 +1398,7 @@ def parse_gate_output(
             scope_registry=scope_registry,
             enforce_model_scope_grounding=enforce_model_scope_grounding,
             allow_mixed_future_use=allow_mixed_future_use,
+            allow_shared_update_targets=allow_shared_update_targets,
         )
     except ModelOutputError as error:
         if error.validation_reason is None:
@@ -1606,6 +1611,8 @@ def validate_summarize_output(
     ):
         raise ModelOutputError("invalid scope_source", validation_detail="invalid_scope_source")
 
+    if candidate_type == "todo" and (item.get("update_memory_id") or expected_update_memory_id) and "status" not in item:
+        raise ModelOutputError("todo update must declare its current status", validation_detail="todo_fields")
     if "status" in item:
         if candidate_type != "todo" or item["status"] not in TODO_STATUSES:
             raise ModelOutputError("invalid todo status", validation_detail="todo_fields")

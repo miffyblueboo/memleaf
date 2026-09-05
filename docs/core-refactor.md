@@ -94,3 +94,43 @@ No old test methods were deleted. Private helper mocks were moved to their new
 owners. One explicit-remember Scope fixture now supplies a corrected second model
 response and additionally checks stored Scope; its original assertions remain.
 Tests must continue using temporary Vaults and no live credentials.
+
+## Phase 2 — model-owned state decisions and grouped updates
+
+This increment builds on `33dc0edaa99351237ca3e5ac1b36abb140735c83`.
+It removes the post-Gate completion/rework candidate factories and the summary
+state injection that could override a model's NO_CHANGE. A missing required todo
+UPDATE status is now rejected and corrected through the bounded model path, not
+silently supplied by a task-specific rule. A complete Gate NO_CHANGE remains a
+valid no-write; correct recognition of new facts remains a model-quality concern.
+
+`UpdateCoordinator` coordinates only an exceptional group of multiple admitted
+updates to the same current memory. Single updates incur no group call. Group
+reconciliation uses the existing ModelExecutor/Model Route, the original target
+revision and exact admitted source spans. The model returns one compatible UPDATE,
+a genuine NO_CHANGE, or a DEFERRED group. Deterministic validation checks all
+members, target, Scope, type and evidence; proposals do not become new evidence.
+Scope-retirement/native-shadowing authorizations are not implicitly combined.
+Oversized or unresolved groups are deferred whole; unrelated target groups can
+still commit. This does not add a new data service or a second persistence path.
+
+A compatible group freezes one write with all contributing candidate receipts.
+It produces one current-memory update and one historical version. Replay records
+the original UPDATE for every member, using the same operation ID without another
+model call. Explicit forget cancels all contributing members and their frozen
+payload, preserving independent sibling requests. A later explicit remember is
+new authorization, not blocked by an old cancellation.
+
+Validation on the complete phase-2 local tree: 717 tests, zero failures/errors,
+2 conditional skips (Linux, Python 3.13). The suite grew from 701 to 717 tests. Sixteen new tests were added; four existing
+shared-target tests were renamed and adapted to the authorized group contract.
+They retain no-partial-write, retained-inbox and single-history coverage, and add
+per-candidate accounting. Group conflicts now advance the normal turn watermark
+with explicit retained DEFERRED records instead of failing the entire Gate. The strict public
+Gate parser still rejects repeated targets by default; only the planner opts in
+to grouped updates. Final-commit CI remains the source for native platform results.
+
+Still separate work: tool-output/attachment retention configuration alignment,
+low-frequency maintenance/low-level library mutation consolidation, and the
+remaining legacy Scope/plan heuristics. This phase does not claim those are
+finished, or that deterministic fixtures substitute for local live-model testing.

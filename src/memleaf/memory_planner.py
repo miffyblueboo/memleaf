@@ -10,10 +10,11 @@ from .inbox import InboxTurn
 from .llm import ModelError
 from .memory_writer import MemoryWriter
 from .turn_plan import dedup_digest, revision_digest
+from .update_coordinator import UpdateCoordinator
 from .prompts import GATE_SYSTEM, SUMMARIZE_SYSTEM, gate_prompt, summarize_prompt
 from .retrieval import normalize_term
 from .validation import ModelOutputError, NO_CHANGE_DECISION, _model_scope_grounding_evidence, parse_gate_output, parse_strict_json, parse_summarize_output, is_aggregate_operational_text, is_attachment_followup_only_text, is_actionable_todo_text, is_mixed_future_use_text, split_mixed_future_use_text
-from .process_common import ProcessingError, _REWORK_ACTION_MARKERS, _TARGET_NOT_RELATED, _TARGET_SAME_USE, _TARGET_UNKNOWN, _automatic_create_conflicts, _automatic_transient_memory, _candidate_lookup_queries, _completion_rework_candidate, _event_payload, _grounded_due_dates, _normalize_final_gate_raw, _normalize_summary_dates, _split_model_project_candidate, _todo_state_recovery_candidate
+from .process_common import ProcessingError, _TARGET_NOT_RELATED, _TARGET_SAME_USE, _TARGET_UNKNOWN, _automatic_create_conflicts, _automatic_transient_memory, _candidate_lookup_queries, _event_payload, _grounded_due_dates, _normalize_final_gate_raw, _normalize_summary_dates, _split_model_project_candidate
 
 
 class MemoryPlanner:
@@ -285,6 +286,7 @@ class MemoryPlanner:
                 scope_registry=validation_scope_registry,
                 enforce_model_scope_grounding=gate_attempt_count < 3,
                 allow_mixed_future_use=gate_attempt_count >= 3,
+                allow_shared_update_targets=True,
             )
             for item in parsed["candidates"]:
                 for field in ("duplicate_memory_id", "update_memory_id"):
@@ -580,7 +582,8 @@ class MemoryPlanner:
                 correction_raw, correction_coverage = split_gate_envelope(correction_raw)
                 correction_gate = parse_gate_output(correction_raw,
                     current_event_keys=tuple(dict.fromkeys(unit.event_key for unit in missing)),
-                    related_memory_ids=gate_related_memory_ids, scope_registry=validation_scope_registry)
+                    related_memory_ids=gate_related_memory_ids, scope_registry=validation_scope_registry,
+                    allow_shared_update_targets=True)
                 new_ids = {item["candidate_id"] for item in correction_gate["candidates"]}
                 if new_ids.intersection(item["candidate_id"] for item in gate["candidates"]):
                     raise ModelOutputError("coverage correction reused a candidate id", validation_detail="duplicate_candidate_id")
@@ -605,189 +608,6 @@ class MemoryPlanner:
                     current.clear()
                     current.update(old)
 
-        # A model may correctly treat the rest of a mixed turn as a query and
-        # still miss the user's explicit completion update. Recover only one
-        # uniquely related active todo; all other gate decisions stay intact.
-        todo_state_recovery = _todo_state_recovery_candidate(events, related)
-        recovery_by_candidate: dict[str, tuple[str, str, str]] = {}
-        recovery_target_id: str | None = None
-        recovery_candidate_value: dict[str, Any] | None = None
-        if todo_state_recovery is not None:
-            recovery_candidate, recovery_state, recovery_target_id, recovery_completed_at = todo_state_recovery
-            recovery_candidate_value = dict(recovery_candidate)
-            state_bindings = []
-            for unit in evidence_units:
-                if unit.source_role == "user" and unit.event_key in recovery_candidate["evidence_event_ids"] and unit.eligible:
-                    state_bindings.append({"unit_id": unit.unit_id, "start": 0, "end": len(unit.text),
-                        "quote": unit.text, "role": "assertion"})
-            if state_bindings:
-                recovery_candidate_value["_evidence_bindings"] = state_bindings
-            recovery_candidate_id = recovery_candidate["candidate_id"].casefold()
-            recovery_by_candidate[recovery_candidate_id] = (
-                recovery_state,
-                recovery_target_id,
-                recovery_completed_at,
-            )
-
-            # Always use the deterministic recovery candidate for the old
-            # target.  A model candidate that points at that target may be a
-            # project/fact or an aggregate containing the new customer
-            # revision; retaining it would either trigger a type mismatch or
-            # overwrite the completion with the rework.
-            recovery_key = recovery_target_id.casefold()
-            gate["candidates"] = [
-                item
-                for item in gate["candidates"]
-                if not (
-                    isinstance(item, Mapping)
-                    and any(
-                        isinstance(item.get(field), str)
-                        and item[field].casefold() == recovery_key
-                        for field in ("update_memory_id", "duplicate_memory_id")
-                    )
-                )
-            ]
-            gate["candidates"].insert(0, recovery_candidate_value)
-
-        force_create_candidate_ids: set[str] = set()
-        completion_rework = (
-            _completion_rework_candidate(events, validation_scope_registry)
-            if todo_state_recovery is not None
-            else None
-        )
-        if completion_rework is not None:
-            # This existing state-recovery path copies a literal post-completion
-            # tail. Bind only those copied clauses, never the completion clause
-            # or unrelated assistant text, to the common admission boundary.
-            rework_bindings = []
-            copied = str(completion_rework.get("memory", ""))
-            for unit in evidence_units:
-                quote = unit.text.strip(" \t\r\n，,；;。.!！?？:：")
-                if (unit.source_role == "user"
-                    and unit.event_key in completion_rework["evidence_event_ids"]
-                    and quote and quote in copied):
-                    start = unit.text.index(quote)
-                    rework_bindings.append({"unit_id": unit.unit_id, "start": start,
-                        "end": start + len(quote), "quote": quote, "role": "assertion"})
-            if rework_bindings:
-                completion_rework["_evidence_bindings"] = rework_bindings
-            rework_text = normalize_term(completion_rework.get("memory", ""))
-            rework_scope_keys = {
-                value.casefold()
-                for value in completion_rework.get("scopes", [])
-                if isinstance(value, str) and value.partition(":")[0] == "project"
-            }
-            rework_evidence_keys = {
-                value.casefold()
-                for value in completion_rework.get("evidence_event_ids", [])
-                if isinstance(value, str)
-            }
-            exact_matches: list[dict[str, Any]] = []
-            fallback_matches: list[dict[str, Any]] = []
-            for item in gate["candidates"]:
-                if not isinstance(item, Mapping) or item.get("worth") is not True:
-                    continue
-                if str(item.get("candidate_id", "")).casefold() in recovery_by_candidate:
-                    continue
-                candidate_text = normalize_term(item.get("memory", ""))
-                candidate_evidence = {
-                    value.casefold()
-                    for value in item.get("evidence_event_ids", [])
-                    if isinstance(value, str)
-                }
-                candidate_scope_keys = {
-                    value.casefold()
-                    for value in item.get("scopes", [])
-                    if isinstance(value, str) and value.partition(":")[0] == "project"
-                }
-                if (
-                    not rework_text
-                    or not rework_evidence_keys.intersection(candidate_evidence)
-                    or candidate_scope_keys != rework_scope_keys
-                ):
-                    continue
-                full_text_match = (
-                    rework_text in candidate_text or candidate_text in rework_text
-                )
-                if full_text_match:
-                    exact_matches.append(dict(item))
-                elif (
-                    item.get("type") == "todo"
-                    or is_actionable_todo_text(item.get("memory"))
-                ) and any(marker in candidate_text for marker in _REWORK_ACTION_MARKERS):
-                    fallback_matches.append(dict(item))
-
-            # Prefer one model candidate that clearly covers the deterministic
-            # tail.  Otherwise accept one same-event/same-project actionable
-            # todo; multiple ambiguous candidates are replaced by the
-            # deterministic full tail so they cannot coexist as duplicates.
-            matched_candidates = exact_matches or fallback_matches
-            exact_ids = {
-                str(value.get("candidate_id", "")).casefold()
-                for value in exact_matches
-            }
-            fallback_ids = {
-                str(value.get("candidate_id", "")).casefold()
-                for value in fallback_matches
-            }
-            discard_ids = set(exact_ids)
-            if len(exact_matches) == 1:
-                selected_text = normalize_term(exact_matches[0].get("memory", ""))
-                discard_ids.update(
-                    str(value.get("candidate_id", "")).casefold()
-                    for value in fallback_matches
-                    if (
-                        selected_text
-                        and normalize_term(value.get("memory", ""))
-                        and (
-                            normalize_term(value.get("memory", "")) in selected_text
-                            or selected_text in normalize_term(value.get("memory", ""))
-                        )
-                    )
-                )
-            elif len(exact_matches) > 1 or len(fallback_matches) > 1:
-                discard_ids.update(fallback_ids)
-            rework_candidates: list[dict[str, Any]] = []
-            found_rework = len(matched_candidates) == 1
-            selected_id = (
-                str(matched_candidates[0].get("candidate_id", "")).casefold()
-                if found_rework
-                else ""
-            )
-            for item in gate["candidates"]:
-                if not isinstance(item, Mapping):
-                    continue
-                candidate_item = dict(item)
-                candidate_id_key = str(candidate_item.get("candidate_id", "")).casefold()
-                if candidate_id_key in discard_ids:
-                    if found_rework and candidate_id_key == selected_id:
-                        candidate_item.pop("update_memory_id", None)
-                        candidate_item.pop("duplicate_memory_id", None)
-                        candidate_item["duplicate"] = False
-                        candidate_item["type"] = "todo"
-                        candidate_item["scopes"] = list(completion_rework["scopes"])
-                        candidate_item["scope_source"] = completion_rework["scope_source"]
-                        candidate_item.pop("_defer_reason", None)
-                        candidate_item["_force_create"] = True
-                        force_create_candidate_ids.add(candidate_id_key)
-                        rework_candidates.append(candidate_item)
-                    # Ambiguous model matches are discarded in favor of the
-                    # deterministic fallback appended below.
-                    continue
-                rework_candidates.append(candidate_item)
-            if not found_rework:
-                rework_candidates.append(dict(completion_rework))
-                force_create_candidate_ids.add(completion_rework["candidate_id"].casefold())
-            # Keep the deterministic completion first, then any independent
-            # rework candidate(s), followed by unrelated gate decisions.
-            recovery_ids = set(recovery_by_candidate)
-            gate["candidates"] = [
-                item
-                for item in rework_candidates
-                if str(item.get("candidate_id", "")).casefold() not in recovery_ids
-            ]
-            if recovery_candidate_value is not None:
-                gate["candidates"].insert(0, recovery_candidate_value)
         requests: list[dict[str, Any]] = []
         observed_scopes: list[str] = []
         current_turn_request_ids: set[str] = set()
@@ -795,7 +615,7 @@ class MemoryPlanner:
         covered_unit_ids: set[str] = set()
         covered_by_unit: dict[str, list[str]] = {}
         seen_candidates: set[tuple[Any, ...]] = set()
-        conflicting_targets: set[str] = set()
+        admitted_candidates: dict[str, dict[str, Any]] = {}
         for candidate in gate["candidates"]:
             candidate = dict(candidate)
             unit_ids = [uid for uid, row in coverage_rows.items()
@@ -820,26 +640,17 @@ class MemoryPlanner:
                 self.audit._record_disposition(turn_ref, candidate, "NO_CHANGE", reason="same_turn_duplicate")
                 continue
             seen_candidates.add(fingerprint)
-            # Recheck every origin here, including deterministic state recovery.
+            # All model candidates pass the same evidence and Scope boundary.
             if self.inputs._scope_evidence_conflict(candidate, turn, validation_scope_registry):
                 self.audit._defer_candidate(turn_ref, candidate, "scope_conflict", scopes=candidate.get("scopes", []))
                 continue
             candidate_id_key = str(candidate.get("candidate_id", "")).casefold()
-            force_create = (
-                candidate_id_key in force_create_candidate_ids
-                or candidate.get("_force_create") is True
-            )
-            if force_create:
-                candidate = dict(candidate)
-                candidate.pop("_force_create", None)
-            recovery = recovery_by_candidate.get(candidate_id_key)
             correction_plan = scope_correction_plans.get(candidate_id_key)
             detached_update_target_id = detached_update_target_ids.get(candidate_id_key)
             defer_reason = candidate.get("_defer_reason")
             # A pure existing-memory query must not leave even a deferred
-            # candidate behind when the model mislabels its recap.  Explicit
-            # todo state recovery is the only write-eligible exception.
-            if read_only_query and recovery is None and not candidate.get("_evidence_bindings"):
+            # candidate behind when the model mislabels its recap.
+            if read_only_query and not candidate.get("_evidence_bindings"):
                 self.audit._record_disposition(
                     turn_ref,
                     candidate,
@@ -995,15 +806,6 @@ class MemoryPlanner:
                         for item in candidate_related
                     ):
                         candidate_related.insert(0, memory.to_dict())
-            if recovery is not None:
-                recovery_target = self.inputs._active_memory_by_id(recovery[1])
-                if recovery_target is not None and not any(
-                    isinstance(item, Mapping)
-                    and isinstance(item.get("memory_id"), str)
-                    and item["memory_id"].casefold() == recovery_target.memory_id.casefold()
-                    for item in candidate_related
-                ):
-                    candidate_related = [recovery_target.to_dict(), *candidate_related]
             if detached_update_target_id is not None:
                 candidate_related = [
                     item
@@ -1013,7 +815,7 @@ class MemoryPlanner:
                         and item["memory_id"].casefold() == detached_update_target_id.casefold()
                     )
                 ]
-            if not force_create and correction_plan is None:
+            if correction_plan is None:
                 candidate = self.inputs._infer_update_target(candidate, candidate_related)
             defer_reason = candidate.pop("_defer_reason", None)
             if defer_reason:
@@ -1194,22 +996,6 @@ class MemoryPlanner:
             admitted_summary_keys = tuple(dict.fromkeys(event["event_key"] for event in admitted_summary_events))
             try:
                 def parse_summary(raw: str) -> dict[str, Any]:
-                    if recovery is not None and isinstance(raw, str):
-                        # Complete/cancel state is deterministic evidence from
-                        # the user event. Inject it before strict validation so
-                        # a model that omits status/completed_at cannot leave
-                        # the update active or fail the required-field check.
-                        parsed_raw = parse_strict_json(raw)
-                        if isinstance(parsed_raw, Mapping) and "decision" not in parsed_raw:
-                            state_change, target_id, completed_at = recovery
-                            parsed_raw = dict(parsed_raw)
-                            parsed_raw["update_memory_id"] = target_id
-                            parsed_raw["status"] = state_change
-                            if state_change == "completed":
-                                parsed_raw["completed_at"] = completed_at
-                            else:
-                                parsed_raw.pop("completed_at", None)
-                            raw = json.dumps(parsed_raw, ensure_ascii=False, separators=(",", ":"))
                     parsed = parse_summarize_output(
                         _normalize_summary_dates(raw, turn, candidate),
                         current_event_keys=admitted_summary_keys,
@@ -1219,7 +1005,7 @@ class MemoryPlanner:
                         expected_scopes=candidate["scopes"],
                         expected_scope_source=candidate["scope_source"],
                         allowed_due_dates=_grounded_due_dates(turn),
-                        allow_no_change=recovery is None,
+                        allow_no_change=True,
                         # The summarize stage may not reinterpret a gate
                         # candidate, including CREATE candidates. Updates
                         # additionally retain the active target's immutable
@@ -1355,25 +1141,16 @@ class MemoryPlanner:
                 )
                 continue
             same_request = next((r for r in requests
-                if dedup_digest(r.get("summary", {})) == dedup_digest(summary)), None)
+                if r.get("summary", {}).get("update_memory_id") == summary.get("update_memory_id")
+                and dedup_digest(r.get("summary", {})) == dedup_digest(summary)), None)
             if same_request is not None:
                 self.audit._record_disposition(turn_ref, candidate, "NO_CHANGE", reason="same_turn_duplicate")
-                continue
-            competing = [r for r in requests if summary_update_target and
-                         r.get("summary", {}).get("update_memory_id") == summary_update_target]
-            if summary_update_target and (competing or summary_update_target in conflicting_targets):
-                conflicting_targets.add(summary_update_target)
-                for previous in competing:
-                    requests.remove(previous)
-                    self.audit._defer_candidate(turn_ref, {"candidate_id": previous["candidate_id"],
-                        "scopes": previous["summary"]["scopes"], "scope_source": previous["summary"].get("scope_source")},
-                        "same_turn_target_conflict")
-                self.audit._defer_candidate(turn_ref, candidate, "same_turn_target_conflict", scopes=candidate_scopes)
                 continue
             pending_request["evidence_unit_ids"] = list(candidate.get("evidence_unit_ids", []))
             if summary_update_target:
                 pending_request["expected_revision"] = target_revisions.get(summary_update_target)
             requests.append(pending_request)
+            admitted_candidates[pending_request["candidate_id"]] = dict(candidate)
             self.audit._record_disposition(
                 turn_ref,
                 candidate,
@@ -1391,8 +1168,9 @@ class MemoryPlanner:
                     and observed_scope not in observed_scopes
                 ):
                     observed_scopes.append(observed_scope)
-        if conflicting_targets and not requests:
-            raise ModelOutputError("no non-conflicting writes in turn", validation_detail="duplicate_update_target")
+        requests = UpdateCoordinator(self.model, self.audit, self.inputs._active_memory_by_id).resolve(
+            requests, candidates=admitted_candidates, evidence_units=evidence_units, events=events,
+            backend=backend, scope_registry=scope_registry, validation_scope_registry=validation_scope_registry)
         evidence_dispositions = []
         for unit in evidence_units:
             row = coverage_rows.get(unit.unit_id)

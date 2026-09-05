@@ -295,6 +295,9 @@ all evidence_event_ids must be copied exactly from the supplied current events,
 never from a turn_id, event_id, generated ID, or invented value. Optional fields
 are memory_id, update_memory_id, aliases, keywords, evidence_event_ids,
 shadow_native_ids, scope_operations, scope_source, status, completed_at, and due_date.
+An update of an existing todo MUST explicitly include status; do not omit it and
+accidentally reset a closed task to active. Missing fields will be retried, never
+filled by a separate task-state recovery rule.
 status, completed_at, and due_date are only for type=todo; status is active, completed,
 or cancelled, completed requires completed_at, and due_date is null/omitted when no
 explicit deadline exists or an absolute YYYY-MM-DD supported by current evidence.
@@ -656,4 +659,23 @@ completed, cancelled, hypothetical/example-only, or third-party-only tasks must 
 become a new user active todo. A model omission must be DEFERRED, never replaced
 by a locally invented action. NO_CHANGE does not append sources or history.
 When units exist, candidates=[] STILL requires coverage for every unit.
+"""
+
+
+# Same policy for the INNER summary, explicit outer schema for grouped updates.
+# Defining this at system level avoids asking a user prompt to override the
+# ordinary single-summary JSON-only system contract.
+UPDATE_GROUP_SYSTEM = SUMMARIZE_SYSTEM + """
+GROUP MODE (SAME_TARGET_RECONCILIATION):
+The normal summary requirements above apply to the INNER summary object.
+The outer response MUST be exactly one of:
+{"decision":"UPDATE","candidate_ids":[...],"summary":{...}},
+{"decision":"NO_CHANGE","candidate_ids":[...]}, or
+{"decision":"DEFERRED","candidate_ids":[...],"reason":"conflicting_changes"}.
+Include every supplied candidate ID exactly once. Reconcile compatible changes
+against the one original memory and all admitted source spans. Retain unaffected
+facts. Proposed summaries are model output, NOT new authoritative evidence.
+Never select a new target, switch Scope/type, or extend maintenance authorization.
+Unresolved contradictions defer the whole target group; do not choose a fragment
+or concatenate incompatible states. NO_CHANGE must remain a genuine no-write.
 """

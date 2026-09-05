@@ -2035,113 +2035,87 @@ class StageB2ATest(unittest.TestCase):
         self.assertEqual(self.processed(service)["sessions"]["codex/s"]["watermark"], 1)
         self.assertTrue((service.vault.inbox_path / "codex" / "s.md").is_file())
 
-    def test_duplicate_update_target_is_rejected_at_gate_and_retried(self):
-        """Duplicate targets are corrected before the writer commit phase."""
-
+    def test_shared_update_target_is_reconciled_before_writer(self):
+        """Multiple admitted updates need one complete model decision before commit."""
         backend = QueueBackend()
-        service = self.service(backend, name="duplicate-update-target-field-repro")
-        existing = service.create_memory(
-            memory_id="mem-existing",
-            title="Existing fact",
-            body="The existing fact.",
-            type="fact",
-            scopes=["global"],
-        )
-        user_key, assistant_key = self.capture_turn(
-            service,
-            turn="duplicate-update",
-            user_event="duplicate-user",
-            assistant_event="duplicate-assistant",
-            user="The first update is true.",
-            assistant="The second update is also true.",
-        )
+        service = self.service(backend, name="shared-update-target")
+        existing = service.create_memory(memory_id="mem-existing", title="Existing fact",
+            body="The existing fact.", type="fact", scopes=["global"])
+        user_key, _ = self.capture_turn(service, turn="shared-update",
+            user_event="shared-user", assistant_event="shared-assistant",
+            user="The first update is true. The second update is also true.", assistant="Noted.")
         candidates = [
-            self.candidate(
-                "update-one",
-                [user_key],
-                memory="First update",
-                update_memory_id=existing.memory_id,
-            ),
-            self.candidate(
-                "update-two",
-                [assistant_key],
-                memory="Second update",
-                update_memory_id=existing.memory_id,
-            ),
+            self.candidate("update-one", [user_key], memory="The first update is true.",
+                update_memory_id=existing.memory_id),
+            self.candidate("update-two", [user_key], memory="The second update is also true.",
+                update_memory_id=existing.memory_id),
         ]
-        backend.responses.extend(
-            [
-                self.gate(candidates),
-                self.gate(
-                    [
-                        self.candidate(
-                            "merged-update",
-                            [user_key, assistant_key],
-                            memory="First and second update",
-                            update_memory_id=existing.memory_id,
-                        )
-                    ]
-                ),
-                self.summary(
-                    user_key,
-                    title="Existing fact",
-                    body="The existing fact now includes both updates.",
-                    update_memory_id=existing.memory_id,
-                ),
-            ]
-        )
-
+        merged = json.loads(self.summary(user_key, title="Existing fact",
+            body="The existing fact now includes both updates.", update_memory_id=existing.memory_id))
+        backend.responses.extend([
+            self.gate(candidates),
+            self.summary(user_key, title="Existing fact", body="The first update is true.",
+                update_memory_id=existing.memory_id),
+            self.summary(user_key, title="Existing fact", body="The second update is also true.",
+                update_memory_id=existing.memory_id),
+            json.dumps({"decision": "UPDATE", "candidate_ids": ["update-one", "update-two"],
+                "summary": merged}),
+        ])
         result = service.process()
-
         self.assertEqual(result["processed_turns"], 1)
         self.assertEqual(result["memories_written"], 1)
-        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "summarize"])
-        self.assertIn("Previous output violated: duplicate_update_target.", backend.calls[1]["prompt"])
-        self.assertIn("merge", backend.calls[1]["prompt"].lower())
-        self.assertEqual(service.read(existing.memory_id).body, "The existing fact now includes both updates.")
+        self.assertEqual([call["purpose"] for call in backend.calls],
+            ["gate", "summarize", "summarize", "summarize"])
+        self.assertIn("SAME_TARGET_RECONCILIATION", backend.calls[-1]["prompt"])
+        self.assertEqual(service.read(existing.memory_id).body,
+            "The existing fact now includes both updates.")
         self.assertEqual(len(service.vault.list_markdown("history")), 1)
-        marker = self.processed(service)["sessions"]["codex/s"]["processing"]
-        self.assertEqual(marker["status"], "idle")
-        self.assertEqual(self.processed(service)["sessions"]["codex/s"]["watermark"], 1)
+        state = self.processed(service)["sessions"]["codex/s"]
+        self.assertEqual(state["processing"]["status"], "idle")
+        self.assertEqual(state["watermark"], 1)
+        rows = state["processed_turns"][0]["candidate_dispositions"]
+        self.assertEqual({r["candidate_id"] for r in rows}, {"update-one", "update-two"})
+        self.assertTrue(all(r["disposition"] == "UPDATE" for r in rows))
+        self.assertEqual(len({r["operation_id"] for r in rows}), 1)
 
-    def test_three_duplicate_update_targets_fail_at_gate_and_keep_inbox(self):
+    def test_three_invalid_group_responses_defer_updates_and_keep_inbox(self):
+        """An invalid reconciliation never writes a partial update or drops evidence."""
         backend = QueueBackend()
-        service = self.service(backend, name="duplicate-update-target-failure")
-        existing = service.create_memory(
-            memory_id="mem-existing",
-            title="Existing fact",
-            body="The existing fact.",
-            type="fact",
-            scopes=["global"],
-        )
-        user_key, assistant_key = self.capture_turn(
-            service,
-            turn="duplicate-update-failure",
-            user_event="duplicate-failure-user",
-            assistant_event="duplicate-failure-assistant",
-        )
+        service = self.service(backend, name="shared-update-failure")
+        existing = service.create_memory(memory_id="mem-existing", title="Existing fact",
+            body="The existing fact.", type="fact", scopes=["global"])
+        user_key, _ = self.capture_turn(service, turn="shared-update-failure",
+            user_event="failure-user", assistant_event="failure-assistant",
+            user="The first update is true. The second update is also true.", assistant="Noted.")
         candidates = [
-            self.candidate("update-one", [user_key], update_memory_id=existing.memory_id),
-            self.candidate("update-two", [assistant_key], update_memory_id=existing.memory_id),
+            self.candidate("update-one", [user_key], memory="The first update is true.",
+                update_memory_id=existing.memory_id),
+            self.candidate("update-two", [user_key], memory="The second update is also true.",
+                update_memory_id=existing.memory_id),
         ]
-        backend.responses.extend([self.gate(candidates)] * 3)
-
-        with self.assertRaises(ModelOutputError) as raised:
-            service.process()
-
-        self.assertEqual(raised.exception.validation_detail, "duplicate_update_target")
-        marker = self.processed(service)["sessions"]["codex/s"]["processing"]
-        self.assertEqual(marker["failure_code"], "model_invalid_response")
-        self.assertEqual(marker["failure_stage"], "gate")
-        self.assertEqual(marker["validation_reason"], "schema_violation")
-        self.assertEqual(marker["validation_detail"], "duplicate_update_target")
-        self.assertEqual(marker["attempt_count"], 3)
-        self.assertEqual(self.processed(service)["sessions"]["codex/s"].get("watermark", 0), 0)
+        backend.responses.extend([
+            self.gate(candidates),
+            self.summary(user_key, title="Existing fact", body="The first update is true.",
+                update_memory_id=existing.memory_id),
+            self.summary(user_key, title="Existing fact", body="The second update is also true.",
+                update_memory_id=existing.memory_id),
+            *[json.dumps({"decision": "NO_CHANGE", "candidate_ids": ["update-one"]})] * 3,
+        ])
+        result = service.process()
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["deferred_candidates"], 2)
+        state = self.processed(service)["sessions"]["codex/s"]
+        self.assertEqual(state["processing"]["status"], "idle")
+        self.assertEqual(state["watermark"], 1)
+        rows = state["processed_turns"][0]["candidate_dispositions"]
+        self.assertTrue(all(r["disposition"] == "DEFERRED" for r in rows))
+        self.assertEqual({r["reason"] for r in rows}, {"same_turn_reconciliation_failed"})
         self.assertEqual(len(self.knowledge(service)), 1)
         self.assertEqual(service.read(existing.memory_id).body, existing.body)
         self.assertEqual(len(service.vault.list_markdown("history")), 0)
         self.assertTrue((service.vault.inbox_path / "codex" / "s.md").exists())
-        self.assertTrue(all("merge every candidate" in call["prompt"].lower() for call in backend.calls[1:]))
+        self.assertEqual(len(backend.calls), 6)
+        self.assertTrue(all("SAME_TARGET_RECONCILIATION" in c["prompt"] for c in backend.calls[-3:]))
 
     def test_writer_batch_defense_labels_duplicate_update_conflict(self):
         service = self.service(QueueBackend(), name="writer-duplicate-update-defense")

@@ -67,13 +67,11 @@ class TurnAudit:
         turn = request.get("turn")
         if not isinstance(turn, InboxTurn):
             return
-        self._record_disposition(
-            (turn.source, turn.session_id, turn.turn_key),
-            request,
-            disposition,
-            reason=reason,
-            memory_id=memory_id,
-        )
+        for member in request.get("contributing_candidates") or [request]:
+            self._record_disposition(
+                (turn.source, turn.session_id, turn.turn_key), member, disposition,
+                reason=reason, memory_id=memory_id,
+            )
 
 
     def _candidate_dispositions(

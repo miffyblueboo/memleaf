@@ -368,10 +368,13 @@ class MemoryCommitter:
                     if operation.get("kind") == "scope_retirement":
                         applied = self.writer.retirement_applied(operation["scope_correction"], self.writer._active_records())
                     if applied:
-                        self.audit._record_disposition(scope_key, operation, operation["disposition"],
-                                                 memory_id=operation["memory_id"])
+                        members = operation.get("contributing_candidates") or [operation]
+                        for member in members:
+                            self.audit._record_disposition(scope_key, member, operation["disposition"],
+                                memory_id=operation["memory_id"])
+                        member_ids = {member["candidate_id"] for member in members}
                         for recorded in self.audit._dispositions_by_turn.get(scope_key, []):
-                            if recorded.get("candidate_id") == operation.get("candidate_id"):
+                            if recorded.get("candidate_id") in member_ids:
                                 recorded["operation_id"] = operation_id
                                 recorded["replayed"] = operation_id in previous_operation_ids
                                 recorded["already_applied"] = operation_id in previous_operation_ids

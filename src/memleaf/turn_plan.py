@@ -77,6 +77,34 @@ def input_digest(turn: Any) -> str:
     return _digest([turn.source, turn.session_id, turn.turn_key, events])
 
 
+def contributing_candidates(request: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Validate optional group accounting, preserving legacy single requests."""
+    rows = request.get("contributing_candidates")
+    if rows is None:
+        return [{"candidate_id": request["candidate_id"],
+                 "evidence_unit_ids": list(request.get("evidence_unit_ids", ()))}]
+    if not isinstance(rows, list) or not rows:
+        raise _error("invalid contributing candidates")
+    seen: set[str] = set()
+    result = []
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"candidate_id", "evidence_unit_ids"}:
+            raise _error("invalid contributing candidate")
+        cid, evidence = row["candidate_id"], row["evidence_unit_ids"]
+        if (not isinstance(cid, str) or not cid or any(c in cid for c in "\x00\r\n")
+            or cid.casefold() in seen or not isinstance(evidence, list) or not evidence
+            or any(not isinstance(uid, str) or not uid for uid in evidence)
+            or not set(evidence).issubset(request.get("evidence_unit_ids", []))):
+            raise _error("invalid contributing candidate identity or evidence")
+        seen.add(cid.casefold())
+        result.append({"candidate_id": cid, "evidence_unit_ids": list(evidence)})
+    if set(request.get("evidence_unit_ids", ())) != {uid for row in result for uid in row["evidence_unit_ids"]}:
+        raise _error("group has unaccounted evidence")
+    if request["candidate_id"].casefold() not in seen:
+        raise _error("group does not include its representative candidate")
+    return result
+
+
 @dataclass(frozen=True)
 class CandidatePlan:
     operation_id: str
@@ -122,6 +150,8 @@ class TurnPlan:
                      "disposition": "UPDATE" if update or retirement or request.get("duplicate_memory_id") else "CREATE",
                      "kind": kind, "evidence_unit_ids": list(evidence),
                      "digest": content_digest(summary)}
+            if "contributing_candidates" in request:
+                value["contributing_candidates"] = contributing_candidates(request)
             if retirement:
                 value["scope_correction"] = dict(correction)
             result.append(CandidatePlan(op_id, _json(value)))
@@ -180,6 +210,7 @@ class FrozenTurn:
                 if (not isinstance(ident, str) or not ident or any(c in ident for c in "\x00\r\n")
                     or (key == "memory_id" and (any(c in ident for c in "/\\") or ident in {".", ".."}))):
                     raise _error("invalid stored write identity")
+            contributing_candidates(request)
             request["turn"] = turn
         return value
 
@@ -209,7 +240,7 @@ def cancel_frozen_targets(stored: Mapping[str, Any], memory_ids: set[str]) -> tu
             request["summary"].get("update_memory_id"), correction.get("target_memory_id"),
             correction.get("survivor_memory_id")}
         if references.intersection(memory_ids):
-            removed.add(request["candidate_id"])
+            removed.update(row["candidate_id"] for row in contributing_candidates(request))
         else:
             kept.append(request)
     if not removed:
