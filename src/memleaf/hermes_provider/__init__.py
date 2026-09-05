@@ -2327,7 +2327,7 @@ class MemleafMemoryProvider(MemoryProvider):
             session_id=session_id,
             turn_id=turn_id,
         )
-        if isinstance(result, Mapping) and (result.get("stored") is True or result.get("duplicate") is True):
+        if isinstance(result, Mapping) and (result.get("stored") is True or result.get("duplicate") is True or result.get("suppressed") is True):
             return True
         logger.warning(
             "memleaf stage=capture_%s status=invalid_result source=hermes session=%s turn=%s",

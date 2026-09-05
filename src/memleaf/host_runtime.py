@@ -111,15 +111,55 @@ class HostRuntime:
         )
         stored = getattr(result, "stored", False) is True
         duplicate = getattr(result, "duplicate", False) is True
-        return stored or duplicate, stored
+        if role == "assistant" and (stored or duplicate):
+            self._consume_captured_evidence(session_id, turn_id)
+        suppressed = getattr(result, "suppressed", False) is True
+        if suppressed:
+            self._discard_private_evidence(session_id, turn_id)
+        return stored or duplicate or suppressed, stored
+
+    def _discard_private_evidence(self, session_id: str, turn_id: str) -> None:
+        with self.vault.lock():
+            state = self._read_ingest_state()
+            bucket = state.setdefault("hosts", {}).setdefault(self.host, {})
+            entry = self._normalize_host_entry(bucket.get(session_id))
+            changed = entry["tool_evidence"].pop(turn_id, None) is not None
+            changed = entry["tool_evidence_lost"].pop(turn_id, None) is not None or changed
+            if changed:
+                bucket[session_id] = entry
+                self._mirror_legacy_codex(state, session_id, entry)
+                atomic_write_json(self.vault.host_ingest_path, state, mode=0o600)
+
+    def _consume_captured_evidence(self, session_id: str, turn_id: str) -> None:
+        from .inbox import parse_inbox_file
+        from .index import turn_key
+        with self.vault.lock():
+            state = self._read_ingest_state()
+            bucket = state.setdefault("hosts", {}).setdefault(self.host, {})
+            entry = self._normalize_host_entry(bucket.get(session_id))
+            pending = entry.get("tool_evidence", {}).get(turn_id, [])
+            if not pending and turn_id not in entry.get("tool_evidence_lost", {}):
+                return
+            # A repeated hook can carry new late results. Only discard cache
+            # records that really survived in the inbox, never just on "duplicate".
+            path = self.vault.session_path(self.host, session_id)
+            turns = parse_inbox_file(path)
+            saved = [record for turn in turns if turn.turn_key == turn_key(turn_id)
+                     for event in turn.events if event.role == "assistant"
+                     for record in event.tool_evidence]
+            if not all(record in saved for record in pending):
+                return
+            entry["tool_evidence"].pop(turn_id, None)
+            entry["tool_evidence_lost"].pop(turn_id, None)
+            bucket[session_id] = entry
+            self._mirror_legacy_codex(state, session_id, entry)
+            atomic_write_json(self.vault.host_ingest_path, state, mode=0o600)
 
     def observe_external_tool(self, *, session_id: str, turn_id: str,
                               tool_name: str, call_id: str, payload: Any,
                               tool_input: Any = None) -> None:
-        incoming = observation_records(tool_name, call_id, payload,
-            source_kind="retrieved_memory" if refers_to_vault(tool_input, self.vault.root) else None)
-        if not incoming:
-            return
+        from .recording_policy import recording_allowed
+        from .index import turn_key
         retrieval_id = self._retrieval_id(session_id, turn_id)
         if retrieval_id is not None:
             try:
@@ -127,6 +167,13 @@ class HostRuntime:
             except RetrievalGateError:
                 return
         with self.vault.lock():
+            permission = read_json(self.vault.processed_index_path)
+            if not recording_allowed(permission, self.host, session_id, turn_key(turn_id)):
+                return
+            incoming = observation_records(tool_name, call_id, payload,
+                source_kind="retrieved_memory" if refers_to_vault(tool_input, self.vault.root) else None)
+            if not incoming:
+                return
             state = self._read_ingest_state()
             bucket = state.setdefault("hosts", {}).setdefault(self.host, {})
             entry = self._normalize_host_entry(bucket.get(session_id))
@@ -162,7 +209,7 @@ class HostRuntime:
         entry = self._host_session(session_id)
         records = entry.get("tool_evidence", {}).get(turn_id, [])
         lost = entry.get("tool_evidence_lost", {}).get(turn_id)
-        if lost is not None or (not records and entry.get("tool_evidence_earlier_loss")):
+        if lost is not None:
             records = [*records, {"tool_name": "evidence.inventory", "call_id": "retention-overflow",
                 "kind": "unknown", "result_status": "truncated", "completeness": "partial",
                 "execution_status": "unknown", "omitted_count": str(lost or 1),
@@ -439,7 +486,8 @@ class HostRuntime:
                 and processed.get(key, 0) > 0
                 for key in ("deferred_candidates", "deferred_inbox_turns", "unresolved_evidence_count")
             )
-        self._set_process_pending(session_id, False)
+        retryable = isinstance(processed, Mapping) and isinstance(processed.get("retryable_deferred_turns"), int) and processed["retryable_deferred_turns"] > 0
+        self._set_process_pending(session_id, retryable)
         return TurnCompletion(
             degraded=degraded,
             captured=captured,

@@ -73,8 +73,8 @@ _CODEX_PROCESS_FAILED_MESSAGE = (
     "has not been reported as successfully extracted."
 )
 _CODEX_PROCESS_DEFERRED_MESSAGE = (
-    "memleaf automatic processing left deferred scope work; scope information is "
-    "still needed and automatic memory extraction is not fully complete."
+    "memleaf automatic processing left deferred evidence, scope, or candidate decisions; inspect "
+    "the reported reason. Automatic memory extraction is not fully complete."
 )
 _SCOPE_MAP_INCOMPLETE = (
     "Scope Map preview incomplete; fetch scope_catalog from the first page "

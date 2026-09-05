@@ -557,6 +557,7 @@ def _jsonable(value: Any) -> Any:
             "event_id": value.event_id,
             "stored": value.stored,
             "duplicate": value.duplicate,
+            **({"suppressed": True} if value.suppressed else {}),
             "path": _jsonable(value.path),
             "content": value.content,
         }

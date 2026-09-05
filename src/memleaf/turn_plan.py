@@ -182,3 +182,55 @@ class FrozenTurn:
                     raise _error("invalid stored write identity")
             request["turn"] = turn
         return value
+
+
+def cancel_frozen_targets(stored: Mapping[str, Any], memory_ids: set[str]) -> tuple[dict[str, Any], set[str]]:
+    """Revoke affected pending writes, preserving independently planned siblings.
+
+    Called only under the Vault lock, before an explicit forget deletes files.
+    Revocation removes frozen plaintext as well as operation intents. It is tied
+    to this input, not a permanent ban on remembering the subject again.
+    """
+    if not isinstance(stored, Mapping) or stored.get("schema_version") != SCHEMA_VERSION:
+        raise _error("invalid stored write plan during forget")
+    payload, checksum = stored.get("payload"), stored.get("checksum")
+    if (not isinstance(payload, str) or len(payload.encode()) > MAX_PLAN_BYTES
+        or hashlib.sha256(payload.encode()).hexdigest() != checksum):
+        raise _error("stored write plan checksum mismatch during forget")
+    value = parse_strict_json(payload)
+    if not isinstance(value, dict) or not isinstance(value.get("requests"), list):
+        raise _error("invalid pending requests during forget")
+    kept, removed = [], set()
+    for request in value["requests"]:
+        if not isinstance(request, dict) or not isinstance(request.get("summary"), dict):
+            raise _error("invalid pending request during forget")
+        correction = request.get("scope_correction") or {}
+        references = {request.get("memory_id"), request.get("duplicate_memory_id"),
+            request["summary"].get("update_memory_id"), correction.get("target_memory_id"),
+            correction.get("survivor_memory_id")}
+        if references.intersection(memory_ids):
+            removed.add(request["candidate_id"])
+        else:
+            kept.append(request)
+    if not removed:
+        return dict(stored), set()
+    value["requests"] = kept
+    value["candidate_dispositions"] = [row for row in value.get("candidate_dispositions", [])
+        if row.get("candidate_id") not in removed]
+    value["candidate_dispositions"].extend(
+        {"candidate_id": cid, "disposition": "NO_CHANGE", "reason": "explicit_forget"}
+        for cid in sorted(removed))
+    value["deferred_candidates"] = [row for row in value.get("deferred_candidates", [])
+        if row.get("candidate_id") not in removed]
+    for row in value.get("evidence_dispositions", []):
+        ids = row.get("candidate_ids")
+        if isinstance(ids, list) and removed.intersection(ids):
+            remaining = [cid for cid in ids if cid not in removed]
+            if remaining:
+                row["candidate_ids"] = remaining
+            else:
+                row.pop("candidate_ids", None)
+                row["decision"] = "NO_CHANGE"
+                row["reason"] = "explicit_forget"
+    result = _json(value)
+    return FrozenTurn(result, hashlib.sha256(result.encode()).hexdigest()).to_dict(), removed

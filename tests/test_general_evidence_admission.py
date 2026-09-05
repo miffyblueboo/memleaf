@@ -198,20 +198,20 @@ class GeneralEvidenceAdmissionTests(unittest.TestCase):
 
     def test_crash_replay_preserves_original_update_disposition(self):
         from unittest.mock import patch
-        from memleaf.processing import Processor
+        from memleaf.process_journal import ProcessJournal
         old=self.core.create_memory(memory_id='orion-maintainer',title='Orion maintainer',
                                     body='Orion maintainer is Alice.',type='fact',scopes=['project:Orion'])
         uk,_=self.capture('Orion maintainer changed to Bob.','Noted.')
         body='Orion maintainer is Bob.'
         c=candidate('maintainer',uk,body);c['update_memory_id']=old.memory_id
         s=summary(uk,body,update_memory_id=old.memory_id)
-        original=Processor._write_processed_unlocked
+        original=ProcessJournal._write_processed_unlocked
         def fail_final(processor, value):
             state=value.get('sessions',{}).get('hermes/session',{})
             if state.get('watermark',0)>0:
                 raise OSError('injected final ledger failure')
             original(processor,value)
-        with patch.object(Processor,'_write_processed_unlocked',fail_final):
+        with patch.object(ProcessJournal,'_write_processed_unlocked',fail_final):
             with self.assertRaises(OSError):
                 self.core.process(model=Backend([c],{'maintainer':s}, semantic=True))
         self.assertEqual(self.core.read(old.memory_id).body,body)

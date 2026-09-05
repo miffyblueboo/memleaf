@@ -168,7 +168,7 @@ class StageB3BScopeTest(unittest.TestCase):
                 self.summary(third_user, ["project:new"]),
             ]
         )
-        with patch("memleaf.processing.save_config", side_effect=OSError("config write")):
+        with patch("memleaf.memory_commit.save_config", side_effect=OSError("config write")):
             with self.assertRaises(OSError):
                 self.service.process(model=backend)
         state = self.processed()["sessions"]["codex/s"]
@@ -210,7 +210,11 @@ class StageB3BScopeTest(unittest.TestCase):
         )
 
         remember_key = event_key("remember-scope")
-        remember_backend = QueueBackend([self.summary(remember_key, ["project:model-scope"])])
+        corrected = json.loads(self.summary(remember_key, ["project:user-scope"]))
+        corrected["scope_source"] = "user"
+        remember_backend = QueueBackend([
+            self.summary(remember_key, ["project:model-scope"]), json.dumps(corrected),
+        ])
         result = self.service.remember(
             "remembered scope",
             source="codex",
@@ -226,6 +230,8 @@ class StageB3BScopeTest(unittest.TestCase):
             ["project:user-scope"],
         )
         self.assertIn("project:user-scope", self.service.vault.config()["scopes"])
+        self.assertEqual(self.service.read(result["memory_ids"][0]).scopes, ["project:user-scope"])
+        self.assertEqual(len(remember_backend.calls), 2)
 
     def test_context_default_global_and_temporary_query_override(self):
         self.set_registry(

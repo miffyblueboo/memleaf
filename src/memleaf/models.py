@@ -280,6 +280,7 @@ class CaptureResult:
     duplicate: bool
     path: Optional[Path] = None
     content: str = ""
+    suppressed: bool = False
 
     def __bool__(self) -> bool:
         return self.stored

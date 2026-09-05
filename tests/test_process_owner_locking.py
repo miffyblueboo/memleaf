@@ -11,30 +11,30 @@ import unittest
 from unittest.mock import Mock, patch
 
 from memleaf.locking import VaultLock
-from memleaf.processing import Processor
+from memleaf.process_journal import ProcessJournal
 from memleaf.process_owner import windows_pid_status
 
 
 class ProcessOwnerTests(unittest.TestCase):
     def test_current_process_is_alive(self):
-        self.assertTrue(Processor._owner_pid_status(os.getpid()))
+        self.assertTrue(ProcessJournal._owner_pid_status(os.getpid()))
 
     def test_invalid_owner_never_probes_os(self):
         for value in (None, True, False, "123", 1.5):
             with self.subTest(value=value):
-                self.assertIsNone(Processor._owner_pid_status(value))
+                self.assertIsNone(ProcessJournal._owner_pid_status(value))
         for value in (0, -1):
-            self.assertFalse(Processor._owner_pid_status(value))
+            self.assertFalse(ProcessJournal._owner_pid_status(value))
 
     def test_liveness_probe_does_not_terminate_child_and_detects_exit(self):
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
         try:
-            self.assertTrue(Processor._owner_pid_status(child.pid))
+            self.assertTrue(ProcessJournal._owner_pid_status(child.pid))
             self.assertIsNone(child.poll(), "a liveness probe must not terminate its target")
         finally:
             child.terminate()
             child.wait(timeout=10)
-        self.assertFalse(Processor._owner_pid_status(child.pid))
+        self.assertFalse(ProcessJournal._owner_pid_status(child.pid))
 
     def test_windows_handle_wait_states_and_close(self):
         for wait_result, expected in ((0, False), (258, True), (0xffffffff, None)):

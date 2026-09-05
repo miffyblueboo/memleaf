@@ -14,6 +14,8 @@ from memleaf.inbox import parse_inbox
 from memleaf.llm import ModelError, ModelUnavailable
 from memleaf.memory_writer import MemoryWriter
 from memleaf.processing import ProcessingError, Processor
+from memleaf.model_execution import ModelExecutor
+from memleaf.planning_context import PlanningContext
 from memleaf.prompts import RELATIVE_TIME_CORRECTION
 from memleaf.validation import ModelOutputError
 
@@ -1178,7 +1180,7 @@ class StageB2ATest(unittest.TestCase):
             "type": "project",
         }
 
-        merged = Processor._merge_additive_project_plan_update(
+        merged = PlanningContext._merge_additive_project_plan_update(
             {"memory": "客户建议将北辰项目数据库改为PostgreSQL。"},
             summary,
             target,
@@ -2436,7 +2438,7 @@ class StageB2ATest(unittest.TestCase):
         config_service.router = backend
         self.capture_turn(config_service)
         with patch.object(
-            Processor,
+            ModelExecutor,
             "_write_model_diagnostic",
             side_effect=OSError("diagnostic write secret"),
         ):
@@ -2856,7 +2858,7 @@ class StageB2ATest(unittest.TestCase):
             "started_at": "2026-08-24T00:00:00Z",
         }
         service.vault.processed_index_path.write_text(json.dumps(value), encoding="utf-8")
-        with patch("memleaf.processing.Processor._owner_pid_status", return_value=False):
+        with patch("memleaf.process_journal.ProcessJournal._owner_pid_status", return_value=False):
             self.assertEqual(service.process()["processed_turns"], 1)
 
     def test_legacy_processing_marker_uses_short_grace_period(self):

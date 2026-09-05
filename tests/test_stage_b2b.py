@@ -422,7 +422,7 @@ class StageB2BTest(unittest.TestCase):
         )
         responses2 = [self.gate([candidate2]), self.summary(user_key2, title="Updated", body="b2b new", update_memory_id=active2.memory_id)]
         backend2.responses.extend(responses2)
-        import memleaf.processing as processing_module
+        import memleaf.process_journal as processing_module
 
         original_atomic = processing_module.atomic_write_json
         calls = {"count": 0}
@@ -514,7 +514,7 @@ class StageB2BTest(unittest.TestCase):
         service = self.make_service(backend)
         self.process_create(service, backend, title="Cleanup", body="cleanup")
         self.clock.advance(hours=24)
-        import memleaf.processing as processing_module
+        import memleaf.process_journal as processing_module
 
         original_atomic = processing_module.atomic_write_json
 

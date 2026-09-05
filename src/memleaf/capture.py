@@ -237,12 +237,22 @@ def capture_event(
     resolved_turn_key = turn_key(turn_id)
     persisted_turn_id = _safe_turn_id(turn_id)
     safe_content = escape_event_markers(redact_text(content))
-    safe_tool_evidence = _normalize_tool_evidence(tool_evidence)
-    if not record or not visible or role not in ("user", "assistant"):
+    if not visible or role not in ("user", "assistant"):
         return CaptureResult(resolved_event_id, stored=False, duplicate=False, content=safe_content)
 
     with vault.lock():
         processed = _read_processed(vault.processed_index_path)
+        from .recording_policy import apply_control
+        allowed, changed = apply_control(processed, source=source, session_id=session_id,
+            turn_key=resolved_turn_key, event_key=resolved_event_key, role=role, content=content, record=record)
+        if not allowed:
+            if changed:
+                atomic_write_json(vault.processed_index_path, processed)
+            return CaptureResult(resolved_event_id, stored=False, duplicate=False, suppressed=True)
+        # Only permitted data reaches normalization or any persistence path.
+        safe_tool_evidence = _normalize_tool_evidence(tool_evidence)
+        if changed:
+            atomic_write_json(vault.processed_index_path, processed)
         known_keys = _known_event_keys(vault, processed)
         if resolved_event_key in known_keys:
             path = vault.session_path(source, session_id)
@@ -319,6 +329,7 @@ def capture_event(
         atomic_write_json(
             vault.processed_index_path,
             {
+                **processed,
                 "version": 1,
                 "event_keys": sorted(event_keys),
                 "events": event_entries,

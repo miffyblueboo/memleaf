@@ -543,7 +543,7 @@ class StageB3DScopeMaintenanceTest(unittest.TestCase):
             ]
         )
 
-        original_atomic = __import__("memleaf.processing", fromlist=["atomic_write_json"]).atomic_write_json
+        original_atomic = __import__("memleaf.process_journal", fromlist=["atomic_write_json"]).atomic_write_json
         calls = {"processed": 0}
 
         def fail_final_processed(path, value):
@@ -555,7 +555,7 @@ class StageB3DScopeMaintenanceTest(unittest.TestCase):
                     raise OSError("injected final processed write failure")
             return original_atomic(path, value)
 
-        with patch("memleaf.processing.atomic_write_json", side_effect=fail_final_processed):
+        with patch("memleaf.process_journal.atomic_write_json", side_effect=fail_final_processed):
             with self.assertRaises(OSError):
                 self.service.process(model=backend)
 

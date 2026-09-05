@@ -84,14 +84,14 @@ class V023ScopeCorrectionTests(unittest.TestCase):
             "scope_source": "model", "update_memory_id": old.memory_id, "evidence_event_ids": list(turn.event_keys),
         }
         processor = Processor(self.service)
-        plan = processor._scope_correction_plan(candidate, turn, self.service.vault.config())
+        plan = processor.inputs._scope_correction_plan(candidate, turn, self.service.vault.config())
         self.assertIsNotNone(plan)
         self.assertEqual(old.memory_id, plan["target_memory_id"])
         self.assertEqual("project:鑫元基金", plan["new_scope"])
 
         no_correction = self._turn("鑫元基金流程要求使用双人复核。")
-        self.assertIsNone(processor._scope_correction_plan(candidate, no_correction, self.service.vault.config()))
-        self.assertEqual("NOT_RELATED", processor._target_relation(candidate, turn=no_correction))
+        self.assertIsNone(processor.inputs._scope_correction_plan(candidate, no_correction, self.service.vault.config()))
+        self.assertEqual("NOT_RELATED", processor.inputs._target_relation(candidate, turn=no_correction))
 
     def test_explicit_scope_correction_recovers_unique_old_target_when_model_omits_id(self) -> None:
         old = self._memory("mem-targetless", "project:兴银理财", "流程要求使用双人复核")
@@ -101,14 +101,14 @@ class V023ScopeCorrectionTests(unittest.TestCase):
             "duplicate": False, "type": "project", "scopes": ["project:鑫元基金"],
             "scope_source": "model", "evidence_event_ids": list(turn.event_keys),
         }
-        plan = Processor(self.service)._scope_correction_plan(candidate, turn, self.service.vault.config())
+        plan = Processor(self.service).inputs._scope_correction_plan(candidate, turn, self.service.vault.config())
         self.assertIsNotNone(plan)
         self.assertEqual(old.memory_id, plan["target_memory_id"])
         self.assertFalse(plan["ambiguous"])
         self.assertFalse(plan["unresolved"])
 
         self._memory("mem-targetless-2", "project:兴银理财", "流程要求使用双人复核并留痕")
-        ambiguous = Processor(self.service)._scope_correction_plan(candidate, turn, self.service.vault.config())
+        ambiguous = Processor(self.service).inputs._scope_correction_plan(candidate, turn, self.service.vault.config())
         self.assertIsNotNone(ambiguous)
         self.assertTrue(ambiguous["ambiguous"])
         self.assertTrue(ambiguous["unresolved"])
@@ -167,8 +167,8 @@ class V023ScopeCorrectionTests(unittest.TestCase):
             "duplicate": False, "type": "project", "scopes": ["project:兴银理财"], "scope_source": "model",
         }
         processor = Processor(self.service)
-        self.assertEqual("project:鑫元基金", processor._turn_evidence_project_scope(turn, self.service.vault.config()))
-        self.assertTrue(processor._scope_evidence_conflict(candidate, turn, self.service.vault.config()))
+        self.assertEqual("project:鑫元基金", processor.inputs._turn_evidence_project_scope(turn, self.service.vault.config()))
+        self.assertTrue(processor.inputs._scope_evidence_conflict(candidate, turn, self.service.vault.config()))
 
 
 if __name__ == "__main__":

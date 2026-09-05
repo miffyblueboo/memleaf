@@ -1,0 +1,96 @@
+# Shared memory core refactor — first verified increment
+
+Baseline: `bc7622e0f4c5c7b6658336c4deb71fce6a370f11` (unreleased 0.2.26 candidate).
+This is a development branch, not a new stable release. The maintainer will run
+live-model acceptance locally; fixture tests are not described as model quality.
+
+## Product contract retained
+
+- Markdown in `knowledge/` and `history/` remains the permanent source of truth.
+  Existing Vault paths, frontmatter, memory IDs, history and tool names remain compatible.
+- No database, vector service, queue server, daemon, telemetry or runtime dependency
+  is introduced. The existing host-managed stdio MCP subprocess remains supported.
+- Hermes still registers `MemleafMemoryProvider` through the official plugin API.
+  Hermes native MEMORY.md / USER.md remain read-only cooperating sources.
+- All hosts use one Core and the selected shared Vault. Source/session identifiers
+  track provenance and lifecycle; they do not restrict permanent visibility.
+- Scope Map -> search -> selected read, retrieval gates, budget, global todo paging,
+  installation and model/provider configuration are unchanged.
+
+## Real ownership boundaries
+
+`Processor` is now an orchestrator with explicit composition, not a mixin,
+attribute proxy or a second parallel pipeline:
+
+| Component | Owns |
+| --- | --- |
+| `ModelExecutor` | Existing Model Route, bounded correction, diagnostics |
+| `PlanningContext` | Related-memory lookup and candidate/target context |
+| `MemoryPlanner` | Model outputs -> proposed changes; no Markdown commit |
+| `MemoryCommitter` | Automatic and explicit commit validation, journal handoff; forget mutation |
+| `ProcessJournal` | Claims, snapshots, cleanup, pending plans and retry progress |
+| `TurnAudit` | Per-run candidate/evidence outcomes and uncommitted overlay |
+| `recording_policy` | Explicit pre-capture permission controls, not memory extraction |
+
+The first structural commit deliberately preserves old semantics. Subsequent
+contract fixes are separate; moving code is not presented as completing semantic
+simplification. The large legacy planner and semantic helpers remain work items.
+
+## Behavior fixes in this increment
+
+1. Capture preserves process-owned root journal fields instead of overwriting
+   `pending_turn_plans` and `pending_operations` when another message arrives.
+2. Forget preflights targets, cancels matching frozen operations before deleting
+   files, and preserves unrelated requests in the same frozen plan. A stale lease
+   cannot commit the cancelled plan. A new explicitly authorized remember event
+   may store the fact again; there is no permanent topic blacklist.
+3. Explicit remember still skips the value Gate, but its explicitly selected Scope
+   must survive summary validation. UPDATE carries the target's pre-model revision
+   through the same optimistic validation as automatic UPDATE.
+4. A successfully persisted assistant event consumes only tool cache records proven
+   present in the inbox. Failed/late capture does not discard unsaved evidence.
+   Session-level historical loss no longer taints unrelated future turns.
+5. Direct leading recording controls and `record=False` prevent turn contents from
+   entering the inbox and host tool cache. Suppression is explicit, not a fake
+   stored result. Session off/resume state survives rebuild/restart; late private
+   callbacks remain private. Examples/quoted commands do not toggle the policy.
+6. `coverage_unresolved` receives at most one subsequent natural retry. At most four
+   such prior turns are selected per process call, alongside new complete turns.
+   Other ambiguity/missing-source reasons are retained, not blindly retried. The
+   host keeps a pending trigger only while automatic retry work remains.
+
+Recording controls intentionally recognize a small explicit command vocabulary
+(e.g. `这段不要记录`, `接下来不要记录`, `恢复记录`, `Don't record this`,
+`stop recording this session`). This is not a promise to classify arbitrary
+natural-language privacy instructions; integrations can use `record=False`.
+Policy stores only permission booleans and hashed identifiers, not private text.
+Late-callback protection keeps identifiers for private turns; it is not a cache
+of private conversation content and is separate from permanent-memory Scope.
+
+## What this increment does not claim
+
+- The legacy post-Gate todo completion/rework recovery and planner heuristics have
+  NOT all been removed. They must be replaced with bounded model-driven planning
+  while preserving task behavior; no email-specific path is reintroduced.
+- Compatible same-target semantic updates still need planning consolidation; the
+  existing conservative conflict result is retained for now.
+- Existing tool-evidence retention/configuration semantics still require their
+  own compatibility review. This increment repairs consumption/permissions, not
+  a silent redefinition of include_tool_output/include_attachments.
+- Compaction and explicit low-level library writes retain their existing paths.
+  This is not an assertion that all maintenance mutations are already centralized.
+- Old abandoned host cache entries are not globally purged by this migration.
+- There is no claim of multi-file database-style atomicity or perfect model judgment.
+
+## Validation
+
+The baseline was reconstructed with Git tree `f55989c9637c8b0345d01f6ebb09c548baec9dd0`.
+Its 682-test suite passed locally. The behavior-preserving composition step passed
+that same suite. New user-result contracts first reproduced the relevant failures,
+then the full suite reached 701 tests with zero failures/errors and 2 conditional
+skips (Linux/Python 3.13). See the exact branch commit's CI for native platforms.
+
+No old test methods were deleted. Private helper mocks were moved to their new
+owners. One explicit-remember Scope fixture now supplies a corrected second model
+response and additionally checks stored Scope; its original assertions remain.
+Tests must continue using temporary Vaults and no live credentials.

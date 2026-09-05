@@ -11,13 +11,13 @@ from unittest.mock import patch
 from memleaf import Memleaf
 from memleaf.index import event_key, turn_key
 from memleaf.memory_writer import MemoryWriter
-from memleaf.processing import (
+from memleaf.planning_context import PlanningContext
+from memleaf.process_common import (
     _RELATED_MAX_BODY_CHARS,
     _RELATED_MAX_CHARS,
     _RELATED_MAX_ITEMS,
     _SCOPE_DIRECTORY_MAX_CHARS,
     _SCOPE_DIRECTORY_MAX_ITEMS,
-    Processor,
 )
 from memleaf.prompts import SUMMARIZE_SYSTEM
 
@@ -573,10 +573,10 @@ class MaintenanceV2Tests(unittest.TestCase):
             "_search_unlocked",
             wraps=self.service._search_unlocked,
         ) as search, patch.object(
-            Processor,
+                    PlanningContext,
             "_scope_records_unlocked",
             autospec=True,
-            side_effect=Processor._scope_records_unlocked,
+            side_effect=PlanningContext._scope_records_unlocked,
         ) as scope_scan:
             result = self.service.process(
                 source="hermes",
@@ -856,7 +856,7 @@ class MaintenanceV2Tests(unittest.TestCase):
             ),
         ]
         backend = QueueBackend(responses)
-        import memleaf.processing as processing_module
+        import memleaf.process_journal as processing_module
 
         original_atomic = processing_module.atomic_write_json
         calls = {"processed": 0}

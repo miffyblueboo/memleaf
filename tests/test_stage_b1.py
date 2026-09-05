@@ -41,7 +41,8 @@ from memleaf.llm import (
     ModelUnavailable,
     OpenAICompatibleBackend,
 )
-from memleaf.processing import Processor, _event_payload
+from memleaf.model_execution import ModelExecutor
+from memleaf.process_common import _event_payload
 from memleaf.validation import parse_gate_output, parse_summarize_output
 from memleaf.mcp_server import _safe_model_diagnostics
 
@@ -658,11 +659,11 @@ class RouterAndAdapterTest(unittest.TestCase):
             "invalid schema",
             validation_reason="schema_violation",
         )
-        self.assertTrue(Processor._allows_next_json_attempt(schema_error, 1))
-        self.assertTrue(Processor._allows_next_json_attempt(schema_error, 2))
-        self.assertFalse(Processor._allows_next_json_attempt(schema_error, 3))
+        self.assertTrue(ModelExecutor._allows_next_json_attempt(schema_error, 1))
+        self.assertTrue(ModelExecutor._allows_next_json_attempt(schema_error, 2))
+        self.assertFalse(ModelExecutor._allows_next_json_attempt(schema_error, 3))
         self.assertFalse(
-            Processor._allows_next_json_attempt(
+            ModelExecutor._allows_next_json_attempt(
                 ModelError("timeout", code="model_timeout"),
                 1,
             )
