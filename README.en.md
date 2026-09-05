@@ -4,8 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.26.**
-> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. This version completes the shared memory core refactor; real-model semantics still require local acceptance with the selected model and representative inputs.
+> **Version: 0.2.27.**
+> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. This release closes long-run lifecycle gaps: Core semantic decisions remain source-neutral, while provenance, closed todos, history versions, and compaction identity are bounded. Real-model semantics still require local acceptance with the selected model and representative inputs.
 > **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.
 
 ## Project scope
@@ -400,6 +400,28 @@ $HOME/.memleaf/
 
 `knowledge/` and `history/` are human-readable data. `_index/` contains derived indexes and runtime state. Deleting or editing it directly can lose processing watermarks, host cursors, or the current retrieval ledger; use `rebuild_index()` when a rebuild is needed.
 
+### Long-run retention
+
+The default configuration bounds long-run growth without adding a background service:
+
+```yaml
+process:
+  memory_compact_threshold_tokens: 100000
+  memory_compact_candidate_ratio: 0.30
+  inbox_cleanup_hours: 24
+  closed_todo_retention_days: 30
+history:
+  policy: bounded
+  retention_days: 3650
+  max_versions_per_memory: 32
+```
+
+- Each active Markdown memory retains at most 16 detailed provenance rows while tracking cumulative `source_count`, `source_digest`, and omitted rows, so repeated UPDATEs cannot grow `sources` without bound.
+- Completed/cancelled todos leave `knowledge/` after 30 days by default and move to `history/`; `list_todos(status=completed|cancelled|all)` can still enumerate retired todos.
+- With `history.policy: bounded`, each stable memory identity keeps at most 32 full historical versions, and versions older than 3650 days are eligible for pruning. Set `history.policy: keep_all` explicitly when permanent audit retention is required.
+- Compaction preserves an existing canonical `memory_id` instead of creating a new `mem-compact-*` identity; a single-memory rewrite keeps its ID and a multi-memory merge chooses one stable survivor.
+- Maintenance runs through normal `process()` / `remember()` / `compact()` lifecycle calls and requires no daemon. Ordinary read-only retrieval does not trigger maintenance writes.
+
 Directories are normally created with mode `0700`, and files are stored as plaintext by default. memleaf has no built-in encryption layer; protect the Vault, backups, and model credentials yourself.
 
 ## Privacy and security boundaries
@@ -440,7 +462,7 @@ The following should not be interpreted as delivered capabilities:
 - Without a model route, memleaf can capture and retrieve but cannot perform automatic extraction, explicit model-backed memory, or compaction.
 - Long-running real-host behavior still depends on the local Agent version, configuration, restart, and model availability.
 - There is no Obsidian plugin, web management UI, cloud sync, or transparent encryption layer.
-- Routine retrieval never performs batch history cleanup; deletion requires an explicit maintenance operation.
+- Routine read-only retrieval never performs retention writes; history pruning and closed-todo retirement run only during normal processing/maintenance lifecycle calls.
 
 
 ## License
@@ -452,7 +474,7 @@ MIT; see [LICENSE](LICENSE).
 *Your memories, in files you own.*
 
 
-## General processing and read-only inspection (0.2.26 candidate)
+## General processing and read-only inspection (0.2.27)
 
 Dialogue, calendars, tickets, files, web results and other tools share the evidence, coverage and write path.
 Models interpret semantics; Core validates physical provenance and exact original quotations.

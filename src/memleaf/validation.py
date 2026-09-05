@@ -362,183 +362,6 @@ def normalize_relative_calendar_text(text: str, anchor: Any) -> str | None:
     return normalized if safe else None
 
 
-_AGGREGATE_DIGEST_MARKERS = (
-    "日报",
-    "汇总",
-    "巡检",
-    "收件箱",
-    "邮箱巡检",
-    "daily report",
-    "digest",
-    "watchlist",
-    "mailbox sweep",
-    "inbox sweep",
-)
-_AGGREGATE_COUNT = re.compile(
-    r"(?:\d+\s*(?:条|项|个|件|封|tasks?|items?)|(?:完成|待受理|派发|新增|逾期)\s*\d+)"
-    r"|(?:completed|pending|assigned|new|overdue)\s*[:：]?\s*\d+",
-    re.IGNORECASE,
-)
-
-
-# These are intentionally narrow, high-signal markers.  The gate is still
-# responsible for deciding whether a candidate is worth retaining; these
-# helpers only protect the write boundary from a known class of semantic
-# contracts that cannot safely be represented by one memory.
-_PROJECT_PLAN_MARKERS = (
-    "实施计划",
-    "项目计划",
-    "实施方案",
-    "项目方案",
-    "计划调整",
-    "调整计划",
-    "调整实施计划",
-    "重新压实计划",
-    "重新压实实施计划",
-    "重新制定计划",
-    "部署计划",
-    "上线计划",
-    "implementation plan",
-    "project plan",
-    "implementation schedule",
-    "plan adjustment",
-    "adjust the plan",
-    "revise the plan",
-    "rebaseline the plan",
-)
-_ADJACENT_PLAN_RECORD_MARKERS = (
-    "邮件",
-    "附件",
-    "会议纪要",
-    "会议记录",
-    "启动会",
-    "存档",
-    "归档",
-    "email",
-    "mail",
-    "attachment",
-    "meeting minutes",
-    "meeting record",
-    "archive",
-)
-_PROJECT_RULE_MARKERS = (
-    "项目要求",
-    "项目约束",
-    "交付要求",
-    "技术路线",
-    "长期要求",
-    "长期约束",
-    "统一规范",
-    "固定规则",
-    "固定流程",
-    "收发流程",
-    "以后",
-    "今后",
-    "后续",
-    "每次",
-    "所有后续",
-    "抄送",
-    "project requirement",
-    "going forward",
-    "from now on",
-    "project constraint",
-    "delivery requirement",
-    "technical approach",
-)
-_DATED_TODO_MARKERS = (
-    "待办",
-    "排查",
-    "答复",
-    "回复",
-    "提交",
-    "跟进",
-    "提醒",
-    "联系",
-    "发给",
-    "发送",
-    "处理",
-    "修改",
-    "改完",
-    "截止",
-    "确认",
-    "整改",
-    "修复",
-    "回访",
-    "催办",
-    "反馈",
-    "完成",
-    "补充材料",
-    "提供",
-    "todo",
-    "deadline",
-    "due",
-    "follow up",
-    "follow-up",
-)
-_INDEPENDENT_TODO_MARKERS = tuple(
-    marker for marker in _DATED_TODO_MARKERS if marker != "完成"
-)
-_PLAN_MILESTONE_MARKERS = (
-    "计划",
-    "上线日期",
-    "交付日期",
-    "完成日期",
-    "工期",
-    "工作日",
-    "里程碑",
-    "上线",
-    "验收",
-    "交付",
-    "迁移",
-    "milestone",
-)
-_PLAN_STAGE_TEXT = re.compile(
-    r"(?:第[一二三四五六七八九十百\d]+阶段|阶段[一二三四五六七八九十百\d]+|"
-    r"phase\s*(?:one|two|three|four|five|\d+))",
-    re.IGNORECASE,
-)
-_CALENDAR_TEXT = re.compile(
-    rf"(?:{_RELATIVE_DATE_TOKEN}|"
-    r"(?<![A-Za-z\d./-])(?:\d{4}[/\-](?:0?[1-9]|1[0-2])[/\-](?:0?[1-9]|[12]\d|3[01])|"
-    r"(?:\d{4}\s*年\s*)?(?:0?[1-9]|1[0-2])\s*月\s*(?:0?[1-9]|[12]\d|3[01])\s*日?)"
-    r")",
-    re.IGNORECASE,
-)
-
-
-
-_ACTION_VERBS = (
-    "修复", "整改", "排查", "准备", "反馈", "回复", "提交", "确认", "部署", "迁移",
-    "调整", "跟进", "处理", "补充", "发送", "提供", "修正", "更正", "改", "重画", "重做", "标明", "标出",
-    "review", "reply", "submit",
-    "confirm", "deploy", "migrate", "fix", "investigate", "prepare", "follow up",
-)
-_ACTION_PREFIXES = (
-    "需要", "需", "待", "请", "必须", "务必", "尽快", "尚需", "还需", "未完成",
-    "need to", "needs to", "must", "todo", "to-do", "pending",
-)
-_ACTION_PLAN_ADJUST = re.compile(
-    r"(?:需要|需|待|请|尽快|按\s*\d+\s*[点项条]|根据\s*\d+\s*[点项条]).{0,20}(?:调整|修改|更新|完善).{0,20}(?:计划|方案)",
-    re.IGNORECASE,
-)
-
-
-def is_actionable_todo_text(value: Any) -> bool:
-    """Recognize high-signal unfinished actions without classifying stable rules."""
-
-    if not isinstance(value, str) or not value.strip():
-        return False
-    folded = value.casefold()
-    if _ACTION_PLAN_ADJUST.search(value):
-        return True
-    has_action = any(marker in folded for marker in _ACTION_VERBS)
-    has_prefix = any(marker in folded for marker in _ACTION_PREFIXES)
-    has_deadline = bool(_CALENDAR_TEXT.search(value)) and any(
-        marker in folded for marker in ("前完成", "之前完成", "截止", "截至", " by ", "before ")
-    )
-    return has_action and (has_prefix or has_deadline)
-
-
 def _validated_due_date(value: Any) -> str:
     if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
         raise ModelOutputError("invalid todo due_date", validation_detail="invalid_due_date")
@@ -549,215 +372,6 @@ def _validated_due_date(value: Any) -> str:
     if parsed.isoformat() != value:
         raise ModelOutputError("invalid todo due_date", validation_detail="invalid_due_date")
     return value
-
-def is_project_plan_text(value: Any) -> bool:
-    """Return whether text explicitly describes a project plan or adjustment."""
-
-    if not isinstance(value, str):
-        return False
-    folded = value.casefold()
-    # Only a record whose own label/phrase is a plan mail, attachment, meeting
-    # record, or archive is adjacent.  A durable plan may still mention that
-    # an attachment must be migrated, an email sent, or a meeting held.
-    compact = re.sub(r"[\s:：，,；;。.!！?？()（）\[\]【】_-]+", "", folded)
-    plan_markers = tuple(
-        re.sub(r"\s+", "", marker.casefold()) for marker in _PROJECT_PLAN_MARKERS
-    )
-    adjacent_markers = tuple(
-        re.sub(r"\s+", "", marker.casefold())
-        for marker in _ADJACENT_PLAN_RECORD_MARKERS
-    )
-    direct_adjacent = any(
-        f"{plan}{adjacent}" in compact or f"{adjacent}{plan}" in compact
-        for plan in plan_markers
-        for adjacent in adjacent_markers
-    )
-    archived_plan = any(
-        f"{plan}已{archive}" in compact or f"已{archive}{plan}" in compact
-        for plan in plan_markers
-        for archive in ("存档", "归档", "archive")
-    )
-    sent_plan_mail = bool(
-        re.search(
-            r"(?:已发送|发送|sent|sentto).{0,12}"
-            r"(?:实施计划|项目计划|实施方案|项目方案|部署计划|上线计划|"
-            r"implementationplan|projectplan|implementationschedule)"
-            r"(?:邮件|email|mail)",
-            compact,
-            re.IGNORECASE,
-        )
-    )
-    if direct_adjacent or archived_plan or sent_plan_mail:
-        return False
-    return any(marker in folded for marker in _PROJECT_PLAN_MARKERS)
-
-
-def _split_future_use_clauses(value: str) -> list[str]:
-    # Semicolons, sentence boundaries, and explicit contrast/conjunction
-    # markers are the only boundaries used here.  Commas are deliberately not
-    # boundaries because implementation plans commonly enumerate milestones.
-    return [
-        part.strip()
-        for part in re.split(
-            r"[;；。！？!?\n]+|[,，]\s*(?=(?:后续|今后|以后|每次|所有后续|going forward|from now on))|(?:同时|另外|此外|其次|并且|并要求|还需|另需|in addition|separately)",
-            value,
-            flags=re.IGNORECASE,
-        )
-        if part.strip()
-    ]
-
-
-def is_mixed_future_use_text(value: Any) -> bool:
-    """Detect a plan/rule combined with an independent dated todo.
-
-    This is a safety boundary, not a general-purpose classifier.  It only
-    returns true when the durable plan/rule and a strong dated action occur in
-    separate clauses.  A plan's own milestone or delivery date therefore
-    remains representable as one project memory.
-    """
-
-    if not isinstance(value, str):
-        return False
-    clauses = _split_future_use_clauses(value)
-    if len(clauses) < 2:
-        return False
-    durable_indexes = {
-        index
-        for index, clause in enumerate(clauses)
-        if is_project_plan_text(clause)
-        or any(marker in clause.casefold() for marker in _PROJECT_RULE_MARKERS)
-    }
-    if not durable_indexes:
-        return False
-    plan_milestone_context = any(
-        any(marker in clauses[index].casefold() for marker in ("里程碑", "milestone"))
-        for index in durable_indexes
-    )
-    plan_stage_context = sum(bool(_PLAN_STAGE_TEXT.search(clause)) for clause in clauses) >= 2
-    todo_indexes = {
-        index
-        for index, clause in enumerate(clauses)
-        if (
-            (_CALENDAR_TEXT.search(clause) and any(marker in clause.casefold() for marker in _DATED_TODO_MARKERS))
-            or is_actionable_todo_text(clause)
-        )
-        and not (
-            "完成" in clause
-            and any(marker in clause.casefold() for marker in _PLAN_MILESTONE_MARKERS)
-            and not any(
-                marker in clause.casefold() for marker in _INDEPENDENT_TODO_MARKERS
-            )
-        )
-        and not (
-            (plan_milestone_context or plan_stage_context)
-            and "完成" in clause
-            and not any(
-                marker in clause.casefold() for marker in _INDEPENDENT_TODO_MARKERS
-            )
-        )
-        # A second clause that is itself the project plan is a plan milestone,
-        # not evidence of a second future-use object.
-        and not is_project_plan_text(clause)
-    }
-    return bool(todo_indexes - durable_indexes)
-
-
-
-def split_mixed_future_use_text(value: Any) -> list[tuple[str, str]] | None:
-    """Safely split one same-scope durable rule/plan plus unfinished action.
-
-    Every clause must classify exactly once. Ambiguous or unclassified text
-    returns ``None`` so the existing deferred-candidate safety boundary stays
-    intact.
-    """
-
-    if not isinstance(value, str):
-        return None
-    clauses = _split_future_use_clauses(value)
-    if len(clauses) < 2:
-        return None
-    result: list[tuple[str, str]] = []
-    durable_count = 0
-    todo_count = 0
-    for clause in clauses:
-        folded = clause.casefold()
-        plan = is_project_plan_text(clause)
-        explicit_plan_adjustment = bool(_ACTION_PLAN_ADJUST.search(clause))
-        todo = (
-            (bool(_CALENDAR_TEXT.search(clause)) and any(marker in folded for marker in _DATED_TODO_MARKERS))
-            or is_actionable_todo_text(clause)
-        ) and (not plan or explicit_plan_adjustment)
-        durable = (plan and not explicit_plan_adjustment) or any(
-            marker in folded for marker in _PROJECT_RULE_MARKERS
-        )
-        if durable == todo:
-            return None
-        if todo:
-            result.append((clause, "todo"))
-            todo_count += 1
-        else:
-            result.append((clause, "project" if is_project_plan_text(clause) else "fact"))
-            durable_count += 1
-    if not durable_count or not todo_count:
-        return None
-    return result
-
-def is_aggregate_operational_text(value: Any) -> bool:
-    """Recognize a combined operational digest, not one concrete work item.
-
-    This deliberately requires multiple aggregate signals.  A single overdue
-    task reported by a daily scan remains eligible for the model's normal
-    future-use decision; a multi-count sweep must be split before persistence.
-    """
-
-    if not isinstance(value, str):
-        return False
-    folded = value.casefold()
-    if not any(marker in folded for marker in _AGGREGATE_DIGEST_MARKERS):
-        return False
-    count_signals = len(_AGGREGATE_COUNT.findall(value))
-    separator_count = len(re.findall(r"[;；]|[—-].*[;；]", value))
-    return count_signals >= 2 or (count_signals >= 1 and separator_count >= 1)
-
-
-_ATTACHMENT_SUBJECT_MARKERS = (
-    "附件", "材料", "文档", "问题清单", "ppt", "slides", "deck", "attachment", "checklist",
-)
-_GENERIC_FOLLOWUP_MARKERS = (
-    "待跟进", "需跟进", "需要跟进", "待处理", "需处理", "需要处理", "请查看", "看下",
-    "follow up", "follow-up", "needs review", "to review",
-)
-_CONCRETE_ATTACHMENT_ACTION_MARKERS = (
-    "迁移", "部署", "修复", "修正", "更正", "整改", "逐项", "发送给", "发给", "抄送", "提交", "回复", "确认",
-    "负责人", "禁止", "必须", "以后", "归档至", "保存至", "migrate", "deploy", "fix",
-    "remediate", "send to", "cc ", "owner", "must",
-)
-_TRANSPORT_DETAIL = re.compile(
-    r"(?:\d+(?:\.\d+)?\s*(?:kb|mb|gb|字节)|(?:邮件|mail|message)\s*(?:id\s*[=:：]?\s*)?#?\d+)",
-    re.IGNORECASE,
-)
-_CONCRETE_DEADLINE = re.compile(
-    r"(?:截至|截止|在|by|before)\s*\d{4}-\d{2}-\d{2}|\d{4}-\d{2}-\d{2}\s*(?:前|之前|截止)",
-    re.IGNORECASE,
-)
-
-
-def is_attachment_followup_only_text(value: Any) -> bool:
-    """Return true for an attachment subject with no reusable concrete action."""
-
-    if not isinstance(value, str):
-        return False
-    folded = value.casefold()
-    if not any(marker in folded for marker in _ATTACHMENT_SUBJECT_MARKERS):
-        return False
-    if any(marker in folded for marker in _CONCRETE_ATTACHMENT_ACTION_MARKERS):
-        return False
-    if _CONCRETE_DEADLINE.search(value):
-        return False
-    return any(marker in folded for marker in _GENERIC_FOLLOWUP_MARKERS) or bool(
-        _TRANSPORT_DETAIL.search(value)
-    )
-
 
 def _reject_constant(value: str) -> None:
     raise ModelOutputError("non-finite JSON number is not allowed", validation_reason="invalid_json")
@@ -984,8 +598,8 @@ def _reject_ungrounded_project_scope(
 
     The gate's memory text is the only candidate-local attribution evidence.
     Session background, other events, and related-memory bodies are
-    intentionally excluded so an aggregate mailbox turn cannot lend a
-    project name to an unrelated candidate.
+    intentionally excluded so one evidence item cannot lend a project name
+    to an unrelated candidate.
     """
 
     selected_owners, matches = _model_scope_grounding_evidence(
@@ -1238,17 +852,6 @@ def validate_gate_output(
             raise ModelOutputError("duplicate candidate cannot be worth remembering", validation_detail="invalid_flags")
         if item["worth"] and candidate_type is None:
             raise ModelOutputError("worth candidate must have a type", validation_detail="invalid_type")
-        if (
-            item["worth"]
-            and is_mixed_future_use_text(item["memory"])
-            and not allow_mixed_future_use
-        ):
-            if not defer_semantic_errors:
-                raise ModelOutputError(
-                    "one candidate combines independent future uses",
-                    validation_detail="mixed_future_use",
-                )
-            item["_defer_reason"] = "mixed_future_use"
         # The model owns the semantic type. Validate it; never infer a new
         # business type from words in a candidate's body.
         if "update_memory_id" in item and "duplicate_memory_id" in item:
@@ -1476,11 +1079,6 @@ def validate_summarize_output(
     _string(item["title"], "title")
     _string(item["body"], "body", multiline=True)
     _reject_relative_calendar_expression(item)
-    if is_mixed_future_use_text(f"{item['title']}\n{item['body']}"):
-        raise ModelOutputError(
-            "one summary combines independent future uses",
-            validation_detail="mixed_future_use",
-        )
     item["tags"] = _string_list(item["tags"], "tags")
     candidate_type = item["type"]
     if not isinstance(candidate_type, str) or candidate_type not in MEMORY_TYPES:
@@ -1742,7 +1340,6 @@ parse_summary_output = parse_summarize_output
 
 
 __all__ = [
-    "split_mixed_future_use_text",
     "MEMORY_TYPES",
     "MODEL_VALIDATION_DETAILS",
     "MODEL_VALIDATION_REASONS",
@@ -1754,11 +1351,6 @@ __all__ = [
     "parse_gate_output",
     "parse_compact_output",
     "parse_strict_json",
-    "is_aggregate_operational_text",
-    "is_attachment_followup_only_text",
-    "is_actionable_todo_text",
-    "is_project_plan_text",
-    "is_mixed_future_use_text",
     "normalize_relative_calendar_text",
     "parse_summarize_output",
     "parse_summary_output",

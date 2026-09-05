@@ -14,6 +14,8 @@ from typing import Any, Iterable, Mapping
 from .llm import CallableBackend, ModelError, ModelRouter, ModelUnavailable
 from .locking import atomic_unlink, atomic_write_json, atomic_write_text, read_json
 from .models import Memory, utc_now
+from .source_policy import merge_memory_provenance, merge_sources
+from .retention import RetentionManager, RetentionError
 from .prompts import COMPACT_SYSTEM, compact_prompt
 from .validation import ModelOutputError, parse_compact_output
 from .vault import safe_component
@@ -330,31 +332,44 @@ class Compactor:
         staging = self._staging_dir_unlocked(transaction_id, create=False)
         if staging.is_symlink() or not staging.exists() or not staging.is_dir():
             raise CompactionError("missing compaction staging")
+        replacement_hashes = {
+            entry["memory_id"]: entry["sha256"] for entry in journal["replacements"]
+        }
+        source_ids = {entry["memory_id"] for entry in journal["sources"]}
         for entry in journal["sources"]:
             source_path = self.service.vault.memory_path(entry["memory_id"], "knowledge")
             if source_path.is_symlink():
                 raise CompactionError("unsafe active memory path during recovery")
+            staged_path = staging / entry["staging_file"]
+            if staged_path.is_symlink() or not staged_path.exists():
+                raise CompactionError("missing staged active memory")
+            try:
+                original = staged_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as error:
+                raise CompactionError("cannot read staged active memory") from error
+            if _sha256(original) != entry["sha256"]:
+                raise CompactionError("staged active memory hash mismatch")
             if source_path.exists():
                 try:
                     current = source_path.read_text(encoding="utf-8")
                 except (OSError, UnicodeError) as error:
                     raise CompactionError("cannot read active memory during recovery") from error
-                # A user edit is preserved; the transaction additions below
-                # are still removed so the vault returns to a stable old view.
-                if _sha256(current) != entry["sha256"]:
+                current_hash = _sha256(current)
+                if current_hash == entry["sha256"]:
                     continue
-            else:
-                staged_path = staging / entry["staging_file"]
-                if staged_path.is_symlink() or not staged_path.exists():
-                    raise CompactionError("missing staged active memory")
-                try:
-                    original = staged_path.read_text(encoding="utf-8")
-                except (OSError, UnicodeError) as error:
-                    raise CompactionError("cannot read staged active memory") from error
-                if _sha256(original) != entry["sha256"]:
-                    raise CompactionError("staged active memory hash mismatch")
-                atomic_write_text(source_path, original)
+                # A canonical survivor is replaced in-place. If the file is
+                # exactly our staged replacement, restore its original source.
+                if replacement_hashes.get(entry["memory_id"]) == current_hash:
+                    atomic_write_text(source_path, original)
+                    continue
+                # Preserve an unrelated user edit rather than overwriting it.
+                continue
+            atomic_write_text(source_path, original)
+        # Backward-compatible cleanup for pre-0.2.27 journals whose
+        # replacement ID was not one of the consumed source IDs.
         for entry in journal["replacements"]:
+            if entry["memory_id"] in source_ids:
+                continue
             path = self.service.vault.memory_path(entry["memory_id"], "knowledge")
             if self._read_expected_file_unlocked(path, entry["sha256"], "compaction replacement") is not None:
                 atomic_unlink(path)
@@ -408,30 +423,26 @@ class Compactor:
         return value
 
     @staticmethod
-    def _replacement_id(summary: Mapping[str, Any], source_ids: Iterable[str]) -> str:
-        material = {
-            "source_memory_ids": sorted({item.casefold() for item in source_ids}),
-            "replacement": {
-                key: summary.get(key)
-                for key in (
-                    "title",
-                    "body",
-                    "tags",
-                    "type",
-                    "scopes",
-                    "scope_source",
-                    "aliases",
-                    "keywords",
-                    "status",
-                    "completed_at",
-                    "due_date",
-                )
-            },
-        }
-        digest = hashlib.sha256(
-            json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
-        return f"mem-compact-{digest[:24]}"
+    def _canonical_candidate(source_candidates: list[_Candidate]) -> _Candidate:
+        if not source_candidates:
+            raise CompactionError("compaction replacement has no sources")
+        # Preserve the identity with the strongest prior user/reference value.
+        # Ties choose the oldest stable identity, then lexical ID.
+        def key(candidate: _Candidate) -> tuple[int, int, datetime, str]:
+            memory = candidate.memory
+            created = _parse_time(memory.created) or datetime.max.replace(tzinfo=timezone.utc)
+            return (
+                0 if memory.extra.get("explicit_remember") is True else 1,
+                -memory.hit_count,
+                created,
+                memory.memory_id.casefold(),
+            )
+        return min(source_candidates, key=key)
+
+    @classmethod
+    def _replacement_id(cls, summary: Mapping[str, Any], source_candidates: list[_Candidate]) -> str:
+        del summary
+        return cls._canonical_candidate(source_candidates).memory.memory_id
 
     @staticmethod
     def _history_id(source: Memory, replacement_id: str, source_hash: str) -> str:
@@ -445,21 +456,12 @@ class Compactor:
         ).hexdigest()
         return f"hist-{digest[:24]}"
 
+
     @staticmethod
     def _merge_sources(memories: Iterable[Memory]) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for memory in memories:
-            for source in memory.sources:
-                if not isinstance(source, Mapping):
-                    continue
-                value = dict(source)
-                key = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-                if key in seen:
-                    continue
-                seen.add(key)
-                result.append(value)
-        return result
+        """Compatibility projection using the shared bounded provenance policy."""
+
+        return merge_memory_provenance(memories)[0]
 
     @staticmethod
     def _first_created(memories: Iterable[Memory], now: str) -> str:
@@ -486,14 +488,18 @@ class Compactor:
     ) -> _Replacement:
         source_memories = [candidate.memory for candidate in source_candidates]
         source_ids = tuple(memory.memory_id for memory in source_memories)
-        replacement_id = self._replacement_id(summary, source_ids)
+        canonical = self._canonical_candidate(source_candidates).memory
+        replacement_id = self._replacement_id(summary, source_candidates)
         status = summary.get("status")
         if summary["type"] == "todo" and status is None:
             status = "active"
-        extra = {
+        sources, source_metadata = merge_memory_provenance(source_memories)
+        extra = dict(canonical.extra)
+        extra.update(source_metadata)
+        extra.update({
             "compaction_source_ids": list(source_ids),
             "compacted_at": now,
-        }
+        })
         if any(memory.extra.get("explicit_remember") is True for memory in source_memories):
             extra["explicit_remember"] = True
         memory = Memory(
@@ -506,8 +512,8 @@ class Compactor:
             scope_source=summary["scope_source"],
             aliases=list(summary["aliases"]),
             keywords=list(summary["keywords"]),
-            sources=self._merge_sources(source_memories),
-            created=self._first_created(source_memories, now),
+            sources=sources,
+            created=canonical.created,
             updated=now,
             hit_count=sum(memory.hit_count for memory in source_memories),
             last_hit_at=self._last_hit(source_memories),
@@ -561,8 +567,10 @@ class Compactor:
             if replacement.memory.memory_id in replacement_ids:
                 raise CompactionError("duplicate compaction replacement id")
             replacement_ids.add(replacement.memory.memory_id)
-            if replacement.memory.memory_id in active_ids:
-                raise CompactionError("compaction replacement id collides with active memory")
+            if replacement.memory.memory_id not in replacement.source_ids:
+                raise CompactionError("compaction replacement must preserve one source identity")
+            if replacement.memory.memory_id not in active_ids:
+                raise CompactionError("compaction canonical survivor is not active")
             for source_id in replacement.source_ids:
                 if source_id in consumed:
                     raise CompactionError("compaction source memory is consumed twice")
@@ -581,8 +589,8 @@ class Compactor:
             raise CompactionError("compaction source is outside the candidate set")
         for replacement in replacements:
             path = self.service.vault.memory_path(replacement.memory.memory_id, "knowledge")
-            if path.is_symlink() or path.exists():
-                raise CompactionError("compaction replacement exists without a pending transaction")
+            if path.is_symlink() or not path.exists():
+                raise CompactionError("compaction canonical survivor is unavailable")
 
     def _build_plan(
         self,
@@ -601,6 +609,8 @@ class Compactor:
                 source_candidates = [by_id[source_id.casefold()] for source_id in source_ids]
             except KeyError as error:
                 raise CompactionError("compaction source is outside the snapshot") from error
+            if any(candidate.memory.type != summary.get("type") for candidate in source_candidates):
+                raise CompactionError("compaction cannot change memory type")
             replacement = self._build_replacement(summary, source_candidates, now=now)
             if replacement.replacement_tokens >= replacement.source_tokens:
                 raise CompactionError("compaction replacement is not smaller than its sources")
@@ -616,6 +626,8 @@ class Compactor:
     ) -> tuple[str, Memory, str]:
         history_id = self._history_id(source.memory, replacement.memory.memory_id, source.raw_hash)
         extra = dict(source.memory.extra)
+        history_sources, source_metadata = merge_sources([], source.memory.sources, extra=extra)
+        extra.update(source_metadata)
         extra.update(
             {
                 "reason": "compaction",
@@ -637,7 +649,7 @@ class Compactor:
             scope_source=source.memory.scope_source,
             aliases=list(source.memory.aliases),
             keywords=list(source.memory.keywords),
-            sources=[dict(item) for item in source.memory.sources],
+            sources=history_sources,
             created=source.memory.created,
             updated=source.memory.updated,
             hit_count=source.memory.hit_count,
@@ -741,12 +753,22 @@ class Compactor:
                 self._write_journal_unlocked(journal)
                 for replacement in replacements:
                     path = self.service.vault.memory_path(replacement.memory.memory_id, "knowledge")
-                    if path.exists() or path.is_symlink():
-                        raise CompactionError("compaction replacement exists without a pending transaction")
+                    if path.is_symlink() or not path.exists():
+                        raise CompactionError("compaction canonical survivor disappeared")
+                    canonical_source = selected_by_id[replacement.memory.memory_id]
+                    try:
+                        current = path.read_text(encoding="utf-8")
+                    except (OSError, UnicodeError) as error:
+                        raise CompactionError("cannot read compaction canonical survivor") from error
+                    if _sha256(current) != canonical_source.raw_hash:
+                        raise CompactionError("compaction canonical survivor changed before replacement")
                     atomic_write_text(path, replacement.raw)
                 journal = dict(journal, phase="replacements")
                 self._write_journal_unlocked(journal)
+                survivor_ids = {replacement.memory.memory_id for replacement in replacements}
                 for source in consumed_candidates:
+                    if source.memory.memory_id in survivor_ids:
+                        continue
                     if source.path.is_symlink():
                         raise CompactionError("unsafe active memory path")
                     try:
@@ -792,8 +814,16 @@ class Compactor:
 
     def _run(self, *, model: Any = None, router: Any = None, explicit: bool) -> dict[str, Any]:
         threshold, ratio = self._config()
+        now = _clock_now(getattr(self.service, "clock", None))
+        try:
+            retention = RetentionManager(self.service).maintain(now)
+        except RetentionError as error:
+            if explicit:
+                raise CompactionError("retention maintenance failed") from error
+            return {"status": "failed", "error": "retention maintenance failed"}
         selected, all_active, active_tokens = self._snapshot(threshold, ratio)
         result = self._base_result(selected, all_active, active_tokens, threshold, ratio)
+        result["retention"] = retention
         if not selected:
             return result
         try:
@@ -818,7 +848,6 @@ class Compactor:
             if not output["memories"]:
                 result["status"] = "noop"
                 return result
-            now = _clock_now(getattr(self.service, "clock", None))
             replacements = self._build_plan(output, selected, now=now)
             self._preflight(selected, all_active, replacements)
             history_ids, replacement_ids = self._commit(

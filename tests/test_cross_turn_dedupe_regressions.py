@@ -7,7 +7,6 @@ from pathlib import Path
 
 from memleaf import Memleaf
 from memleaf.index import event_key
-from memleaf.validation import is_mixed_future_use_text
 
 
 from tests.semantic_fixtures import semantic_fixture
@@ -79,12 +78,10 @@ class CrossTurnDedupeRegressionTests(unittest.TestCase):
     def active(self):
         return [record.memory for record in self.service._read_memories_unlocked("knowledge")]
 
-    def test_dated_todo_plus_future_document_rule_is_mixed_future_use(self):
-        text = (
-            "alpha 项目架构评审文档修改仍需在2026-09-03前完成，"
-            "后续需求文档直接发送联系人甲、联系人乙，抄送联系人丙，并确认附件。"
-        )
-        self.assertTrue(is_mixed_future_use_text(text))
+    def test_atomicity_is_model_owned_not_a_local_business_classifier(self):
+        validation_source = (Path(__file__).parents[1] / "src" / "memleaf" / "validation.py").read_text(encoding="utf-8")
+        self.assertNotIn("is_mixed_future_use_text", validation_source)
+        self.assertNotIn("_PROJECT_PLAN_MARKERS", validation_source)
 
     def test_existing_todo_no_change_and_new_document_flow_create_separately(self):
         existing = self.service.create_memory(
@@ -125,7 +122,6 @@ class CrossTurnDedupeRegressionTests(unittest.TestCase):
         )
         backend = QueueBackend(
             [
-                gate([mixed]),
                 gate([old_no_change, new_flow]),
                 summary(
                     user,
@@ -146,7 +142,7 @@ class CrossTurnDedupeRegressionTests(unittest.TestCase):
         self.assertIn("需求文档", new.body)
         self.assertNotIn("2026-09-03", new.body)
         self.assertEqual([], self.service._read_memories_unlocked("history"))
-        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "summarize"])
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
 
     def test_create_is_deferred_when_related_active_memory_already_covers_same_use(self):
         existing = self.service.create_memory(

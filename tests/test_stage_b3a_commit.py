@@ -225,7 +225,7 @@ class StageB3ACommitTest(unittest.TestCase):
 
         def fail(path, text, *args, **kwargs):
             path = Path(path)
-            if path.parent == self.service.vault.knowledge_path and path.name.startswith("mem-compact-"):
+            if path.parent == self.service.vault.knowledge_path and "merged fact" in text:
                 raise OSError("replacement injection")
             return original(path, text, *args, **kwargs)
 

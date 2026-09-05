@@ -59,16 +59,6 @@ _DIAGNOSTIC_CANDIDATE_REQUIRED = frozenset(
 )
 
 
-_DERIVED_OVERDUE_RE = re.compile(
-    r"(?:逾期|超期|overdue)\s*\d+(?:\.\d+)?\s*(?:天|日|days?)",
-    re.IGNORECASE,
-)
-
-
-_EXECUTION_RECEIPT_RE = re.compile(
-    r"(?:核验归档|归档核验|服务器已接受(?:提交|投递)|server accepted)",
-    re.IGNORECASE,
-)
 
 
 _SCOPE_CORRECTION_MARKER_RE = re.compile(
@@ -138,14 +128,6 @@ def _project_scope_occurrences(
 
 def _automatic_read_only_query(events: Iterable[Mapping[str, Any]]) -> bool:
     return read_only_turn(analyze_turn_evidence(events))
-
-
-def _automatic_transient_memory(value: Any) -> bool:
-    """Reject volatile counters and one-off execution receipts at write time."""
-
-    if not isinstance(value, str):
-        return False
-    return bool(_DERIVED_OVERDUE_RE.search(value) or _EXECUTION_RECEIPT_RE.search(value))
 
 
 _CANDIDATE_LOOKUP_SPLIT = re.compile(

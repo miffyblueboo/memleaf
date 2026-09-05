@@ -1,5 +1,5 @@
 name: memleaf
-version: 0.2.26
+version: 0.2.27
 description: "Hermes-native external MemoryProvider for local-first Markdown memory shared with the memleaf MCP server."
 hooks:
   - prefetch

@@ -2,6 +2,15 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.27 — 2026-09-05
+
+- Remove application-, document-, tool- and business-specific semantic classifiers from the Core admission/target path. The model owns future-use and atomicity judgments; Core retains source-neutral evidence, Scope, type, target, date, revision and conflict validation.
+- Bound per-memory provenance to 16 retained source rows while preserving cumulative source count/digest metadata, preventing repeated UPDATEs and copied history versions from growing `sources` without limit.
+- Retire completed/cancelled todos from active `knowledge/` after a configurable grace period (30 days by default) while keeping them queryable through historical todo enumeration.
+- Add bounded history retention (`3650` days and `32` complete versions per stable identity by default) with an explicit `keep_all` opt-out for audit-oriented Vaults.
+- Preserve an existing canonical memory identity during compaction instead of generating `mem-compact-*` IDs; rollback remains journaled and crash-safe.
+- Keep Markdown as the source of truth, retain zero runtime dependencies and no daemon, and preserve Hermes/Codex shared-Vault retrieval and write contracts.
+
 ## 0.2.26 — 2026-09-05
 
 - Refactor automatic processing into explicit model execution, planning, update coordination, commit, journal and audit owners while preserving Markdown Vaults, memory IDs, Hermes MemoryProvider and cross-Agent retrieval contracts. No runtime dependency or independent service is added.

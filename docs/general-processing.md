@@ -1,4 +1,4 @@
-# General processing reliability contract — 0.2.26 candidate
+# General processing reliability contract — 0.2.27
 
 This is source-neutral processing, not a mail extractor. Dialogue, documents,
 calendars, issue trackers and terminal/tool observations use the same admission

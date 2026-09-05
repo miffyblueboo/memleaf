@@ -43,6 +43,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "memory_compact_threshold_tokens": 100000,
         "memory_compact_candidate_ratio": 0.30,
         "inbox_cleanup_hours": 24,
+        "closed_todo_retention_days": 30,
+    },
+    "history": {
+        "policy": "bounded",
+        "retention_days": 3650,
+        "max_versions_per_memory": 32,
     },
     "capture": {
         "visible_messages_only": True,
@@ -118,6 +124,18 @@ def load_config(path: Path | str, *, vault: Path | str | None = None) -> dict[st
     cleanup_hours = process.get("inbox_cleanup_hours") if isinstance(process, Mapping) else None
     if type(cleanup_hours) is not int or cleanup_hours < 0:
         raise ValueError("invalid memleaf process.inbox_cleanup_hours")
+    closed_todo_days = process.get("closed_todo_retention_days") if isinstance(process, Mapping) else None
+    if type(closed_todo_days) is not int or closed_todo_days < 0:
+        raise ValueError("invalid memleaf process.closed_todo_retention_days")
+    history = merged.get("history")
+    if not isinstance(history, Mapping):
+        raise ValueError("invalid memleaf history settings")
+    if history.get("policy") not in {"bounded", "keep_all"}:
+        raise ValueError("invalid memleaf history.policy")
+    if type(history.get("retention_days")) is not int or history["retention_days"] < 1:
+        raise ValueError("invalid memleaf history.retention_days")
+    if type(history.get("max_versions_per_memory")) is not int or history["max_versions_per_memory"] < 1:
+        raise ValueError("invalid memleaf history.max_versions_per_memory")
     llm = merged.get("llm")
     if not isinstance(llm, Mapping):
         raise ValueError("invalid memleaf llm settings")

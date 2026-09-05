@@ -4,8 +4,8 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **版本：0.2.26。**
-> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。本版完成共享记忆核心重构；真实模型语义效果仍需结合本地模型和业务样本验收。
+> **版本：0.2.27。**
+> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。本版收口长期运行治理：Core 语义判断保持 source-neutral，并为来源、关闭待办、历史版本和压缩身份增加有界生命周期。真实模型语义效果仍需结合本地模型和代表性样本验收。
 > **当前版本支持 Hermes 和 Codex。** Antigravity（反重力）不检测、不安装、不配置。
 
 ## 项目定位
@@ -398,6 +398,28 @@ $HOME/.memleaf/
 
 `knowledge/` 和 `history/` 是可读数据；`_index/` 主要是派生索引或运行状态。删除或直接修改 `_index/` 可能丢失处理水位、Hook 游标或当前检索账本；需要重建时优先使用 `rebuild_index()`。
 
+### 长期运行与保留策略
+
+默认配置对长期增长做三层治理，而不引入后台服务：
+
+```yaml
+process:
+  memory_compact_threshold_tokens: 100000
+  memory_compact_candidate_ratio: 0.30
+  inbox_cleanup_hours: 24
+  closed_todo_retention_days: 30
+history:
+  policy: bounded
+  retention_days: 3650
+  max_versions_per_memory: 32
+```
+
+- active Markdown 每条最多保留 16 个来源明细，同时记录累计 `source_count`、`source_digest` 和省略数量，避免 UPDATE 让 `sources` 无限膨胀；
+- 已完成/已取消 todo 默认在 30 天后退出 `knowledge/` 并进入 `history/`；`list_todos(status=completed|cancelled|all)` 仍可枚举这些历史待办；
+- `history.policy: bounded` 默认每个稳定记忆身份最多保留 32 个完整历史版本，且超过 3650 天的版本可被维护流程淘汰；需要永久审计时可显式设置 `history.policy: keep_all`；
+- compaction 会保留一个既有 canonical `memory_id`，不会再为整理结果创建新的 `mem-compact-*` 身份；单条精简保持原 ID，多条合并选择一个稳定 survivor。
+- 这些维护动作在正常 `process()` / `remember()` / `compact()` 生命周期中执行，不需要 daemon；普通只读检索本身不触发维护写入。
+
 默认目录尽量使用 `0700`，文件默认明文保存。memleaf 没有内置加密层，请自行保护 Vault、备份和模型调用凭证。
 
 ## 隐私与安全边界
@@ -438,7 +460,7 @@ python -m build --wheel --sdist
 - 没有模型路由时只能捕获和检索，不能完成自动提炼、显式记忆或压缩；
 - 真实宿主长期运行效果仍取决于本机 Agent 版本、配置、重启和模型可用性；
 - 不提供 Obsidian 插件、Web 管理界面、云同步或透明加密层；
-- `history/` 的批量清理不会被普通检索自动执行，删除操作需要明确调用维护接口。
+- 普通只读检索不会触发保留策略写入；历史淘汰和关闭待办退休只在正常处理/维护生命周期中执行。
 
 
 ## License
@@ -449,7 +471,7 @@ MIT，见 [LICENSE](LICENSE)。
 *Your memories, in files you own.*
 
 
-## 通用处理与只读验收（0.2.26）
+## 通用处理与只读验收（0.2.27）
 
 邮件、日历、工单、文件、浏览器与普通对话共用证据准入、覆盖检查和写入路径。
 自动摘要只能使用获准引用的原文；助手复述和旧记忆回读不能单独授权新增写入。

@@ -26,8 +26,6 @@ from memleaf.prompts import (
 from memleaf.validation import (
     ModelOutputError,
     NO_CHANGE_DECISION,
-    is_aggregate_operational_text,
-    is_attachment_followup_only_text,
     normalize_relative_calendar_text,
 )
 from memleaf.index import event_key, turn_key
@@ -439,49 +437,37 @@ class StageB1Test(unittest.TestCase):
             "2026-09-03（周四）",
         )
 
-    def test_aggregate_operational_detector_requires_a_combined_digest(self):
-        self.assertTrue(
-            is_aggregate_operational_text(
-                "Orion汇总（2026-09-02）：子任务完成4条；现场增补待受理2条——另派发1条。"
-            )
-        )
-        self.assertFalse(
-            is_aggregate_operational_text(
-                "Orion项目巡检：浦银安盛任务提供测试数据逾期5天。"
-            )
-        )
+    def test_business_shaped_candidate_is_not_reclassified_by_local_rules(self):
+        key = event_key("business-shaped")
+        raw = json.dumps({"candidates": [{
+            "candidate_id": "business-shaped",
+            "memory": "Orion汇总：子任务完成4条；现场增补待受理2条。",
+            "evidence_event_ids": [key],
+            "duplicate": False,
+            "worth": True,
+            "type": "fact",
+            "scopes": ["global"],
+            "scope_source": "model",
+        }]})
+        parsed = parse_gate_output(raw, current_event_keys=[key])
+        self.assertEqual(parsed["candidates"][0]["type"], "fact")
+        self.assertTrue(parsed["candidates"][0]["worth"])
 
-    def test_attachment_followup_detector_keeps_only_concrete_actions(self):
-        self.assertTrue(
-            is_attachment_followup_only_text(
-                "鑫元基金评审PPT和SIT问题清单待跟进处理。"
-            )
-        )
-        self.assertTrue(
-            is_attachment_followup_only_text(
-                "评审PPT附件8MB，邮件918，需跟进。"
-            )
-        )
-        self.assertTrue(
-            is_attachment_followup_only_text(
-                "评审PPT 2026-09-02版本待跟进。"
-            )
-        )
-        self.assertFalse(
-            is_attachment_followup_only_text(
-                "SIT问题清单需在2026-09-03前由张三逐项整改。"
-            )
-        )
-        self.assertFalse(
-            is_attachment_followup_only_text(
-                "以后需求文档直接发给王佳鑫、黄欣婕，并抄送谭宇来。"
-            )
-        )
-        self.assertFalse(
-            is_attachment_followup_only_text(
-                "中银国际历史数据库和附件需要全量迁移。"
-            )
-        )
+    def test_document_shaped_candidate_is_not_reclassified_by_local_rules(self):
+        key = event_key("document-shaped")
+        raw = json.dumps({"candidates": [{
+            "candidate_id": "document-shaped",
+            "memory": "评审材料需要在2026-09-03前由张三逐项整改。",
+            "evidence_event_ids": [key],
+            "duplicate": False,
+            "worth": True,
+            "type": "todo",
+            "scopes": ["global"],
+            "scope_source": "model",
+        }]})
+        parsed = parse_gate_output(raw, current_event_keys=[key])
+        self.assertEqual(parsed["candidates"][0]["type"], "todo")
+        self.assertTrue(parsed["candidates"][0]["worth"])
 
     def test_process_retries_schema_violation_until_third_gate_attempt_and_commits(self):
         responses = [
@@ -818,9 +804,8 @@ class RouterAndAdapterTest(unittest.TestCase):
         for value in ("model", "user", "session_context", "insufficient_context"):
             self.assertIn(value, GATE_SYSTEM)
         self.assertIn("30", GATE_SYSTEM)
-        self.assertIn("event_key", GATE_SYSTEM)
-        self.assertIn("turn_id", GATE_SYSTEM)
-        self.assertIn("event_id", GATE_SYSTEM)
+        self.assertIn("evidence_event_ids", GATE_SYSTEM)
+        self.assertIn("unit_id", GATE_SYSTEM)
         self.assertNotIn("event-key-placeholder", GATE_SYSTEM)
         for value in ("preference", "fact", "project", "todo", "event", "identity", "other"):
             self.assertIn(value, SUMMARIZE_SYSTEM)
@@ -866,79 +851,52 @@ class RouterAndAdapterTest(unittest.TestCase):
         self.assertNotIn("Minimal valid JSON example", gate_prompt([]))
 
     def test_gate_worth_is_based_on_future_reuse_not_content_category(self):
-        gate_text = GATE_SYSTEM.lower()
-        normalized_gate_text = " ".join(gate_text.split())
+        normalized_gate_text = " ".join(GATE_SYSTEM.lower().split())
         for phrase in (
-            "reasonable, concrete future reuse",
-            "later answer or action",
+            "concrete future reuse",
+            "later answer/action wrong",
             "forget a commitment",
-            "repeat an investigation",
-            "repeat a mistake",
-            "no plausible future use",
-            "one candidate for one future use",
+            "repeated investigation",
+            "source type, tool name, application, document kind, message kind, and business domain never decide worth",
+            "temporary execution details",
+            "transient observations",
+            "one-off chatter",
             "zero or one candidate",
-            "draft awaiting confirmation",
-            "temporary error",
-            "unconfirmed suggestion",
-            "independent future use",
-            "email body/signature/contact details",
-            "test pass/fail",
-            "audit findings",
-            "verification procedures",
-            "operational health/status",
-            "assistant's own summary",
-            "status marker",
+            "independent future questions/actions",
+            "explicit remember mode only",
         ):
             self.assertIn(phrase, normalized_gate_text)
-        self.assertIn("content type, source, and form do not decide worth", normalized_gate_text)
-        for category in ("email", "daily report", "troubleshooting result", "tool result", "process detail"):
-            self.assertIn(category, normalized_gate_text)
-        self.assertIn("may be worth keeping or discarding", normalized_gate_text)
-        self.assertIn("bypasses", normalized_gate_text)
-        self.assertNotIn("never keep email", normalized_gate_text)
-        self.assertNotIn("always keep troubleshooting", normalized_gate_text)
+        for forbidden in ("email", "mailbox", "attachment", "daily report", "ppt"):
+            self.assertNotIn(forbidden, normalized_gate_text)
+
 
     def test_gate_and_summary_use_one_complete_future_use_topic(self):
-        gate_text = GATE_SYSTEM.lower()
-        normalized_gate_text = " ".join(gate_text.split())
+        normalized_gate_text = " ".join(GATE_SYSTEM.lower().split())
         for phrase in (
-            "smallest complete",
-            "same entity or project",
-            "list, overall state, subset",
-            "progress, deadline, and next step",
-            "independently retrieved and updated",
-            "adjacent overlapping snapshots",
-            "ordinary turns should produce zero or one candidate",
-            "genuinely independent future questions or actions",
+            "smallest complete memory",
+            "independently retrievable and updateable future-use topic",
+            "independent future uses",
+            "details that belong to the same future question/action",
+            "zero or one candidate",
+            "genuinely independent future questions/actions",
         ):
             self.assertIn(phrase, normalized_gate_text)
 
-        summary_text = SUMMARIZE_SYSTEM.lower()
-        normalized_summary_text = " ".join(summary_text.split())
+        normalized_summary_text = " ".join(SUMMARIZE_SYSTEM.lower().split())
         for phrase in (
             "independently retrievable and updateable future-use topic",
-            "related active memleaf memories",
-            "future question/action",
-            "set update_memory_id",
+            "related active memories",
             "retain still-valid information",
-            "replace",
-            "latest confirmed state",
-            "keep type identical",
-            "adjacent",
-            "new sibling memory",
-            "genuinely different",
-            "future question/action",
-            "email's body",
-            "temporary path",
-            "file byte count",
-            "message id",
-            "test pass/fail",
-            "audit conclusion",
-            "verification procedure",
-            "operational health/status",
-            "assistant-only claim",
+            "remove or replace superseded facts",
+            "keep the target type identical",
+            "do not create an adjacent sibling",
+            "smallest complete confirmed content",
+            "transient execution detail",
         ):
             self.assertIn(phrase, normalized_summary_text)
+        for forbidden in ("email", "mailbox", "attachment", "daily report", "ppt"):
+            self.assertNotIn(forbidden, normalized_summary_text)
+
 
     def test_summarize_update_target_must_be_a_related_active_memory_when_supplied(self):
         summary = {

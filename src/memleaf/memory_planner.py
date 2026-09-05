@@ -14,8 +14,8 @@ from .update_coordinator import UpdateCoordinator
 from .evidence_policy import retain_tool_evidence
 from .prompts import GATE_SYSTEM, SUMMARIZE_SYSTEM, gate_prompt, summarize_prompt
 from .retrieval import normalize_term
-from .validation import ModelOutputError, NO_CHANGE_DECISION, _model_scope_grounding_evidence, parse_gate_output, parse_strict_json, parse_summarize_output, is_aggregate_operational_text, is_attachment_followup_only_text, is_actionable_todo_text, is_mixed_future_use_text
-from .process_common import ProcessingError, _TARGET_NOT_RELATED, _TARGET_SAME_USE, _TARGET_UNKNOWN, _automatic_create_conflicts, _automatic_transient_memory, _candidate_lookup_queries, _event_payload, _grounded_due_dates, _normalize_summary_dates
+from .validation import ModelOutputError, NO_CHANGE_DECISION, _model_scope_grounding_evidence, parse_gate_output, parse_strict_json, parse_summarize_output
+from .process_common import ProcessingError, _TARGET_NOT_RELATED, _TARGET_SAME_USE, _TARGET_UNKNOWN, _automatic_create_conflicts, _candidate_lookup_queries, _event_payload, _grounded_due_dates, _normalize_summary_dates
 
 
 class MemoryPlanner:
@@ -352,20 +352,7 @@ class MemoryPlanner:
                 )
                 target_relations[candidate_id] = relation
                 if relation == _TARGET_NOT_RELATED:
-                    if not (
-                        target_fields == {"duplicate_memory_id"}
-                        and self.inputs._model_scope_is_elliptical(
-                            candidate,
-                            turn,
-                            validation_scope_registry,
-                        )
-                    ):
-                        invalid_targets[candidate_id] = target_fields
-                    else:
-                        # Let the candidate-local scope query reject this
-                        # duplicate target once, preserving the original
-                        # one-response safety boundary for inherited scopes.
-                        candidate_level_target_ids.add(candidate_id)
+                    invalid_targets[candidate_id] = target_fields
                 elif relation == _TARGET_UNKNOWN:
                     unknown_target_ids.add(candidate_id)
                 if "update_memory_id" in target_fields:
@@ -546,35 +533,6 @@ class MemoryPlanner:
                     scopes=candidate.get("scopes"),
                 )
                 continue
-            if candidate.get("worth") and (
-                _automatic_transient_memory(candidate.get("memory"))
-            ):
-                self.audit._record_disposition(
-                    turn_ref,
-                    candidate,
-                    "NO_CHANGE",
-                    reason="transient",
-                )
-                continue
-            # A combined mailbox/daily digest is not an atomic memory.  If a
-            # concrete action was worth retaining, the gate must emit it as
-            # its own candidate; the aggregate shell itself is NO_CHANGE.
-            if candidate.get("worth") and is_aggregate_operational_text(candidate.get("memory")):
-                self.audit._record_disposition(
-                    turn_ref,
-                    candidate,
-                    "NO_CHANGE",
-                    reason="aggregate",
-                )
-                continue
-            if candidate.get("worth") and is_attachment_followup_only_text(candidate.get("memory")):
-                self.audit._record_disposition(
-                    turn_ref,
-                    candidate,
-                    "NO_CHANGE",
-                    reason="attachment_followup",
-                )
-                continue
             candidate_scopes = list(candidate["scopes"])
             # An automatic candidate with no reliable project attribution is
             # retained as a retryable inbox turn, never silently promoted to
@@ -595,17 +553,23 @@ class MemoryPlanner:
                 scope_directory is not None
                 and not scope_directory_complete
                 and correction_plan is None
-                and (
-                    candidate["worth"] or has_target
-                )
             ):
-                self.audit._defer_candidate(
-                    turn_ref,
-                    candidate,
-                    "scope_directory_incomplete",
-                    scopes=candidate_scopes,
-                )
-                continue
+                # An incomplete metadata directory cannot safely authorize a
+                # new target or prove that no duplicate exists.  However, an
+                # explicit model-selected target may still proceed when the
+                # same source-neutral target relation check already verified
+                # it from the bounded related-memory context.
+                target_relation = target_relations.get(candidate_id_key)
+                if (not has_target and candidate["worth"]) or (
+                    has_target and target_relation != _TARGET_SAME_USE
+                ):
+                    self.audit._defer_candidate(
+                        turn_ref,
+                        candidate,
+                        "scope_directory_incomplete",
+                        scopes=candidate_scopes,
+                    )
+                    continue
 
             if (
                 candidate["worth"]
@@ -912,26 +876,6 @@ class MemoryPlanner:
                         if isinstance(summary.get("update_memory_id"), str)
                         else None
                     ),
-                )
-                continue
-            if is_attachment_followup_only_text(
-                f"{summary.get('title', '')}\n{summary.get('body', '')}"
-            ):
-                self.audit._record_disposition(
-                    turn_ref,
-                    candidate,
-                    "NO_CHANGE",
-                    reason="attachment_followup",
-                )
-                continue
-            if _automatic_transient_memory(
-                f"{summary.get('title', '')}\n{summary.get('body', '')}"
-            ):
-                self.audit._record_disposition(
-                    turn_ref,
-                    candidate,
-                    "NO_CHANGE",
-                    reason="transient",
                 )
                 continue
             if gate_update_target is not None:
