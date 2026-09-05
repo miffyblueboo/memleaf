@@ -1,0 +1,43 @@
+name: Apply v0.2.27 patch
+
+on:
+  push:
+    branches:
+      - fix/v0.2.27-long-run-hygiene
+    paths:
+      - .github/workflows/apply-v027-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/v0.2.27-long-run-hygiene
+          fetch-depth: 0
+      - name: Reassemble and verify tested patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .v027.patch.part01 .v027.patch.part02 .v027.patch.part03 .v027.patch.part04 \
+              .v027.patch.part05 .v027.patch.part06 .v027.patch.part07 .v027.patch.part08 \
+              > /tmp/v027.patch.gz.b64
+          test "$(sha256sum /tmp/v027.patch.gz.b64 | awk '{print $1}')" = "a8cb7570f6e7b05ebccd44fbce607d858f08b975630fbf5fbeaa2dc15148169c"
+          base64 -d /tmp/v027.patch.gz.b64 | gzip -d > /tmp/v027.patch
+          test "$(sha256sum /tmp/v027.patch | awk '{print $1}')" = "9bf371e49ab330e413f3c0d0909a247017fa3e9a04e594dc468ee1cb3dc3234a"
+          git apply --check /tmp/v027.patch
+      - name: Apply patch and remove transport files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --index /tmp/v027.patch
+          git rm .v027.patch.part01 .v027.patch.part02 .v027.patch.part03 .v027.patch.part04 \
+                 .v027.patch.part05 .v027.patch.part06 .v027.patch.part07 .v027.patch.part08
+          git rm .github/workflows/apply-v027-patch.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "feat: harden long-run memory hygiene for v0.2.27"
+          git push origin HEAD:fix/v0.2.27-long-run-hygiene
