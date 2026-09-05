@@ -1,0 +1,103 @@
+name: Persist general processing WIP checkpoint
+
+on:
+  push:
+    branches: [fix/v0.2.26-general-processing-pipeline]
+    paths: [.github/workflows/checkpoint-general-processing.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  checkpoint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify baseline and reconstruct reviewed working files
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/fix/v0.2.26-general-processing-pipeline
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD^)" = 7f8fdd025fcc2db5467067dedc58b28628cefdf4
+          python - <<'PY'
+          import base64, gzip, hashlib, json, subprocess
+          from pathlib import Path
+          parts = [
+              'ffedf2043f9c586b1ec82129c56cac80e443d9e2',
+              '1e40b61e6ace05d01ba11e680dc8954143b30d2d',
+              'acbbf1b17ee2c4079854f55d4979daaaae918402',
+              '2129fc6c032ef2e0f56f3fb0753da11952a42ff0',
+          ]
+          chunks = []
+          for sha in parts:
+              response = json.loads(subprocess.check_output([
+                  'gh', 'api', 'repos/miffyblueboo/memleaf/git/blobs/' + sha
+              ]))
+              data = base64.b64decode(response['content'])
+              assert hashlib.sha1(f'blob {len(data)}\0'.encode() + data).hexdigest() == sha
+              chunks.append(data)
+          payload = gzip.decompress(base64.b64decode(b''.join(chunks), validate=True))
+          assert hashlib.sha256(payload).hexdigest() == '269f03db9e841f62a30505a7355dfcc8718bc108d0e38cfd42a461a90f33e628'
+          changes = json.loads(payload)
+          expected = {
+              'docs/v0.2.26-processing-status.md', 'src/memleaf/admission.py',
+              'src/memleaf/capture.py', 'src/memleaf/hermes_provider/__init__.py',
+              'src/memleaf/host_events.py', 'src/memleaf/host_runtime.py',
+              'src/memleaf/inbox.py', 'src/memleaf/index.py',
+              'src/memleaf/mcp_server.py', 'src/memleaf/processing.py',
+              'src/memleaf/prompts.py', 'src/memleaf/provenance.py',
+              'src/memleaf/turn_plan.py', 'tests/test_general_evidence_admission.py',
+              'tests/test_general_tool_provenance.py',
+          }
+          assert set(changes) == expected
+          staged = {}
+          for name, change in changes.items():
+              path = Path(name)
+              assert not path.is_symlink()
+              if change['before'] is None:
+                  assert not path.exists(), name
+                  before = b''
+              else:
+                  before = path.read_bytes()
+                  assert hashlib.sha256(before).hexdigest() == change['before'], name
+              lines = before.decode('utf-8').splitlines(keepends=True)
+              for start, end, replacement in reversed(change['ops']):
+                  assert 0 <= start <= end <= len(lines)
+                  lines[start:end] = replacement.splitlines(keepends=True)
+              result = ''.join(lines).encode('utf-8')
+              assert hashlib.sha256(result).hexdigest() == change['after'], name
+              staged[path] = result
+          for path, content in staged.items():
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_bytes(content)
+          print(f'Verified and restored {len(staged)} exact working files.')
+          PY
+      - name: Compile and execute focused regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade setuptools wheel
+          python -m pip install --no-build-isolation --no-deps -e .
+          python -m compileall -q src tests
+          python -m unittest tests.test_general_evidence_admission tests.test_general_tool_provenance tests.test_admission_noise tests.test_todo_state_recovery -v
+          git diff --check
+      - name: Save checkpoint on the repair branch only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/checkpoint-general-processing.yml
+          git add docs/v0.2.26-processing-status.md src/memleaf/*.py src/memleaf/hermes_provider/__init__.py tests/test_general_evidence_admission.py tests/test_general_tool_provenance.py
+          git commit -m 'WIP: source-neutral admission, tool evidence and replay journal'
+          git push origin HEAD:refs/heads/fix/v0.2.26-general-processing-pipeline
