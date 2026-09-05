@@ -1,0 +1,112 @@
+name: Apply complete verified v026 candidate
+on:
+  push:
+    branches: [fix/v0.2.26-general-processing-pipeline]
+    paths: [.github/workflows/apply-v026-verified.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.event.head_commit.message == 'chore: apply complete verified v026 candidate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify complete transport and exact source tree
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = d935165dcc4f37d620c25b6d9b802077a1a8930d
+          test "$(git rev-parse HEAD^{tree})" != 8bceb53230bf08d72d16a369fd770dc7d30f6552
+          python - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          repo = 'miffyblueboo/memleaf'
+          chunks = [
+              '24f406bef61bfd43f6030745c5e03a585288469f',
+              '69c960f53e0ee91024789fb2559ec8df96c6442d',
+              '625e5b61ddd03bd74c084d3a6da2580fa471e1fa',
+              '3152083450ccbbc14fdc26166ee72236d61560ba',
+              'a3b0eda52a71401d5d455144f03d01b843a66453',
+              'c9c06fabdaa0d8dad1a2fbba9b3c552cc5505b4a',
+              '3c0e22f8ee5bc11efd756d9a7f432ea7d69825fe',
+              '80c291da071ef5823b6a1a2d0381d2a6046a3274',
+              'e8061ac410db26da026ba9db530c556804e463e2',
+              '45c0f10fad2af43ecd833a34fbf8e2f956d69da6',
+              'd06da656d1a44b014fb1c5cf1d6b87d7fa71261c',
+          ]
+          parts = []
+          for index, sha in enumerate(chunks):
+              req = urllib.request.Request(
+                  f'https://api.github.com/repos/{repo}/git/blobs/{sha}',
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                           'Accept': 'application/vnd.github+json',
+                           'User-Agent': 'memleaf-complete-source-verification'})
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  value = json.load(response)
+              assert value['encoding'] == 'base64'
+              part = base64.b64decode(''.join(value['content'].split()), validate=True)
+              assert len(part) == (5228 if index == 10 else 6000), index
+              actual = hashlib.sha1(b'blob ' + str(len(part)).encode() + b'\0' + part).hexdigest()
+              assert actual == sha, (index, actual)
+              parts.append(part)
+          encoded = b''.join(parts)
+          assert len(encoded) == 65228
+          compressed = base64.b64decode(encoded, validate=True)
+          assert len(compressed) == 48920
+          assert hashlib.sha256(compressed).hexdigest() == '9b761ccfd1db285adca04e55892f4ebcb2b2b2840cc29e26cef35e7baf0015c0'
+          decoder = lzma.LZMADecompressor()
+          patch = decoder.decompress(compressed, max_length=209408)
+          assert decoder.eof and not decoder.unused_data, 'incomplete or trailing transport'
+          assert len(patch) == 209407
+          assert hashlib.sha256(patch).hexdigest() == 'f5eb2fc4f6191eab18ce1b875bfd258125e54990b164403e6faeac0bab4bf9c0'
+          out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'v026-verification'
+          out.mkdir(exist_ok=True)
+          path = out / 'candidate.patch'
+          path.write_bytes(patch)
+          subprocess.run(['git', 'apply', '--check', str(path)], check=True)
+          subprocess.run(['git', 'apply', str(path)], check=True)
+          pathlib.Path('.github/workflows/apply-v026-verified.yml').unlink()
+          subprocess.run(['git', 'add', '-A'], check=True)
+          tree = subprocess.check_output(['git', 'write-tree'], text=True).strip()
+          assert tree == '8bceb53230bf08d72d16a369fd770dc7d30f6552', tree
+          (out / 'source-identity.json').write_text(json.dumps({
+              'base_commit': 'd935165dcc4f37d620c25b6d9b802077a1a8930d',
+              'target_tree': tree, 'patch_sha256': hashlib.sha256(patch).hexdigest(),
+              'patch_bytes': len(patch), 'transport_complete': True}, indent=2))
+          print('Verified complete patch and exact final source tree:', tree)
+          PY
+      - name: Execute final-source compilation and complete regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install .
+          python -m compileall -q src tests examples
+          git diff --cached --check
+          python -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/v026-verification/full-tests.log"
+          memleaf --version
+          memleaf-mcp --version
+          test "$(git write-tree)" = 8bceb53230bf08d72d16a369fd770dc7d30f6552
+      - name: Save complete source to repair branch only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: complete source-neutral processing and frozen recovery'
+          git push origin HEAD:refs/heads/fix/v0.2.26-general-processing-pipeline
+          git rev-parse HEAD > "$RUNNER_TEMP/v026-verification/commit.txt"
+          git archive --format=tar.gz -o "$RUNNER_TEMP/v026-verification/complete-source.tar.gz" HEAD
+      - name: Preserve verification and complete source
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v026-complete-source-verification
+          path: ${{ runner.temp }}/v026-verification/
+          retention-days: 30
