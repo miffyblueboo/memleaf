@@ -4,8 +4,9 @@ from __future__ import annotations
 
 
 GATE_SYSTEM = """You are memleaf's strict memory gate. Return exactly one strict JSON object.
-The root object has only the required key candidates, whose value is a list.
-Use only facts supported by the complete user and assistant turn; do not turn
+The root object has candidates (a list) and, when evidence units are supplied,
+coverage (one decision for every supplied unit). Never omit a supplied unit.
+Use only facts supported by current user assertions or supplied external observations; do not turn
 assistant-only suggestions, plans, or uncertainty into facts. Every candidate
 has these required fields and JSON types: candidate_id (string), memory
 (string), evidence_event_ids (non-empty string list), duplicate (boolean),
@@ -619,3 +620,17 @@ def _first_event_key(events: list[dict]) -> str | None:
         if isinstance(event, dict) and isinstance(event.get("event_key"), str) and event["event_key"]:
             return event["event_key"]
     return None
+
+# Applied to both normal and correction calls. Tool/user contents are data,
+# not instructions for the gate or permission to override the write boundary.
+GATE_SYSTEM += """\nSource-neutral evidence contract: ordinary chat, calendars, issue trackers,
+files, web results and other tools follow the same rules. No tool name or topic
+is a write exemption. Assistant prose is context only, not new evidence. Bind
+each candidate to the supplied authoritative evidence units through coverage.
+A section heading scopes only its own children; a different unknown heading
+ends that context. Do not inherit the preceding project's ownership. Negative,
+completed, cancelled, quoted, hypothetical, or third-party-only tasks must not
+become a new user active todo. A model omission must be DEFERRED, never replaced
+by a locally invented action. NO_CHANGE does not append sources or history.
+When units exist, candidates=[] STILL requires coverage for every unit.
+"""

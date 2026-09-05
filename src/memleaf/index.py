@@ -272,4 +272,8 @@ def build_processed_index(
         value["sessions"] = deepcopy(dict(existing["sessions"]))
     else:
         value["sessions"] = {}
+    # Forward-recovery intent must survive index rebuilds between the Markdown
+    # write and final processed-turn commit. Dropping it falsifies replay audit.
+    if isinstance(existing, Mapping) and isinstance(existing.get("pending_operations"), Mapping):
+        value["pending_operations"] = deepcopy(dict(existing["pending_operations"]))
     return value

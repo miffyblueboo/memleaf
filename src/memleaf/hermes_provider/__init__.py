@@ -1234,6 +1234,59 @@ def _bounded_mail_evidence(messages: Optional[List[Dict[str, Any]]]) -> list[dic
     return output
 
 
+def _bounded_current_tool_evidence(messages: Optional[List[Dict[str, Any]]]) -> list[dict[str, str]]:
+    """Match current-turn results strictly by call ID, not tool name/order.
+
+    Kept standard-library-only: Hermes can load this copied provider while the
+    core runs in a separate environment. Core capture redacts and validates
+    these bounded records again before persistence.
+    """
+    if not isinstance(messages, list):
+        return []
+    start = next((index for index in range(len(messages) - 1, -1, -1)
+                  if isinstance(messages[index], Mapping) and messages[index].get("role") == "user"), None)
+    if start is None:
+        # Without a current-turn boundary, cumulative history is not new evidence.
+        return []
+    current = messages[start:]
+    calls = _visible_tool_calls(current)
+    results = _visible_tool_results(current)
+    output = []
+    seen = set()
+    for call in calls:
+        cid, name = call.get("call_id"), call.get("name")
+        if not isinstance(cid, str) or not cid or not isinstance(name, str) or cid in seen:
+            continue
+        if sum(other.get("call_id") == cid for other in calls) != 1:
+            continue
+        matches = [result for result in results if result.get("call_id") == cid]
+        if len(matches) != 1:
+            continue
+        payload = matches[0].get("payload")
+        if isinstance(payload, Mapping) and (payload.get("isError") is True or payload.get("error")):
+            continue
+        try:
+            text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            continue
+        if not text or "\x00" in text:
+            continue
+        item = {"tool_name": name[:320], "call_id": cid[:320],
+                "kind": "retrieved_memory" if re.search(r"(?:^|[_.:/-])memleaf(?:$|[_.:/-])", name, re.I) else "external_observation",
+                "result_status": "success" if len(text) <= 2000 else "truncated",
+                "content": text[:2000]}
+        if isinstance(payload, Mapping):
+            for key in ("record_id", "title", "message_id", "subject", "sender", "domain"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip() and not any(ch in value for ch in "\x00\r\n"):
+                    item[key] = value[:320]
+        output.append(item)
+        seen.add(cid)
+        if len(output) >= 8:
+            break
+    return output
+
+
 class MemleafMemoryProvider(MemoryProvider):
     """Use the local memleaf vault as Hermes' single external provider."""
 
@@ -2505,14 +2558,14 @@ class MemleafMemoryProvider(MemoryProvider):
                     self._last_retrieval_observation = observation
                     self._last_retrieval_audit = str(audit_state.get("status") or "SEARCH_UNKNOWN")
                 lineage_ready = self._retry_pending_lineage(effective_session)
-                mail_evidence = _bounded_mail_evidence(messages)
+                tool_evidence = _bounded_current_tool_evidence(messages)
                 for role, content in visible_events:
                     if not self._capture_visible(
                         session_id=effective_session,
                         turn_id=turn_id,
                         role=role,
                         content=content,
-                        tool_evidence=mail_evidence if role == "assistant" else None,
+                        tool_evidence=tool_evidence if role == "assistant" else None,
                     ):
                         return
                 if not self._auto_process:

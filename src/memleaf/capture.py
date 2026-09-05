@@ -36,36 +36,8 @@ _MAX_MAIL_EVIDENCE_TEXT = 320
 
 
 def _normalize_tool_evidence(value: Any) -> list[dict[str, str]]:
-    if value is None:
-        return []
-    if not isinstance(value, (list, tuple)):
-        raise ValueError("tool evidence must be a list")
-    result: list[dict[str, str]] = []
-    seen: set[tuple[tuple[str, str], ...]] = set()
-    for raw in list(value)[:_MAX_MAIL_EVIDENCE_ITEMS]:
-        if not isinstance(raw, Mapping) or set(raw) - _MAIL_EVIDENCE_FIELDS:
-            raise ValueError("invalid tool evidence record")
-        item: dict[str, str] = {}
-        for key in _MAIL_EVIDENCE_FIELDS:
-            field = raw.get(key)
-            if field is None:
-                continue
-            if not isinstance(field, str) or not field.strip() or any(ch in field for ch in "\x00\r\n"):
-                raise ValueError("invalid tool evidence field")
-            text = redact_text(field.strip())[:_MAX_MAIL_EVIDENCE_TEXT]
-            if key == "domain":
-                text = text.casefold().lstrip("@")
-                if not _MAIL_DOMAIN_RE.fullmatch(text):
-                    raise ValueError("invalid tool evidence domain")
-            item[key] = text
-        if not item:
-            continue
-        fingerprint = tuple(sorted(item.items()))
-        if fingerprint in seen:
-            continue
-        seen.add(fingerprint)
-        result.append(item)
-    return result
+    from .provenance import normalize_tool_evidence
+    return normalize_tool_evidence(value)
 
 def _event_id(source: str, session_id: str, turn_id: str, role: str, event_id: Optional[str]) -> str:
     if event_id is not None:

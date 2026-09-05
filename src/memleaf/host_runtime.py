@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .locking import atomic_write_json, read_json
+from .provenance import normalize_tool_evidence, observation_record
 from .retrieval_gate import (
     MAX_GATE_RETRIES,
     RetrievalGateError,
@@ -106,10 +107,42 @@ class HostRuntime:
             content,
             record=True,
             visible=True,
+            tool_evidence=self._tool_evidence(session_id, turn_id) if role == "assistant" else None,
         )
         stored = getattr(result, "stored", False) is True
         duplicate = getattr(result, "duplicate", False) is True
         return stored or duplicate, stored
+
+    def observe_external_tool(self, *, session_id: str, turn_id: str,
+                              tool_name: str, call_id: str, payload: Any) -> None:
+        record = observation_record(tool_name, call_id, payload)
+        if record is None:
+            return
+        retrieval_id = self._retrieval_id(session_id, turn_id)
+        if retrieval_id is not None:
+            try:
+                turn_id = validate_turn(self.vault, retrieval_id).get("turn_id", turn_id)
+            except RetrievalGateError:
+                return
+        with self.vault.lock():
+            state = self._read_ingest_state()
+            bucket = state.setdefault("hosts", {}).setdefault(self.host, {})
+            entry = self._normalize_host_entry(bucket.get(session_id))
+            pending = entry.setdefault("tool_evidence", {})
+            records = pending.setdefault(turn_id, [])
+            if not any(r.get("call_id") == record["call_id"] for r in records):
+                records.append(record)
+            pending[turn_id] = records[:8]
+            # Bound pending turns independently of the global permanent Vault.
+            while len(pending) > 16:
+                pending.pop(next(iter(pending)))
+            bucket[session_id] = entry
+            self._mirror_legacy_codex(state, session_id, entry)
+            atomic_write_json(self.vault.host_ingest_path, state, mode=0o600)
+
+    def _tool_evidence(self, session_id: str, turn_id: str) -> list[dict[str, str]]:
+        entry = self._host_session(session_id)
+        return normalize_tool_evidence(entry.get("tool_evidence", {}).get(turn_id, []))
 
     def process(self, **arguments: Any) -> Any:
         """Run the existing Core process path without changing extraction rules."""
@@ -465,6 +498,7 @@ class HostRuntime:
         return {
             "process_pending": pending,
             "injected_turn_ids": injected,
+            "tool_evidence": dict(value.get("tool_evidence", {})) if isinstance(value, Mapping) and isinstance(value.get("tool_evidence"), Mapping) else {},
         }
 
     def _mirror_legacy_codex(

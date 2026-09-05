@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional
 
+from .admission import (analyze_turn_evidence, admission_reason, read_only_turn,
+    evidence_prompt, parse_coverage, split_gate_envelope, supporting_units)
 from .capture import _safe_turn_id
 from .config import save_config
 from .index import EVENT_V2_BLOCK, event_key, extract_event_keys, turn_key
@@ -28,6 +30,7 @@ from .llm import (
 )
 from .locking import atomic_write_json, atomic_write_text, read_json
 from .memory_writer import MemoryWriter
+from .turn_plan import TurnPlan, content_digest
 from .models import Memory, utc_now
 from .native_index import NativeIndexer
 from .prompts import (
@@ -92,24 +95,6 @@ _DIAGNOSTIC_CANDIDATE_REQUIRED = frozenset(
     ("candidate_id", "memory", "evidence_event_ids", "duplicate", "worth", "type", "scopes", "scope_source")
 )
 
-_READ_ONLY_QUERY_MARKERS = (
-    "有没有", "有什么", "有哪些", "是什么", "是谁", "多少", "哪个", "哪些",
-    "什么时候", "何时", "如何", "怎么", "为什么", "是否", "能否", "可否",
-    "查询", "查一下", "查下", "看看", "看下", "查看", "汇总", "列出", "告诉我",
-    "what", "which", "who", "show me", "list",
-)
-# A mailbox scan is a query-shaped request, but its answer may contain new
-# external facts (for example, a customer asks for two fixes).  Do not apply
-# the pure-existing-memory no-write rule to those requests; the gate still
-# decides which individual facts/actions are durable.
-_EXTERNAL_SOURCE_QUERY_MARKERS = (
-    "邮箱", "收件箱", "mailbox", "inbox",
-)
-_USER_ASSERTION_MARKERS = (
-    "已确认", "确认了", "已决定", "我决定", "改为", "更新为", "变更为", "以后",
-    "今后", "约定", "我的偏好", "我喜欢", "必须", "要求是", "截止日期为",
-    "负责人是", "负责人为",
-)
 _DERIVED_OVERDUE_RE = re.compile(
     r"(?:逾期|超期|overdue)\s*\d+(?:\.\d+)?\s*(?:天|日|days?)",
     re.IGNORECASE,
@@ -149,19 +134,6 @@ _REWORK_ACTION_MARKERS = (
     "修改", "修复", "整改", "补充", "补上", "补齐", "调整", "改下", "改一下", "改成", "更改",
     "完善", "修订", "重新", "更新", "rework", "revise", "redraw", "fix", "update", "change",
 )
-_EXPLICIT_REPAIR_COUNT_RE = re.compile(
-    r"(?:\d+|[一二三四五六七八九十百千万两俩]+)\s*"
-    r"(?:个|项|条|处|点|件|问题|缺陷|模块)",
-    re.IGNORECASE,
-)
-_EXPLICIT_REPAIR_RE = re.compile(
-    r"(?:需|需要|须|待|仍需|还需|尚需|有待|要)\s*"
-    r"(?:修正|修复|改正|整改|修改|更正|补充|完善|fix|repair|remediate)",
-    re.IGNORECASE,
-)
-
-
-
 _SCOPE_CORRECTION_MARKER_RE = re.compile(
     r"(?:不是|并非|不属于|归错|归属错误|错误归属|应属于|应该属于|改归|改为|纠正为|"
     r"wrong\s+(?:project|scope)|belongs?\s+to|correct\s+(?:project|scope))",
@@ -489,249 +461,13 @@ def _explicit_todo_state_change(
 
 
 def _automatic_read_only_query(events: Iterable[Mapping[str, Any]]) -> bool:
-    """Return true when the user only asks for information in this turn."""
-
-    user_text = "\n".join(
-        str(event.get("content", ""))
-        for event in events
-        if str(event.get("role", "")).casefold() == "user"
-    ).strip()
-    if not user_text:
-        return False
-    folded = user_text.casefold()
-    query_prefix = folded
-    # Requests often stack polite prefixes ("请帮我看下…").  Strip them
-    # repeatedly so the actual interrogative is visible to the classifier.
-    while True:
-        stripped = re.sub(r"^(?:请|帮我|麻烦|请问|麻烦你)\s*", "", query_prefix)
-        if stripped == query_prefix:
-            break
-        query_prefix = stripped
-    interrogative_markers = {
-        "有没有", "有什么", "有哪些", "是什么", "是谁", "多少", "哪个", "哪些",
-        "什么时候", "何时", "如何", "怎么", "为什么", "是否", "能否", "可否",
-        "what", "which", "who",
-    }
-    imperative_markers = {
-        "查询", "查一下", "查下", "看看", "看下", "查看", "汇总", "列出", "告诉我",
-        "show me",
-    }
-    asks = bool(
-        re.search(r"[?？]", user_text)
-        or re.search(r"(?:吗|么|呢)\s*$", user_text)
-        or any(marker in query_prefix for marker in interrogative_markers)
-        or bool(re.search(r"\b(?:what|which|who|list)\b", query_prefix, flags=re.IGNORECASE))
-        or any(
-            re.search(
-                rf"(?:^|[。！？!?；;：:])\s*{re.escape(marker)}",
-                query_prefix,
-                flags=re.IGNORECASE,
-            )
-            for marker in imperative_markers
-        )
-    )
-    if not asks:
-        return False
-    # A mailbox read can surface new customer facts/actions.  It is not a
-    # query over existing knowledge, even though the user's wording is a
-    # question; let the gate admit concrete project-local items from it.
-    if any(marker in folded for marker in _EXTERNAL_SOURCE_QUERY_MARKERS):
-        return False
-
-    # An assertion-shaped phrase can be part of the requested result rather
-    # than a new fact.  For example, both “有什么是我必须完成的” and
-    # “我有哪些已确认的需求” are pure queries.  Conversely,
-    # “这个需求必须完成，什么时候开始？” contains a new
-    # assertion before the question and must remain write-eligible.
-    question_words = ("谁", "什么", "哪些", "哪个", "哪项", "多少", "吗", "么", "呢")
-    for marker in _USER_ASSERTION_MARKERS:
-        start = 0
-        while True:
-            position = folded.find(marker, start)
-            if position < 0:
-                break
-            suffix = folded[position + len(marker) :]
-            clause_start = max(
-                (folded.rfind(separator, 0, position) for separator in "。！？!?;；,，"),
-                default=-1,
-            ) + 1
-            later_separators = [
-                folded.find(separator, position + len(marker))
-                for separator in "。！？!?;；,，"
-            ]
-            clause_end = min(
-                (value for value in later_separators if value >= 0),
-                default=len(folded),
-            )
-            question_before = any(
-                folded.find(word, clause_start, position) >= 0
-                for word in interrogative_markers
-            )
-            question_after = marker == "必须" and any(
-                folded.find(word, position + len(marker), clause_end) >= 0
-                for word in (*interrogative_markers, *question_words)
-            )
-            if (
-                not question_before
-                and not question_after
-                and not any(suffix.startswith(word) for word in question_words)
-            ):
-                return False
-            start = position + len(marker)
-    return True
+    return read_only_turn(analyze_turn_evidence(events))
 
 
-def _repair_line_text(value: str) -> str:
-    """Keep a deterministic repair candidate focused on its action."""
-
-    text = re.sub(r"^\s*(?:[-*•]|\d+[.)、])\s*", "", value).strip()
-    text = re.sub(r"\*+", "", text)
-    text = re.sub(
-        r"[（(][^（）()]{0,120}(?:附件|文档|下载|邮件|message|attachment)[^（）()]{0,120}[）)]",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
-    text = re.sub(r"(?:她|他|对方|客户)(?:说|反馈|回复)\s*[:：]?", "", text)
-    text = re.sub(r"[“\"]([^”\"]+)[”\"]", r"\1", text)
-    text = re.sub(r"\s+", " ", text).strip(" \t，,；;。.!！?？:：")
-    return text
 
 
-def _deterministic_project_repair_candidates(
-    events: Iterable[Mapping[str, Any]],
-    scope_registry: Mapping[str, Any] | None,
-    existing_candidates: Iterable[Mapping[str, Any]],
-) -> list[dict[str, Any]]:
-    """Recover explicit counted project repairs omitted by the gate.
 
-    Mailbox summaries frequently put the project name in a numbered heading
-    and the concrete repair count in the following bullet.  The normal gate
-    can conservatively discard that attachment-shaped bullet; this narrow
-    recovery only handles a candidate-local, registered project plus an
-    explicit quantity and an unfinished repair verb.  It never promotes a
-    generic attachment or follow-up line.
-    """
 
-    if not isinstance(scope_registry, Mapping):
-        return []
-    existing_topics: dict[str, list[str]] = {}
-    for candidate in existing_candidates:
-        if not isinstance(candidate, Mapping) or candidate.get("worth") is not True:
-            continue
-        text = candidate.get("memory")
-        if not isinstance(text, str):
-            continue
-        if not _EXPLICIT_REPAIR_COUNT_RE.search(text) or not _EXPLICIT_REPAIR_RE.search(text):
-            continue
-        occurrences = _project_scope_occurrences(text, scope_registry)
-        if occurrences is None:
-            continue
-        for _start, _end, scope in occurrences:
-            existing_topics.setdefault(scope.casefold(), []).append(normalize_term(text))
-
-    # Keep the extraction candidate-local.  A heading such as “6. 摩根基金”
-    # commonly precedes the actual repair bullet, so retain that scope until
-    # the next project heading (or a separator) and collect only explicit
-    # remediation bullets underneath a counted repair statement.
-    sections: list[tuple[str, str, str, list[str]]] = []
-    for event in events:
-        if str(event.get("role", "")).casefold() not in {"user", "assistant"}:
-            continue
-        content = event.get("content")
-        evidence_event_id = event.get("event_key")
-        if not isinstance(content, str) or not content.strip() or not isinstance(evidence_event_id, str):
-            continue
-        current_scope: str | None = None
-        aggregate_line: str | None = None
-        aggregate_scope: str | None = None
-        detail_lines: list[str] = []
-
-        def flush_section() -> None:
-            nonlocal aggregate_line, aggregate_scope, detail_lines
-            if aggregate_line is not None and aggregate_scope is not None:
-                sections.append(
-                    (evidence_event_id, aggregate_scope, aggregate_line, list(detail_lines))
-                )
-            aggregate_line = None
-            aggregate_scope = None
-            detail_lines = []
-
-        for line in content.splitlines():
-            line_text = line.strip()
-            if re.fullmatch(r"[-—]{3,}", line_text):
-                flush_section()
-                current_scope = None
-                continue
-            if not line_text:
-                continue
-            line_occurrences = _project_scope_occurrences(line_text, scope_registry)
-            line_scopes = list(dict.fromkeys(item[2] for item in (line_occurrences or [])))
-            if len(line_scopes) == 1:
-                if current_scope is not None and line_scopes[0].casefold() != current_scope.casefold():
-                    flush_section()
-                current_scope = line_scopes[0]
-            elif len(line_scopes) > 1:
-                flush_section()
-                current_scope = None
-            if _EXPLICIT_REPAIR_COUNT_RE.search(line_text) and _EXPLICIT_REPAIR_RE.search(line_text):
-                flush_section()
-                if current_scope is not None:
-                    aggregate_line = line_text
-                    aggregate_scope = current_scope
-                continue
-            # Only explicit repair/remediation language can turn a following
-            # bullet into an independent item.  Generic “见附件/需跟进” text
-            # remains outside this recovery path.
-            if (
-                aggregate_line is not None
-                and current_scope is not None
-                and current_scope.casefold() == aggregate_scope.casefold()
-                and _EXPLICIT_REPAIR_RE.search(line_text)
-            ):
-                detail_lines.append(line_text)
-        flush_section()
-
-    recovered: list[dict[str, Any]] = []
-    emitted_keys: set[tuple[str, str]] = set()
-    for evidence_event_id, scope, aggregate_line, detail_lines in sections:
-        lines = detail_lines or [aggregate_line]
-        scope_name = scope.partition(":")[2]
-        for line in lines:
-            cleaned = _repair_line_text(line)
-            if not cleaned:
-                continue
-            if scope_name.casefold() not in cleaned.casefold():
-                cleaned = f"{scope_name}：{cleaned}"
-            normalized = normalize_term(cleaned)
-            key = (scope.casefold(), normalized)
-            if not normalized or key in emitted_keys:
-                continue
-            # A model candidate covering this exact repair already has a
-            # normal UPDATE/NO_CHANGE path; do not create a sibling.  Other
-            # repairs in the same project remain independently recoverable.
-            if any(
-                normalized in existing_text or existing_text in normalized
-                for existing_text in existing_topics.get(scope.casefold(), [])
-            ):
-                continue
-            candidate_id = "email-repair-" + hashlib.sha256(
-                f"{evidence_event_id}|{scope}|{normalized}".encode("utf-8")
-            ).hexdigest()[:16]
-            recovered.append(
-                {
-                    "candidate_id": candidate_id,
-                    "memory": cleaned,
-                    "evidence_event_ids": [evidence_event_id],
-                    "duplicate": False,
-                    "worth": True,
-                    "type": "todo",
-                    "scopes": [scope],
-                    "scope_source": "model",
-                }
-            )
-            emitted_keys.add(key)
-    return recovered
 
 
 def _automatic_transient_memory(value: Any) -> bool:
@@ -866,10 +602,25 @@ def _todo_state_recovery_candidate(
     scope_source = target.scope_source
     if scope_source not in {"model", "user", "session_context", "insufficient_context"}:
         scope_source = "model"
-    status_word = "completed" if state == "completed" else "cancelled"
+    # Carry the actual declaration through the common admission boundary.
+    # A synthesized status label loses support for elliptical declarations.
+    declaration = user_text
+    for event in events:
+        if event.get("event_key") not in evidence_event_ids:
+            continue
+        for unit in analyze_turn_evidence([event]):
+            if unit.origin != "user_assertion":
+                continue
+            local_change = _explicit_todo_state_change([dict(event, content=unit.text)])
+            if local_change is not None and local_change[0] == state:
+                declaration = unit.text
+                break
+        else:
+            continue
+        break
     candidate = {
         "candidate_id": candidate_id,
-        "memory": f"{target.title} 用户已明确{status_word}。",
+        "memory": f"{target.title} 用户状态声明：{declaration}",
         "evidence_event_ids": evidence_event_ids,
         "duplicate": False,
         "worth": True,
@@ -1174,6 +925,7 @@ def _event_payload(turn: InboxTurn) -> list[dict[str, Any]]:
             "turn_id": event.turn_id or "",
             "timestamp": event.timestamp,
             "content": event.content,
+            "tool_evidence": [dict(item) for item in event.tool_evidence],
         }
         for event in turn.events
     ]
@@ -1405,6 +1157,7 @@ class Processor:
         self._planned_related: list[dict[str, Any]] = []
         self._deferred_by_turn: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
         self._dispositions_by_turn: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        self._evidence_by_turn: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
 
     def _record_disposition(
         self,
@@ -1431,6 +1184,8 @@ class Processor:
             "candidate_id": candidate_id,
             "disposition": disposition,
         }
+        if candidate.get("evidence_unit_ids"):
+            value["evidence_unit_ids"] = list(candidate["evidence_unit_ids"])
         if isinstance(reason, str) and reason:
             value["reason"] = reason
         if isinstance(memory_id, str) and memory_id:
@@ -2550,7 +2305,7 @@ class Processor:
             for item in getattr(event, "tool_evidence", ()):
                 if isinstance(item, Mapping) and isinstance(item.get("domain"), str):
                     domains.append(item["domain"])
-        matches = project_scopes_for_domains(domains, config)
+        matches = project_scopes_for_domains(domains, config if "scopes" in config else {"scopes": config})
         return matches[0] if len(matches) == 1 else None
 
     def _scope_evidence_conflict(
@@ -2559,15 +2314,27 @@ class Processor:
         turn: InboxTurn,
         config: Mapping[str, Any],
     ) -> bool:
-        evidence_scope = self._turn_evidence_project_scope(turn, config)
-        if evidence_scope is None or candidate.get("worth") is not True:
+        if candidate.get("worth") is not True:
             return False
-        selected = [
-            value
-            for value in candidate.get("scopes", [])
-            if isinstance(value, str) and value.startswith("project:")
-        ]
-        return bool(selected) and all(value.casefold() != evidence_scope.casefold() for value in selected)
+        units = supporting_units(candidate, analyze_turn_evidence(_event_payload(turn)))
+        selected = {value.casefold() for value in candidate.get("scopes", [])
+                    if isinstance(value, str) and value.startswith("project:")}
+        registry = config.get("scopes", config)
+        for unit in units:
+            if unit.origin != "external_observation" and not unit.section_path:
+                continue
+            grounded = _project_scope_occurrences("\n".join((*unit.section_path, unit.text)), registry)
+            if grounded is None:
+                return True
+            projects = {item[2].casefold() for item in grounded}
+            if selected and projects and not selected.issubset(projects):
+                return True
+            if selected and unit.section_path and not projects:
+                return True
+            mapped = project_scopes_for_domains([unit.domain] if unit.domain else [], {"scopes": registry})
+            if selected and mapped and (len(mapped) != 1 or mapped[0].casefold() not in selected):
+                return True
+        return False
 
     @staticmethod
     def _scope_terms_present(text: str, scope: str, config: Mapping[str, Any]) -> bool:
@@ -3215,6 +2982,8 @@ class Processor:
         scope: Any = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         events = _event_payload(turn)
+        evidence_units = analyze_turn_evidence(events)
+        coverage_rows: dict[str, dict[str, Any]] = {}
         turn_ref = (turn.source, turn.session_id, turn.turn_key)
         self._deferred_by_turn.setdefault(turn_ref, [])
         related, scope_background, native_refs, scope_fallback = self._related(
@@ -3306,7 +3075,7 @@ class Processor:
         scope_correction_plans: dict[str, dict[str, Any]] = {}
 
         def parse_gate(raw: str) -> dict[str, Any]:
-            nonlocal gate_attempt_count
+            nonlocal gate_attempt_count, coverage_rows
             gate_attempt_count += 1
             detached_update_target_ids.clear()
             deferred_type_mismatch_ids.clear()
@@ -3314,6 +3083,7 @@ class Processor:
             unknown_target_ids.clear()
             candidate_level_target_ids.clear()
             scope_correction_plans.clear()
+            raw, coverage_value = split_gate_envelope(raw)
             raw_for_parse = (
                 _normalize_final_gate_raw(raw, validation_scope_registry)
                 if gate_attempt_count >= 3
@@ -3327,6 +3097,8 @@ class Processor:
                 enforce_model_scope_grounding=gate_attempt_count < 3,
                 allow_mixed_future_use=gate_attempt_count >= 3,
             )
+            coverage_rows = (parse_coverage(coverage_value, evidence_units, parsed["candidates"])
+                             if coverage_value is not None else {})
             if gate_attempt_count >= 3:
                 candidates = []
                 for candidate in parsed["candidates"]:
@@ -3562,7 +3334,7 @@ class Processor:
                 scope_directory_complete=scope_directory_complete,
                 scope_background=scope_background,
                 scope_registry=scope_registry,
-            ),
+            ) + evidence_prompt(evidence_units),
             system=GATE_SYSTEM,
             purpose="gate",
             parser=parse_gate,
@@ -3572,23 +3344,6 @@ class Processor:
                 "turn_index": turn.turn_index,
             },
         )
-        # A mailbox summary may put a project in a numbered heading and the
-        # concrete “N items need repair” action in its following bullet.  If
-        # the gate conservatively omits that attachment-shaped item, recover
-        # only this narrow, project-grounded action before candidate-level
-        # dedupe.  Pure existing-memory queries remain write-free.
-        if not _automatic_read_only_query(events):
-            recovered_repairs = _deterministic_project_repair_candidates(
-                events,
-                validation_scope_registry,
-                gate.get("candidates", []),
-            )
-            if recovered_repairs:
-                gate = dict(gate)
-                gate["candidates"] = [
-                    *gate.get("candidates", []),
-                    *recovered_repairs,
-                ]
         # A model may correctly treat the rest of a mixed turn as a query and
         # still miss the user's explicit completion update. Recover only one
         # uniquely related active todo; all other gate decisions stay intact.
@@ -3753,8 +3508,35 @@ class Processor:
         requests: list[dict[str, Any]] = []
         observed_scopes: list[str] = []
         current_turn_request_ids: set[str] = set()
-        read_only_query = _automatic_read_only_query(events)
+        read_only_query = read_only_turn(evidence_units)
+        covered_unit_ids: set[str] = set()
+        seen_candidates: set[tuple[Any, ...]] = set()
         for candidate in gate["candidates"]:
+            candidate = dict(candidate)
+            unit_ids = [uid for uid, row in coverage_rows.items()
+                        if candidate.get("candidate_id") in row.get("candidate_ids", [])]
+            if unit_ids:
+                candidate["_evidence_unit_ids"] = unit_ids
+            reason, support = admission_reason(candidate, evidence_units)
+            candidate["evidence_unit_ids"] = [u.unit_id for u in support]
+            covered_unit_ids.update(candidate["evidence_unit_ids"])
+            if reason is not None and candidate.get("worth"):
+                if reason in {"read_only_query", "quoted_or_example"}:
+                    self._record_disposition(turn_ref, candidate, "NO_CHANGE", reason=reason)
+                else:
+                    self._defer_candidate(turn_ref, candidate, reason, scopes=candidate.get("scopes", []))
+                continue
+            fingerprint = (normalize_term(str(candidate.get("memory", ""))),
+                           candidate.get("type"), tuple(sorted(candidate.get("scopes", []))),
+                           candidate.get("update_memory_id"), candidate.get("duplicate_memory_id"))
+            if fingerprint in seen_candidates:
+                self._record_disposition(turn_ref, candidate, "NO_CHANGE", reason="same_turn_duplicate")
+                continue
+            seen_candidates.add(fingerprint)
+            # Recheck every origin here, including deterministic state recovery.
+            if self._scope_evidence_conflict(candidate, turn, validation_scope_registry):
+                self._defer_candidate(turn_ref, candidate, "scope_conflict", scopes=candidate.get("scopes", []))
+                continue
             candidate_id_key = str(candidate.get("candidate_id", "")).casefold()
             force_create = (
                 candidate_id_key in force_create_candidate_ids
@@ -4277,6 +4059,19 @@ class Processor:
                     reason="already_covered",
                 )
                 continue
+            same_request = next((r for r in requests if
+                r.get("summary", {}).get("type") == summary.get("type")
+                and r.get("summary", {}).get("scopes") == summary.get("scopes")
+                and normalize_term(str(r.get("summary", {}).get("body", ""))) == normalize_term(summary["body"])
+                and r.get("summary", {}).get("status") == summary.get("status")
+                and r.get("summary", {}).get("due_date") == summary.get("due_date")), None)
+            if same_request is not None:
+                self._record_disposition(turn_ref, candidate, "NO_CHANGE", reason="same_turn_duplicate")
+                continue
+            if summary_update_target and any(r.get("summary", {}).get("update_memory_id") == summary_update_target for r in requests):
+                self._defer_candidate(turn_ref, candidate, "same_turn_target_conflict", scopes=candidate_scopes)
+                continue
+            pending_request["evidence_unit_ids"] = list(candidate.get("evidence_unit_ids", []))
             requests.append(pending_request)
             self._record_disposition(
                 turn_ref,
@@ -4295,6 +4090,26 @@ class Processor:
                     and observed_scope not in observed_scopes
                 ):
                     observed_scopes.append(observed_scope)
+        evidence_dispositions = []
+        for unit in evidence_units:
+            row = coverage_rows.get(unit.unit_id)
+            if unit.unit_id in covered_unit_ids:
+                decision, reason = "CANDIDATE", "candidate_checked"
+            elif row is not None:
+                decision, reason = row["decision"], row.get("reason", "coverage_unresolved")
+            elif unit.eligible:
+                decision, reason = "DEFERRED", "coverage_unresolved"
+            elif unit.origin == "unknown":
+                decision, reason = "DEFERRED", "incomplete_tool_evidence"
+            else:
+                decision, reason = "NO_CHANGE", unit.origin
+            if decision == "DEFERRED":
+                marker = {"candidate_id": "coverage:" + unit.unit_id,
+                          "scopes": ["unscoped"], "scope_source": "insufficient_context"}
+                self._defer_candidate(turn_ref, marker, reason)
+            evidence_dispositions.append({"unit_id": unit.unit_id, "event_key": unit.event_key,
+                                          "decision": decision, "reason": reason})
+        self._evidence_by_turn[turn_ref] = evidence_dispositions
         return requests, observed_scopes
 
     def _state_for_snapshot_unlocked(self, snapshot: _Snapshot, processed: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -4501,6 +4316,15 @@ class Processor:
                         if current not in migrated:
                             migrated.append(current)
                     summary["scopes"] = migrated
+            plan = TurnPlan.from_requests(all_requests)
+            operations = processed.setdefault("pending_operations", {})
+            previous_operation_ids = set(operations)
+            for operation in plan.candidates:
+                operations.setdefault(operation.operation_id, operation.to_dict())
+            if plan.candidates:
+                # Persist write intent before knowledge/history mutation. The
+                # journal contains identifiers and digests, never source text.
+                self._write_processed_unlocked(processed)
             if all_requests:
                 written = self.writer.write_many_unlocked(all_requests, now=now)
             else:
@@ -4638,7 +4462,38 @@ class Processor:
                     entry.pop("deferred_candidates", None)
                     if not entry.get("cleanup_done_at"):
                         entry["eligible_cleanup_at"] = _add_hours(now, cleanup_hours)
+                operations = processed.get("pending_operations", {})
+                for operation_id, operation in list(operations.items()):
+                    if not isinstance(operation, Mapping) or (
+                        operation.get("source"), operation.get("session_id"), operation.get("turn_key")
+                    ) != scope_key:
+                        continue
+                    # Already under the Vault lock: do not re-enter the public
+                    # reader (its file lock is intentionally non-reentrant).
+                    active = None
+                    try:
+                        active_path = self.service.vault.memory_path(operation.get("memory_id"), "knowledge")
+                        if active_path.is_file() and not active_path.is_symlink():
+                            active = Memory.from_markdown(active_path.read_text(encoding="utf-8"), active_path)
+                    except (OSError, UnicodeError, ValueError, TypeError):
+                        pass
+                    applied = (active is not None
+                               and MemoryWriter._request_already_applied({"turn": snapshot.turn}, active)
+                               and content_digest(active.to_dict()) == operation.get("digest"))
+                    if applied:
+                        self._record_disposition(scope_key, operation, operation["disposition"],
+                                                 memory_id=operation["memory_id"])
+                        for recorded in self._dispositions_by_turn.get(scope_key, []):
+                            if recorded.get("candidate_id") == operation.get("candidate_id"):
+                                recorded["operation_id"] = operation_id
+                                recorded["replayed"] = operation_id in previous_operation_ids
+                                recorded["already_applied"] = operation_id in previous_operation_ids
+                        entry["memory_ids"] = sorted(set(entry.get("memory_ids", []) + [operation["memory_id"]]))
+                    # Successful no-op intents are resolved too. A failed
+                    # commit never reaches the final journal-clearing write.
+                    operations.pop(operation_id, None)
                 entry["candidate_dispositions"] = self._candidate_dispositions([snapshot])
+                entry["evidence_dispositions"] = self._evidence_by_turn.get(scope_key, [])
                 state["processed_turns"] = entries
                 watermark = max(_as_int(state.get("watermark"), 0), _as_int(snapshot.turn.turn_index, 0))
                 state["watermark"] = watermark
@@ -4704,6 +4559,8 @@ class Processor:
         observed_scopes: dict[tuple[str, str, str], list[str]] = {}
         self._planned_related = []
         self._deferred_by_turn = {}
+        self._dispositions_by_turn = {}
+        self._evidence_by_turn = {}
         try:
             for snapshot in snapshots:
                 with self.service.vault.lock():
