@@ -22,6 +22,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Retry after correcting the first transport block; all eight blocks are hash-pinned below.
           expected=(
             9aa4446c5f52636ce64b1e33068e18e92e58346735b8feab47417c53b948ca62
             c64d3c48b7f1f5f91f2cca2c8fa373812394139674cb9b9968c87b5fe7156acf
