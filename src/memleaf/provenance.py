@@ -7,7 +7,7 @@ from .redaction import redact_text
 
 TOOL_EVIDENCE_FIELDS = frozenset({"message_id", "subject", "sender", "domain",
     "tool_name", "call_id", "record_id", "title", "kind", "result_status",
-    "content", "result_digest", "execution_status", "completeness", "schema_version", "omitted_count"})
+    "content", "result_digest", "execution_status", "completeness", "schema_version", "omitted_count", "source_type", "retention"})
 MAX_ITEMS = 8
 MAX_TEXT = 320
 MAX_CONTENT = 2000
@@ -57,6 +57,10 @@ def normalize_tool_evidence(value: Any) -> list[dict[str, str]]:
             raise ValueError("invalid evidence completeness")
         if item.get("result_status") == "truncated":
             item["completeness"] = "partial"
+        if "source_type" in item and item["source_type"] not in {"document", "tool_result", "unknown"}:
+            raise ValueError("invalid tool evidence source type")
+        if "retention" in item and item["retention"] not in {"metadata", "bounded"}:
+            raise ValueError("invalid tool evidence retention")
         if "omitted_count" in item and (not item["omitted_count"].isascii()
             or not item["omitted_count"].isdigit() or len(item["omitted_count"]) > 12):
             raise ValueError("invalid omitted observation count")

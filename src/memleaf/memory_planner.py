@@ -11,6 +11,7 @@ from .llm import ModelError
 from .memory_writer import MemoryWriter
 from .turn_plan import dedup_digest, revision_digest
 from .update_coordinator import UpdateCoordinator
+from .evidence_policy import retain_tool_evidence
 from .prompts import GATE_SYSTEM, SUMMARIZE_SYSTEM, gate_prompt, summarize_prompt
 from .retrieval import normalize_term
 from .validation import ModelOutputError, NO_CHANGE_DECISION, _model_scope_grounding_evidence, parse_gate_output, parse_strict_json, parse_summarize_output, is_aggregate_operational_text, is_attachment_followup_only_text, is_actionable_todo_text, is_mixed_future_use_text, split_mixed_future_use_text
@@ -139,6 +140,13 @@ class MemoryPlanner:
         scope: Any = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         events = _event_payload(turn)
+        # Capture policy also applies to unprocessed legacy inbox evidence.
+        # Keep the immutable turn untouched for input-digest/replay validation.
+        # Explicit remember supplies its own visible user text; it does not
+        # revive previously excluded tool observations.
+        policy_config = self.service.vault.config()
+        for event in events:
+            event["tool_evidence"] = retain_tool_evidence(event["tool_evidence"], policy_config)
         evidence_units = analyze_turn_evidence(events)
         coverage_rows: dict[str, dict[str, Any]] = {}
         turn_ref = (turn.source, turn.session_id, turn.turn_key)

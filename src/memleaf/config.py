@@ -46,7 +46,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "capture": {
         "visible_messages_only": True,
-        "include_tool_output": False,
+        "tool_evidence_mode": "bounded",
         "include_attachments": False,
         "redact_secrets": True,
     },
@@ -97,6 +97,10 @@ def load_config(path: Path | str, *, vault: Path | str | None = None) -> dict[st
     if not isinstance(parsed, dict):
         raise ValueError("invalid memleaf config.yaml")
     merged = _merge_defaults(parsed, default_config(vault))
+    # Resolve from the file BEFORE defaults, preserving a legacy explicit
+    # false value rather than manufacturing opt-in during an upgrade.
+    from .evidence_policy import capture_settings
+    merged["capture"].update(capture_settings(parsed))
     if not isinstance(merged.get("vault"), str):
         raise ValueError("invalid memleaf vault setting")
     capture = merged.get("capture")
@@ -137,6 +141,8 @@ def save_config(path: Path | str, config: Mapping[str, Any]) -> None:
     if not isinstance(config, Mapping):
         raise ValueError("config must be a mapping")
     normalized = deepcopy(dict(config))
+    from .evidence_policy import capture_settings
+    normalized["capture"] = capture_settings(normalized)
     try:
         normalized["scopes"] = validate_scope_registry(normalized.get("scopes", {}))
     except ScopeError as error:

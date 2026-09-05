@@ -156,6 +156,9 @@ def analyze_turn_evidence(events: Iterable[Mapping[str, Any]]) -> tuple[Evidence
         for record in event.get("tool_evidence", ()) or ():
             if not isinstance(record, Mapping):
                 continue
+            if record.get("retention") == "metadata":
+                # Intentional capture policy is not an unresolved observation.
+                continue
             body = record.get("content")
             if not isinstance(body, str) or not body.strip():
                 # Keep absence visible without pretending this diagnostic is

@@ -250,7 +250,8 @@ def capture_event(
                 atomic_write_json(vault.processed_index_path, processed)
             return CaptureResult(resolved_event_id, stored=False, duplicate=False, suppressed=True)
         # Only permitted data reaches normalization or any persistence path.
-        safe_tool_evidence = _normalize_tool_evidence(tool_evidence)
+        from .evidence_policy import retain_tool_evidence
+        safe_tool_evidence = retain_tool_evidence(tool_evidence, vault.config())
         if changed:
             atomic_write_json(vault.processed_index_path, processed)
         known_keys = _known_event_keys(vault, processed)

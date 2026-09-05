@@ -62,9 +62,9 @@ later source input. Execution outcome and completeness are distinct.
 
 Codex pending tool data retains sixteen turns; bounded tombstones make evicted
 uncaptured evidence visible as incomplete. Older loss beyond 256 tombstones
-leaves a conservative session diagnostic. In that extreme state missing
-observations may stay partial until source evidence is supplied again. No old
-observation is attached as a new fact to a different turn.
+leaves a session diagnostic only; it does not mark unrelated future turns as
+incomplete. Successfully captured observations are consumed from the host cache.
+No old observation is attached as a new fact to a different turn.
 
 Automatic NO_CHANGE does not modify permanent Markdown, sources or history.
 Processing watermarks/diagnostics may still advance: these are not permanent
@@ -151,3 +151,11 @@ Real-model acceptance requires an explicit model route in repository Actions:
 secret `MEMLEAF_LIVE_MODEL_TOKEN` and variables `MEMLEAF_LIVE_BASE_URL` and
 `MEMLEAF_LIVE_MODEL`. Missing configuration is a blocked acceptance result,
 not a passing semantic test. Never publish based only on deterministic mocks.
+
+## Capture policy (shared-core refactor)
+
+Tool evidence is controlled by `capture.tool_evidence_mode` and document opt-in,
+not the presence of business words. The same policy runs before cache/inbox writes
+and new model-planning calls. Intentional exclusion is not missing evidence.
+See [retention contract](evidence-retention.md) for legacy settings, plaintext
+metadata, opaque-resource limitations and the distinction from explicit forget.

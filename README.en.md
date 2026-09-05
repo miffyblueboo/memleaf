@@ -404,7 +404,7 @@ Directories are normally created with mode `0700`, and files are stored as plain
 
 ## Privacy and security boundaries
 
-- By default, capture accepts only explicitly supplied visible user/assistant text; it excludes system prompts, developer prompts, hidden reasoning, raw tool output, and full attachment bodies.
+- Conversation capture accepts visible user/assistant text, never system/developer instructions or hidden reasoning. Matched current-turn tool evidence is controlled separately by `capture.tool_evidence_mode`: new Vaults use bounded/redacted observations; document/attachment bodies are excluded by default. Legacy configurations disabling tool output are not silently opted into body retention.
 - Common API keys, Bearer tokens, cookies, JWTs, and private keys are redacted on a best-effort basis before capture is written. Redaction is not encryption and cannot detect every secret.
 - Path validation, symlink checks, Vault locks, same-directory temporary files, fsync, and atomic replacement protect local writes.
 - memleaf does not upload the entire Vault and has no hosted backend, telemetry, or account system.
@@ -468,3 +468,30 @@ Dry-run executes the normal processor on a private temporary copy and may call t
 It does not modify the source Vault; concurrent source changes invalidate the preview. There is no apply-preview mode.
 Execution success is separate from evidence completeness: `coverage_status=partial` reports unresolved work.
 See [general processing](docs/general-processing.md) for the protocol, limits and verification boundaries.
+
+### Tool-evidence retention
+
+```yaml
+capture:
+  tool_evidence_mode: bounded  # bounded | metadata | off
+  include_attachments: false
+```
+
+`bounded` keeps bounded, redacted current-turn observations; small tool results may be
+retained in full, not just as model summaries. `metadata` keeps identifiers and permitted
+metadata (which may include titles), not bodies; intentional exclusions are not reported
+as unresolved extraction. `off` retains no tool-evidence records. None of these modes makes
+assistant synthesis or retrieved old memory independent evidence of new facts.
+
+For an existing file without the new mode, legacy `include_tool_output: false` or an
+absent boolean means `metadata`; true means `bounded`. An explicit new mode takes
+precedence. New Vaults write only the new mode. Attachment opt-in remains subject to the
+mode. Adapters classify structural file paths, file IDs and attachment handles, not
+arbitrary opaque shell commands. Pasted visible documents and explicit remember text
+are not automatic attachment capture.
+
+The policy applies to pending cache, inbox writes, and new model-planning inputs.
+Tightening it is not a retroactive rewrite of committed memories or captured inbox files.
+Previously frozen operations are recovered as existing plans, not new model calls.
+Captured evidence retains its existing cleanup grace period; use explicit forget for
+memory deletion. See `docs/evidence-retention.md` for limits and scope.

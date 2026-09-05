@@ -134,3 +134,19 @@ Still separate work: tool-output/attachment retention configuration alignment,
 low-frequency maintenance/low-level library mutation consolidation, and the
 remaining legacy Scope/plan heuristics. This phase does not claim those are
 finished, or that deterministic fixtures substitute for local live-model testing.
+
+## Phase 3 — shared evidence-retention policy
+
+Based on phase-2 commit `3ac8a29394f358b55527d8874b64c55c93d4359f`.
+This increment aligns tool-output/attachment policy across direct capture,
+HostRuntime pending cache, the copied Hermes provider and new planning calls.
+New Vaults write an explicit bounded mode; old false/absent flags remain metadata
+only, with no silent opt-in. Document sources remain excluded unless authorized.
+Metadata exclusions cannot create false missing-evidence retries or later regain
+removed content. Configuration changes do not retroactively delete memories or
+rewrite frozen operations. The full boundary is in `docs/evidence-retention.md`.
+
+Phases 2 and 3 supersede the corresponding first-increment TODO entries above.
+Remaining design work is the legacy Scope/plan heuristics and coordination of
+low-frequency compaction and raw-library mutation paths. No release-complete
+claim is made merely because the current regression suite passes.

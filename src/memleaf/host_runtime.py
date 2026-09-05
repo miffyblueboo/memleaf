@@ -34,6 +34,7 @@ from .retrieval_gate import (
     validate_turn,
 )
 from .service import Memleaf
+from .evidence_policy import document_arguments, retain_tool_evidence
 
 
 _GATE_RETRY_REASON = (
@@ -120,15 +121,18 @@ class HostRuntime:
 
     def _discard_private_evidence(self, session_id: str, turn_id: str) -> None:
         with self.vault.lock():
-            state = self._read_ingest_state()
-            bucket = state.setdefault("hosts", {}).setdefault(self.host, {})
-            entry = self._normalize_host_entry(bucket.get(session_id))
-            changed = entry["tool_evidence"].pop(turn_id, None) is not None
-            changed = entry["tool_evidence_lost"].pop(turn_id, None) is not None or changed
-            if changed:
-                bucket[session_id] = entry
-                self._mirror_legacy_codex(state, session_id, entry)
-                atomic_write_json(self.vault.host_ingest_path, state, mode=0o600)
+            self._discard_private_evidence_unlocked(session_id, turn_id)
+
+    def _discard_private_evidence_unlocked(self, session_id: str, turn_id: str) -> None:
+        state = self._read_ingest_state()
+        bucket = state.setdefault("hosts", {}).setdefault(self.host, {})
+        entry = self._normalize_host_entry(bucket.get(session_id))
+        changed = entry["tool_evidence"].pop(turn_id, None) is not None
+        changed = entry["tool_evidence_lost"].pop(turn_id, None) is not None or changed
+        if changed:
+            bucket[session_id] = entry
+            self._mirror_legacy_codex(state, session_id, entry)
+            atomic_write_json(self.vault.host_ingest_path, state, mode=0o600)
 
     def _consume_captured_evidence(self, session_id: str, turn_id: str) -> None:
         from .inbox import parse_inbox_file
@@ -147,7 +151,8 @@ class HostRuntime:
             saved = [record for turn in turns if turn.turn_key == turn_key(turn_id)
                      for event in turn.events if event.role == "assistant"
                      for record in event.tool_evidence]
-            if not all(record in saved for record in pending):
+            permitted = retain_tool_evidence(pending, self.vault.config())
+            if not all(record in saved for record in permitted):
                 return
             entry["tool_evidence"].pop(turn_id, None)
             entry["tool_evidence_lost"].pop(turn_id, None)
@@ -172,13 +177,17 @@ class HostRuntime:
                 return
             incoming = observation_records(tool_name, call_id, payload,
                 source_kind="retrieved_memory" if refers_to_vault(tool_input, self.vault.root) else None)
+            for record in incoming:
+                record["source_type"] = "document" if document_arguments(tool_input) else "tool_result"
+            incoming = retain_tool_evidence(incoming, self.vault.config())
             if not incoming:
+                self._discard_private_evidence_unlocked(session_id, turn_id)
                 return
             state = self._read_ingest_state()
             bucket = state.setdefault("hosts", {}).setdefault(self.host, {})
             entry = self._normalize_host_entry(bucket.get(session_id))
             pending = entry.setdefault("tool_evidence", {})
-            records = pending.setdefault(turn_id, [])
+            records = retain_tool_evidence(pending.setdefault(turn_id, []), self.vault.config())
             for record in incoming:
                 matching = [r for r in records if r.get("call_id") == record["call_id"]
                             and r.get("record_id") == record.get("record_id")]
@@ -214,7 +223,7 @@ class HostRuntime:
                 "kind": "unknown", "result_status": "truncated", "completeness": "partial",
                 "execution_status": "unknown", "omitted_count": str(lost or 1),
                 "content": "Pending tool observations exceeded retention; original evidence must be supplied again."}]
-        return normalize_tool_evidence(records)
+        return retain_tool_evidence(records, self.vault.config())
 
     def process(self, **arguments: Any) -> Any:
         """Run the existing Core process path without changing extraction rules."""

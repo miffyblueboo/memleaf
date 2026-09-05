@@ -758,6 +758,29 @@ def _path_from_tool_arguments(arguments: Any) -> Optional[str]:
     return None
 
 
+
+def _has_document_arguments(value: Any, depth: int = 0) -> bool:
+    """Classify structural file handles in the standalone copied provider.
+
+    Kept dependency-free; contract tests compare this adapter projection with
+    Core's document_arguments. Tool names and shell command text are not used.
+    """
+    if depth > 4:
+        return False
+    if isinstance(value, Mapping):
+        for key, item in list(value.items())[:32]:
+            if key in {"path", "file", "file_path", "filepath", "filename", "attachment_id", "file_id"}:
+                if isinstance(item, str) and item.strip():
+                    return True
+            if key == "uri" and isinstance(item, str) and item.startswith("file://"):
+                return True
+            if isinstance(item, (Mapping, list, tuple)) and _has_document_arguments(item, depth + 1):
+                return True
+    elif isinstance(value, (list, tuple)):
+        return any(_has_document_arguments(item, depth + 1) for item in value[:32])
+    return False
+
+
 def _path_is_within(root: Optional[Path], value: Optional[str]) -> Optional[bool]:
     if root is None or value is None:
         return None
@@ -1284,7 +1307,8 @@ def _bounded_current_tool_evidence(messages: Optional[List[Dict[str, Any]]], *, 
                     "execution_status": "error" if execution_error else "success",
                     "completeness": "partial" if partial else "complete", "schema_version": "2",
                     "result_status": "truncated" if partial else "error" if execution_error else "success",
-                    "content": text[:2000]}
+                    "content": text[:2000],
+                    "source_type": "document" if _has_document_arguments(call.get("arguments")) else "tool_result"}
             if isinstance(value, Mapping):
                 for key in ("record_id", "title", "message_id", "subject", "sender", "domain"):
                     field = value.get(key)

@@ -75,7 +75,9 @@ INSTRUCTIONS = (
     "When explicitly calling legacy context, pass source and session_id together and avoid "
     "duplicating native memory that the target host already loads. "
     "Capture only user-visible and assistant-visible text. Never capture system or developer "
-    "messages, hidden reasoning, raw tool output, or attachment bodies. "
+    "messages or hidden reasoning. Do not place raw tool output or attachment bodies in "
+    "visible-message content. Matched current-turn tool_evidence is governed by the Vault's "
+    "capture.tool_evidence_mode (bounded, metadata, off) and include_attachments policy. "
     "Process only complete user+assistant turns; do not process incomplete turns. "
     "Use remember only when the user explicitly asks to remember something. If the user has "
     "previously or currently explicitly said not to record corresponding text, skip capture for it. "
@@ -146,7 +148,7 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                             "subject": {"type": "string"},
                             "sender": {"type": "string"},
                             "domain": {"type": "string"},
-                            **{key: {"type": "string"} for key in ("tool_name", "call_id", "record_id", "title", "kind", "result_status", "content", "result_digest")},
+                            **{key: {"type": "string"} for key in ("tool_name", "call_id", "record_id", "title", "kind", "result_status", "content", "result_digest", "execution_status", "completeness", "schema_version", "omitted_count", "source_type", "retention")},
                         }
                     ),
                 },
