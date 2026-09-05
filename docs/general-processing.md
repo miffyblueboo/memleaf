@@ -131,3 +131,23 @@ paraphrases, multiple scopes and several external tool categories. Record actual
 model/provider, counts of false writes/omissions/deferrals, and failures without
 including credentials or private transcripts. Unit-test success cannot replace
 that acceptance.
+
+## Native Windows verification boundaries
+
+Windows processing-owner liveness is queried through a process handle with
+SYNCHRONIZE access, never by sending a signal. Shared-Vault writes use a
+native byte-range lock between processes, not only a Python thread mutex.
+Native child-process tests run on Linux, macOS and Windows.
+
+The full Python suite runs on all three OS families. Only the `install.sh`
+shell-harness class is POSIX-only; Windows retains installation, upgrade,
+PowerShell syntax, host lifecycle and native Codex acceptance. Test launchers
+use native `.cmd` wrappers on Windows. Byte-preservation assertions compare
+actual before/after bytes, including CRLF. POSIX mode-bit checks are conditional:
+Windows file privacy follows the Vault directory's inherited ACLs, and Unix
+`0600` must not be interpreted as proof of a Windows owner-only DACL.
+
+Real-model acceptance requires an explicit model route in repository Actions:
+secret `MEMLEAF_LIVE_MODEL_TOKEN` and variables `MEMLEAF_LIVE_BASE_URL` and
+`MEMLEAF_LIVE_MODEL`. Missing configuration is a blocked acceptance result,
+not a passing semantic test. Never publish based only on deterministic mocks.

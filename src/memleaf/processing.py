@@ -1541,17 +1541,22 @@ class Processor:
 
     @staticmethod
     def _owner_pid_status(owner_pid: Any) -> Optional[bool]:
-        """Return whether a POSIX processing owner is alive.
+        """Return whether a local processing owner is alive.
 
         ``None`` means that the marker does not contain a usable PID or that
         the platform cannot answer the question.  In that case callers use
         the short legacy grace period rather than assuming ownership is gone.
         """
 
-        if os.name != "posix" or isinstance(owner_pid, bool) or not isinstance(owner_pid, int):
+        if isinstance(owner_pid, bool) or not isinstance(owner_pid, int):
             return None
         if owner_pid <= 0:
             return False
+        if os.name == "nt":
+            from .process_owner import windows_pid_status
+            return windows_pid_status(owner_pid)
+        if os.name != "posix":
+            return None
         try:
             os.kill(owner_pid, 0)
         except ProcessLookupError:

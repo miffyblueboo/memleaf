@@ -93,13 +93,35 @@ class StageC2InitTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def make_executable(self, name: str, body: str = "#!/bin/sh\nexit 0\n") -> Path:
-        path = self.bin / name
+        path = self.bin / (name + ".cmd" if os.name == "nt" else name)
+        if os.name == "nt":
+            if name == "hermes" and "env-path" in body:
+                script = self.bin / "fake_hermes.py"
+                script.write_text(
+                    "import json, os, pathlib, sys\n"
+                    "args = sys.argv[1:]\n"
+                    "home = pathlib.Path(os.environ['HERMES_HOME'])\n"
+                    "if args[:2] == ['config', 'env-path']: print(home / '.env')\n"
+                    "elif args[:3] == ['config', 'get', 'model']: print(json.dumps({'default':'test-flash','provider':'openai','base_url':'https://example.test/v1'}))\n"
+                    "elif args[:3] == ['config', 'get', 'custom_providers']: print('{}')\n"
+                    "elif args[:2] == ['mcp', 'add']:\n"
+                    " home.mkdir(parents=True, exist_ok=True)\n"
+                    " vault = args[args.index('--vault') + 1]\n"
+                    " (home / 'config.yaml').write_text(json.dumps({'mcp_servers':{'memleaf':{'command':'memleaf-mcp','args':['--vault',vault]}}}), encoding='utf-8')\n",
+                    encoding="utf-8",
+                )
+                body = f'@echo off\n"{PYTHON}" "{script}" %*\nexit /b %errorlevel%\n'
+            elif "codex-called" in body:
+                body = '@echo off\necho called > "%HOME%\\codex-called"\nexit /b 1\n'
+            else:
+                body = '@echo off\nexit /b 0\n'
         path.write_text(body, encoding="utf-8")
         path.chmod(0o700)
         return path
 
     def env(self):
-        return {"HOME": str(self.home), "PATH": str(self.bin)}
+        return {"HOME": str(self.home), "PATH": str(self.bin),
+                "HERMES_HOME": str(self.home / ".hermes")}
 
     def test_detection_true_false_and_uncertain(self):
         self.make_executable("codex")
@@ -488,12 +510,13 @@ class StageC2InitTests(unittest.TestCase):
             encoding="utf-8",
         )
         config.chmod(0o640)
+        original_mode = stat.S_IMODE(config.stat().st_mode)
         adapter = AntigravityAdapter(home=self.home, env=self.env())
         result = adapter.configure(adapter.detect(), self.vault)
         self.assertEqual("configured", result.status)
         self.assertTrue(result.changed)
         self.assertIsNotNone(result.backup_path)
-        self.assertEqual(0o640, stat.S_IMODE(config.stat().st_mode))
+        self.assertEqual(original_mode, stat.S_IMODE(config.stat().st_mode))
         data = json.loads(config.read_text(encoding="utf-8"))
         self.assertEqual({"secret": "kept"}, data["other"])
         self.assertEqual({"x": 1}, data["mcpServers"]["other"])
@@ -567,6 +590,7 @@ class StageC2InitTests(unittest.TestCase):
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
         environment["HOME"] = str(home or self.home)
+        environment["HERMES_HOME"] = str((home or self.home) / ".hermes")
         environment["PATH"] = str(self.bin)
         return subprocess.run(
             [PYTHON, "-m", "memleaf.cli", *arguments],

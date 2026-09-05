@@ -2403,7 +2403,8 @@ class StageB2ATest(unittest.TestCase):
 
         path = service.vault.logs_path / "model-diagnostics.jsonl"
         self.assertTrue(path.is_file())
-        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        if os.name == "posix":  # Windows security is governed by inherited ACLs, not mode bits.
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertLessEqual(path.stat().st_size, 256 * 1024)
         lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
         self.assertEqual(len(lines), 3)
@@ -2855,7 +2856,7 @@ class StageB2ATest(unittest.TestCase):
             "started_at": "2026-08-24T00:00:00Z",
         }
         service.vault.processed_index_path.write_text(json.dumps(value), encoding="utf-8")
-        with patch("memleaf.processing.os.kill", side_effect=ProcessLookupError):
+        with patch("memleaf.processing.Processor._owner_pid_status", return_value=False):
             self.assertEqual(service.process()["processed_turns"], 1)
 
     def test_legacy_processing_marker_uses_short_grace_period(self):
