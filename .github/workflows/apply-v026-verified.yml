@@ -7,13 +7,14 @@ permissions:
   contents: write
 jobs:
   apply:
-    if: github.event.head_commit.message == 'chore: apply complete verified v026 candidate'
+    if: >-
+      github.event.head_commit.message == 'chore: apply complete verified v026 candidate'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -23,8 +24,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = d935165dcc4f37d620c25b6d9b802077a1a8930d
-          test "$(git rev-parse HEAD^{tree})" != 8bceb53230bf08d72d16a369fd770dc7d30f6552
+          test "$(git diff --name-only d935165dcc4f37d620c25b6d9b802077a1a8930d HEAD)" = .github/workflows/apply-v026-verified.yml
           python - <<'PY'
           import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
           repo = 'miffyblueboo/memleaf'
