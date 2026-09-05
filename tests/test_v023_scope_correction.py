@@ -13,7 +13,7 @@ from memleaf.models import Memory
 from memleaf.processing import Processor
 from memleaf.scope_maintenance import scope_registry_projection
 from memleaf.scope_state import project_scopes_for_domains, validate_scope_registry
-from memleaf.validation import split_mixed_future_use_text
+from memleaf.validation import parse_gate_output
 
 
 class V023ScopeCorrectionTests(unittest.TestCase):
@@ -143,13 +143,22 @@ class V023ScopeCorrectionTests(unittest.TestCase):
         self.assertEqual("scope_correction", archived.extra.get("invalidated_reason"))
         self.assertEqual(correct.memory_id, archived.extra.get("superseded_by"))
 
-    def test_same_project_mixed_future_use_splits_only_when_every_clause_is_classifiable(self) -> None:
-        split = split_mixed_future_use_text(
-            "金元顺安实施计划要求后续交付都保留回滚方案；同时需要按6点调整实施计划并提交反馈"
-        )
-        self.assertIsNotNone(split)
-        self.assertEqual({"project", "todo"}, {kind for _text, kind in split})
-        self.assertIsNone(split_mixed_future_use_text("金元顺安实施计划后续按规范执行；另外还有一些事情"))
+    def test_atomicity_is_model_owned_not_locally_split_by_business_text(self) -> None:
+        key = event_key("mixed-future-use")
+        memory = "金元顺安后续交付保留回滚方案；同时需要提交反馈。"
+        raw = json.dumps({"candidates": [{
+            "candidate_id": "model-owned-atomicity",
+            "memory": memory,
+            "worth": True,
+            "duplicate": False,
+            "type": "project",
+            "scopes": ["global"],
+            "scope_source": "model",
+            "evidence_event_ids": [key],
+        }]})
+        parsed = parse_gate_output(raw, current_event_keys=[key])
+        self.assertEqual(parsed["candidates"][0]["memory"], memory)
+        self.assertEqual(parsed["candidates"][0]["type"], "project")
 
     def test_unique_mail_domain_conflict_is_detected_without_scope_map_exposure(self) -> None:
         self.service.capture("hermes", "evidence", "t2", "user", "处理这封邮件", event_id="eu")

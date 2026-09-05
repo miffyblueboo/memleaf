@@ -84,55 +84,38 @@ def summary(event, *, title, body, type="fact", update_memory_id=None):
 
 
 class AdmissionPromptTests(unittest.TestCase):
-    def test_automatic_gate_has_explicit_operational_noise_boundary(self):
+    def test_automatic_gate_is_source_neutral_and_future_use_driven(self):
         text = " ".join(GATE_SYSTEM.casefold().split())
         for phrase in (
-            "in the automatic capture/process path",
-            "return candidates=[]",
-            "mcp/tool connection",
-            "failure diagnosis",
-            "do not keep it merely to avoid a future investigation",
-            "same operational incident spans stats/search/remember",
-            "separate, user-confirmed future-use fact",
-            "preference, identity, constraint",
-            "project risk",
-            "durable lesson",
-            "pure read-only query",
-            "never set duplicate_memory_id",
-            "append its source",
-            "request to invoke or test the remember tool",
-            "do not store the failure report",
+            "source-neutral",
+            "current user assertions",
+            "matched current-turn external observations",
+            "do not independently authorize a write",
+            "concrete future reuse",
+            "source type, tool name, application, document kind, message kind, and business domain never decide worth",
+            "one independently retrievable and updateable future-use topic",
+            "pure read-only query adds no memory",
             "explicit remember mode",
         ):
             self.assertIn(phrase, text)
-
-        prompt = gate_prompt(
-            [{"event_key": "event-1", "role": "assistant", "content": "MCP test failed"}],
-        )
+        prompt = gate_prompt([{"event_key": "event-1", "role": "assistant", "content": "temporary result"}])
         self.assertIn("Mode: automatic capture/process", prompt)
-        self.assertIn("does not prove it succeeded", prompt)
         self.assertIn("A pure query answered by restating a related active memory is read-only", prompt)
-        self.assertIn("do not set duplicate_memory_id or update_memory_id", prompt)
         self.assertIn("no admissible future-use information", gate_prompt([]))
 
-    def test_summary_preserves_business_exception_without_importing_diagnostics(self):
+    def test_summary_contract_is_source_neutral(self):
         text = " ".join(SUMMARIZE_SYSTEM.casefold().split())
         for phrase in (
-            "never summarize a pure mcp/tool connectivity test",
-            "failed outcome or surrounding diagnosis",
-            "user-confirmed future-use preference, identity, constraint",
-            "summarize only that future-use topic",
-            "summarize only the requested object",
-            "do not append tool/test diagnostics",
+            "source-neutral",
+            "update or no_change takes precedence over create",
+            "retain still-valid information",
+            "application-, tool-, document- or business-specific heuristics",
+            "smallest complete confirmed content",
+            "transient execution detail",
         ):
             self.assertIn(phrase, text)
-
-        event = {"event_key": "event-1", "role": "user", "content": "a project risk"}
-        prompt = summarize_prompt(
-            candidate("risk", ["event-1"], memory="a project risk"),
-            [event],
-            explicit=False,
-        )
+        event = {"event_key": "event-1", "role": "user", "content": "a durable constraint"}
+        prompt = summarize_prompt(candidate("risk", ["event-1"], memory="a durable constraint"), [event], explicit=False)
         self.assertIn("Mode: candidate passed the gate", prompt)
 
 
@@ -450,7 +433,8 @@ class AdmissionFlowTests(unittest.TestCase):
                         "sent-receipt",
                         [user_key, assistant_key],
                         memory="供数清单邮件已发送并完成归档核验。",
-                        type="fact",
+                        type=None,
+                        worth=False,
                     )
                 ]
             )
@@ -998,8 +982,8 @@ class AdmissionFlowTests(unittest.TestCase):
         service = self.make_service("duplicate-update")
         old = service.create_memory(
             memory_id="mem-state",
-            title="Project state",
-            body="The project is in state A.",
+            title="项目状态",
+            body="项目状态为 A。",
             type="project",
         )
         backend = QueueBackend()
@@ -1025,7 +1009,7 @@ class AdmissionFlowTests(unittest.TestCase):
                         candidate(
                             "risk",
                             [second_user],
-                            memory="项目存在最新风险。",
+                            memory="项目状态风险已更新。",
                             type="project",
                             update_memory_id=old.memory_id,
                         ),
@@ -1040,8 +1024,8 @@ class AdmissionFlowTests(unittest.TestCase):
                 ),
                 summary(
                     second_user,
-                    title="Project risk",
-                    body="项目存在最新风险。",
+                    title="项目状态",
+                    body="项目状态风险已更新。",
                     type="project",
                     update_memory_id=old.memory_id,
                 ),

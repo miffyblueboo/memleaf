@@ -53,14 +53,15 @@ def candidate(
     type="fact",
     scopes=None,
     update_memory_id=None,
+    worth=True,
 ):
     value = {
         "candidate_id": candidate_id,
         "memory": memory,
         "evidence_event_ids": list(evidence),
         "duplicate": False,
-        "worth": True,
-        "type": type,
+        "worth": worth,
+        "type": type if worth else None,
         "scopes": list(scopes or ["global"]),
         "scope_source": "model",
     }
@@ -158,7 +159,6 @@ class ExtractionQualityRegressionTests(unittest.TestCase):
         )
         backend = QueueBackend(
             [
-                gate([mixed]),
                 gate([split_project, split_todo]),
                 summary(
                     user_key,
@@ -186,13 +186,13 @@ class ExtractionQualityRegressionTests(unittest.TestCase):
 
         memories = self.active_memories()
         self.assertEqual(result["processed_turns"], 1)
-        # The safe implementation may split after a bounded gate retry.  A
-        # one-memory successful write would be the historical defect.
+        # Atomicity is model-owned; Core validates the two independent outputs
+        # without a source-specific local classifier.
         self.assertGreaterEqual(len(memories), 2)
         self.assertEqual({memory.type for memory in memories}, {"project", "todo"})
         self.assertEqual(
             [call["purpose"] for call in backend.calls],
-            ["gate", "gate", "summarize", "summarize"],
+            ["gate", "summarize", "summarize"],
         )
         self.assertFalse(
             any(
@@ -202,108 +202,32 @@ class ExtractionQualityRegressionTests(unittest.TestCase):
             "project constraint and deadline todo were merged into one memory",
         )
 
-    def test_repeated_mixed_future_use_defers_only_bad_candidate(self):
-        """A third mixed-use failure must not discard a valid sibling candidate."""
-
+    def test_model_rejects_non_atomic_candidate_without_blocking_valid_sibling(self):
         user_key, assistant_key = self.capture_turn(
-            "repeated-mixed-future-use",
-            user="请记录本轮确认的项目要求。",
-            assistant="系统采用达梦数据库；部署测试环境的任务必须在2026-09-10前完成。",
+            "model-owned-atomicity",
+            user="请记录本轮确认的两个独立事项。",
+            assistant="系统采用达梦数据库；另有一个独立部署任务。",
         )
-        project_scope = ["project:金元顺安"]
-        mixed = candidate(
-            "mixed-repeated",
-            [user_key, assistant_key],
-            memory=(
-                "金元顺安实施计划采用达梦和东方通；背景说明暂未定稿；"
-                "并要求部署测试环境在2026-09-10前完成。"
-            ),
-            type="project",
-            scopes=project_scope,
+        rejected = candidate(
+            "non-atomic", [user_key, assistant_key],
+            memory="把两个独立 future-use 对象混成一条。", type="project", scopes=["project:金元顺安"], worth=False,
         )
         valid = candidate(
-            "valid-sibling",
-            [user_key, assistant_key],
-            memory="本轮确认系统采用达梦数据库。",
-            type="fact",
-            scopes=["global"],
+            "valid-sibling", [user_key, assistant_key],
+            memory="本轮确认系统采用达梦数据库。", type="fact", scopes=["global"],
         )
-        backend = QueueBackend(
-            [
-                gate([mixed, valid]),
-                gate([mixed, valid]),
-                gate([mixed, valid]),
-                summary(
-                    user_key,
-                    title="系统数据库选型",
-                    body="本轮确认系统采用达梦数据库。",
-                    type="fact",
-                    scopes=["global"],
-                ),
-            ]
-        )
-
-        result = self.service.process(
-            source="hermes",
-            session_id="repeated-mixed-future-use",
-            model=backend,
-        )
-
+        backend = QueueBackend([
+            gate([rejected, valid]),
+            summary(user_key, title="系统数据库选型", body="本轮确认系统采用达梦数据库。", type="fact", scopes=["global"]),
+        ])
+        result = self.service.process(source="hermes", session_id="model-owned-atomicity", model=backend)
         self.assertEqual(result["processed_turns"], 1)
         self.assertEqual(result["memories_written"], 1)
         self.assertEqual(len(self.active_memories()), 1)
         self.assertEqual(self.active_memories()[0].body, "本轮确认系统采用达梦数据库。")
-        self.assertEqual(
-            [call["purpose"] for call in backend.calls],
-            ["gate", "gate", "gate", "summarize"],
-        )
-        processed = json.loads(
-            self.service.vault.processed_index_path.read_text(encoding="utf-8")
-        )
-        state = processed["sessions"]["hermes/repeated-mixed-future-use"]
-        self.assertEqual(state["processing"]["status"], "idle")
-        self.assertEqual(result["deferred_candidates"], 1)
-        self.assertEqual(
-            state["processed_turns"][0]["deferred_candidates"][0]["candidate_id"],
-            "mixed-repeated",
-        )
-        self.assertEqual(
-            state["processed_turns"][0]["deferred_candidates"][0]["reason"],
-            "mixed_future_use",
-        )
-        self.assertTrue(
-            (
-                self.service.vault.inbox_path
-                / "hermes"
-                / "repeated-mixed-future-use.md"
-            ).is_file()
-        )
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
+        self.assertEqual(result["deferred_candidates"], 0)
 
-        retry_backend = QueueBackend(
-            [
-                gate([mixed, valid]),
-                gate([mixed, valid]),
-                gate([mixed, valid]),
-                summary(
-                    user_key,
-                    title="系统数据库选型",
-                    body="本轮确认系统采用达梦数据库。",
-                    type="fact",
-                    scopes=["global"],
-                ),
-            ]
-        )
-        retry = self.service.process(
-            source="hermes",
-            session_id="repeated-mixed-future-use",
-            scope="global",
-            model=retry_backend,
-        )
-        self.assertEqual(retry["processed_turns"], 1)
-        self.assertEqual(retry["memory_ids"], [])
-        self.assertEqual(retry["memories_written"], 0)
-        self.assertEqual(len(self.active_memories()), 1)
-        self.assertEqual(retry["deferred_candidates"], 1)
 
     def test_repeated_mixed_future_use_does_not_swallow_other_schema_errors(self):
         """The final mixed-use fallback must preserve unrelated validation failures."""

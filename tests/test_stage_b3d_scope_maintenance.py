@@ -341,18 +341,17 @@ class StageB3DScopeMaintenanceTest(unittest.TestCase):
             scopes=["project:old"],
         )
         key = self.capture_turn(prefix="duplicate", content="shared fact marker")
-        backend = QueueBackend(
-            [
-                self.gate(
-                    key,
-                    scopes=["project:new"],
-                    duplicate_memory_id=existing.memory_id,
-                )
-            ]
+        invalid = self.gate(
+            key,
+            scopes=["project:new"],
+            duplicate_memory_id=existing.memory_id,
         )
+        backend = QueueBackend([invalid, invalid, invalid])
 
-        with self.assertRaises(ModelOutputError):
-            self.service.process(model=backend)
+        result = self.service.process(model=backend)
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["deferred_candidates"], 1)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "gate"])
 
         unchanged = self.service.read(existing.memory_id)
         self.assertEqual(unchanged.body, existing.body)

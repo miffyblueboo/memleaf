@@ -108,11 +108,6 @@ _UNTRUSTED_TOOL_RESULT_TAG = "<untrusted_tool_result"
 _UNTRUSTED_TOOL_RESULT_END = "</untrusted_tool_result>"
 
 
-_MAX_MAIL_EVIDENCE_ITEMS = 8
-_MAIL_ADDRESS_RE = re.compile(r"(?i)([A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,63}))")
-_MAIL_TOOL_RE = re.compile(r"(?:gmail|outlook|mail|email)", re.IGNORECASE)
-
-
 class _MCPToolError(RuntimeError):
     """Safe structured model error returned by the local MCP boundary."""
 
@@ -1178,83 +1173,6 @@ def _resolve_command(config: Mapping[str, Any]) -> Optional[str]:
         if (Path.home() / ".local" / "bin" / "memleaf-mcp").is_file()
         else None
     )
-
-
-def _bounded_mail_evidence(messages: Optional[List[Dict[str, Any]]]) -> list[dict[str, str]]:
-    """Extract only message id/subject/sender/domain from visible mail tool results."""
-
-    calls = _visible_tool_calls(messages)
-    results = _visible_tool_results(messages)
-    used: set[int] = set()
-    output: list[dict[str, str]] = []
-    seen: set[tuple[tuple[str, str], ...]] = set()
-
-    def add_record(mapping: Mapping[str, Any]) -> None:
-        if len(output) >= _MAX_MAIL_EVIDENCE_ITEMS:
-            return
-        lowered = {str(key).casefold(): value for key, value in mapping.items()}
-        message_id = next((lowered.get(key) for key in ("message_id", "messageid", "id") if isinstance(lowered.get(key), (str, int))), None)
-        subject = next((lowered.get(key) for key in ("subject", "title") if isinstance(lowered.get(key), str)), None)
-        sender = next((lowered.get(key) for key in ("sender", "from", "from_address", "from_email", "email") if isinstance(lowered.get(key), str)), None)
-        domain = next((lowered.get(key) for key in ("domain", "sender_domain") if isinstance(lowered.get(key), str)), None)
-        if isinstance(sender, str):
-            match = _MAIL_ADDRESS_RE.search(sender)
-            if match and not domain:
-                domain = match.group(2)
-        item: dict[str, str] = {}
-        for key, value, limit in (
-            ("message_id", message_id, 160),
-            ("subject", subject, 320),
-            ("sender", sender, 320),
-            ("domain", domain, 253),
-        ):
-            if value is None:
-                continue
-            text = str(value).strip()
-            if not text or any(ch in text for ch in "\x00\r\n"):
-                continue
-            if key == "domain":
-                text = text.casefold().lstrip("@")
-                if not re.fullmatch(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", text):
-                    continue
-            item[key] = text[:limit]
-        if "domain" not in item:
-            return
-        fingerprint = tuple(sorted(item.items()))
-        if fingerprint not in seen:
-            seen.add(fingerprint)
-            output.append(item)
-
-    def visit(value: Any, depth: int = 0) -> None:
-        if depth > 4 or len(output) >= _MAX_MAIL_EVIDENCE_ITEMS:
-            return
-        decoded = _decode_hermes_tool_result(value)
-        if decoded is _MISSING_TOOL_RESULT:
-            return
-        if decoded is not value:
-            visit(decoded, depth + 1)
-            return
-        if isinstance(value, Mapping):
-            add_record(value)
-            for child in value.values():
-                if isinstance(child, (Mapping, list, tuple)):
-                    visit(child, depth + 1)
-        elif isinstance(value, (list, tuple)):
-            for child in value:
-                visit(child, depth + 1)
-
-    ordinal = 0
-    for call in calls:
-        name = call.get("name")
-        if not isinstance(name, str) or not _MAIL_TOOL_RE.search(name):
-            continue
-        ordinal += 1
-        payload = _tool_result_for_call(call, calls, results, used)
-        if payload is not _CALL_FAILED:
-            visit(payload)
-        if len(output) >= _MAX_MAIL_EVIDENCE_ITEMS:
-            break
-    return output
 
 
 def _bounded_current_tool_evidence(messages: Optional[List[Dict[str, Any]]], *, vault_root: Optional[Path] = None) -> list[dict[str, str]]:

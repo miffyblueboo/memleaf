@@ -1224,7 +1224,7 @@ class StageB2ATest(unittest.TestCase):
         self.assertEqual(service.read(other.memory_id).body, other.body)
         self.assertEqual(len(service.vault.list_markdown("history")), 1)
 
-    def test_same_project_different_future_use_target_retries_then_creates(self):
+    def test_model_selects_create_for_same_scope_different_future_use(self):
         backend = QueueBackend()
         service = self.service(backend, name="same-project-wrong-target")
         old = service.create_memory(
@@ -1257,7 +1257,6 @@ class StageB2ATest(unittest.TestCase):
         corrected.pop("update_memory_id")
         backend.responses.extend(
             [
-                self.gate([wrong]),
                 self.gate([corrected]),
                 self.summary(
                     user_key,
@@ -1273,8 +1272,8 @@ class StageB2ATest(unittest.TestCase):
         result = service.process(source="codex", session_id="s", model=backend)
 
         self.assertEqual(result["memories_written"], 1)
-        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "summarize"])
-        self.assertIn("Previous output violated: target_not_relevant.", backend.calls[1]["prompt"])
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
+        self.assertNotIn("target_not_relevant", " ".join(call["prompt"] for call in backend.calls))
         self.assertEqual(service.read(old.memory_id).title, old.title)
         self.assertEqual(service.read(old.memory_id).body, old.body)
         self.assertEqual(len(service.vault.list_markdown("history")), 0)

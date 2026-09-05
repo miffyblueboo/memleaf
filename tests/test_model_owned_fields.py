@@ -118,22 +118,26 @@ class ModelOwnedFields(unittest.TestCase):
         self.assertTrue(self.core.vault.inbox_path.joinpath("hermes", "s.md").exists())
 
 
-    def test_persistent_unrelated_update_is_not_converted_to_create(self):
+    def test_model_selected_same_scope_update_is_not_second_guessed_by_core_text_matching(self):
         target = self.core.create_memory(memory_id="alpha-owner", title="alpha 负责人",
             body="alpha 负责人为甲。", type="fact", scopes=["project:alpha"])
         key = self.capture("alpha 负责人仍为甲。alpha 数据库迁移至 PostgreSQL。")
         c = self.candidate(memory="alpha 数据库迁移至 PostgreSQL。", evidence_event_ids=[key],
                            update_memory_id=target.memory_id)
         original = deepcopy(c)
-        backend = fixture.QueueBackend([fixture.gate([c])] * 3)
+        body = "alpha 数据库迁移至 PostgreSQL。"
+        backend = fixture.QueueBackend([
+            fixture.gate([c]),
+            fixture.summary(key, title=target.title, body=body, type="fact",
+                            scopes=["project:alpha"], update_memory_id=target.memory_id),
+        ])
         result = self.core.process(model=backend)
-        self.assertEqual(result["memories_written"], 0)
-        self.assertEqual(result["deferred_candidates"], 1)
+        self.assertEqual(result["memory_ids"], [target.memory_id])
         self.assertEqual(c, original)
         self.assertEqual(len(self.core.vault.list_markdown("knowledge")), 1)
-        self.assertEqual(self.core.read(target.memory_id).body, target.body)
-        self.assertEqual(self.core.vault.list_markdown("history"), [])
-        self.assertEqual([call["purpose"] for call in backend.calls], ["gate"] * 3)
+        self.assertEqual(self.core.read(target.memory_id).body, body)
+        self.assertEqual(len(self.core.vault.list_markdown("history")), 1)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
 
     def test_exact_title_ambiguity_never_selects_a_target(self):
         from memleaf.processing import Processor

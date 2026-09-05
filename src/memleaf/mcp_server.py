@@ -227,7 +227,8 @@ _TOOLS: tuple[dict[str, Any], ...] = (
         "description": (
             "Enumerate current memleaf todo memories by status/date across all scopes by default. "
             "This is not relevance search. Continue with next_cursor until has_more=false, then read "
-            "the matching todo bodies with the same retrieval_id."
+            "the matching todo bodies with the same retrieval_id. Retired completed/cancelled rows "
+            "include history=true and require read(include_history=true)."
         ),
         "inputSchema": _object_schema(
             {

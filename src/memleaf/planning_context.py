@@ -12,7 +12,6 @@ from .native_index import NativeIndexer
 from .retrieval import candidate_matches_query, filter_by_scope, normalize_term
 from .scope_state import project_scopes_for_domains
 from .scope_maintenance import ScopeMaintenanceError, scope_registry_projection
-from .validation import is_project_plan_text
 from .process_common import ProcessingError, _RELATED_MAX_BODY_CHARS, _RELATED_MAX_CHARS, _RELATED_MAX_ITEMS, _SCOPE_CORRECTION_MARKER_RE, _SCOPE_DIRECTORY_MAX_CHARS, _SCOPE_DIRECTORY_MAX_ITEMS, _SCOPE_DIRECTORY_MAX_TITLE_CHARS, _TARGET_NOT_RELATED, _TARGET_SAME_USE, _TARGET_UNKNOWN, _event_payload, _invoke_native, _merge_related, _native_result, _project_scope_occurrences, _safe_scope_background, _session_key
 
 
@@ -704,8 +703,16 @@ class PlanningContext:
         scope_directory: Optional[list[dict[str, Any]]] = None,
         scope_directory_complete: bool = True,
     ) -> str:
-        """Classify a selected target as NOT_RELATED, SAME_USE, or UNKNOWN."""
+        """Validate only structural properties of a model-selected target.
 
+        The model owns semantic same-future-use judgment. Core verifies that
+        the selected target still exists and remains visible in the candidate's
+        selected Scope. Type/revision checks are enforced by the planner and
+        commit boundary. No candidate/title/body token matching participates in
+        target authorization.
+        """
+
+        del turn, scope_directory, scope_directory_complete
         target_id = next(
             (
                 candidate.get(field)
@@ -714,9 +721,8 @@ class PlanningContext:
             ),
             None,
         )
-        memory = candidate.get("memory")
         scopes = candidate.get("scopes")
-        if not isinstance(target_id, str) or not isinstance(memory, str) or not isinstance(scopes, list):
+        if not isinstance(target_id, str) or not isinstance(scopes, list):
             return _TARGET_UNKNOWN
         target = self._active_memory_by_id(target_id)
         if target is None:
@@ -725,125 +731,11 @@ class PlanningContext:
             config = self.service.vault.config()
         except (OSError, UnicodeError, ValueError, TypeError):
             return _TARGET_UNKNOWN
-        source = candidate.get("scope_source")
-        if is_project_plan_text(memory) and self._is_adjacent_plan_record(target.title):
-            return _TARGET_NOT_RELATED
-        if scope_directory is not None and not scope_directory_complete:
-            return _TARGET_UNKNOWN
         if not filter_by_scope([target], scopes, config):
             return _TARGET_NOT_RELATED
-
-        scope_terms = self._project_scope_terms(scopes, config)
-
-        if self._model_scope_is_elliptical(candidate, turn, config):
-            # An inherited project scope can make an elliptical turn (for
-            # example, "this project's task") unambiguous even when the
-            # project name is absent from the current events.  The
-            # candidate-local scope query still verifies the target's actual
-            # membership before writing.
-            return _TARGET_SAME_USE
-
-        if source in {"user", "session_context"}:
-            # These scopes are authoritative context.  Do not require title
-            # wording to repeat the inherited project/entity name.
-            return _TARGET_SAME_USE
-        if source != "model":
-            return _TARGET_UNKNOWN
-
-        # A complete inherited-scope directory is an explicit, bounded target
-        # selection.  The active target has already been resolved above; body
-        # and topic relevance are resolved by the candidate-local context
-        # below.  Detached candidates do not pass this directory and
-        # therefore always use full retrieval.
-        if scope_directory is not None and scope_directory_complete:
-            selected = next(
-                (
-                    item
-                    for item in scope_directory
-                    if isinstance(item, Mapping)
-                    and isinstance(item.get("memory_id"), str)
-                    and item["memory_id"].casefold() == target.memory_id.casefold()
-                ),
-                None,
-            )
-            if selected is not None:
-                return _TARGET_SAME_USE
-
-        # Global and other non-project scopes do not expose a stable project
-        # identity to compare.  The active, scope-matched target is the
-        # relevant context; retain the established behavior for those targets.
-        if not scope_terms:
-            return _TARGET_SAME_USE
-
-        # A plan candidate and a formal plan target represent the same
-        # future-use object even when the candidate is phrased as a proposed
-        # adjustment and shares few title tokens.  Ambiguous same-scope plans
-        # are handled conservatively by _infer_update_target before this
-        # classifier is reached; adjacent mail/meeting records were excluded
-        # above.
-        if is_project_plan_text(memory) and is_project_plan_text(target.title):
-            return _TARGET_SAME_USE
-
-        def without_scope_terms(value: str) -> str:
-            result = value
-            for term in sorted(set(scope_terms), key=len, reverse=True):
-                result = re.sub(re.escape(term), "", result, flags=re.IGNORECASE)
-            return result.strip()
-
-        topic_query = without_scope_terms(memory)
-        topic_title = without_scope_terms(target.title)
-        if not topic_query or not topic_title:
-            return _TARGET_UNKNOWN
-        topic_memory = Memory(
-            memory_id=target.memory_id,
-            title=topic_query,
-            body="",
-            type=target.type,
-            scopes=target.scopes,
-        )
-        return _TARGET_SAME_USE if candidate_matches_query(topic_memory, topic_title) else _TARGET_NOT_RELATED
+        return _TARGET_SAME_USE
 
 
-    @staticmethod
-    def _project_scope_terms(
-        scopes: Any,
-        config: Mapping[str, Any],
-    ) -> list[str]:
-        configured_scopes = config.get("scopes", {}) if isinstance(config, Mapping) else {}
-        terms: list[str] = []
-        if not isinstance(scopes, list):
-            return terms
-        for scope in scopes:
-            if not isinstance(scope, str) or not scope.startswith("project:"):
-                continue
-            terms.append(scope.partition(":")[2])
-            metadata = configured_scopes.get(scope) if isinstance(configured_scopes, Mapping) else None
-            aliases = metadata.get("aliases") if isinstance(metadata, Mapping) else None
-            if isinstance(aliases, list):
-                terms.extend(alias for alias in aliases if isinstance(alias, str) and alias)
-        return terms
-
-
-    @classmethod
-    def _model_scope_is_elliptical(
-        cls,
-        candidate: Mapping[str, Any],
-        turn: Optional[InboxTurn],
-        config: Mapping[str, Any],
-    ) -> bool:
-        if candidate.get("scope_source") != "model" or turn is None:
-            return False
-        terms = cls._project_scope_terms(candidate.get("scopes"), config)
-        if not terms:
-            return False
-        visible_text = normalize_term(
-            " ".join(
-                event.content
-                for event in turn.events
-                if isinstance(event.content, str)
-            )
-        )
-        return not any(normalize_term(term) in visible_text for term in terms)
 
 
     @staticmethod
@@ -855,23 +747,6 @@ class PlanningContext:
             for scope in scopes
             if isinstance(scope, str) and scope.startswith("project:")
         }
-
-
-    @staticmethod
-    def _is_project_plan_title(value: Any) -> bool:
-        return is_project_plan_text(value)
-
-
-    @staticmethod
-    def _is_adjacent_plan_record(value: Any) -> bool:
-        text = normalize_term(value) if isinstance(value, str) else ""
-        return bool(text) and any(
-            marker in text
-            for marker in (
-                "已发送", "发送", "邮件", "附件", "存档", "会议", "启动会", "纪要",
-                "sent", "email", "mail", "attachment", "archive", "meeting", "minutes",
-            )
-        ) and not is_project_plan_text(value)
 
 
     def _infer_update_target(

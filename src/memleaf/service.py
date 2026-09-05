@@ -418,7 +418,15 @@ class Memleaf:
         history = self._read_memories_unlocked("history")
         direct = [record for record in knowledge + history if record.memory.memory_id == memory_id]
         if not direct:
-            return []
+            # A retired active identity (for example a closed todo) may exist
+            # only as historical Markdown. Resolve that stable identity without
+            # guessing across unrelated history records.
+            linked = [
+                record for record in history
+                if record.memory.extra.get("active_memory_id") == memory_id
+                or record.memory.extra.get("original_memory_id") == memory_id
+            ]
+            return linked
         if not any(record.area == "knowledge" for record in direct):
             # A history memory id is an independent, directly addressable
             # artifact.  Never infer deletion of its active counterpart from
@@ -568,6 +576,13 @@ class Memleaf:
             memory = Memory.from_mapping(memory)
         if area not in ("knowledge", "history"):
             raise ValueError("invalid memory area")
+        from .source_policy import MAX_MEMORY_SOURCES, merge_sources
+        if len(memory.sources) > MAX_MEMORY_SOURCES or any(
+            key in memory.extra for key in ("source_count", "source_digest", "sources_omitted")
+        ):
+            bounded_sources, source_metadata = merge_sources([], memory.sources, extra=memory.extra)
+            memory.sources = bounded_sources
+            memory.extra.update(source_metadata)
         path = self.vault.memory_path(memory.memory_id, area)
         with self._mutation_boundary():
             if path.is_symlink():
@@ -1098,7 +1113,17 @@ class Memleaf:
         scope_value = self._scope_query_values(scope)
         with self.vault.lock():
             self._recover_compaction_unlocked()
-            records = [record for record in self._read_memories_unlocked("knowledge") if record.memory.type == "todo"]
+            active_records = [record for record in self._read_memories_unlocked("knowledge") if record.memory.type == "todo"]
+            active_ids = {record.memory.memory_id.casefold() for record in active_records}
+            records = list(active_records)
+            if status in {"completed", "cancelled", "all"}:
+                records.extend(
+                    record
+                    for record in self._read_memories_unlocked("history")
+                    if record.memory.type == "todo"
+                    and record.memory.extra.get("invalidated_reason") == "todo_closed"
+                    and str(record.memory.extra.get("active_memory_id", "")).casefold() not in active_ids
+                )
             if scope_value is not None:
                 try:
                     requested = normalize_scopes(scope_value, field="todo scope")
@@ -1139,6 +1164,12 @@ class Memleaf:
                     "memory_id": record.memory.memory_id,
                     "title": directory_entry(record.memory).title,
                     "due_date": record.memory.due_date,
+                    "history": record.area == "history",
+                    **(
+                        {"active_memory_id": record.memory.extra.get("active_memory_id")}
+                        if record.area == "history" and isinstance(record.memory.extra.get("active_memory_id"), str)
+                        else {}
+                    ),
                 }
                 for record in ordered
             ]
@@ -1593,6 +1624,8 @@ class Memleaf:
             process = config.get("process") if isinstance(config, Mapping) else None
             threshold = process.get("memory_compact_threshold_tokens") if isinstance(process, Mapping) else None
             ratio = process.get("memory_compact_candidate_ratio") if isinstance(process, Mapping) else None
+            closed_todo_days = process.get("closed_todo_retention_days") if isinstance(process, Mapping) else None
+            history_config = config.get("history") if isinstance(config, Mapping) else None
             active_tokens = estimate_active_tokens([record.memory for record in knowledge])
             inbox_files = self.vault.list_markdown("inbox")
             event_count = 0
@@ -1640,6 +1673,10 @@ class Memleaf:
                 "compaction_threshold_tokens": threshold,
                 "compaction_candidate_ratio": ratio,
                 "compaction_due": isinstance(threshold, int) and active_tokens >= threshold,
+                "closed_todo_retention_days": closed_todo_days,
+                "history_policy": history_config.get("policy") if isinstance(history_config, Mapping) else None,
+                "history_retention_days": history_config.get("retention_days") if isinstance(history_config, Mapping) else None,
+                "history_max_versions_per_memory": history_config.get("max_versions_per_memory") if isinstance(history_config, Mapping) else None,
                 "native_sources": native_sources,
                 "native_segments": native_segments,
                 "native_unavailable": native_unavailable,

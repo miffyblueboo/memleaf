@@ -9,6 +9,7 @@ from typing import Any, Iterable, Mapping
 
 from .locking import atomic_write_text
 from .models import Memory
+from .source_policy import merge_sources
 from .validation import ModelOutputError
 
 
@@ -88,18 +89,10 @@ class MemoryWriter:
 
     @staticmethod
     def _merge_sources(old: Iterable[Mapping[str, Any]], current: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for source in list(old) + list(current):
-            if not isinstance(source, Mapping):
-                continue
-            value = dict(source)
-            key = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            if key in seen:
-                continue
-            seen.add(key)
-            result.append(value)
-        return result
+        """Compatibility projection; active writers use merge_sources metadata too."""
+
+        return merge_sources(old, current)[0]
+
 
     def _active_records(self) -> dict[str, Any]:
         return {
@@ -317,6 +310,12 @@ class MemoryWriter:
         if request.get("explicit_remember") is True:
             extra["explicit_remember"] = True
         core_sources = self._core_sources(request)
+        bounded_sources, source_metadata = merge_sources(
+            existing.sources if existing is not None else [],
+            core_sources,
+            extra=extra,
+        )
+        extra.update(source_metadata)
         return Memory(
             memory_id=memory_id,
             title=summary["title"],
@@ -327,7 +326,7 @@ class MemoryWriter:
             aliases=list(summary.get("aliases", [])),
             keywords=list(summary.get("keywords", [])),
             scope_source=summary.get("scope_source"),
-            sources=self._merge_sources(existing.sources if existing is not None else [], core_sources),
+            sources=bounded_sources,
             created=created,
             updated=now,
             hit_count=existing.hit_count if existing is not None else 0,
@@ -345,6 +344,11 @@ class MemoryWriter:
         if isinstance(candidate_scopes, list):
             scopes = self._merge_scope_values(scopes, candidate_scopes)
         scope_source = summary.get("scope_source") or existing.scope_source
+        extra = dict(existing.extra)
+        bounded_sources, source_metadata = merge_sources(
+            existing.sources, self._core_sources(request), extra=extra
+        )
+        extra.update(source_metadata)
         return Memory(
             memory_id=existing.memory_id,
             title=existing.title,
@@ -355,7 +359,7 @@ class MemoryWriter:
             aliases=list(existing.aliases),
             keywords=list(existing.keywords),
             scope_source=scope_source,
-            sources=self._merge_sources(existing.sources, self._core_sources(request)),
+            sources=bounded_sources,
             created=existing.created,
             updated=now,
             hit_count=existing.hit_count,
@@ -363,7 +367,7 @@ class MemoryWriter:
             status=existing.status,
             completed_at=existing.completed_at,
             due_date=existing.due_date,
-            extra=dict(existing.extra),
+            extra=extra,
         )
 
     @staticmethod
@@ -387,6 +391,8 @@ class MemoryWriter:
     ) -> str:
         history_id = self._history_id(old)
         extra = dict(old.extra)
+        history_sources, source_metadata = merge_sources([], old.sources, extra=extra)
+        extra.update(source_metadata)
         extra.update(
             {
                 "active_memory_id": old.memory_id,
@@ -406,7 +412,7 @@ class MemoryWriter:
             aliases=list(old.aliases),
             keywords=list(old.keywords),
             scope_source=old.scope_source,
-            sources=[dict(item) for item in old.sources],
+            sources=history_sources,
             created=old.created,
             updated=old.updated,
             hit_count=old.hit_count,
