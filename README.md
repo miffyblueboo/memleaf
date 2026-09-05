@@ -4,8 +4,8 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **开发候选：0.2.26（尚未发布）。**
-> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。已发布版本仍为 0.2.25；此修复分支的 0.2.26 尚未发布。
+> **版本：0.2.26。**
+> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。本版完成共享记忆核心重构；真实模型语义效果仍需结合本地模型和业务样本验收。
 > **当前版本支持 Hermes 和 Codex。** Antigravity（反重力）不检测、不安装、不配置。
 
 ## 项目定位
@@ -449,7 +449,7 @@ MIT，见 [LICENSE](LICENSE)。
 *Your memories, in files you own.*
 
 
-## 通用处理与只读验收（0.2.26 开发候选）
+## 通用处理与只读验收（0.2.26）
 
 邮件、日历、工单、文件、浏览器与普通对话共用证据准入、覆盖检查和写入路径。
 自动摘要只能使用获准引用的原文；助手复述和旧记忆回读不能单独授权新增写入。
