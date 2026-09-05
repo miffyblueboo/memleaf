@@ -66,3 +66,12 @@ def semantic_function(original):
     def callback(prompt, **kwargs):
         return bind_response(original(prompt, **kwargs), prompt, kwargs.get('purpose', ''))
     return callback
+
+
+def deferred_target_response(prompt, **kwargs):
+    """A deliberate model ambiguity judgment, never used by production code."""
+    units = json.JSONDecoder().raw_decode(prompt.split(_MARKER, 1)[1])[0]
+    return json.dumps({"candidates": [], "evidence_bindings": [], "coverage": [
+        {"unit_id": u["unit_id"], "decision": "DEFERRED" if u["source_role"] == "user" else "NO_CHANGE",
+         "reason": "target_ambiguous" if u["source_role"] == "user" else "assistant_restatement"}
+        for u in units]}, ensure_ascii=False)

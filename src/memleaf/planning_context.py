@@ -874,53 +874,6 @@ class PlanningContext:
         ) and not is_project_plan_text(value)
 
 
-    @classmethod
-    def _merge_additive_project_plan_update(
-        cls,
-        candidate: Mapping[str, Any],
-        summary: Mapping[str, Any],
-        target: Memory | None,
-    ) -> dict[str, Any]:
-        """Preserve a full active plan when current evidence only adds constraints."""
-
-        result = dict(summary)
-        if (
-            target is None
-            or target.type != "project"
-            or not cls._is_project_plan_title(target.title)
-        ):
-            return result
-        candidate_text = str(candidate.get("memory", "")).casefold()
-        additive_markers = (
-            "建议", "补充", "增加", "新增", "追加", "还需", "同时", "纳入", "完善",
-            "suggest", "propose", "additional", "add ", "include",
-        )
-        replacement_markers = (
-            "改为", "变更为", "替换", "取消", "删除", "不再", "更新为", "调整为", "推迟至", "提前至",
-            "replace", "changed to", "no longer", "cancel", "remove", "instead", "moved to",
-        )
-        if not any(marker in candidate_text for marker in additive_markers):
-            return result
-        if any(marker in candidate_text for marker in replacement_markers):
-            return result
-
-        old_body = target.body.strip()
-        new_body = str(result.get("body", "")).strip()
-        normalized_old = " ".join(old_body.casefold().split())
-        normalized_new = " ".join(new_body.casefold().split())
-        if old_body and normalized_old not in normalized_new:
-            result["body"] = f"{old_body}\n\n{new_body}" if new_body else old_body
-        result["title"] = target.title
-        for field in ("tags", "aliases", "keywords"):
-            merged: list[str] = []
-            for value in list(getattr(target, field)) + list(result.get(field, [])):
-                if isinstance(value, str) and value not in merged:
-                    merged.append(value)
-            if merged or field in result:
-                result[field] = merged
-        return result
-
-
     def _infer_update_target(
         self,
         candidate: Mapping[str, Any],
@@ -928,9 +881,8 @@ class PlanningContext:
     ) -> dict[str, Any]:
         """Reuse one unambiguous same-scope active memory before CREATE.
 
-        General same-type matching prevents a wrong gate target from escaping
-        into a sibling CREATE. Project-plan candidates retain the specialized
-        project-over-fact preference used by earlier maintenance behavior.
+        Deterministic lookup requires a full target-title match, matching type
+        and matching Scope. Semantic interpretation remains model-owned.
         """
 
         result = dict(candidate)
@@ -975,56 +927,10 @@ class PlanningContext:
             seen_same_type.add(memory_id.casefold())
             same_type_matches.append(target)
 
-        specialized_plan = (
-            candidate_type in {"fact", "project"}
-            and self._is_project_plan_title(candidate_text)
-        )
-        if not specialized_plan:
-            if len(same_type_matches) > 1:
-                result["_defer_reason"] = "ambiguous_update_target"
-                return result
-            if len(same_type_matches) == 1:
-                result["update_memory_id"] = same_type_matches[0].memory_id
-            return result
-
-        project_matches: list[Memory] = []
-        fact_matches: list[Memory] = []
-        seen: set[str] = set()
-        for item in related:
-            if not isinstance(item, Mapping) or item.get("native") is True:
-                continue
-            memory_id = item.get("memory_id")
-            item_type = item.get("type")
-            item_scopes = item.get("scopes")
-            if (
-                not isinstance(memory_id, str)
-                or not isinstance(item_type, str)
-                or item_type not in {"fact", "project"}
-                or self._project_scope_keys(item_scopes) != project_keys
-                or memory_id.casefold() in seen
-                or not self._is_project_plan_title(item.get("title"))
-                or self._is_adjacent_plan_record(item.get("title"))
-            ):
-                continue
-            try:
-                target = Memory.from_mapping(item)
-            except (TypeError, ValueError):
-                continue
-            seen.add(memory_id.casefold())
-            if target.type == "project":
-                project_matches.append(target)
-            else:
-                fact_matches.append(target)
-
-        if len(project_matches) > 1 or (not project_matches and len(fact_matches) > 1):
+        # Exact same-type title matching may select a lookup target. It never
+        # promotes a fact to project or chooses another type by plan keywords.
+        if len(same_type_matches) > 1:
             result["_defer_reason"] = "ambiguous_update_target"
-            return result
-        if project_matches:
-            target = project_matches[0]
-        elif len(fact_matches) == 1:
-            target = fact_matches[0]
-        else:
-            return result
-        result["update_memory_id"] = target.memory_id
-        result["type"] = target.type
+        elif len(same_type_matches) == 1:
+            result["update_memory_id"] = same_type_matches[0].memory_id
         return result

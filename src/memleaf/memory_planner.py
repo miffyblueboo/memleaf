@@ -14,8 +14,8 @@ from .update_coordinator import UpdateCoordinator
 from .evidence_policy import retain_tool_evidence
 from .prompts import GATE_SYSTEM, SUMMARIZE_SYSTEM, gate_prompt, summarize_prompt
 from .retrieval import normalize_term
-from .validation import ModelOutputError, NO_CHANGE_DECISION, _model_scope_grounding_evidence, parse_gate_output, parse_strict_json, parse_summarize_output, is_aggregate_operational_text, is_attachment_followup_only_text, is_actionable_todo_text, is_mixed_future_use_text, split_mixed_future_use_text
-from .process_common import ProcessingError, _TARGET_NOT_RELATED, _TARGET_SAME_USE, _TARGET_UNKNOWN, _automatic_create_conflicts, _automatic_transient_memory, _candidate_lookup_queries, _event_payload, _grounded_due_dates, _normalize_final_gate_raw, _normalize_summary_dates, _split_model_project_candidate
+from .validation import ModelOutputError, NO_CHANGE_DECISION, _model_scope_grounding_evidence, parse_gate_output, parse_strict_json, parse_summarize_output, is_aggregate_operational_text, is_attachment_followup_only_text, is_actionable_todo_text, is_mixed_future_use_text
+from .process_common import ProcessingError, _TARGET_NOT_RELATED, _TARGET_SAME_USE, _TARGET_UNKNOWN, _automatic_create_conflicts, _automatic_transient_memory, _candidate_lookup_queries, _event_payload, _grounded_due_dates, _normalize_summary_dates
 
 
 class MemoryPlanner:
@@ -237,8 +237,6 @@ class MemoryPlanner:
             return [request], list(summary["scopes"])
 
         gate_attempt_count = 0
-        detached_update_target_ids: dict[str, str] = {}
-        deferred_type_mismatch_ids: set[str] = set()
         target_relations: dict[str, str] = {}
         unknown_target_ids: set[str] = set()
         candidate_level_target_ids: set[str] = set()
@@ -247,19 +245,13 @@ class MemoryPlanner:
         def parse_gate(raw: str) -> dict[str, Any]:
             nonlocal gate_attempt_count, coverage_rows
             gate_attempt_count += 1
-            detached_update_target_ids.clear()
-            deferred_type_mismatch_ids.clear()
             target_relations.clear()
             unknown_target_ids.clear()
             candidate_level_target_ids.clear()
             scope_correction_plans.clear()
             raw, binding_value = split_semantic_envelope(raw)
             raw, coverage_value = split_gate_envelope(raw)
-            raw_for_parse = (
-                _normalize_final_gate_raw(raw, validation_scope_registry)
-                if gate_attempt_count >= 3
-                else raw
-            )
+            raw_for_parse = raw
             # An explicit scope correction can legitimately name an old-scope
             # target absent from the ordinary new-scope directory. Authorize
             # that one candidate/target pair before strict ID validation, not
@@ -292,8 +284,7 @@ class MemoryPlanner:
                 current_event_keys=turn.event_keys,
                 related_memory_ids=[*gate_related_memory_ids, *allowed_corrections.values()],
                 scope_registry=validation_scope_registry,
-                enforce_model_scope_grounding=gate_attempt_count < 3,
-                allow_mixed_future_use=gate_attempt_count >= 3,
+                defer_semantic_errors=gate_attempt_count >= 3,
                 allow_shared_update_targets=True,
             )
             for item in parsed["candidates"]:
@@ -318,71 +309,6 @@ class MemoryPlanner:
                                 raise ModelOutputError("binding contradicts coverage", validation_detail="invalid_evidence")
                         item["_evidence_bindings"] = claims
             validate_coverage_bindings(coverage_rows, evidence_units, parsed["candidates"])
-
-            if gate_attempt_count >= 3:
-                candidates = []
-                for candidate in parsed["candidates"]:
-                    candidate_scopes = [
-                        item
-                        for item in candidate.get("scopes", [])
-                        if isinstance(item, str)
-                    ]
-                    if (
-                        candidate.get("scope_source") == "model"
-                        and candidate.get("worth") is True
-                        and any(item.partition(":")[0] == "project" for item in candidate_scopes)
-                    ):
-                        selected_owners, matches = _model_scope_grounding_evidence(
-                            str(candidate.get("memory", "")),
-                            candidate_scopes,
-                            validation_scope_registry,
-                        )
-                        candidate = dict(candidate)
-                        if not selected_owners:
-                            candidates.append(candidate)
-                            continue
-                        if len(matches) == 1:
-                            grounded_scope = next(iter(matches.values()))
-                            if grounded_scope.casefold() not in set(selected_owners.values()):
-                                non_project_scopes = [
-                                    item
-                                    for item in candidate_scopes
-                                    if item.partition(":")[0] != "project"
-                                ]
-                                if all(
-                                    item.casefold() != grounded_scope.casefold()
-                                    for item in non_project_scopes
-                                ):
-                                    non_project_scopes.append(grounded_scope)
-                                candidate["scopes"] = non_project_scopes
-                        else:
-                            candidate["scopes"] = ["unscoped"]
-                            candidate["scope_source"] = "insufficient_context"
-                    candidates.append(candidate)
-                parsed = dict(parsed)
-                parsed["candidates"] = candidates
-
-            # A model may explicitly mark an aggregate as insufficiently
-            # grounded on its first response.  It is already valid gate JSON,
-            # so waiting for a retry would defer the whole turn unnecessarily.
-            # Split only on project names found in this candidate's own text;
-            # unknown or ambiguous fragments remain candidate-local deferred
-            # work below.
-            if gate_attempt_count >= 3 or any(
-                candidate.get("scope_source") == "insufficient_context"
-                for candidate in parsed["candidates"]
-                if isinstance(candidate, Mapping)
-            ):
-                split_candidates: list[dict[str, Any]] = []
-                for candidate in parsed["candidates"]:
-                    split_candidates.extend(
-                        _split_model_project_candidate(
-                            candidate,
-                            validation_scope_registry,
-                        )
-                    )
-                parsed = dict(parsed)
-                parsed["candidates"] = split_candidates
 
             prepared_candidates: list[dict[str, Any]] = []
             for candidate in parsed["candidates"]:
@@ -456,9 +382,8 @@ class MemoryPlanner:
                 )
 
             # Check topic relevance before surfacing a type mismatch.  This
-            # ordering matters for aggregate turns: an unrelated target must
-            # reach the existing final-retry detach path instead of consuming
-            # all three attempts at the schema boundary.
+            # ordering gives the model the most useful correction first.
+            # After bounded correction, reject only the invalid candidate.
             if type_mismatches and gate_attempt_count < 3:
                 raise ModelOutputError(
                     "candidate type does not match update target",
@@ -466,83 +391,20 @@ class MemoryPlanner:
                 )
 
             if invalid_targets or type_mismatches:
-                # A persistently non-converging model must not hold an entire
-                # inbox turn hostage.  An unrelated update target can safely
-                # become an independent CREATE candidate; an unrelated
-                # duplicate has no independent fact to write and is dropped.
-                candidates: list[dict[str, Any]] = []
-                for candidate in parsed["candidates"]:
-                    candidate_key = candidate["candidate_id"].casefold()
-                    fields = invalid_targets.get(candidate_key)
-                    mismatch = candidate_key in type_mismatches
-                    if candidate_key in scope_correction_plans:
-                        fields = None
-                        mismatch = False
-                    if mismatch:
-                        # A type mismatch is never repaired by changing the
-                        # target type.  If the target still serves the same
-                        # future use, retain the candidate for an explicit
-                        # scoped retry; detaching it would create a sibling
-                        # for the same topic.  A clearly different durable
-                        # topic may safely continue as CREATE.
-                        candidate_copy = dict(candidate)
-                        relation = target_relations.get(
-                            candidate["candidate_id"].casefold(),
-                            _TARGET_UNKNOWN,
-                        )
-                        if relation == _TARGET_NOT_RELATED and candidate.get("worth") is True:
-                            wrong_target_id = candidate_copy.get("update_memory_id")
-                            if isinstance(wrong_target_id, str):
-                                detached_update_target_ids[candidate["candidate_id"].casefold()] = wrong_target_id
-                            candidate_copy.pop("update_memory_id", None)
-                            candidates.append(candidate_copy)
-                        else:
-                            deferred_type_mismatch_ids.add(candidate["candidate_id"].casefold())
-                            candidates.append(candidate_copy)
-                        continue
-                    if candidate["candidate_id"].casefold() in unknown_target_ids:
-                        candidates.append(candidate)
-                        continue
-                    if not fields:
-                        candidates.append(candidate)
-                        continue
-                    if "duplicate_memory_id" in fields:
-                        continue
-                    if "update_memory_id" in fields and candidate.get("worth"):
-                        independent = dict(candidate)
-                        wrong_target_id = independent.get("update_memory_id")
-                        if isinstance(wrong_target_id, str):
-                            detached_update_target_ids[candidate["candidate_id"].casefold()] = wrong_target_id
-                        independent.pop("update_memory_id", None)
-                        candidates.append(independent)
-                parsed = dict(parsed)
-                parsed["candidates"] = candidates
-            if gate_attempt_count >= 3:
-                marked_candidates: list[dict[str, Any]] = []
+                # Validation may reject a model proposal, not change UPDATE
+                # into CREATE or erase a duplicate decision. A persistently
+                # invalid target is retained for review; valid siblings proceed.
+                candidates = []
                 for candidate in parsed["candidates"]:
                     item = dict(candidate)
-                    if item.get("worth") and is_mixed_future_use_text(item.get("memory")):
-                        split = split_mixed_future_use_text(item.get("memory"))
-                        if split is None:
-                            item["_defer_reason"] = "mixed_future_use"
-                            marked_candidates.append(item)
-                            continue
-                        base_id = str(item.get("candidate_id", "candidate"))
-                        for index, (fragment, fragment_type) in enumerate(split, start=1):
-                            child = dict(item)
-                            digest = hashlib.sha256(fragment.encode("utf-8")).hexdigest()[:8]
-                            child["candidate_id"] = f"{base_id}:future-{index}-{digest}"
-                            child["memory"] = fragment
-                            child["type"] = fragment_type
-                            child["duplicate"] = False
-                            child.pop("duplicate_memory_id", None)
-                            child.pop("update_memory_id", None)
-                            child.pop("_defer_reason", None)
-                            marked_candidates.append(child)
-                        continue
-                    marked_candidates.append(item)
-                parsed = dict(parsed)
-                parsed["candidates"] = marked_candidates
+                    cid = item["candidate_id"].casefold()
+                    if cid not in scope_correction_plans:
+                        if cid in type_mismatches:
+                            item["_defer_reason"] = "update_target_type_mismatch"
+                        elif cid in invalid_targets:
+                            item["_defer_reason"] = "target_not_relevant"
+                    candidates.append(item)
+                parsed = {**parsed, "candidates": candidates}
             return parsed
 
         gate = self.model._complete_json_stage(
@@ -573,8 +435,7 @@ class MemoryPlanner:
         if missing:
             saved_gate = deepcopy(gate)
             saved_coverage = deepcopy(coverage_rows)
-            saved_maps = [deepcopy(value) for value in (detached_update_target_ids,
-                deferred_type_mismatch_ids, target_relations, unknown_target_ids,
+            saved_maps = [deepcopy(value) for value in (target_relations, unknown_target_ids,
                 candidate_level_target_ids, scope_correction_plans)]
             try:
                 correction_raw = self.model._complete(backend,
@@ -611,8 +472,8 @@ class MemoryPlanner:
                 # A failed correction cannot invalidate already validated siblings.
                 gate = saved_gate
                 coverage_rows = saved_coverage
-                for current, old in zip((detached_update_target_ids, deferred_type_mismatch_ids,
-                    target_relations, unknown_target_ids, candidate_level_target_ids, scope_correction_plans), saved_maps):
+                for current, old in zip((target_relations, unknown_target_ids,
+                    candidate_level_target_ids, scope_correction_plans), saved_maps):
                     current.clear()
                     current.update(old)
 
@@ -654,7 +515,6 @@ class MemoryPlanner:
                 continue
             candidate_id_key = str(candidate.get("candidate_id", "")).casefold()
             correction_plan = scope_correction_plans.get(candidate_id_key)
-            detached_update_target_id = detached_update_target_ids.get(candidate_id_key)
             defer_reason = candidate.get("_defer_reason")
             # A pure existing-memory query must not leave even a deferred
             # candidate behind when the model mislabels its recap.
@@ -734,7 +594,6 @@ class MemoryPlanner:
             if (
                 scope_directory is not None
                 and not scope_directory_complete
-                and detached_update_target_id is None
                 and correction_plan is None
                 and (
                     candidate["worth"] or has_target
@@ -752,7 +611,6 @@ class MemoryPlanner:
                 candidate["worth"]
                 and scope_ambiguous
                 and not has_target
-                and detached_update_target_id is None
                 and correction_plan is None
             ):
                 self.audit._defer_candidate(
@@ -772,15 +630,6 @@ class MemoryPlanner:
                 )
                 continue
 
-            if candidate_id_key in deferred_type_mismatch_ids:
-                self.audit._defer_candidate(
-                    turn_ref,
-                    candidate,
-                    "update_target_type_mismatch",
-                    scopes=candidate_scopes,
-                )
-                continue
-
             candidate_related, candidate_scope_background, candidate_native_refs, _ = self.inputs._related_query(
                 turn,
                 state,
@@ -791,10 +640,10 @@ class MemoryPlanner:
                     candidate.get("duplicate_memory_id"),
                     candidate.get("update_memory_id"),
                 ],
-                priority_only=(scope_directory is not None and detached_update_target_id is None),
+                priority_only=(scope_directory is not None),
                 scope_records=(
                     scoped_records
-                    if scope_directory is not None and detached_update_target_id is None
+                    if scope_directory is not None
                     else None
                 ),
             )
@@ -814,15 +663,6 @@ class MemoryPlanner:
                         for item in candidate_related
                     ):
                         candidate_related.insert(0, memory.to_dict())
-            if detached_update_target_id is not None:
-                candidate_related = [
-                    item
-                    for item in candidate_related
-                    if not (
-                        isinstance(item.get("memory_id"), str)
-                        and item["memory_id"].casefold() == detached_update_target_id.casefold()
-                    )
-                ]
             if correction_plan is None:
                 candidate = self.inputs._infer_update_target(candidate, candidate_related)
             defer_reason = candidate.pop("_defer_reason", None)
@@ -845,7 +685,7 @@ class MemoryPlanner:
                         candidate,
                         turn=turn,
                         scope_directory=(
-                            scope_directory if detached_update_target_id is None else None
+                            scope_directory
                         ),
                         scope_directory_complete=scope_directory_complete,
                     )
@@ -1111,7 +951,9 @@ class MemoryPlanner:
                     summary = dict(summary)
                     summary["update_memory_id"] = gate_update_target
                 target = self.service.read(gate_update_target, include_history=False)
-                summary = self.inputs._merge_additive_project_plan_update(candidate, summary, target)
+                # The summary is the complete model-proposed current value.
+                # Do not concatenate old/new bodies using business keywords.
+                pass
             if summary["scopes"] == ["unscoped"] or summary.get("scope_source") == "insufficient_context":
                 self.audit._defer_candidate(
                     turn_ref,

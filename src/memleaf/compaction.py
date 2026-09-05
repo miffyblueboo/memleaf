@@ -378,8 +378,7 @@ class Compactor:
         self._rollback_pending_unlocked(journal)
 
     def _snapshot(self, threshold: int, ratio: float) -> tuple[list[_Candidate], list[_Candidate], int]:
-        with self.service.vault.lock():
-            self._recover_pending_unlocked()
+        with self.service._mutation_boundary():
             candidates: list[_Candidate] = []
             for record in self.service._read_memories_unlocked("knowledge"):
                 try:
@@ -676,8 +675,7 @@ class Compactor:
     ) -> tuple[list[str], list[str]]:
         replacement_ids = [replacement.memory.memory_id for replacement in replacements]
         selected_by_id = {candidate.memory.memory_id: candidate for candidate in selected}
-        with self.service.vault.lock():
-            self._recover_pending_unlocked()
+        with self.service._mutation_boundary():
             current_active = self.service._read_memories_unlocked("knowledge")
             current_by_id = {record.memory.memory_id: record for record in current_active}
             for candidate in selected:

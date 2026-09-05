@@ -7,6 +7,7 @@ import json
 import os
 import re
 import base64
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -359,6 +360,18 @@ class Memleaf:
 
         return Compactor(self).compact(model=model, router=router)
 
+    @contextmanager
+    def _mutation_boundary(self):
+        """Serialize permanent changes after recovering interrupted maintenance.
+
+        The caller retains its own authorization, journal and revision checks.
+        This boundary does not run models or replay pending automatic writes.
+        In particular, forget may cancel a pending write before it can replay.
+        """
+        with self.vault.lock():
+            self._recover_compaction_unlocked()
+            yield
+
     def _recover_compaction_unlocked(self) -> None:
         """Recover a pending compaction while the vault lock is held."""
 
@@ -556,8 +569,7 @@ class Memleaf:
         if area not in ("knowledge", "history"):
             raise ValueError("invalid memory area")
         path = self.vault.memory_path(memory.memory_id, area)
-        with self.vault.lock():
-            self._recover_compaction_unlocked()
+        with self._mutation_boundary():
             if path.is_symlink():
                 raise ValueError("unsafe memory path")
             atomic_write_text(path, memory.to_markdown())
@@ -1520,8 +1532,7 @@ class Memleaf:
         """Delete an exact memleaf memory without creating a history copy."""
 
         safe_component(memory_id, "memory id")
-        with self.vault.lock():
-            self._recover_compaction_unlocked()
+        with self._mutation_boundary():
             deleted = self._delete_records_unlocked(self._find_forget_records_unlocked(memory_id))
             return bool(deleted)
 
@@ -1531,8 +1542,7 @@ class Memleaf:
         if not isinstance(query, str) or not query.strip():
             return ForgetAboutResult(status="not_found")
         normalized = normalize_term(query)
-        with self.vault.lock():
-            self._recover_compaction_unlocked()
+        with self._mutation_boundary():
             exact = []
             if "\n" not in query and "\r" not in query:
                 try:

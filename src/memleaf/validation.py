@@ -1177,6 +1177,7 @@ def validate_gate_output(
     enforce_model_scope_grounding: bool = True,
     allow_mixed_future_use: bool = False,
     allow_shared_update_targets: bool = False,
+    defer_semantic_errors: bool = False,
 ) -> dict[str, Any]:
     """Validate and return a normalized gate object without writing anything."""
 
@@ -1242,41 +1243,14 @@ def validate_gate_output(
             and is_mixed_future_use_text(item["memory"])
             and not allow_mixed_future_use
         ):
-            raise ModelOutputError(
-                "one candidate combines independent future uses",
-                validation_detail="mixed_future_use",
-            )
-        if (
-            item["worth"]
-            and (
-                (
-                    candidate_type in {"fact", "event", "other"}
-                    and is_actionable_todo_text(item["memory"])
-                    and (
-                        not is_project_plan_text(item["memory"])
-                        or _ACTION_PLAN_ADJUST.search(item["memory"])
-                    )
+            if not defer_semantic_errors:
+                raise ModelOutputError(
+                    "one candidate combines independent future uses",
+                    validation_detail="mixed_future_use",
                 )
-                or (
-                    candidate_type == "project"
-                    and _ACTION_PLAN_ADJUST.search(item["memory"])
-                )
-            )
-        ):
-            item["type"] = "todo"
-            candidate_type = "todo"
-        # A clearly named implementation plan/plan adjustment is a project
-        # memory, even when the model labels it as a generic fact.  Keep todo
-        # candidates intact: a task list that merely mentions a plan is still
-        # an actionable todo, while fact/event/other are the common accidental
-        # labels observed for durable plan changes.
-        if (
-            item["worth"]
-            and candidate_type in {"fact", "event", "other"}
-            and is_project_plan_text(item["memory"])
-        ):
-            item["type"] = "project"
-            candidate_type = "project"
+            item["_defer_reason"] = "mixed_future_use"
+        # The model owns the semantic type. Validate it; never infer a new
+        # business type from words in a candidate's body.
         if "update_memory_id" in item and "duplicate_memory_id" in item:
             raise ModelOutputError(
                 "a candidate cannot set both duplicate_memory_id and update_memory_id",
@@ -1357,10 +1331,18 @@ def validate_gate_output(
             raise ModelOutputError("invalid scope_source", validation_detail="invalid_scope_source")
         item["scopes"] = _scopes(item["scopes"], item["scope_source"])
         if item["worth"]:
-            _reject_mixed_project_scopes(item["scopes"])
-            if item["scope_source"] == "model":
-                if enforce_model_scope_grounding:
+            try:
+                _reject_mixed_project_scopes(item["scopes"])
+                if item["scope_source"] == "model" and enforce_model_scope_grounding:
                     _reject_ungrounded_project_scope(item["memory"], item["scopes"], scope_registry)
+            except ModelOutputError as error:
+                if not defer_semantic_errors or error.validation_detail not in {
+                    "mixed_project_scopes", "scope_not_grounded"
+                }:
+                    raise
+                # No field rewriting and no synthesized child candidates. Only
+                # the rejected candidate is deferred after bounded correction.
+                item["_defer_reason"] = "scope_conflict"
         if "reason" in item:
             _string(item["reason"], "reason", nonempty=False)
             if len(item["reason"]) > 30:
@@ -1381,6 +1363,7 @@ def parse_gate_output(
     enforce_model_scope_grounding: bool = True,
     allow_mixed_future_use: bool = False,
     allow_shared_update_targets: bool = False,
+    defer_semantic_errors: bool = False,
 ) -> dict[str, Any]:
     try:
         parsed = parse_strict_json(raw)
@@ -1399,6 +1382,7 @@ def parse_gate_output(
             enforce_model_scope_grounding=enforce_model_scope_grounding,
             allow_mixed_future_use=allow_mixed_future_use,
             allow_shared_update_targets=allow_shared_update_targets,
+            defer_semantic_errors=defer_semantic_errors,
         )
     except ModelOutputError as error:
         if error.validation_reason is None:
@@ -1501,23 +1485,6 @@ def validate_summarize_output(
     candidate_type = item["type"]
     if not isinstance(candidate_type, str) or candidate_type not in MEMORY_TYPES:
         raise ModelOutputError("invalid memory type", validation_detail="invalid_type")
-    inferred_project_type = (
-        candidate_type in {"fact", "event", "other"}
-        and is_project_plan_text(f"{item['title']}\n{item['body']}")
-    )
-    if inferred_project_type:
-        if expected_type is not None and expected_type != "project":
-            raise ModelOutputError(
-                "project plan summary cannot use a non-project gate type",
-                validation_detail="invalid_type",
-            )
-        if expected_target_type is not None and expected_target_type != "project":
-            raise ModelOutputError(
-                "project plan summary cannot update a non-project target",
-                validation_detail="invalid_type",
-            )
-        candidate_type = "project"
-        item["type"] = candidate_type
     if expected_type is not None and candidate_type != expected_type:
         raise ModelOutputError(
             "summary type differs from gate candidate",

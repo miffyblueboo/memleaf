@@ -76,7 +76,7 @@ class MemoryCommitter:
             turn = request["turn"]
             key = _session_key(turn.source, turn.session_id)
             by_snapshot.setdefault(key, []).append(request)
-        with self.service.vault.lock():
+        with self.service._mutation_boundary():
             processed = _read_processed(self.service.vault.processed_index_path)
             sessions = processed.setdefault("sessions", {})
             for snapshot in snapshots:

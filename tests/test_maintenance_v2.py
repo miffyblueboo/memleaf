@@ -1044,7 +1044,9 @@ class MaintenanceV2Tests(unittest.TestCase):
             [
                 invalid_gate,
                 invalid_gate,
-                invalid_gate,
+                gate([candidate("wrong-target", [user_event, assistant_event],
+                    "alpha 项目负责人更新为乙。", scopes=["project:alpha"],
+                    update_memory_id="mem-alpha-owner")]),
                 summary(
                     user_event,
                     "alpha 项目负责人更新为乙。",

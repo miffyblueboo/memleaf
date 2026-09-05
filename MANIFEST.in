@@ -9,4 +9,4 @@ include IMPLEMENTATION_PLAN.md
 recursive-include tests *.py
 recursive-include examples *.md *.ndjson *.py
 
-include docs/general-processing.md
+include docs/*.md

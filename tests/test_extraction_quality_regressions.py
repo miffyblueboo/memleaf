@@ -361,7 +361,7 @@ class ExtractionQualityRegressionTests(unittest.TestCase):
         )
         # This is the model mistake observed in production: it points at the
         # existing plan but labels the candidate as a fact.  The core should
-        # canonicalize it to the immutable target type before validation.
+        # request a model correction, not relabel it locally.
         mislabeled = candidate(
             "zhongyin-plan-adjustment",
             [user_key, assistant_key],
@@ -373,6 +373,7 @@ class ExtractionQualityRegressionTests(unittest.TestCase):
         backend = QueueBackend(
             [
                 gate([mislabeled]),
+                gate([{**mislabeled, "type": "project"}]),
                 summary(
                     user_key,
                     title="中银国际信创实施计划",
@@ -393,9 +394,10 @@ class ExtractionQualityRegressionTests(unittest.TestCase):
             model=backend,
         )
 
+        self.assertIn("update_target_type_mismatch", backend.calls[1]["prompt"])
         current = self.service.read(existing.memory_id)
         self.assertEqual(result["memory_ids"], [existing.memory_id])
-        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "summarize"])
         self.assertEqual(current.type, "project")
         self.assertIn("原始安排", current.body)
         self.assertIn("提前部署测试环境", current.body)
@@ -645,8 +647,8 @@ class ExtractionQualityRegressionTests(unittest.TestCase):
         self.assertEqual(len(parsed["candidates"]), 1)
         self.assertEqual(parsed["candidates"][0]["type"], "project")
 
-    def test_plan_body_contexts_are_normalized_from_fact_to_project(self):
-        """计划正文中的附件、发送和会议语境不应阻止 project 纠正。"""
+    def test_plan_body_contexts_preserve_model_type(self):
+        """Content keywords must not rewrite a structurally valid model type."""
 
         bodies = (
             "中银国际实施计划：根据附件V2调整部署。",
@@ -667,7 +669,8 @@ class ExtractionQualityRegressionTests(unittest.TestCase):
                     gate([item]),
                     event_keys=[event_id],
                 )
-                self.assertEqual(parsed["candidates"][0]["type"], "project")
+                self.assertEqual(parsed["candidates"][0]["type"], "fact")
+                self.assertEqual(parsed["candidates"][0]["memory"], body)
 
     def test_adjacent_plan_records_are_not_promoted_to_project(self):
         """邮件、附件清单、会议纪要和存档记录不应冒充计划正文。"""
@@ -695,7 +698,7 @@ class ExtractionQualityRegressionTests(unittest.TestCase):
                 self.assertEqual(parsed["candidates"][0]["type"], expected_type)
 
     def test_plan_markers_are_project_and_unique_same_name_targets_stay_updates(self):
-        """部署/上线计划及计划调整均识别为 project，并复用唯一目标。"""
+        """模型识别计划类型及目标；程序保持原 ID 和一次历史更新。"""
 
         plan_cases = (
             ("deploy", "中银国际部署计划根据附件V2调整部署。", "中银国际部署计划"),
@@ -737,7 +740,8 @@ class ExtractionQualityRegressionTests(unittest.TestCase):
                     f"candidate-{suffix}",
                     [user_key, assistant_key],
                     memory=body,
-                    type="fact",
+                    type="project",
+                    update_memory_id=target.memory_id,
                     scopes=["project:中银国际"],
                 )
                 backend = QueueBackend(

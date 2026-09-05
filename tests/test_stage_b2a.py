@@ -20,7 +20,7 @@ from memleaf.prompts import RELATIVE_TIME_CORRECTION
 from memleaf.validation import ModelOutputError
 
 
-from tests.semantic_fixtures import semantic_fixture
+from tests.semantic_fixtures import semantic_fixture, deferred_target_response
 
 @semantic_fixture
 class QueueBackend:
@@ -272,7 +272,7 @@ class StageB2ATest(unittest.TestCase):
         self.assertNotIn("project:浙江东方", state.get("scopes", []))
         self.assertNotIn("project:浙江东方", service.vault.config()["scopes"])
 
-    def test_gate_scope_not_grounded_final_retry_corrects_by_unique_memory_match(self):
+    def test_gate_scope_not_grounded_model_corrects_on_final_retry(self):
         backend = QueueBackend()
         service = self.service(backend, name="scope-final-correct")
         config = service.vault.config()
@@ -300,7 +300,7 @@ class StageB2ATest(unittest.TestCase):
             [
                 self.gate([wrong]),
                 self.gate([wrong]),
-                self.gate([wrong]),
+                self.gate([{**wrong, "scopes": ["project:zhongyin"]}]),
                 self.summary(
                     user_key,
                     title="中银国际实施计划",
@@ -414,7 +414,8 @@ class StageB2ATest(unittest.TestCase):
         deferred = turn_entry["deferred_candidates"]
         self.assertEqual(len(deferred), 1)
         self.assertEqual(deferred[0]["candidate_id"], "both-mentioned")
-        self.assertEqual(deferred[0]["reason"], "scope_required")
+        self.assertEqual(deferred[0]["reason"], "scope_conflict")
+        self.assertEqual(deferred[0]["scopes"], ["project:zhongyin"])
         self.assertEqual(self.processed(service)["sessions"]["codex/s"]["processing"]["status"], "idle")
 
     def test_scope_not_grounded_final_retry_wrong_scope_and_wrong_update_target_is_safe(self):
@@ -453,7 +454,8 @@ class StageB2ATest(unittest.TestCase):
             [
                 self.gate([wrong]),
                 self.gate([wrong]),
-                self.gate([wrong]),
+                self.gate([{**{k: v for k, v in wrong.items() if k != "update_memory_id"},
+                            "scopes": ["project:beta"]}]),
                 self.summary(
                     user_key,
                     title="贝塔 项目负责人",
@@ -518,7 +520,7 @@ class StageB2ATest(unittest.TestCase):
             [
                 self.gate([wrong]),
                 self.gate([wrong]),
-                self.gate([wrong]),
+                self.gate([{k: v for k, v in wrong.items() if k != "update_memory_id"}]),
                 self.summary(
                     user_key,
                     title="浙江东方实施计划",
@@ -863,7 +865,7 @@ class StageB2ATest(unittest.TestCase):
         ]
         self.assertEqual(diagnostics[0]["validation_detail"], "mixed_project_scopes")
 
-    def test_three_mixed_project_gate_failures_keep_inbox_and_watermark(self):
+    def test_three_mixed_project_gate_failures_retain_deferred_evidence(self):
         backend = QueueBackend()
         service = self.service(backend, name="mixed-gate-failure")
         user_key, assistant_key = self.capture_turn(
@@ -881,24 +883,16 @@ class StageB2ATest(unittest.TestCase):
         mixed["scopes"] = ["project:zhongyin", "project:morgan"]
         backend.responses.extend([self.gate([mixed])] * 3)
 
-        with self.assertRaises(ModelOutputError) as raised:
-            service.process(
-                source="codex",
-                session_id="mixed-gate-failure",
-                model=backend,
-            )
-
-        self.assertEqual(raised.exception.validation_detail, "mixed_project_scopes")
-        self.assertEqual(raised.exception.stage, "gate")
-        self.assertEqual(raised.exception.attempt_count, 3)
-        marker = self.processed(service)["sessions"]["codex/mixed-gate-failure"]["processing"]
-        self.assertEqual(marker["failure_stage"], "gate")
-        self.assertEqual(marker["validation_detail"], "mixed_project_scopes")
-        self.assertEqual(marker["attempt_count"], 3)
-        self.assertEqual(
-            self.processed(service)["sessions"]["codex/mixed-gate-failure"].get("watermark", 0),
-            0,
-        )
+        result = service.process(source="codex", session_id="mixed-gate-failure", model=backend)
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["deferred_candidates"], 1)
+        self.assertEqual([c["purpose"] for c in backend.calls], ["gate"] * 3)
+        state = self.processed(service)["sessions"]["codex/mixed-gate-failure"]
+        row = state["processed_turns"][0]["deferred_candidates"][0]
+        self.assertEqual(row["reason"], "scope_conflict")
+        self.assertEqual(row["scopes"], mixed["scopes"])
+        # Scan progress can advance; unresolved original evidence remains.
+        self.assertEqual(state["watermark"], 1)
         self.assertTrue((service.vault.inbox_path / "codex" / "mixed-gate-failure.md").is_file())
         self.assertEqual(self.knowledge(service), [])
 
@@ -1127,14 +1121,15 @@ class StageB2ATest(unittest.TestCase):
             turn="feedback",
             user_event="jinyuan-plan-user",
             assistant_event="jinyuan-plan-assistant",
-            user="金元顺安客户对实施计划提出补充建议。",
+            user="金元顺安客户要求实施计划补充数据迁移、安全基线、漏洞扫描和回滚演练。",
             assistant="需增加数据迁移、安全基线、漏洞扫描和回滚演练。",
         )
         item = self.candidate(
             "jinyuan-plan-feedback",
             [user_key, assistant_key],
             memory="金元顺安实施计划需补充数据迁移、安全基线、漏洞扫描和回滚演练。",
-            type="fact",
+            type="project",
+            update_memory_id=existing.memory_id,
         )
         item["scopes"] = ["project:金元顺安"]
         backend.responses.extend(
@@ -1143,8 +1138,8 @@ class StageB2ATest(unittest.TestCase):
                 self.summary(
                     user_key,
                     title=existing.title,
-                    body="客户建议补充数据迁移、安全基线、漏洞扫描和回滚演练。",
-                    tags=["金元顺安", "调整建议"],
+                    body=old_body + "\n\n客户要求补充数据迁移、安全基线、漏洞扫描和回滚演练。",
+                    tags=["金元顺安", "达梦", "东方通", "负责人", "调整建议"],
                     type="project",
                     scopes=["project:金元顺安"],
                     update_memory_id=existing.memory_id,
@@ -1165,28 +1160,22 @@ class StageB2ATest(unittest.TestCase):
         self.assertEqual(history[0].memory.body, old_body)
 
     def test_explicit_project_plan_replacement_does_not_merge_conflicting_body(self):
-        target = self.service().create_memory(
-            memory_id="mem-plan-replacement",
-            title="北辰项目实施计划",
-            body="北辰项目数据库采用达梦。",
-            tags=["达梦"],
-            type="project",
-            scopes=["project:北辰"],
-        )
-        summary = {
-            "title": target.title,
-            "body": "北辰项目数据库改为PostgreSQL。",
-            "tags": ["PostgreSQL"],
-            "type": "project",
-        }
-
-        merged = PlanningContext._merge_additive_project_plan_update(
-            {"memory": "客户建议将北辰项目数据库改为PostgreSQL。"},
-            summary,
-            target,
-        )
-
-        self.assertEqual(merged, summary)
+        service = self.service()
+        target = service.create_memory(memory_id="mem-plan-replacement", title="北辰项目实施计划",
+            body="北辰项目数据库采用达梦。", tags=["达梦"], type="project", scopes=["project:北辰"])
+        key, _ = self.capture_turn(service, user="北辰项目实施计划的数据库改为PostgreSQL。")
+        proposal = self.candidate("replacement", [key], memory="北辰项目实施计划的数据库改为PostgreSQL。",
+            type="project", update_memory_id=target.memory_id)
+        proposal["scopes"] = ["project:北辰"]
+        body = "北辰项目数据库改为PostgreSQL。"
+        backend = QueueBackend([self.gate([proposal]), self.summary(key, title=target.title,
+            body=body, type="project", scopes=["project:北辰"], update_memory_id=target.memory_id)])
+        result = service.process(model=backend, scope="project:北辰")
+        self.assertEqual(result["memory_ids"], [target.memory_id])
+        self.assertEqual(service.read(target.memory_id).body, body)
+        history = service._read_memories_unlocked("history")
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].memory.body, target.body)
 
     def test_summary_update_target_mismatch_is_retried_before_writing(self):
         backend = QueueBackend()
@@ -1328,7 +1317,7 @@ class StageB2ATest(unittest.TestCase):
                 self.summary(
                     user_key,
                     title="金元顺安实施计划",
-                    body="金元顺安实施计划新增部署要求。",
+                    body="金元顺安实施计划按原方案执行。\n\n金元顺安实施计划新增部署要求。",
                     type="project",
                     scopes=["project:金元顺安"],
                     update_memory_id=old.memory_id,
@@ -1346,7 +1335,7 @@ class StageB2ATest(unittest.TestCase):
         )
         self.assertEqual(len(service.vault.list_markdown("history")), 1)
 
-    def test_same_project_plan_fact_candidate_is_reconciled_to_immutable_project_target(self):
+    def test_model_selects_immutable_project_type_and_target(self):
         backend = QueueBackend()
         service = self.service(backend, name="inferred-plan-update")
         old = service.create_memory(
@@ -1361,14 +1350,15 @@ class StageB2ATest(unittest.TestCase):
             turn="inferred-plan-update",
             user_event="inferred-plan-update-user",
             assistant_event="inferred-plan-update-assistant",
-            user="中银国际客户提出实施计划调整建议。",
+            user="中银国际客户要求实施计划提前部署测试环境并重新压实计划。",
             assistant="已记录中银国际实施计划调整建议，待更新计划。",
         )
         candidate = self.candidate(
             "zhongyin-plan-feedback",
             [user_key, assistant_key],
             memory="中银国际客户提出实施计划调整建议：提前部署测试环境并重新压实计划。",
-            type="fact",
+            type="project",
+            update_memory_id=old.memory_id,
         )
         candidate["scopes"] = ["project:中银国际"]
         backend.responses.extend(
@@ -1452,14 +1442,15 @@ class StageB2ATest(unittest.TestCase):
                     turn=f"multi-target-{slug}",
                     user_event=f"multi-target-{slug}-user",
                     assistant_event=f"multi-target-{slug}-assistant",
-                    user=f"{project}客户提出实施计划调整建议。",
+                    user=f"{project}客户要求实施计划提前部署测试环境并重新压实计划。",
                     assistant=f"已记录{project}实施计划的新约束，待更新计划。",
                 )
                 candidate = self.candidate(
                     f"{slug}-plan-feedback",
                     [user_key, assistant_key],
                     memory=f"{project}客户提出实施计划调整建议：提前部署测试环境并重新压实计划。",
-                    type="fact",
+                    type="project",
+                    update_memory_id=plan.memory_id,
                 )
                 candidate["scopes"] = [f"project:{project}"]
                 backend.responses.extend(
@@ -1517,23 +1508,23 @@ class StageB2ATest(unittest.TestCase):
             type="fact",
         )
         candidate["scopes"] = ["project:金元顺安"]
-        backend.responses.append(self.gate([candidate]))
+        backend.responses.append(deferred_target_response)
 
         result = service.process(source="codex", session_id="s", model=backend)
 
         self.assertEqual(result["memory_ids"], [])
         self.assertEqual(result["memories_written"], 0)
-        self.assertEqual(result["deferred_candidates"], 1)
+        self.assertGreater(result["unresolved_evidence_count"], 0)
         self.assertEqual([call["purpose"] for call in backend.calls], ["gate"])
         self.assertEqual(
-            self.processed(service)["sessions"]["codex/s"]["processed_turns"][0]["deferred_candidates"][0]["reason"],
-            "ambiguous_update_target",
+            self.processed(service)["sessions"]["codex/s"]["processed_turns"][0]["deferred_evidence"][0]["reason"],
+            "target_ambiguous",
         )
         self.assertEqual(len(self.knowledge(service)), 2)
         self.assertEqual(len(service.vault.list_markdown("history")), 0)
         self.assertTrue((service.vault.inbox_path / "codex" / "s.md").is_file())
 
-    def test_same_project_wrong_update_target_final_retry_becomes_create(self):
+    def test_model_corrects_wrong_update_to_create_on_final_retry(self):
         backend = QueueBackend()
         service = self.service(backend, name="same-project-wrong-target-final-retry")
         old = service.create_memory(
@@ -1564,7 +1555,7 @@ class StageB2ATest(unittest.TestCase):
             [
                 invalid_gate,
                 invalid_gate,
-                invalid_gate,
+                self.gate([{k: v for k, v in wrong.items() if k != "update_memory_id"}]),
                 self.summary(
                     user_key,
                     title="alpha 项目负责人",
@@ -1592,7 +1583,7 @@ class StageB2ATest(unittest.TestCase):
             "\n".join(record.memory.body for record in service._read_memories_unlocked("knowledge")),
         )
 
-    def test_same_project_wrong_duplicate_target_final_retry_is_dropped(self):
+    def test_wrong_duplicate_is_retained_as_deferred_on_final_retry(self):
         backend = QueueBackend()
         service = self.service(backend, name="same-project-wrong-duplicate-final-retry")
         old = service.create_memory(

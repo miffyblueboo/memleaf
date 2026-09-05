@@ -291,7 +291,7 @@ def admission_reason(candidate: Mapping[str, Any], units: Iterable[EvidenceUnit]
 
 COVERAGE_REASONS = frozenset({"query_only", "assistant_restatement", "retrieved_memory_only",
     "no_future_value", "exact_duplicate", "quoted_or_example", "negated", "already_completed",
-    "scope_ambiguous", "scope_conflict", "ownership_ambiguous", "coverage_unresolved"})
+    "scope_ambiguous", "scope_conflict", "ownership_ambiguous", "target_ambiguous", "coverage_unresolved"})
 
 
 def parse_coverage(value: Any, units: Iterable[EvidenceUnit], candidates: Iterable[Mapping[str, Any]], *, require_complete: bool = True) -> dict[str, dict[str, Any]]:

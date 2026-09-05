@@ -2,17 +2,17 @@
 
 All notable changes to memleaf are documented here.
 
-## 0.2.26 — Unreleased
+## 0.2.26 — 2026-09-05
 
-- Separate physical provenance from semantic role; validate exact candidate quotations and reject assistant-only/retrieved-memory authority. Remove whole-turn example suppression, lexical-overlap authorization and short-text bypasses.
-- Add one bounded source-neutral coverage correction. Keep evidence accounting separate from candidate outcomes and never let a model erase known missing/truncated observations.
-- Restrict automatic summarization to admitted spans and current admitted source keys, while preserving related memories as context.
-- Preserve complete bounded structured records and source metadata across Hermes/Codex; report overflow and retention loss explicitly.
-- Freeze complete write requests before mutation, replay without a fresh model call, verify target revisions under the Vault lock, and preserve actual UPDATE/scope-retirement audit outcomes.
-- Add exact same-turn/commit-time deduplication that includes task titles; keep conflicting updates from overwriting newer shared state.
-- Add local read-only audit and isolated process --dry-run, with bounded snapshots and concurrent-change detection.
-- Migrate deterministic test stubs to the explicit evidence protocol without weakening their update/history/failure assertions; add adversarial quotation, transport, concurrency, replay and inspection tests.
-- This is an unreleased candidate. Hosted-model semantic acceptance and cross-platform checks are reported separately, not inferred from scripted unit tests.
+- Refactor automatic processing into explicit model execution, planning, update coordination, commit, journal and audit owners while preserving Markdown Vaults, memory IDs, Hermes MemoryProvider and cross-Agent retrieval contracts. No runtime dependency or independent service is added.
+- Remove post-Gate completion/rework generation, forced status/type/Scope rewrites, local last-retry candidate splitting, wrong-target UPDATE-to-CREATE conversion and automatic old/new body concatenation. Invalid proposals receive bounded model correction, then explicit candidate-local deferral; valid siblings proceed.
+- Add source-neutral exact evidence bindings and one bounded coverage correction. Assistant synthesis, recalled memory and truncated observations do not independently authorize new facts; evidence and candidate outcomes are accounted separately.
+- Reconcile compatible same-target updates into one model-owned write/history operation with all contributing receipts. Preserve actual outcomes on replay and reject stale target revisions under the shared Vault lock.
+- Freeze complete change payloads; explicit forget cancels matching pending operations before deletion. Explicit remember enforces selected Scope and target revisions. Automatic/explicit writes, forget, raw-library writes and compaction share the lock/recovery entry boundary without conflating their authorization.
+- Honor leading recording controls and record=False before persistence, consume only safely captured tool caches, and retry unresolved coverage at most once through natural lifecycle triggers. Keep unresolved source evidence after exhaustion.
+- Unify bounded/metadata/off tool-evidence retention across direct capture, Hermes, Codex and planning. Preserve legacy disabled settings and document-source exclusions; configuration changes do not fabricate missing source content.
+- Add read-only audit, isolated dry-run, Windows native process-liveness and cross-process file-lock safeguards. Run complete regression suites on Linux, Windows and macOS plus wheel/sdist installation checks.
+- Deterministic contract tests do not establish real-model semantic quality. The maintainer selected local live-model acceptance rather than repository model credentials; no real-model result is claimed by this release.
 
 ## 0.2.25 — 2026-09-04
 
