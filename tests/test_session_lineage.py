@@ -17,6 +17,9 @@ from tests.test_stage_c1_mcp import MCPProcess
 from tests.test_hermes_provider import provider_module
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class QueueBackend:
     provider = "fake"
     model = "session-lineage-test"

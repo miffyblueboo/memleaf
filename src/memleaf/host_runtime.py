@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .locking import atomic_write_json, read_json
+from .provenance import observation_records, refers_to_vault, normalize_tool_evidence, observation_record
 from .retrieval_gate import (
     MAX_GATE_RETRIES,
     RetrievalGateError,
@@ -33,6 +34,7 @@ from .retrieval_gate import (
     validate_turn,
 )
 from .service import Memleaf
+from .evidence_policy import document_arguments, retain_tool_evidence
 
 
 _GATE_RETRY_REASON = (
@@ -106,10 +108,122 @@ class HostRuntime:
             content,
             record=True,
             visible=True,
+            tool_evidence=self._tool_evidence(session_id, turn_id) if role == "assistant" else None,
         )
         stored = getattr(result, "stored", False) is True
         duplicate = getattr(result, "duplicate", False) is True
-        return stored or duplicate, stored
+        if role == "assistant" and (stored or duplicate):
+            self._consume_captured_evidence(session_id, turn_id)
+        suppressed = getattr(result, "suppressed", False) is True
+        if suppressed:
+            self._discard_private_evidence(session_id, turn_id)
+        return stored or duplicate or suppressed, stored
+
+    def _discard_private_evidence(self, session_id: str, turn_id: str) -> None:
+        with self.vault.lock():
+            self._discard_private_evidence_unlocked(session_id, turn_id)
+
+    def _discard_private_evidence_unlocked(self, session_id: str, turn_id: str) -> None:
+        state = self._read_ingest_state()
+        bucket = state.setdefault("hosts", {}).setdefault(self.host, {})
+        entry = self._normalize_host_entry(bucket.get(session_id))
+        changed = entry["tool_evidence"].pop(turn_id, None) is not None
+        changed = entry["tool_evidence_lost"].pop(turn_id, None) is not None or changed
+        if changed:
+            bucket[session_id] = entry
+            self._mirror_legacy_codex(state, session_id, entry)
+            atomic_write_json(self.vault.host_ingest_path, state, mode=0o600)
+
+    def _consume_captured_evidence(self, session_id: str, turn_id: str) -> None:
+        from .inbox import parse_inbox_file
+        from .index import turn_key
+        with self.vault.lock():
+            state = self._read_ingest_state()
+            bucket = state.setdefault("hosts", {}).setdefault(self.host, {})
+            entry = self._normalize_host_entry(bucket.get(session_id))
+            pending = entry.get("tool_evidence", {}).get(turn_id, [])
+            if not pending and turn_id not in entry.get("tool_evidence_lost", {}):
+                return
+            # A repeated hook can carry new late results. Only discard cache
+            # records that really survived in the inbox, never just on "duplicate".
+            path = self.vault.session_path(self.host, session_id)
+            turns = parse_inbox_file(path)
+            saved = [record for turn in turns if turn.turn_key == turn_key(turn_id)
+                     for event in turn.events if event.role == "assistant"
+                     for record in event.tool_evidence]
+            permitted = retain_tool_evidence(pending, self.vault.config())
+            if not all(record in saved for record in permitted):
+                return
+            entry["tool_evidence"].pop(turn_id, None)
+            entry["tool_evidence_lost"].pop(turn_id, None)
+            bucket[session_id] = entry
+            self._mirror_legacy_codex(state, session_id, entry)
+            atomic_write_json(self.vault.host_ingest_path, state, mode=0o600)
+
+    def observe_external_tool(self, *, session_id: str, turn_id: str,
+                              tool_name: str, call_id: str, payload: Any,
+                              tool_input: Any = None) -> None:
+        from .recording_policy import recording_allowed
+        from .index import turn_key
+        retrieval_id = self._retrieval_id(session_id, turn_id)
+        if retrieval_id is not None:
+            try:
+                turn_id = validate_turn(self.vault, retrieval_id).get("turn_id", turn_id)
+            except RetrievalGateError:
+                return
+        with self.vault.lock():
+            permission = read_json(self.vault.processed_index_path)
+            if not recording_allowed(permission, self.host, session_id, turn_key(turn_id)):
+                return
+            incoming = observation_records(tool_name, call_id, payload,
+                source_kind="retrieved_memory" if refers_to_vault(tool_input, self.vault.root) else None)
+            for record in incoming:
+                record["source_type"] = "document" if document_arguments(tool_input) else "tool_result"
+            incoming = retain_tool_evidence(incoming, self.vault.config())
+            if not incoming:
+                self._discard_private_evidence_unlocked(session_id, turn_id)
+                return
+            state = self._read_ingest_state()
+            bucket = state.setdefault("hosts", {}).setdefault(self.host, {})
+            entry = self._normalize_host_entry(bucket.get(session_id))
+            pending = entry.setdefault("tool_evidence", {})
+            records = retain_tool_evidence(pending.setdefault(turn_id, []), self.vault.config())
+            for record in incoming:
+                matching = [r for r in records if r.get("call_id") == record["call_id"]
+                            and r.get("record_id") == record.get("record_id")]
+                if not matching:
+                    records.append(record)
+                elif any(r.get("result_digest") != record.get("result_digest") for r in matching):
+                    for existing in matching:
+                        existing["kind"] = "unknown"
+                        existing["result_status"] = "unknown"
+                        existing["completeness"] = "partial"
+            pending[turn_id] = normalize_tool_evidence(records)
+            # Bound pending turns independently of the global permanent Vault.
+            # Keep bounded loss tombstones rather than silently forgetting a
+            # not-yet-captured turn. Very old loss remains a session diagnostic.
+            lost = entry.setdefault("tool_evidence_lost", {})
+            while len(pending) > 16:
+                evicted_id = next(iter(pending))
+                evicted = pending.pop(evicted_id)
+                lost[evicted_id] = sum(int(row.get("omitted_count", "1")) for row in evicted)
+            while len(lost) > 256:
+                lost.pop(next(iter(lost)))
+                entry["tool_evidence_earlier_loss"] = True
+            bucket[session_id] = entry
+            self._mirror_legacy_codex(state, session_id, entry)
+            atomic_write_json(self.vault.host_ingest_path, state, mode=0o600)
+
+    def _tool_evidence(self, session_id: str, turn_id: str) -> list[dict[str, str]]:
+        entry = self._host_session(session_id)
+        records = entry.get("tool_evidence", {}).get(turn_id, [])
+        lost = entry.get("tool_evidence_lost", {}).get(turn_id)
+        if lost is not None:
+            records = [*records, {"tool_name": "evidence.inventory", "call_id": "retention-overflow",
+                "kind": "unknown", "result_status": "truncated", "completeness": "partial",
+                "execution_status": "unknown", "omitted_count": str(lost or 1),
+                "content": "Pending tool observations exceeded retention; original evidence must be supplied again."}]
+        return retain_tool_evidence(records, self.vault.config())
 
     def process(self, **arguments: Any) -> Any:
         """Run the existing Core process path without changing extraction rules."""
@@ -379,9 +493,10 @@ class HostRuntime:
                 isinstance(processed.get(key), int)
                 and not isinstance(processed.get(key), bool)
                 and processed.get(key, 0) > 0
-                for key in ("deferred_candidates", "deferred_inbox_turns")
+                for key in ("deferred_candidates", "deferred_inbox_turns", "unresolved_evidence_count")
             )
-        self._set_process_pending(session_id, False)
+        retryable = isinstance(processed, Mapping) and isinstance(processed.get("retryable_deferred_turns"), int) and processed["retryable_deferred_turns"] > 0
+        self._set_process_pending(session_id, retryable)
         return TurnCompletion(
             degraded=degraded,
             captured=captured,
@@ -465,6 +580,9 @@ class HostRuntime:
         return {
             "process_pending": pending,
             "injected_turn_ids": injected,
+            "tool_evidence_lost": dict(value.get("tool_evidence_lost", {})) if isinstance(value, Mapping) and isinstance(value.get("tool_evidence_lost"), Mapping) else {},
+            "tool_evidence_earlier_loss": isinstance(value, Mapping) and value.get("tool_evidence_earlier_loss") is True,
+            "tool_evidence": dict(value.get("tool_evidence", {})) if isinstance(value, Mapping) and isinstance(value.get("tool_evidence"), Mapping) else {},
         }
 
     def _mirror_legacy_codex(

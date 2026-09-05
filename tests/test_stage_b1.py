@@ -41,7 +41,8 @@ from memleaf.llm import (
     ModelUnavailable,
     OpenAICompatibleBackend,
 )
-from memleaf.processing import Processor, _event_payload
+from memleaf.model_execution import ModelExecutor
+from memleaf.process_common import _event_payload
 from memleaf.validation import parse_gate_output, parse_summarize_output
 from memleaf.mcp_server import _safe_model_diagnostics
 
@@ -88,6 +89,8 @@ class _ErrorOpener:
         del request, timeout
         raise self.error
 
+
+from tests.semantic_fixtures import semantic_function
 
 class StageB1Test(unittest.TestCase):
     def setUp(self):
@@ -231,6 +234,7 @@ class StageB1Test(unittest.TestCase):
         ]
         calls = []
 
+        @semantic_function
         def callback(prompt, **kwargs):
             calls.append((prompt, kwargs["purpose"]))
             return responses.pop(0)
@@ -323,6 +327,7 @@ class StageB1Test(unittest.TestCase):
         responses = [json.dumps(gate)] + [json.dumps(relative_summary)] * 3
         calls = []
 
+        @semantic_function
         def callback(prompt, **kwargs):
             calls.append(kwargs["purpose"])
             return responses.pop(0)
@@ -486,6 +491,7 @@ class StageB1Test(unittest.TestCase):
         ]
         calls = []
 
+        @semantic_function
         def callback(prompt, **kwargs):
             calls.append((prompt, kwargs))
             return responses.pop(0)
@@ -518,6 +524,7 @@ class StageB1Test(unittest.TestCase):
         responses = [invalid, invalid, invalid]
         calls = []
 
+        @semantic_function
         def callback(prompt, **kwargs):
             calls.append((prompt, kwargs))
             return responses.pop(0)
@@ -652,11 +659,11 @@ class RouterAndAdapterTest(unittest.TestCase):
             "invalid schema",
             validation_reason="schema_violation",
         )
-        self.assertTrue(Processor._allows_next_json_attempt(schema_error, 1))
-        self.assertTrue(Processor._allows_next_json_attempt(schema_error, 2))
-        self.assertFalse(Processor._allows_next_json_attempt(schema_error, 3))
+        self.assertTrue(ModelExecutor._allows_next_json_attempt(schema_error, 1))
+        self.assertTrue(ModelExecutor._allows_next_json_attempt(schema_error, 2))
+        self.assertFalse(ModelExecutor._allows_next_json_attempt(schema_error, 3))
         self.assertFalse(
-            Processor._allows_next_json_attempt(
+            ModelExecutor._allows_next_json_attempt(
                 ModelError("timeout", code="model_timeout"),
                 1,
             )

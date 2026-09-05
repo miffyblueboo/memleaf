@@ -73,8 +73,8 @@ _CODEX_PROCESS_FAILED_MESSAGE = (
     "has not been reported as successfully extracted."
 )
 _CODEX_PROCESS_DEFERRED_MESSAGE = (
-    "memleaf automatic processing left deferred scope work; scope information is "
-    "still needed and automatic memory extraction is not fully complete."
+    "memleaf automatic processing left deferred evidence, scope, or candidate decisions; inspect "
+    "the reported reason. Automatic memory extraction is not fully complete."
 )
 _SCOPE_MAP_INCOMPLETE = (
     "Scope Map preview incomplete; fetch scope_catalog from the first page "
@@ -428,7 +428,15 @@ def _handle_codex_post_tool(
     tool_name = _field(event, "tool_name", "toolName")
     is_search = _codex_memleaf_tool(tool_name, "search")
     is_todos = _codex_memleaf_tool(tool_name, "list_todos")
-    if not (is_search or is_todos) or session_id is None or turn_id is None:
+    if session_id is None or turn_id is None:
+        return {}
+    if not (is_search or is_todos):
+        call_id = _field(event, "tool_use_id", "toolUseId")
+        if isinstance(tool_name, str) and isinstance(call_id, str):
+            runtime.observe_external_tool(session_id=session_id, turn_id=turn_id,
+                                          tool_name=tool_name, call_id=call_id,
+                                          payload=_field(event, "tool_response", "toolResponse"),
+                                          tool_input=_field(event, "tool_input", "toolInput"))
         return {}
     tool_input = _field(event, "tool_input", "toolInput")
     call_id = _field(event, "tool_use_id", "toolUseId")

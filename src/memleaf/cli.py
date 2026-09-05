@@ -77,6 +77,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     install.add_argument("--json", action="store_true", help="emit one JSON result")
+    audit = commands.add_parser("audit", help="inspect an existing Vault without changing it")
+    audit.add_argument("--vault", type=Path, default=None)
+    audit.add_argument("--json", action="store_true")
+    process = commands.add_parser("process", help="process captured turns or preview on an isolated copy")
+    process.add_argument("--vault", type=Path, default=None)
+    process.add_argument("--source", default=None)
+    process.add_argument("--session-id", default=None)
+    process.add_argument("--scope", default=None)
+    process.add_argument("--dry-run", action="store_true", help="no source Vault writes; may call the configured model")
+    process.add_argument("--json", action="store_true")
     host_event = commands.add_parser(
         "host-event",
         help="host lifecycle hook entry",
@@ -213,6 +223,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if args.mcp_runtime != "auto":
                     install_kwargs["mcp_runtime"] = args.mcp_runtime
                 output = install_hermes(**install_kwargs)
+        elif args.command in {"audit", "process"}:
+            from .inspection import audit_vault, existing_root, preview_process
+            if args.command == "audit":
+                output = audit_vault(args.vault)
+            elif args.dry_run:
+                output = preview_process(args.vault, source=args.source, session_id=args.session_id, scope=args.scope)
+            else:
+                from .service import Memleaf
+                output = Memleaf(existing_root(args.vault)).process(
+                    source=args.source, session_id=args.session_id, scope=args.scope)
         elif args.command == "host-event":
             output = _host_event(args)
         else:  # pragma: no cover - argparse requires a known subcommand.
@@ -229,12 +249,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print("{}")
             return 0
         if getattr(args, "json", False):
-            print(json.dumps({"error": "initialization failed"}, ensure_ascii=False))
+            print(json.dumps({"error": "operation failed" if args.command in {"audit", "process"}
+                              else "initialization failed", "stage": args.command}, ensure_ascii=False))
         else:
             action = getattr(args, "command", "init")
             print(f"memleaf {action} failed unexpectedly", file=sys.stderr)
         return 1
 
+    if args.command in {"audit", "process"}:
+        print(json.dumps(output, ensure_ascii=False, sort_keys=True, indent=None if args.json else 2))
+        return 0
     if args.command == "host-event":
         print(json.dumps(output, ensure_ascii=False, separators=(",", ":")))
         return 0

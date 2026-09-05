@@ -2,6 +2,18 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.26 — 2026-09-05
+
+- Refactor automatic processing into explicit model execution, planning, update coordination, commit, journal and audit owners while preserving Markdown Vaults, memory IDs, Hermes MemoryProvider and cross-Agent retrieval contracts. No runtime dependency or independent service is added.
+- Remove post-Gate completion/rework generation, forced status/type/Scope rewrites, local last-retry candidate splitting, wrong-target UPDATE-to-CREATE conversion and automatic old/new body concatenation. Invalid proposals receive bounded model correction, then explicit candidate-local deferral; valid siblings proceed.
+- Add source-neutral exact evidence bindings and one bounded coverage correction. Assistant synthesis, recalled memory and truncated observations do not independently authorize new facts; evidence and candidate outcomes are accounted separately.
+- Reconcile compatible same-target updates into one model-owned write/history operation with all contributing receipts. Preserve actual outcomes on replay and reject stale target revisions under the shared Vault lock.
+- Freeze complete change payloads; explicit forget cancels matching pending operations before deletion. Explicit remember enforces selected Scope and target revisions. Automatic/explicit writes, forget, raw-library writes and compaction share the lock/recovery entry boundary without conflating their authorization.
+- Honor leading recording controls and record=False before persistence, consume only safely captured tool caches, and retry unresolved coverage at most once through natural lifecycle triggers. Keep unresolved source evidence after exhaustion.
+- Unify bounded/metadata/off tool-evidence retention across direct capture, Hermes, Codex and planning. Preserve legacy disabled settings and document-source exclusions; configuration changes do not fabricate missing source content.
+- Add read-only audit, isolated dry-run, Windows native process-liveness and cross-process file-lock safeguards. Run complete regression suites on Linux, Windows and macOS plus wheel/sdist installation checks.
+- Deterministic contract tests do not establish real-model semantic quality. The maintainer selected local live-model acceptance rather than repository model credentials; no real-model result is claimed by this release.
+
 ## 0.2.25 — 2026-09-04
 
 - Keep global todo questions and cross-session recaps strictly read-only,

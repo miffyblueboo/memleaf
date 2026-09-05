@@ -14,6 +14,9 @@ from memleaf.processing import ProcessingError
 from memleaf.validation import ModelOutputError
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class QueueBackend:
     provider = "fake"
     model = "b2b-test"
@@ -419,7 +422,7 @@ class StageB2BTest(unittest.TestCase):
         )
         responses2 = [self.gate([candidate2]), self.summary(user_key2, title="Updated", body="b2b new", update_memory_id=active2.memory_id)]
         backend2.responses.extend(responses2)
-        import memleaf.processing as processing_module
+        import memleaf.process_journal as processing_module
 
         original_atomic = processing_module.atomic_write_json
         calls = {"count": 0}
@@ -427,7 +430,7 @@ class StageB2BTest(unittest.TestCase):
         def fail_processed(path, value):
             if path == service2.vault.processed_index_path:
                 calls["count"] += 1
-                if calls["count"] == 2:
+                if value.get("sessions", {}).get("codex/s", {}).get("watermark", 0) >= 2 and value["sessions"]["codex/s"].get("processing", {}).get("status") == "idle":
                     raise OSError("processed write failed")
             return original_atomic(path, value)
 
@@ -511,7 +514,7 @@ class StageB2BTest(unittest.TestCase):
         service = self.make_service(backend)
         self.process_create(service, backend, title="Cleanup", body="cleanup")
         self.clock.advance(hours=24)
-        import memleaf.processing as processing_module
+        import memleaf.process_journal as processing_module
 
         original_atomic = processing_module.atomic_write_json
 
@@ -543,7 +546,7 @@ class StageB2BTest(unittest.TestCase):
         self.assertNotIn("cleanup_done_at", entry2)
         self.assertEqual(service2.process()["cleaned_turns"], 1)
 
-    def test_batch_duplicate_update_target_and_deterministic_collision_are_zero_write(self):
+    def test_unreconciled_updates_and_deterministic_collision_are_zero_write(self):
         backend = QueueBackend()
         service = self.make_service(backend)
         active, _, _ = self.process_create(service, backend, title="Original", body="old")
@@ -563,13 +566,17 @@ class StageB2BTest(unittest.TestCase):
                 self.gate(candidates),
                 self.summary(user_key, title="One", body="one", update_memory_id=active.memory_id),
                 self.summary(user_key, title="Two", body="two", update_memory_id=active.memory_id),
+                json.dumps({"decision": "DEFERRED", "candidate_ids": ["c1", "c2"],
+                    "reason": "conflicting_changes"}),
             ]
         )
-        with self.assertRaises(ModelOutputError):
-            service.process()
+        result = service.process()
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["deferred_candidates"], 2)
         self.assertEqual(self.active(service).body, "old")
         self.assertEqual(len(service.vault.list_markdown("history")), 0)
-        self.assertEqual(self.processed(service)["sessions"]["codex/s"]["watermark"], 1)
+        self.assertEqual(self.processed(service)["sessions"]["codex/s"]["watermark"], 2)
+        self.assertTrue(service.vault.session_path("codex", "s").exists())
 
         service2 = self.make_service(QueueBackend(), name="collision")
         backend2 = service2.router

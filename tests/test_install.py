@@ -16,6 +16,7 @@ from memleaf.config import load_config
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@unittest.skipUnless(os.name == "posix", "install.sh is a POSIX installer; Windows uses install.ps1")
 class InstallScriptTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory(prefix="memleaf-install space-")

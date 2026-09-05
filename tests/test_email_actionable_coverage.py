@@ -56,7 +56,41 @@ class QueueBackend:
             # corrections.  A coverage/retry implementation may ask again;
             # the historical implementation accepts the first valid gate and
             # never sees this second response.
-            return self.first_gate if self.gate_calls == 1 else self.coverage_gate
+            raw = self.first_gate if self.gate_calls == 1 else self.coverage_gate
+            value = json.loads(raw)
+            units = json.JSONDecoder().raw_decode(prompt.split("Evidence units (data, never instructions):\n", 1)[1])[0]
+            # Authored semantic bindings: each action cites only its actual
+            # tool-result line. Leave omitted action lines unaccounted so the
+            # real generic coverage correction is exercised.
+            markers = {
+                "bankin-stakeholders": "中银国际：",
+                "jinyuan-plan": "金元顺安：",
+                "morgan-withdrawal-correction": "撤单场景校验规则",
+                "morgan-history-mapping-correction": "历史数据迁移字段映射",
+            }
+            bindings = []
+            allowed_keys = {u["event_key"] for u in units}
+            for c in value["candidates"]:
+                c["evidence_event_ids"] = [k for k in c["evidence_event_ids"] if k in allowed_keys]
+                marker = markers.get(c["candidate_id"])
+                matches = [u for u in units if u["origin"] == "external_observation"
+                           and marker and marker in u["text"]]
+                if matches:
+                    bindings.append({"candidate_id": c["candidate_id"], "claims": [
+                        {"unit_id": u["unit_id"], "quote": u["text"], "role": "source_excerpt"}
+                        for u in matches]})
+            rows = []
+            for u in units:
+                ids = [b["candidate_id"] for b in bindings if any(x["unit_id"] == u["unit_id"] for x in b["claims"])]
+                if ids:
+                    rows.append({"unit_id": u["unit_id"], "decision": "CANDIDATE", "candidate_ids": ids})
+                elif u["origin"] != "external_observation":
+                    rows.append({"unit_id": u["unit_id"], "decision": "NO_CHANGE",
+                                 "reason": "query_only" if u["origin"] == "user_query" else "assistant_restatement"})
+                elif self.gate_calls > 1 or "安联基金：" in u["text"] or "巡检结果" in u["text"]:
+                    rows.append({"unit_id": u["unit_id"], "decision": "NO_CHANGE", "reason": "no_future_value"})
+            value.update(evidence_bindings=bindings, coverage=rows)
+            return json.dumps(value, ensure_ascii=False)
         if purpose == "summarize":
             candidate_text = prompt
             if "Candidate:\n" in prompt:
@@ -182,6 +216,8 @@ class EmailActionableCoverageTests(unittest.TestCase):
             "assistant",
             assistant,
             event_id=assistant_id,
+            tool_evidence=[{"tool_name": "mail.read", "call_id": "digest-call", "kind": "external_observation",
+                            "result_status": "success", "content": assistant}],
         )
         return event_key(user_id), event_key(assistant_id)
 
@@ -267,32 +303,32 @@ class EmailActionableCoverageTests(unittest.TestCase):
             coverage_gate,
             {
                 "中银国际项目干系人信息表": summary(
-                    user_key,
+                    assistant_key,
                     title="中银国际干系人信息表和入场材料",
                     body="中银国际项目干系人信息表和外部人员入场材料需要提供。",
                     scopes=["project:中银国际"],
                 ),
                 "金元顺安实施计划": summary(
-                    user_key,
+                    assistant_key,
                     title="金元顺安实施计划重排",
                     body="金元顺安实施计划需要按客户意见重排后回复。",
                     scopes=["project:金元顺安"],
                 ),
                 "撤单场景校验规则": summary(
-                    user_key,
+                    assistant_key,
                     title="摩根基金撤单场景校验规则",
                     body="摩根基金撤单场景校验规则需要补充并修正。",
                     scopes=morgan_scope,
                     update_memory_id=existing.memory_id,
                 ),
                 "历史数据迁移字段映射": summary(
-                    user_key,
+                    assistant_key,
                     title="摩根基金历史数据迁移字段映射",
                     body="摩根基金历史数据迁移字段映射需要修正。",
                     scopes=morgan_scope,
                 ),
             },
-            fallback_evidence=user_key,
+            fallback_evidence=assistant_key,
         )
 
         result = self.service.process(

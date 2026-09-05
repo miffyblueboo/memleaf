@@ -242,7 +242,8 @@ class ModelDiscoveryTests(unittest.TestCase):
                 api_key="direct-secret",
             )
             write_model_config(path, candidate, vault=Path(temporary))
-            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            if os.name == "posix":  # Windows security is governed by inherited ACLs, not mode bits.
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
             value = load_config(path, vault=Path(temporary))
             self.assertEqual(value["llm"]["api_key"], "direct-secret")
             self.assertEqual(value["llm"]["request_timeout"], 120)
@@ -286,7 +287,8 @@ class ModelDiscoveryTests(unittest.TestCase):
             self.assertEqual(config["llm"]["model"], "manual-mini")
             self.assertEqual(config["llm"]["api_key"], "manual-secret")
             self.assertEqual(config["llm"]["request_timeout"], 120)
-            self.assertEqual(stat.S_IMODE((vault / "config.yaml").stat().st_mode), 0o600)
+            if os.name == "posix":  # Windows security is governed by inherited ACLs, not mode bits.
+                self.assertEqual(stat.S_IMODE((vault / "config.yaml").stat().st_mode), 0o600)
             self.assertNotIn("manual-secret", stdout.getvalue() + stderr.getvalue())
 
 

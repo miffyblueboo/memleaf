@@ -76,6 +76,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest tests.test_cross_host_acceptance tests.test_maintenance_v2 tests.test_retrieval_v2 tests.test_session_lineage -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run complete Windows regression suite
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -p 'test_*.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Smoke-test installed commands and Vault
         shell: pwsh
         run: |
@@ -123,6 +128,8 @@ jobs:
           python -m unittest tests.test_codex_install tests.test_host_events tests.test_v2_host_flow tests.test_v2_mcp_flow -v
           python -m unittest tests.test_cross_host_acceptance tests.test_maintenance_v2 tests.test_retrieval_v2 tests.test_session_lineage -v
 
+      - name: Run complete macOS regression suite
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
 
   codex-native:
     name: codex-native-${{ matrix.os }}

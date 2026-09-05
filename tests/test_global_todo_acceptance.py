@@ -12,6 +12,9 @@ from memleaf.mcp_server import _invoke_tool
 from memleaf.retrieval_gate import todo_filter_key, validate_turn
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class QueueBackend:
     provider = "fake"
     model = "global-todo-acceptance"

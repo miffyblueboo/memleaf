@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -13,6 +15,11 @@ try:  # pragma: no cover - the fallback is for non-POSIX hosts.
     import fcntl
 except ImportError:  # pragma: no cover
     fcntl = None
+
+try:  # pragma: no cover - available only on Windows.
+    import msvcrt
+except ImportError:  # pragma: no cover
+    msvcrt = None
 
 
 _thread_locks: dict[str, threading.RLock] = {}
@@ -112,24 +119,46 @@ class VaultLock:
             os.chmod(self.path, 0o600)
         except OSError:
             pass
-        if fcntl is not None:
-            fcntl.flock(self._stream.fileno(), fcntl.LOCK_EX)
-        else:  # pragma: no cover - exercised only on non-POSIX hosts.
-            key = str(self.path.resolve())
-            with _thread_locks_guard:
-                self._fallback_lock = _thread_locks.setdefault(key, threading.RLock())
-            self._fallback_lock.acquire()
+        try:
+            if fcntl is not None:
+                fcntl.flock(self._stream.fileno(), fcntl.LOCK_EX)
+            elif msvcrt is not None:  # native, cross-process byte-range lock
+                # Windows permits a lock beyond EOF; do not modify the lock
+                # file while another process holds it. Always lock byte zero.
+                while True:
+                    self._stream.seek(0)
+                    try:
+                        msvcrt.locking(self._stream.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError as error:
+                        if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                            raise
+                        time.sleep(0.05)
+            else:  # Unsupported hosts retain the historical thread-only fallback.
+                key = str(self.path.resolve())
+                with _thread_locks_guard:
+                    self._fallback_lock = _thread_locks.setdefault(key, threading.RLock())
+                self._fallback_lock.acquire()
+        except BaseException:
+            self._stream.close()
+            self._stream = None
+            raise
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         if self._stream is None:
             return
-        if fcntl is not None:
-            fcntl.flock(self._stream.fileno(), fcntl.LOCK_UN)
-        elif self._fallback_lock is not None:  # pragma: no cover
-            self._fallback_lock.release()
-        self._stream.close()
-        self._stream = None
+        try:
+            if fcntl is not None:
+                fcntl.flock(self._stream.fileno(), fcntl.LOCK_UN)
+            elif msvcrt is not None:  # pragma: no cover - native Windows
+                self._stream.seek(0)
+                msvcrt.locking(self._stream.fileno(), msvcrt.LK_UNLCK, 1)
+            elif self._fallback_lock is not None:  # pragma: no cover
+                self._fallback_lock.release()
+        finally:
+            self._stream.close()
+            self._stream = None
 
 
 def read_json(path: Path) -> Any:

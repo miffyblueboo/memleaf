@@ -7,6 +7,7 @@ import json
 import os
 import re
 import base64
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -359,6 +360,18 @@ class Memleaf:
 
         return Compactor(self).compact(model=model, router=router)
 
+    @contextmanager
+    def _mutation_boundary(self):
+        """Serialize permanent changes after recovering interrupted maintenance.
+
+        The caller retains its own authorization, journal and revision checks.
+        This boundary does not run models or replay pending automatic writes.
+        In particular, forget may cancel a pending write before it can replay.
+        """
+        with self.vault.lock():
+            self._recover_compaction_unlocked()
+            yield
+
     def _recover_compaction_unlocked(self) -> None:
         """Recover a pending compaction while the vault lock is held."""
 
@@ -556,8 +569,7 @@ class Memleaf:
         if area not in ("knowledge", "history"):
             raise ValueError("invalid memory area")
         path = self.vault.memory_path(memory.memory_id, area)
-        with self.vault.lock():
-            self._recover_compaction_unlocked()
+        with self._mutation_boundary():
             if path.is_symlink():
                 raise ValueError("unsafe memory path")
             atomic_write_text(path, memory.to_markdown())
@@ -1512,47 +1524,15 @@ class Memleaf:
             return fit_directory_items(entries, limit=bounded_limit)
 
     def _delete_records_unlocked(self, records: Iterable[_Record]) -> list[str]:
-        # Preflight every target before mutating anything, then keep active
-        # knowledge as the retry anchor until all linked history is gone.
-        unique: list[_Record] = []
-        seen_paths: set[Path] = set()
-        for record in records:
-            if record.path in seen_paths:
-                continue
-            seen_paths.add(record.path)
-            if record.path.is_symlink():
-                raise ValueError("unsafe memory path")
-            unique.append(record)
-        unique.sort(key=lambda record: (record.area == "knowledge", str(record.path)))
+        from .memory_commit import MemoryCommitter
 
-        deleted: list[str] = []
-        try:
-            for record in unique:
-                try:
-                    record.path.unlink()
-                except FileNotFoundError:
-                    continue
-                deleted.append(record.memory.memory_id)
-        except Exception:
-            if deleted:
-                # The Markdown files are source of truth.  Keep derived indexes
-                # synchronized after a partial filesystem mutation before the
-                # original deletion error is surfaced to the caller.
-                try:
-                    self._rebuild_index_unlocked()
-                except Exception:
-                    pass
-            raise
-        if deleted:
-            self._rebuild_index_unlocked()
-        return sorted(set(deleted))
+        return MemoryCommitter.forget_records_unlocked(self, records)
 
     def forget_memory(self, memory_id: str) -> bool:
         """Delete an exact memleaf memory without creating a history copy."""
 
         safe_component(memory_id, "memory id")
-        with self.vault.lock():
-            self._recover_compaction_unlocked()
+        with self._mutation_boundary():
             deleted = self._delete_records_unlocked(self._find_forget_records_unlocked(memory_id))
             return bool(deleted)
 
@@ -1562,8 +1542,7 @@ class Memleaf:
         if not isinstance(query, str) or not query.strip():
             return ForgetAboutResult(status="not_found")
         normalized = normalize_term(query)
-        with self.vault.lock():
-            self._recover_compaction_unlocked()
+        with self._mutation_boundary():
             exact = []
             if "\n" not in query and "\r" not in query:
                 try:

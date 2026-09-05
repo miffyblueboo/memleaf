@@ -14,6 +14,9 @@ from memleaf.prompts import GATE_SYSTEM, SUMMARIZE_SYSTEM, gate_prompt, summariz
 from memleaf.validation import ModelOutputError
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class QueueBackend:
     provider = "fake"
     model = "admission-noise-test"
@@ -991,7 +994,7 @@ class AdmissionFlowTests(unittest.TestCase):
         self.assertEqual(marker["watermark"], 2)
         self.assertEqual(marker["processing"]["status"], "idle")
 
-    def test_multiple_candidates_cannot_update_one_active_memory_in_one_batch(self):
+    def test_conflicting_candidates_cannot_partially_update_one_memory(self):
         service = self.make_service("duplicate-update")
         old = service.create_memory(
             memory_id="mem-state",
@@ -1007,7 +1010,7 @@ class AdmissionFlowTests(unittest.TestCase):
             user="项目状态从 A 进入 B，同时同步最新风险。",
             assistant="已确认状态更新为 B。",
         )
-        second_user = event_key("duplicate-update/turn-1/assistant")
+        second_user = first_user  # Both changes must have current user evidence.
         backend.responses.extend(
             [
                 gate(
@@ -1042,16 +1045,22 @@ class AdmissionFlowTests(unittest.TestCase):
                     type="project",
                     update_memory_id=old.memory_id,
                 ),
+                json.dumps({"decision": "DEFERRED", "candidate_ids": ["state", "risk"],
+                    "reason": "conflicting_changes"}),
             ]
         )
 
-        with self.assertRaises(ModelOutputError):
-            service.process(source="hermes", session_id="duplicate-update", model=backend)
+        result = service.process(source="hermes", session_id="duplicate-update", model=backend)
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["deferred_candidates"], 2)
 
         self.assertEqual(service.read(old.memory_id).body, old.body)
         self.assertEqual(service.vault.list_markdown("history"), [])
         processed = json.loads(service.vault.processed_index_path.read_text(encoding="utf-8"))
-        self.assertEqual(processed["sessions"]["hermes/duplicate-update"].get("watermark", 0), 0)
+        self.assertEqual(processed["sessions"]["hermes/duplicate-update"].get("watermark", 0), 1)
+        entry = processed["sessions"]["hermes/duplicate-update"]["processed_turns"][0]
+        self.assertEqual({r["reason"] for r in entry["deferred_candidates"]}, {"same_turn_target_conflict"})
+        self.assertTrue(service.vault.session_path("hermes", "duplicate-update").exists())
 
 
 if __name__ == "__main__":

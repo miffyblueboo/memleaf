@@ -110,27 +110,8 @@ def _event_metadata(text: str) -> list[dict[str, Any]]:
 
 
 def _bounded_tool_evidence(value: Any) -> tuple[dict[str, str], ...]:
-    if not isinstance(value, list):
-        return ()
-    allowed = {"message_id", "subject", "sender", "domain"}
-    result: list[dict[str, str]] = []
-    for raw in value[:8]:
-        if not isinstance(raw, Mapping) or set(raw) - allowed:
-            continue
-        item = {
-            str(key): str(field)
-            for key, field in raw.items()
-            if key in allowed
-            and isinstance(field, str)
-            and field
-            and "\x00" not in field
-            and "\r" not in field
-            and "\n" not in field
-            and len(field) <= 320
-        }
-        if item:
-            result.append(item)
-    return tuple(result)
+    from .provenance import read_tool_evidence
+    return read_tool_evidence(value)
 
 def parse_inbox_text(
     text: str,

@@ -8,3 +8,5 @@ include RELEASE_CHECKLIST.md
 include IMPLEMENTATION_PLAN.md
 recursive-include tests *.py
 recursive-include examples *.md *.ndjson *.py
+
+include docs/*.md

@@ -36,36 +36,8 @@ _MAX_MAIL_EVIDENCE_TEXT = 320
 
 
 def _normalize_tool_evidence(value: Any) -> list[dict[str, str]]:
-    if value is None:
-        return []
-    if not isinstance(value, (list, tuple)):
-        raise ValueError("tool evidence must be a list")
-    result: list[dict[str, str]] = []
-    seen: set[tuple[tuple[str, str], ...]] = set()
-    for raw in list(value)[:_MAX_MAIL_EVIDENCE_ITEMS]:
-        if not isinstance(raw, Mapping) or set(raw) - _MAIL_EVIDENCE_FIELDS:
-            raise ValueError("invalid tool evidence record")
-        item: dict[str, str] = {}
-        for key in _MAIL_EVIDENCE_FIELDS:
-            field = raw.get(key)
-            if field is None:
-                continue
-            if not isinstance(field, str) or not field.strip() or any(ch in field for ch in "\x00\r\n"):
-                raise ValueError("invalid tool evidence field")
-            text = redact_text(field.strip())[:_MAX_MAIL_EVIDENCE_TEXT]
-            if key == "domain":
-                text = text.casefold().lstrip("@")
-                if not _MAIL_DOMAIN_RE.fullmatch(text):
-                    raise ValueError("invalid tool evidence domain")
-            item[key] = text
-        if not item:
-            continue
-        fingerprint = tuple(sorted(item.items()))
-        if fingerprint in seen:
-            continue
-        seen.add(fingerprint)
-        result.append(item)
-    return result
+    from .provenance import normalize_tool_evidence
+    return normalize_tool_evidence(value)
 
 def _event_id(source: str, session_id: str, turn_id: str, role: str, event_id: Optional[str]) -> str:
     if event_id is not None:
@@ -265,12 +237,23 @@ def capture_event(
     resolved_turn_key = turn_key(turn_id)
     persisted_turn_id = _safe_turn_id(turn_id)
     safe_content = escape_event_markers(redact_text(content))
-    safe_tool_evidence = _normalize_tool_evidence(tool_evidence)
-    if not record or not visible or role not in ("user", "assistant"):
+    if not visible or role not in ("user", "assistant"):
         return CaptureResult(resolved_event_id, stored=False, duplicate=False, content=safe_content)
 
     with vault.lock():
         processed = _read_processed(vault.processed_index_path)
+        from .recording_policy import apply_control
+        allowed, changed = apply_control(processed, source=source, session_id=session_id,
+            turn_key=resolved_turn_key, event_key=resolved_event_key, role=role, content=content, record=record)
+        if not allowed:
+            if changed:
+                atomic_write_json(vault.processed_index_path, processed)
+            return CaptureResult(resolved_event_id, stored=False, duplicate=False, suppressed=True)
+        # Only permitted data reaches normalization or any persistence path.
+        from .evidence_policy import retain_tool_evidence
+        safe_tool_evidence = retain_tool_evidence(tool_evidence, vault.config())
+        if changed:
+            atomic_write_json(vault.processed_index_path, processed)
         known_keys = _known_event_keys(vault, processed)
         if resolved_event_key in known_keys:
             path = vault.session_path(source, session_id)
@@ -347,6 +330,7 @@ def capture_event(
         atomic_write_json(
             vault.processed_index_path,
             {
+                **processed,
                 "version": 1,
                 "event_keys": sorted(event_keys),
                 "events": event_entries,

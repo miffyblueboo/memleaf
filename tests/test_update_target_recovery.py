@@ -19,6 +19,9 @@ from memleaf.config import save_config
 from memleaf.index import event_key
 
 
+from tests.semantic_fixtures import semantic_fixture, deferred_target_response
+
+@semantic_fixture
 class QueueBackend:
     provider = "fake"
     model = "update-target-recovery"
@@ -35,6 +38,8 @@ class QueueBackend:
         response = self.responses.pop(0)
         if isinstance(response, BaseException):
             raise response
+        if callable(response):
+            return response(prompt, system=system, purpose=purpose)
         return response
 
 
@@ -123,7 +128,7 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
     def inbox_exists(self, session):
         return (self.service.vault.inbox_path / "hermes" / f"{session}.md").is_file()
 
-    def test_final_retry_splits_grounded_multi_project_aggregate_per_candidate(self):
+    def test_model_splits_grounded_multi_project_aggregate_on_retry(self):
         """One bad aggregate must not block independently grounded projects."""
 
         user_key, assistant_key = self.capture_turn(
@@ -150,7 +155,11 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
             [
                 gate([aggregate]),
                 gate([aggregate]),
-                gate([aggregate]),
+                gate([
+                    candidate("alpha-plan", [user_key], memory="alpha 项目实施计划新增提前部署测试环境要求。", type="project", scopes=["project:alpha"]),
+                    candidate("beta-task", [user_key], memory="beta 项目需补充网络拓扑图。", type="todo", scopes=["project:beta"]),
+                    candidate("gamma-owner", [user_key], memory="gamma 负责人已确认由乙负责。", type="fact", scopes=["project:gamma"]),
+                ]),
                 summary(
                     user_key,
                     title="alpha 项目实施计划",
@@ -191,8 +200,8 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
             ["gate", "gate", "gate", "summarize", "summarize", "summarize"],
         )
 
-    def test_first_valid_insufficient_context_aggregate_is_split(self):
-        """A valid unscoped aggregate is split without spending gate retries."""
+    def test_insufficient_context_aggregate_is_deferred_without_local_split(self):
+        """An unscoped model candidate is retained, not locally split and reassigned."""
 
         user_key, assistant_key = self.capture_turn(
             "first-response-aggregate",
@@ -215,50 +224,21 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
             scopes=["unscoped"],
             scope_source="insufficient_context",
         )
-        backend = QueueBackend(
-            [
-                gate([aggregate]),
-                summary(
-                    user_key,
-                    title="alpha 负责人",
-                    body="alpha 负责人当前为甲。",
-                    type="fact",
-                    scopes=["project:alpha"],
-                ),
-                summary(
-                    user_key,
-                    title="beta 负责人",
-                    body="beta 负责人当前为乙。",
-                    type="fact",
-                    scopes=["project:beta"],
-                ),
-                summary(
-                    user_key,
-                    title="gamma 负责人",
-                    body="gamma 负责人当前为丙。",
-                    type="fact",
-                    scopes=["project:gamma"],
-                ),
-            ]
-        )
+        backend = QueueBackend([gate([aggregate])])
+        result = self.service.process(source="hermes", session_id="first-response-aggregate", model=backend)
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["deferred_candidates"], 1)
+        self.assertEqual(self.active(), [])
+        self.assertTrue(self.inbox_exists("first-response-aggregate"))
+        state = json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
+        row = state["sessions"]["hermes/first-response-aggregate"]["processed_turns"][0]["deferred_candidates"][0]
+        self.assertEqual(row["candidate_id"], aggregate["candidate_id"])
+        self.assertEqual(row["scopes"], ["unscoped"])
+        self.assertEqual(row["reason"], "scope_required")
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate"])
 
-        result = self.service.process(
-            source="hermes", session_id="first-response-aggregate", model=backend
-        )
-
-        self.assertEqual(result["memories_written"], 3)
-        self.assertEqual(result["deferred_candidates"], 0)
-        self.assertEqual(
-            {memory.scopes[0] for memory in self.active()},
-            {"project:alpha", "project:beta", "project:gamma"},
-        )
-        self.assertEqual(
-            [call["purpose"] for call in backend.calls],
-            ["gate", "summarize", "summarize", "summarize"],
-        )
-
-    def test_unrelated_fact_target_is_removed_and_project_plan_is_created(self):
-        """A plan aimed at an unrelated fact survives three gate retries as CREATE."""
+    def test_model_removes_unrelated_fact_target_before_create(self):
+        """The model removes its wrong target on the third reply before CREATE."""
 
         old = self.service.create_memory(
             memory_id="mem-beta-fact",
@@ -284,7 +264,7 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
             [
                 gate([wrong_target]),
                 gate([wrong_target]),
-                gate([wrong_target]),
+                gate([{k: v for k, v in wrong_target.items() if k != "update_memory_id"}]),
                 summary(
                     user_key,
                     title="alpha 项目实施计划",
@@ -312,8 +292,8 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
         self.assertIn("实施计划", created[0].body)
         self.assertEqual(self.service.vault.list_markdown("history"), [])
 
-    def test_unrelated_project_target_is_removed_and_fact_is_created(self):
-        """A fact aimed at an unrelated project target also becomes an independent CREATE."""
+    def test_model_removes_unrelated_project_target_before_create(self):
+        """The model corrects its unrelated target before an independent CREATE."""
 
         old = self.service.create_memory(
             memory_id="mem-beta-plan",
@@ -339,7 +319,7 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
             [
                 gate([wrong_target]),
                 gate([wrong_target]),
-                gate([wrong_target]),
+                gate([{k: v for k, v in wrong_target.items() if k != "update_memory_id"}]),
                 summary(
                     user_key,
                     title="alpha 项目负责人",
@@ -363,7 +343,7 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
         self.assertIn("负责人", created[0].body)
         self.assertEqual(self.service.vault.list_markdown("history"), [])
 
-    def test_same_project_plan_detaches_orion_sync_fact_target_and_creates_project(self):
+    def test_model_detaches_orion_fact_before_creating_plan(self):
         """A plan must not overwrite a same-scope Orion synchronization fact."""
 
         config = self.service.vault.config()
@@ -393,7 +373,7 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
             [
                 gate([wrong_target]),
                 gate([wrong_target]),
-                gate([wrong_target]),
+                gate([{k: v for k, v in wrong_target.items() if k != "update_memory_id"}]),
                 summary(
                     user_key,
                     title="金元顺安信创实施计划",
@@ -511,8 +491,8 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
                     ).is_file()
                 )
 
-    def test_detached_wrong_target_reuses_unique_same_use_project_target(self):
-        """After detaching a wrong fact, a unique plan target is still updated."""
+    def test_model_corrects_wrong_target_to_existing_project(self):
+        """The model corrects a wrong fact target to the existing plan on bounded retry."""
 
         wrong_target = self.service.create_memory(
             memory_id="mem-alpha-orion-fact",
@@ -548,7 +528,7 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
             [
                 gate([wrong]),
                 gate([wrong]),
-                gate([wrong]),
+                gate([{**wrong, "update_memory_id": correct_target.memory_id}]),
                 summary(
                     user_key,
                     title="alpha 项目实施计划",
@@ -578,8 +558,8 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
             correct_target.memory_id,
         )
 
-    def test_detached_wrong_target_with_multiple_valid_plans_is_deferred(self):
-        """A detached candidate must not guess when two same-use plans remain."""
+    def test_invalid_target_with_multiple_plans_is_deferred(self):
+        """A persistently wrong candidate must not become a guessed update or CREATE."""
 
         wrong_target = self.service.create_memory(
             memory_id="mem-alpha-orion-ambiguous",
@@ -638,7 +618,7 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
             self.service.vault.processed_index_path.read_text(encoding="utf-8")
         )
         entry = processed["sessions"]["hermes/detach-ambiguous-plans"]["processed_turns"][0]
-        self.assertEqual(entry["deferred_candidates"][0]["reason"], "ambiguous_update_target")
+        self.assertEqual(entry["deferred_candidates"][0]["reason"], "update_target_type_mismatch")
         self.assertTrue(self.inbox_exists("detach-ambiguous-plans"))
 
     def test_adjacent_sent_mail_is_skipped_in_favor_of_formal_project_plan(self):
@@ -746,13 +726,7 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
                 gate([mismatch, duplicate]),
                 gate([mismatch, duplicate]),
                 gate([mismatch, duplicate]),
-                summary(
-                    user_key,
-                    title="alpha 项目实施计划",
-                    body="alpha 项目实施计划新增测试环境要求。",
-                    type="project",
-                    scopes=["project:alpha"],
-                ),
+
             ]
         )
 
@@ -760,8 +734,9 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
             source="hermes", session_id="mismatch-with-duplicate", model=backend
         )
 
-        self.assertEqual(result["memories_written"], 1)
-        self.assertEqual(len(result["memory_ids"]), 1)
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["deferred_candidates"], 1)
+        self.assertEqual(len(result["memory_ids"]), 0)
         self.assertEqual(self.service.read(wrong_target.memory_id).body, wrong_target.body)
         self.assertEqual(
             self.service.read(duplicate_target.memory_id).body,
@@ -772,9 +747,7 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
             for memory in self.active()
             if memory.memory_id not in {wrong_target.memory_id, duplicate_target.memory_id}
         ]
-        self.assertEqual(len(created), 1)
-        self.assertEqual(created[0].type, "project")
-        self.assertIn("测试环境", created[0].body)
+        self.assertEqual(created, [])
         self.assertEqual(self.service.vault.list_markdown("history"), [])
 
     def test_model_scope_membership_precedes_elliptical_wrong_beta_target(self):
@@ -894,13 +867,12 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
             update_memory_id=None,
         )
         # The bad candidate is repeated by the model on every gate retry;
-        # the final retry must remove only that target and retain ``good``.
+        # the final retry defers that proposal without changing it; ``good`` proceeds.
         backend = QueueBackend(
             [
                 gate([bad, good]),
                 gate([bad, good]),
                 gate([bad, good]),
-                no_change(),
                 summary(
                     user_key,
                     title="gamma 项目负责人",
@@ -965,7 +937,7 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
             [
                 gate([temporary, covered]),
                 gate([temporary, covered]),
-                gate([temporary, covered]),
+                gate([{k: v for k, v in c.items() if k != "update_memory_id"} for c in (temporary, covered)]),
                 no_change(),
                 no_change(),
             ]
@@ -1013,14 +985,15 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
             "scopes": ["project:alpha"],
             "scope_source": "model",
         }
-        backend = QueueBackend([gate([ambiguous])])
+        backend = QueueBackend([deferred_target_response])
 
         result = self.service.process(
             source="hermes", session_id="ambiguous-recovery", model=backend
         )
 
         self.assertEqual(result["memories_written"], 0)
-        self.assertEqual(result["deferred_candidates"], 1)
+        self.assertGreater(result["unresolved_evidence_count"], 0)
+        self.assertEqual(result["coverage_status"], "partial")
         self.assertEqual({memory.memory_id for memory in self.active()}, {first.memory_id, second.memory_id})
         self.assertEqual(self.service.vault.list_markdown("history"), [])
         self.assertTrue(self.inbox_exists("ambiguous-recovery"))

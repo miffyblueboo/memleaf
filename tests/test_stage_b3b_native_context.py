@@ -227,8 +227,9 @@ class StageB3BNativeContextTest(unittest.TestCase):
 
         self.set_sources({"shared": {"agent": "hermes", "path": str(shared), "share": True}})
         shared.write_text("# Shared\nchanged page\n", encoding="utf-8")
+        changed_bytes = shared.read_bytes()
         self.assertIsNone(self.service.read_page(native_id))
-        self.assertEqual(b"# Shared\nchanged page\n", shared.read_bytes())
+        self.assertEqual(changed_bytes, shared.read_bytes())
 
     def test_shadow_failure_does_not_advance_watermark_and_retry_is_idempotent(self):
         shared = self.root / "shared.md"

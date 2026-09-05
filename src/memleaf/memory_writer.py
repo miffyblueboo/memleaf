@@ -134,6 +134,23 @@ class MemoryWriter:
         }
         return request_keys.issubset(applied_keys)
 
+    def retirement_applied(self, correction: Mapping[str, Any], active: Mapping[str, Any]) -> bool:
+        target_id = correction.get("target_memory_id")
+        survivor_id = correction.get("survivor_memory_id")
+        history_id = correction.get("expected_history_id")
+        if (not isinstance(history_id, str) or target_id in active or survivor_id not in active):
+            return False
+        try:
+            path = self.service.vault.memory_path(history_id, "history")
+            if path.is_symlink() or not path.is_file():
+                return False
+            memory = Memory.from_markdown(path.read_text(encoding="utf-8"), path)
+        except (OSError, UnicodeError, ValueError, TypeError):
+            return False
+        return (memory.memory_id == history_id and memory.extra.get("active_memory_id") == target_id
+                and memory.extra.get("superseded_by") == survivor_id
+                and memory.extra.get("invalidated_reason") == "scope_correction")
+
     @staticmethod
     def _preflight_error(
         message: str,
@@ -169,6 +186,8 @@ class MemoryWriter:
                 target_record = active.get(target_id)
                 survivor_record = active.get(survivor_id)
                 if target_record is None or survivor_record is None:
+                    if self.retirement_applied(correction, active):
+                        continue
                     raise self._preflight_error("scope correction target is not active")
                 target_memory = getattr(target_record, "memory", target_record)
                 survivor_memory = getattr(survivor_record, "memory", survivor_record)
@@ -185,7 +204,7 @@ class MemoryWriter:
             if duplicate_id is not None:
                 if not isinstance(duplicate_id, str) or duplicate_id not in active:
                     raise self._preflight_error("duplicate target is not an active memory")
-                if duplicate_id in duplicate_ids:
+                if duplicate_id in duplicate_ids and request.get("explicit_remember"):
                     raise self._preflight_error(
                         "batch contains duplicate metadata merge target",
                         validation_detail="duplicate_update_target",
@@ -426,6 +445,8 @@ class MemoryWriter:
             target_record = active.get(target_id)
             survivor_record = active.get(survivor_id)
             if target_record is None or survivor_record is None:
+                if self.retirement_applied(correction, active):
+                    return getattr(survivor_record, "memory", survivor_record)
                 raise ModelOutputError("scope correction target is not active")
             target = getattr(target_record, "memory", target_record)
             survivor = getattr(survivor_record, "memory", survivor_record)

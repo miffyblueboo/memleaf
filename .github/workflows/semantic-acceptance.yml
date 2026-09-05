@@ -1,0 +1,38 @@
+name: Live semantic acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/v0.2.26-general-processing-pipeline]
+
+permissions:
+  contents: read
+
+jobs:
+  semantic:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.event.head_commit.message, 'verify-live: ')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install the exact candidate
+        run: python -m pip install .
+      - name: Run bounded synthetic Model Route acceptance
+        env:
+          MEMLEAF_LIVE_MODEL_TOKEN: ${{ secrets.MEMLEAF_LIVE_MODEL_TOKEN }}
+          MEMLEAF_LIVE_BASE_URL: ${{ vars.MEMLEAF_LIVE_BASE_URL }}
+          MEMLEAF_LIVE_MODEL: ${{ vars.MEMLEAF_LIVE_MODEL }}
+        run: python examples/live_processing_acceptance.py "${{ runner.temp }}/semantic-acceptance"
+      - name: Preserve acceptance evidence, including configuration blockers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semantic-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/semantic-acceptance/
+          if-no-files-found: error
+          retention-days: 14

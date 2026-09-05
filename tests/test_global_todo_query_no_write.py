@@ -18,6 +18,9 @@ from memleaf.config import save_config
 from memleaf.index import event_key
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+@semantic_fixture
 class QueueBackend:
     """Deterministic model queue for gate and summarize stages."""
 
@@ -83,6 +86,7 @@ def summary(
     scope: str,
     update_memory_id: str | None = None,
     status: str | None = None,
+    completed_at: str | None = None,
 ) -> str:
     value: dict[str, object] = {
         "title": title,
@@ -97,6 +101,8 @@ def summary(
         value["update_memory_id"] = update_memory_id
     if status is not None:
         value["status"] = status
+    if completed_at is not None:
+        value["completed_at"] = completed_at
     return json.dumps(value, ensure_ascii=False)
 
 
@@ -419,6 +425,7 @@ class GlobalTodoQueryNoWriteTests(unittest.TestCase):
                             scope="project:鑫元基金",
                             update_memory_id=existing.memory_id,
                             status=expected_status,
+                            completed_at="2026-09-05T09:00:00Z" if expected_status == "completed" else None,
                         ),
                     ]
                 )

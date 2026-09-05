@@ -14,10 +14,15 @@ from memleaf.inbox import parse_inbox
 from memleaf.llm import ModelError, ModelUnavailable
 from memleaf.memory_writer import MemoryWriter
 from memleaf.processing import ProcessingError, Processor
+from memleaf.model_execution import ModelExecutor
+from memleaf.planning_context import PlanningContext
 from memleaf.prompts import RELATIVE_TIME_CORRECTION
 from memleaf.validation import ModelOutputError
 
 
+from tests.semantic_fixtures import semantic_fixture, deferred_target_response
+
+@semantic_fixture
 class QueueBackend:
     provider = "fake"
     model = "b2a-test"
@@ -267,7 +272,7 @@ class StageB2ATest(unittest.TestCase):
         self.assertNotIn("project:浙江东方", state.get("scopes", []))
         self.assertNotIn("project:浙江东方", service.vault.config()["scopes"])
 
-    def test_gate_scope_not_grounded_final_retry_corrects_by_unique_memory_match(self):
+    def test_gate_scope_not_grounded_model_corrects_on_final_retry(self):
         backend = QueueBackend()
         service = self.service(backend, name="scope-final-correct")
         config = service.vault.config()
@@ -295,7 +300,7 @@ class StageB2ATest(unittest.TestCase):
             [
                 self.gate([wrong]),
                 self.gate([wrong]),
-                self.gate([wrong]),
+                self.gate([{**wrong, "scopes": ["project:zhongyin"]}]),
                 self.summary(
                     user_key,
                     title="中银国际实施计划",
@@ -409,7 +414,8 @@ class StageB2ATest(unittest.TestCase):
         deferred = turn_entry["deferred_candidates"]
         self.assertEqual(len(deferred), 1)
         self.assertEqual(deferred[0]["candidate_id"], "both-mentioned")
-        self.assertEqual(deferred[0]["reason"], "scope_required")
+        self.assertEqual(deferred[0]["reason"], "scope_conflict")
+        self.assertEqual(deferred[0]["scopes"], ["project:zhongyin"])
         self.assertEqual(self.processed(service)["sessions"]["codex/s"]["processing"]["status"], "idle")
 
     def test_scope_not_grounded_final_retry_wrong_scope_and_wrong_update_target_is_safe(self):
@@ -448,7 +454,8 @@ class StageB2ATest(unittest.TestCase):
             [
                 self.gate([wrong]),
                 self.gate([wrong]),
-                self.gate([wrong]),
+                self.gate([{**{k: v for k, v in wrong.items() if k != "update_memory_id"},
+                            "scopes": ["project:beta"]}]),
                 self.summary(
                     user_key,
                     title="贝塔 项目负责人",
@@ -513,7 +520,7 @@ class StageB2ATest(unittest.TestCase):
             [
                 self.gate([wrong]),
                 self.gate([wrong]),
-                self.gate([wrong]),
+                self.gate([{k: v for k, v in wrong.items() if k != "update_memory_id"}]),
                 self.summary(
                     user_key,
                     title="浙江东方实施计划",
@@ -631,17 +638,17 @@ class StageB2ATest(unittest.TestCase):
     def test_two_candidates_are_separate_deterministic_memories_and_repeat_is_noop(self):
         backend = QueueBackend()
         service = self.service(backend)
-        user_key, assistant_key = self.capture_turn(service)
+        user_key, assistant_key = self.capture_turn(service, user="A durable fact. A second durable fact.")
         backend.responses.extend(
             [
                 self.gate(
                     [
                         self.candidate("c1", [user_key]),
-                        self.candidate("c2", [assistant_key], memory="another durable fact"),
+                        self.candidate("c2", [user_key], memory="another durable fact"),
                     ]
                 ),
                 self.summary(user_key, title="First"),
-                self.summary(assistant_key, title="Second"),
+                self.summary(user_key, title="Second"),
             ]
         )
 
@@ -858,7 +865,7 @@ class StageB2ATest(unittest.TestCase):
         ]
         self.assertEqual(diagnostics[0]["validation_detail"], "mixed_project_scopes")
 
-    def test_three_mixed_project_gate_failures_keep_inbox_and_watermark(self):
+    def test_three_mixed_project_gate_failures_retain_deferred_evidence(self):
         backend = QueueBackend()
         service = self.service(backend, name="mixed-gate-failure")
         user_key, assistant_key = self.capture_turn(
@@ -876,24 +883,16 @@ class StageB2ATest(unittest.TestCase):
         mixed["scopes"] = ["project:zhongyin", "project:morgan"]
         backend.responses.extend([self.gate([mixed])] * 3)
 
-        with self.assertRaises(ModelOutputError) as raised:
-            service.process(
-                source="codex",
-                session_id="mixed-gate-failure",
-                model=backend,
-            )
-
-        self.assertEqual(raised.exception.validation_detail, "mixed_project_scopes")
-        self.assertEqual(raised.exception.stage, "gate")
-        self.assertEqual(raised.exception.attempt_count, 3)
-        marker = self.processed(service)["sessions"]["codex/mixed-gate-failure"]["processing"]
-        self.assertEqual(marker["failure_stage"], "gate")
-        self.assertEqual(marker["validation_detail"], "mixed_project_scopes")
-        self.assertEqual(marker["attempt_count"], 3)
-        self.assertEqual(
-            self.processed(service)["sessions"]["codex/mixed-gate-failure"].get("watermark", 0),
-            0,
-        )
+        result = service.process(source="codex", session_id="mixed-gate-failure", model=backend)
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["deferred_candidates"], 1)
+        self.assertEqual([c["purpose"] for c in backend.calls], ["gate"] * 3)
+        state = self.processed(service)["sessions"]["codex/mixed-gate-failure"]
+        row = state["processed_turns"][0]["deferred_candidates"][0]
+        self.assertEqual(row["reason"], "scope_conflict")
+        self.assertEqual(row["scopes"], mixed["scopes"])
+        # Scan progress can advance; unresolved original evidence remains.
+        self.assertEqual(state["watermark"], 1)
         self.assertTrue((service.vault.inbox_path / "codex" / "mixed-gate-failure.md").is_file())
         self.assertEqual(self.knowledge(service), [])
 
@@ -1122,14 +1121,15 @@ class StageB2ATest(unittest.TestCase):
             turn="feedback",
             user_event="jinyuan-plan-user",
             assistant_event="jinyuan-plan-assistant",
-            user="金元顺安客户对实施计划提出补充建议。",
+            user="金元顺安客户要求实施计划补充数据迁移、安全基线、漏洞扫描和回滚演练。",
             assistant="需增加数据迁移、安全基线、漏洞扫描和回滚演练。",
         )
         item = self.candidate(
             "jinyuan-plan-feedback",
             [user_key, assistant_key],
             memory="金元顺安实施计划需补充数据迁移、安全基线、漏洞扫描和回滚演练。",
-            type="fact",
+            type="project",
+            update_memory_id=existing.memory_id,
         )
         item["scopes"] = ["project:金元顺安"]
         backend.responses.extend(
@@ -1138,8 +1138,8 @@ class StageB2ATest(unittest.TestCase):
                 self.summary(
                     user_key,
                     title=existing.title,
-                    body="客户建议补充数据迁移、安全基线、漏洞扫描和回滚演练。",
-                    tags=["金元顺安", "调整建议"],
+                    body=old_body + "\n\n客户要求补充数据迁移、安全基线、漏洞扫描和回滚演练。",
+                    tags=["金元顺安", "达梦", "东方通", "负责人", "调整建议"],
                     type="project",
                     scopes=["project:金元顺安"],
                     update_memory_id=existing.memory_id,
@@ -1160,28 +1160,22 @@ class StageB2ATest(unittest.TestCase):
         self.assertEqual(history[0].memory.body, old_body)
 
     def test_explicit_project_plan_replacement_does_not_merge_conflicting_body(self):
-        target = self.service().create_memory(
-            memory_id="mem-plan-replacement",
-            title="北辰项目实施计划",
-            body="北辰项目数据库采用达梦。",
-            tags=["达梦"],
-            type="project",
-            scopes=["project:北辰"],
-        )
-        summary = {
-            "title": target.title,
-            "body": "北辰项目数据库改为PostgreSQL。",
-            "tags": ["PostgreSQL"],
-            "type": "project",
-        }
-
-        merged = Processor._merge_additive_project_plan_update(
-            {"memory": "客户建议将北辰项目数据库改为PostgreSQL。"},
-            summary,
-            target,
-        )
-
-        self.assertEqual(merged, summary)
+        service = self.service()
+        target = service.create_memory(memory_id="mem-plan-replacement", title="北辰项目实施计划",
+            body="北辰项目数据库采用达梦。", tags=["达梦"], type="project", scopes=["project:北辰"])
+        key, _ = self.capture_turn(service, user="北辰项目实施计划的数据库改为PostgreSQL。")
+        proposal = self.candidate("replacement", [key], memory="北辰项目实施计划的数据库改为PostgreSQL。",
+            type="project", update_memory_id=target.memory_id)
+        proposal["scopes"] = ["project:北辰"]
+        body = "北辰项目数据库改为PostgreSQL。"
+        backend = QueueBackend([self.gate([proposal]), self.summary(key, title=target.title,
+            body=body, type="project", scopes=["project:北辰"], update_memory_id=target.memory_id)])
+        result = service.process(model=backend, scope="project:北辰")
+        self.assertEqual(result["memory_ids"], [target.memory_id])
+        self.assertEqual(service.read(target.memory_id).body, body)
+        history = service._read_memories_unlocked("history")
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].memory.body, target.body)
 
     def test_summary_update_target_mismatch_is_retried_before_writing(self):
         backend = QueueBackend()
@@ -1323,7 +1317,7 @@ class StageB2ATest(unittest.TestCase):
                 self.summary(
                     user_key,
                     title="金元顺安实施计划",
-                    body="金元顺安实施计划新增部署要求。",
+                    body="金元顺安实施计划按原方案执行。\n\n金元顺安实施计划新增部署要求。",
                     type="project",
                     scopes=["project:金元顺安"],
                     update_memory_id=old.memory_id,
@@ -1341,7 +1335,7 @@ class StageB2ATest(unittest.TestCase):
         )
         self.assertEqual(len(service.vault.list_markdown("history")), 1)
 
-    def test_same_project_plan_fact_candidate_is_reconciled_to_immutable_project_target(self):
+    def test_model_selects_immutable_project_type_and_target(self):
         backend = QueueBackend()
         service = self.service(backend, name="inferred-plan-update")
         old = service.create_memory(
@@ -1356,14 +1350,15 @@ class StageB2ATest(unittest.TestCase):
             turn="inferred-plan-update",
             user_event="inferred-plan-update-user",
             assistant_event="inferred-plan-update-assistant",
-            user="中银国际客户提出实施计划调整建议。",
+            user="中银国际客户要求实施计划提前部署测试环境并重新压实计划。",
             assistant="已记录中银国际实施计划调整建议，待更新计划。",
         )
         candidate = self.candidate(
             "zhongyin-plan-feedback",
             [user_key, assistant_key],
             memory="中银国际客户提出实施计划调整建议：提前部署测试环境并重新压实计划。",
-            type="fact",
+            type="project",
+            update_memory_id=old.memory_id,
         )
         candidate["scopes"] = ["project:中银国际"]
         backend.responses.extend(
@@ -1447,14 +1442,15 @@ class StageB2ATest(unittest.TestCase):
                     turn=f"multi-target-{slug}",
                     user_event=f"multi-target-{slug}-user",
                     assistant_event=f"multi-target-{slug}-assistant",
-                    user=f"{project}客户提出实施计划调整建议。",
+                    user=f"{project}客户要求实施计划提前部署测试环境并重新压实计划。",
                     assistant=f"已记录{project}实施计划的新约束，待更新计划。",
                 )
                 candidate = self.candidate(
                     f"{slug}-plan-feedback",
                     [user_key, assistant_key],
                     memory=f"{project}客户提出实施计划调整建议：提前部署测试环境并重新压实计划。",
-                    type="fact",
+                    type="project",
+                    update_memory_id=plan.memory_id,
                 )
                 candidate["scopes"] = [f"project:{project}"]
                 backend.responses.extend(
@@ -1512,23 +1508,23 @@ class StageB2ATest(unittest.TestCase):
             type="fact",
         )
         candidate["scopes"] = ["project:金元顺安"]
-        backend.responses.append(self.gate([candidate]))
+        backend.responses.append(deferred_target_response)
 
         result = service.process(source="codex", session_id="s", model=backend)
 
         self.assertEqual(result["memory_ids"], [])
         self.assertEqual(result["memories_written"], 0)
-        self.assertEqual(result["deferred_candidates"], 1)
+        self.assertGreater(result["unresolved_evidence_count"], 0)
         self.assertEqual([call["purpose"] for call in backend.calls], ["gate"])
         self.assertEqual(
-            self.processed(service)["sessions"]["codex/s"]["processed_turns"][0]["deferred_candidates"][0]["reason"],
-            "ambiguous_update_target",
+            self.processed(service)["sessions"]["codex/s"]["processed_turns"][0]["deferred_evidence"][0]["reason"],
+            "target_ambiguous",
         )
         self.assertEqual(len(self.knowledge(service)), 2)
         self.assertEqual(len(service.vault.list_markdown("history")), 0)
         self.assertTrue((service.vault.inbox_path / "codex" / "s.md").is_file())
 
-    def test_same_project_wrong_update_target_final_retry_becomes_create(self):
+    def test_model_corrects_wrong_update_to_create_on_final_retry(self):
         backend = QueueBackend()
         service = self.service(backend, name="same-project-wrong-target-final-retry")
         old = service.create_memory(
@@ -1559,7 +1555,7 @@ class StageB2ATest(unittest.TestCase):
             [
                 invalid_gate,
                 invalid_gate,
-                invalid_gate,
+                self.gate([{k: v for k, v in wrong.items() if k != "update_memory_id"}]),
                 self.summary(
                     user_key,
                     title="alpha 项目负责人",
@@ -1587,7 +1583,7 @@ class StageB2ATest(unittest.TestCase):
             "\n".join(record.memory.body for record in service._read_memories_unlocked("knowledge")),
         )
 
-    def test_same_project_wrong_duplicate_target_final_retry_is_dropped(self):
+    def test_wrong_duplicate_is_retained_as_deferred_on_final_retry(self):
         backend = QueueBackend()
         service = self.service(backend, name="same-project-wrong-duplicate-final-retry")
         old = service.create_memory(
@@ -1993,7 +1989,7 @@ class StageB2ATest(unittest.TestCase):
         )
         valid = self.candidate(
             "valid-fact",
-            [assistant_key],
+            [user_key],
             memory="项目负责人已确认。",
             type="fact",
         )
@@ -2004,7 +2000,7 @@ class StageB2ATest(unittest.TestCase):
             type="todo",
         )
         good_summary = self.summary(
-            assistant_key,
+            user_key,
             title="项目负责人",
             body="项目负责人已确认。",
             type="fact",
@@ -2030,113 +2026,87 @@ class StageB2ATest(unittest.TestCase):
         self.assertEqual(self.processed(service)["sessions"]["codex/s"]["watermark"], 1)
         self.assertTrue((service.vault.inbox_path / "codex" / "s.md").is_file())
 
-    def test_duplicate_update_target_is_rejected_at_gate_and_retried(self):
-        """Duplicate targets are corrected before the writer commit phase."""
-
+    def test_shared_update_target_is_reconciled_before_writer(self):
+        """Multiple admitted updates need one complete model decision before commit."""
         backend = QueueBackend()
-        service = self.service(backend, name="duplicate-update-target-field-repro")
-        existing = service.create_memory(
-            memory_id="mem-existing",
-            title="Existing fact",
-            body="The existing fact.",
-            type="fact",
-            scopes=["global"],
-        )
-        user_key, assistant_key = self.capture_turn(
-            service,
-            turn="duplicate-update",
-            user_event="duplicate-user",
-            assistant_event="duplicate-assistant",
-            user="The first update is true.",
-            assistant="The second update is also true.",
-        )
+        service = self.service(backend, name="shared-update-target")
+        existing = service.create_memory(memory_id="mem-existing", title="Existing fact",
+            body="The existing fact.", type="fact", scopes=["global"])
+        user_key, _ = self.capture_turn(service, turn="shared-update",
+            user_event="shared-user", assistant_event="shared-assistant",
+            user="The first update is true. The second update is also true.", assistant="Noted.")
         candidates = [
-            self.candidate(
-                "update-one",
-                [user_key],
-                memory="First update",
-                update_memory_id=existing.memory_id,
-            ),
-            self.candidate(
-                "update-two",
-                [assistant_key],
-                memory="Second update",
-                update_memory_id=existing.memory_id,
-            ),
+            self.candidate("update-one", [user_key], memory="The first update is true.",
+                update_memory_id=existing.memory_id),
+            self.candidate("update-two", [user_key], memory="The second update is also true.",
+                update_memory_id=existing.memory_id),
         ]
-        backend.responses.extend(
-            [
-                self.gate(candidates),
-                self.gate(
-                    [
-                        self.candidate(
-                            "merged-update",
-                            [user_key, assistant_key],
-                            memory="First and second update",
-                            update_memory_id=existing.memory_id,
-                        )
-                    ]
-                ),
-                self.summary(
-                    user_key,
-                    title="Existing fact",
-                    body="The existing fact now includes both updates.",
-                    update_memory_id=existing.memory_id,
-                ),
-            ]
-        )
-
+        merged = json.loads(self.summary(user_key, title="Existing fact",
+            body="The existing fact now includes both updates.", update_memory_id=existing.memory_id))
+        backend.responses.extend([
+            self.gate(candidates),
+            self.summary(user_key, title="Existing fact", body="The first update is true.",
+                update_memory_id=existing.memory_id),
+            self.summary(user_key, title="Existing fact", body="The second update is also true.",
+                update_memory_id=existing.memory_id),
+            json.dumps({"decision": "UPDATE", "candidate_ids": ["update-one", "update-two"],
+                "summary": merged}),
+        ])
         result = service.process()
-
         self.assertEqual(result["processed_turns"], 1)
         self.assertEqual(result["memories_written"], 1)
-        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "gate", "summarize"])
-        self.assertIn("Previous output violated: duplicate_update_target.", backend.calls[1]["prompt"])
-        self.assertIn("merge", backend.calls[1]["prompt"].lower())
-        self.assertEqual(service.read(existing.memory_id).body, "The existing fact now includes both updates.")
+        self.assertEqual([call["purpose"] for call in backend.calls],
+            ["gate", "summarize", "summarize", "summarize"])
+        self.assertIn("SAME_TARGET_RECONCILIATION", backend.calls[-1]["prompt"])
+        self.assertEqual(service.read(existing.memory_id).body,
+            "The existing fact now includes both updates.")
         self.assertEqual(len(service.vault.list_markdown("history")), 1)
-        marker = self.processed(service)["sessions"]["codex/s"]["processing"]
-        self.assertEqual(marker["status"], "idle")
-        self.assertEqual(self.processed(service)["sessions"]["codex/s"]["watermark"], 1)
+        state = self.processed(service)["sessions"]["codex/s"]
+        self.assertEqual(state["processing"]["status"], "idle")
+        self.assertEqual(state["watermark"], 1)
+        rows = state["processed_turns"][0]["candidate_dispositions"]
+        self.assertEqual({r["candidate_id"] for r in rows}, {"update-one", "update-two"})
+        self.assertTrue(all(r["disposition"] == "UPDATE" for r in rows))
+        self.assertEqual(len({r["operation_id"] for r in rows}), 1)
 
-    def test_three_duplicate_update_targets_fail_at_gate_and_keep_inbox(self):
+    def test_three_invalid_group_responses_defer_updates_and_keep_inbox(self):
+        """An invalid reconciliation never writes a partial update or drops evidence."""
         backend = QueueBackend()
-        service = self.service(backend, name="duplicate-update-target-failure")
-        existing = service.create_memory(
-            memory_id="mem-existing",
-            title="Existing fact",
-            body="The existing fact.",
-            type="fact",
-            scopes=["global"],
-        )
-        user_key, assistant_key = self.capture_turn(
-            service,
-            turn="duplicate-update-failure",
-            user_event="duplicate-failure-user",
-            assistant_event="duplicate-failure-assistant",
-        )
+        service = self.service(backend, name="shared-update-failure")
+        existing = service.create_memory(memory_id="mem-existing", title="Existing fact",
+            body="The existing fact.", type="fact", scopes=["global"])
+        user_key, _ = self.capture_turn(service, turn="shared-update-failure",
+            user_event="failure-user", assistant_event="failure-assistant",
+            user="The first update is true. The second update is also true.", assistant="Noted.")
         candidates = [
-            self.candidate("update-one", [user_key], update_memory_id=existing.memory_id),
-            self.candidate("update-two", [assistant_key], update_memory_id=existing.memory_id),
+            self.candidate("update-one", [user_key], memory="The first update is true.",
+                update_memory_id=existing.memory_id),
+            self.candidate("update-two", [user_key], memory="The second update is also true.",
+                update_memory_id=existing.memory_id),
         ]
-        backend.responses.extend([self.gate(candidates)] * 3)
-
-        with self.assertRaises(ModelOutputError) as raised:
-            service.process()
-
-        self.assertEqual(raised.exception.validation_detail, "duplicate_update_target")
-        marker = self.processed(service)["sessions"]["codex/s"]["processing"]
-        self.assertEqual(marker["failure_code"], "model_invalid_response")
-        self.assertEqual(marker["failure_stage"], "gate")
-        self.assertEqual(marker["validation_reason"], "schema_violation")
-        self.assertEqual(marker["validation_detail"], "duplicate_update_target")
-        self.assertEqual(marker["attempt_count"], 3)
-        self.assertEqual(self.processed(service)["sessions"]["codex/s"].get("watermark", 0), 0)
+        backend.responses.extend([
+            self.gate(candidates),
+            self.summary(user_key, title="Existing fact", body="The first update is true.",
+                update_memory_id=existing.memory_id),
+            self.summary(user_key, title="Existing fact", body="The second update is also true.",
+                update_memory_id=existing.memory_id),
+            *[json.dumps({"decision": "NO_CHANGE", "candidate_ids": ["update-one"]})] * 3,
+        ])
+        result = service.process()
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["deferred_candidates"], 2)
+        state = self.processed(service)["sessions"]["codex/s"]
+        self.assertEqual(state["processing"]["status"], "idle")
+        self.assertEqual(state["watermark"], 1)
+        rows = state["processed_turns"][0]["candidate_dispositions"]
+        self.assertTrue(all(r["disposition"] == "DEFERRED" for r in rows))
+        self.assertEqual({r["reason"] for r in rows}, {"same_turn_reconciliation_failed"})
         self.assertEqual(len(self.knowledge(service)), 1)
         self.assertEqual(service.read(existing.memory_id).body, existing.body)
         self.assertEqual(len(service.vault.list_markdown("history")), 0)
         self.assertTrue((service.vault.inbox_path / "codex" / "s.md").exists())
-        self.assertTrue(all("merge every candidate" in call["prompt"].lower() for call in backend.calls[1:]))
+        self.assertEqual(len(backend.calls), 6)
+        self.assertTrue(all("SAME_TARGET_RECONCILIATION" in c["prompt"] for c in backend.calls[-3:]))
 
     def test_writer_batch_defense_labels_duplicate_update_conflict(self):
         service = self.service(QueueBackend(), name="writer-duplicate-update-defense")
@@ -2400,7 +2370,8 @@ class StageB2ATest(unittest.TestCase):
 
         path = service.vault.logs_path / "model-diagnostics.jsonl"
         self.assertTrue(path.is_file())
-        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        if os.name == "posix":  # Windows security is governed by inherited ACLs, not mode bits.
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertLessEqual(path.stat().st_size, 256 * 1024)
         lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
         self.assertEqual(len(lines), 3)
@@ -2432,7 +2403,7 @@ class StageB2ATest(unittest.TestCase):
         config_service.router = backend
         self.capture_turn(config_service)
         with patch.object(
-            Processor,
+            ModelExecutor,
             "_write_model_diagnostic",
             side_effect=OSError("diagnostic write secret"),
         ):
@@ -2664,8 +2635,8 @@ class StageB2ATest(unittest.TestCase):
     def test_invalid_second_summary_does_not_write_first_summary(self):
         backend = QueueBackend()
         service = self.service(backend)
-        user_key, assistant_key = self.capture_turn(service)
-        candidates = [self.candidate("c1", [user_key]), self.candidate("c2", [assistant_key])]
+        user_key, assistant_key = self.capture_turn(service, user="A durable fact. A second durable fact.")
+        candidates = [self.candidate("c1", [user_key]), self.candidate("c2", [user_key], memory="A second durable fact")]
         backend.responses.extend(
             [
                 self.gate(candidates),
@@ -2686,15 +2657,15 @@ class StageB2ATest(unittest.TestCase):
         self.assertEqual(len(self.knowledge(service)), 0)
 
         backend.responses.extend(
-            [self.gate(candidates), self.summary(user_key, title="first"), self.summary(assistant_key, title="second")]
+            [self.gate(candidates), self.summary(user_key, title="first"), self.summary(user_key, title="second")]
         )
         self.assertEqual(service.process()["memories_written"], 2)
 
     def test_second_model_failure_does_not_advance_watermark(self):
         backend = QueueBackend()
         service = self.service(backend)
-        user_key, assistant_key = self.capture_turn(service)
-        candidates = [self.candidate("c1", [user_key]), self.candidate("c2", [assistant_key])]
+        user_key, assistant_key = self.capture_turn(service, user="A durable fact. A second durable fact.")
+        candidates = [self.candidate("c1", [user_key]), self.candidate("c2", [user_key], memory="A second durable fact")]
         backend.responses.extend(
             [self.gate(candidates), self.summary(user_key, title="first"), ModelError("second failed")]
         )
@@ -2733,9 +2704,9 @@ class StageB2ATest(unittest.TestCase):
     def test_partial_knowledge_write_is_retryable_without_duplicate_files(self):
         backend = QueueBackend()
         service = self.service(backend)
-        user_key, assistant_key = self.capture_turn(service)
-        candidates = [self.candidate("c1", [user_key]), self.candidate("c2", [assistant_key])]
-        responses = [self.gate(candidates), self.summary(user_key, title="first"), self.summary(assistant_key, title="second")]
+        user_key, assistant_key = self.capture_turn(service, user="A durable fact. A second durable fact.")
+        candidates = [self.candidate("c1", [user_key]), self.candidate("c2", [user_key], memory="A second durable fact")]
+        responses = [self.gate(candidates), self.summary(user_key, title="first"), self.summary(user_key, title="second")]
         backend.responses.extend(responses)
         import memleaf.memory_writer as memory_writer_module
 
@@ -2766,12 +2737,12 @@ class StageB2ATest(unittest.TestCase):
     def test_sources_are_core_generated_and_todo_defaults_active(self):
         backend = QueueBackend()
         service = self.service(backend)
-        user_key, assistant_key = self.capture_turn(service)
+        user_key, assistant_key = self.capture_turn(service, user="I need to submit the report.")
         backend.responses.extend(
             [
                 self.gate([self.candidate("todo", [user_key], type="todo")]),
                 self.summary(
-                    assistant_key,
+                    user_key,
                     title="Todo",
                     body="Do the thing",
                     type="todo",
@@ -2852,7 +2823,7 @@ class StageB2ATest(unittest.TestCase):
             "started_at": "2026-08-24T00:00:00Z",
         }
         service.vault.processed_index_path.write_text(json.dumps(value), encoding="utf-8")
-        with patch("memleaf.processing.os.kill", side_effect=ProcessLookupError):
+        with patch("memleaf.process_journal.ProcessJournal._owner_pid_status", return_value=False):
             self.assertEqual(service.process()["processed_turns"], 1)
 
     def test_legacy_processing_marker_uses_short_grace_period(self):
