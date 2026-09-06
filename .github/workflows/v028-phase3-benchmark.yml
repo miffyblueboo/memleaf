@@ -20,8 +20,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Apply phase 3 cleanup
-        run: python scripts/apply_v028_phase3.py
+      - name: Apply phase 3 cleanup and regression fixes
+        run: |
+          python scripts/apply_v028_phase3.py
+          python scripts/fix_v028_phase3_regressions.py
       - name: Compile source, tests and benchmark
         run: python -m compileall -q src tests scripts/benchmark_long_run.py
       - name: Install package
@@ -63,6 +65,7 @@ jobs:
           assert len(payload['results']) == 3
           for result in payload['results']:
               assert result['sanity']['search_status'] == 'found'
+              assert result['sanity']['cold_search_status'] == 'found'
               assert result['sanity']['exact_status'] == 'found'
               assert result['sanity']['fulltext_status'] == 'found'
               assert result['sanity']['scope_status'] == 'found'
