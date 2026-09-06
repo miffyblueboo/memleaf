@@ -33,11 +33,13 @@ jobs:
         run: |
           set -euo pipefail
           echo '=== legacy config names ==='
-          git grep -nE '(include_tool_output|abnormal_guard|tag_full|^[[:space:]]*["'"']inject["'"']|processed_index_path|agents_index_path)' -- src docs tests || true
+          git grep -nE '(include_tool_output|abnormal_guard|tag_full|processed_index_path|agents_index_path)' -- src docs tests || true
+          git grep -nE '"inject"|inject:' -- src docs tests || true
           echo '=== old stage/candidate/development naming ==='
           git grep -nEi '(stage[- _]?[abc][0-9a-z]*|candidate/development|development candidate)' -- src docs README.md README.en.md || true
       - name: Core business-specific semantic lexicon audit
         shell: bash
         run: |
           set -euo pipefail
+          echo '=== business-specific terms in Core ==='
           git grep -nEi '(email|e-mail|邮件|日报|ppt|项目计划|工单|github)' -- src/memleaf || true
