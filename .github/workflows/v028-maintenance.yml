@@ -27,6 +27,8 @@ jobs:
           python scripts/fix_v028_phase1.py
       - name: Compile source and tests
         run: python -m compileall -q src tests
+      - name: Install package for console-entry acceptance
+        run: python -m pip install -e .
       - name: Run state/config and core regression tests
         env:
           PYTHONPATH: src
