@@ -109,17 +109,18 @@ jobs:
           rebuild_p95 = metrics['rebuild_index']['p95_ms']
           rss = largest.get('peak_rss_mib')
           rss_text = f'{rss:.3f} MiB' if isinstance(rss, (int, float)) else 'n/a'
-
-          section = f'''## 0.2.28 — 2026-09-06
-
-- Separate rebuildable `_index/` data from correctness-critical `_state/` runtime state. Existing Vaults migrate crash-safely and idempotently with verified copy-before-cleanup semantics; conflicting old/new state fails closed, and `rebuild-index` no longer changes processing, retrieval, host-ingest, or compaction state.
-- Consolidate legacy configuration into the current schema: migrate old tool-evidence and injection settings once, preserve conservative legacy evidence semantics, reject contradictory old/current settings, and document the bounded 0.2.x CLI compatibility sunset.
-- Move host activation bookkeeping and first-party installer state to `_state/`, remove the obsolete derived agents-index ownership, and keep Hermes/Codex on one globally shared Markdown Vault across Windows, macOS, and Linux.
-- Remove the remaining Core todo urgency classifier based on words such as `urgent`, `ASAP`, `紧急`, or `尽快`; unscheduled todo ordering is deterministic and business semantics remain model-owned.
-- Add reproducible 1k/10k/50k long-run benchmarks covering initialization, rebuild, retrieval, CREATE/UPDATE/NO_CHANGE, history/todo retention, compaction, lock hold time, RSS, and disk footprint. At 50k, warm candidate/full-text/scope-search p95 values are {candidate_p95:.3f}/{fulltext_p95:.3f}/{scope_p95:.3f} ms; rebuild p95 is {rebuild_p95:.3f} ms and peak RSS is {rss_text}.
-- Do **not** introduce SQLite FTS in v0.2.28: all measured 50k search paths remain within the explicit 2,000 ms p95 interactive target. Markdown remains the sole source of truth and the existing derived index remains sufficient for the measured scale.
-
-'''
+          section = '\n'.join([
+              '## 0.2.28 — 2026-09-06',
+              '',
+              '- Separate rebuildable `_index/` data from correctness-critical `_state/` runtime state. Existing Vaults migrate crash-safely and idempotently with verified copy-before-cleanup semantics; conflicting old/new state fails closed, and `rebuild-index` no longer changes processing, retrieval, host-ingest, or compaction state.',
+              '- Consolidate legacy configuration into the current schema: migrate old tool-evidence and injection settings once, preserve conservative legacy evidence semantics, reject contradictory old/current settings, and document the bounded 0.2.x CLI compatibility sunset.',
+              '- Move host activation bookkeeping and first-party installer state to `_state/`, remove the obsolete derived agents-index ownership, and keep Hermes/Codex on one globally shared Markdown Vault across Windows, macOS, and Linux.',
+              '- Remove the remaining Core todo urgency classifier based on words such as `urgent`, `ASAP`, `紧急`, or `尽快`; unscheduled todo ordering is deterministic and business semantics remain model-owned.',
+              f'- Add reproducible 1k/10k/50k long-run benchmarks covering initialization, rebuild, retrieval, CREATE/UPDATE/NO_CHANGE, history/todo retention, compaction, lock hold time, RSS, and disk footprint. At 50k, warm candidate/full-text/scope-search p95 values are {candidate_p95:.3f}/{fulltext_p95:.3f}/{scope_p95:.3f} ms; rebuild p95 is {rebuild_p95:.3f} ms and peak RSS is {rss_text}.',
+              '- Do **not** introduce SQLite FTS in v0.2.28: all measured 50k search paths remain within the explicit 2,000 ms p95 interactive target. Markdown remains the sole source of truth and the existing derived index remains sufficient for the measured scale.',
+              '',
+              '',
+          ])
           changelog = Path('CHANGELOG.md')
           current = changelog.read_text(encoding='utf-8')
           if '## 0.2.28 —' in current:
