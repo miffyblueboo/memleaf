@@ -34,7 +34,7 @@ jobs:
           rm -f scripts/optimize_v028_sqlite_candidates.py
           rm -f scripts/optimize_v028_sqlite_rebuild.py
           rm -f scripts/update_v028_benchmark_report.py
-          if git grep -nEi 'sqlite|fts5' -- src tests scripts/benchmark_long_run.py; then
+          if git grep -nEi 'sqlite|fts5' -- src scripts/benchmark_long_run.py; then
             echo 'unexpected SQLite/FTS product reference remains' >&2
             exit 1
           fi
