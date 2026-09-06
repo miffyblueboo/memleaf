@@ -34,9 +34,13 @@ if '"_index/processed.json"' in text:
     raise SystemExit("inspection still reads processed state from _index")
 write(path, text)
 
-# Remove internal index terminology for host activation state.
+# Remove internal index terminology for host activation state. vault.py is
+# handled explicitly below so its compatibility aliases cannot be renamed into
+# duplicate current properties before they are deleted.
 for root_name in ("src", "tests"):
     for target in (ROOT / root_name).rglob("*.py"):
+        if target.name == "vault.py":
+            continue
         text = target.read_text(encoding="utf-8")
         updated = text.replace("update_agents_index", "update_agents_state")
         updated = updated.replace("agent_index_path", "agent_state_path")
