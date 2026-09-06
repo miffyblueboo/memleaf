@@ -124,6 +124,18 @@ def patch_benchmark_script() -> None:
         '"If a real Vault grows into the tens of thousands of active memories, first audit CREATE-vs-UPDATE/NO_CHANGE behavior, todo retirement, history retention, duplicate control, and compaction. The product remains Markdown-only in v0.2.28.",\n        "",\n        "## Active-memory lifecycle health",\n        "",\n        "Active memory count is a health signal, not an archival counter. Repeated facts should update existing canonical memories, unchanged observations should be NO_CHANGE, completed/cancelled todos retire from active memory, historical versions are bounded, and compaction reduces redundant active material. A real Vault approaching the 50k stress dataset should therefore trigger lifecycle/quality investigation before search-backend expansion.",',
         "lifecycle interpretation",
     )
+    text = replace_once(
+        text,
+        'f"Platform: `{payload[\'platform\']}`  ",',
+        'f"Platform: `{payload[\'platform\']}`",',
+        "platform markdown whitespace",
+    )
+    text = replace_once(
+        text,
+        'f"Python: `{payload[\'python_version\']}`  ",',
+        'f"Python: `{payload[\'python_version\']}`",',
+        "python markdown whitespace",
+    )
 
     lowered = text.lower()
     if "sqlite_fts_recommended" in text or "sqlite fts" in lowered or "fts5" in lowered:
