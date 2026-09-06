@@ -1,0 +1,440 @@
+{
+  "counts": [
+    1000,
+    10000,
+    50000
+  ],
+  "decision": {
+    "architecture_change_required": false,
+    "evaluated_memory_count": 50000,
+    "normal_steady_state_assumed": false,
+    "peak_rss_reference_mib": 1024.0,
+    "reason": "50k active memories is retained as an extreme stress boundary, not a normal steady-state assumption. The normal retrieval path is Scope Map -> scope-constrained search -> read, while UPDATE/NO_CHANGE, todo retirement, bounded history, and compaction are expected to control active-memory growth. Stress misses are recorded for capacity visibility and do not justify adding another storage/search backend.",
+    "rebuild_p95_reference_ms": 120000.0,
+    "rebuild_reference_missed": false,
+    "rss_reference_missed": true,
+    "stress_reference_misses": {
+      "fulltext_search": 20002.997,
+      "scope_filtered_search": 18639.123,
+      "search_candidate_warm": 19553.817
+    },
+    "stress_reference_search_p95_ms": 2000.0,
+    "workload_classification": "stress_boundary"
+  },
+  "evidence_note": "Raw benchmark timings/resource measurements are preserved from the verified non-SQLite stress run. Only the architectural interpretation metadata was reframed: 50k is an extreme stress boundary, not normal steady state.",
+  "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+  "python_implementation": "CPython",
+  "python_version": "3.13.15",
+  "results": [
+    {
+      "disk": {
+        "history_bytes": 242582,
+        "index_bytes": 177821,
+        "knowledge_bytes": 1856705,
+        "state_bytes": 165,
+        "vault_bytes": 2279289
+      },
+      "generation_ms": 257.577,
+      "history_seed_count": 100,
+      "memory_count": 1000,
+      "metrics": {
+        "closed_todo_retirement": {
+          "max_ms": 843.429,
+          "median_ms": 835.599,
+          "p95_ms": 843.429,
+          "samples": 3
+        },
+        "compaction_snapshot": {
+          "max_ms": 370.681,
+          "median_ms": 356.001,
+          "p95_ms": 370.681,
+          "samples": 3
+        },
+        "create": {
+          "max_ms": 1218.47,
+          "median_ms": 1149.732,
+          "p95_ms": 1218.47,
+          "samples": 3
+        },
+        "exact_memory_id_lookup": {
+          "max_ms": 386.845,
+          "median_ms": 385.124,
+          "p95_ms": 386.845,
+          "samples": 3
+        },
+        "fulltext_search": {
+          "max_ms": 389.206,
+          "median_ms": 385.229,
+          "p95_ms": 389.206,
+          "samples": 3
+        },
+        "history_pruning": {
+          "max_ms": 578.825,
+          "median_ms": 572.614,
+          "p95_ms": 578.825,
+          "samples": 3
+        },
+        "history_write": {
+          "max_ms": 3.392,
+          "median_ms": 3.047,
+          "p95_ms": 3.392,
+          "samples": 3
+        },
+        "list_todos": {
+          "max_ms": 363.616,
+          "median_ms": 337.284,
+          "p95_ms": 363.616,
+          "samples": 3
+        },
+        "no_change": {
+          "max_ms": 1185.68,
+          "median_ms": 1109.159,
+          "p95_ms": 1185.68,
+          "samples": 3
+        },
+        "read": {
+          "max_ms": 338.413,
+          "median_ms": 337.3,
+          "p95_ms": 338.413,
+          "samples": 3
+        },
+        "rebuild_index": {
+          "max_ms": 398.467,
+          "median_ms": 390.421,
+          "p95_ms": 398.467,
+          "samples": 3
+        },
+        "scope_filtered_search": {
+          "max_ms": 370.537,
+          "median_ms": 369.218,
+          "p95_ms": 370.537,
+          "samples": 3
+        },
+        "search_candidate_process_cold": {
+          "max_ms": 388.067,
+          "median_ms": 388.067,
+          "p95_ms": 388.067,
+          "samples": 1
+        },
+        "search_candidate_warm": {
+          "max_ms": 388.011,
+          "median_ms": 386.328,
+          "p95_ms": 388.011,
+          "samples": 3
+        },
+        "update": {
+          "max_ms": 1132.795,
+          "median_ms": 1068.737,
+          "p95_ms": 1132.795,
+          "samples": 3
+        },
+        "vault_initialization": {
+          "max_ms": 0.799,
+          "median_ms": 0.667,
+          "p95_ms": 0.799,
+          "samples": 3
+        },
+        "vault_lock_hold_search": {
+          "max_ms": 381.196,
+          "median_ms": 381.196,
+          "p95_ms": 381.196,
+          "samples": 1
+        }
+      },
+      "peak_rss_mib": 50.871,
+      "sanity": {
+        "cold_search_status": "found",
+        "compaction_selected": 301,
+        "exact_status": "found",
+        "fulltext_status": "found",
+        "read_found": true,
+        "rebuild": {
+          "changed_sources": [],
+          "events": 0,
+          "history": 100,
+          "knowledge": 1000,
+          "native_segments": 0,
+          "native_sources": 0,
+          "native_unavailable": 0
+        },
+        "scope_status": "found",
+        "search_status": "found",
+        "todos_status": "found"
+      }
+    },
+    {
+      "disk": {
+        "history_bytes": 2011591,
+        "index_bytes": 1528887,
+        "knowledge_bytes": 18641071,
+        "state_bytes": 165,
+        "vault_bytes": 22183731
+      },
+      "generation_ms": 2652.103,
+      "history_seed_count": 1000,
+      "memory_count": 10000,
+      "metrics": {
+        "closed_todo_retirement": {
+          "max_ms": 7683.019,
+          "median_ms": 7271.686,
+          "p95_ms": 7683.019,
+          "samples": 3
+        },
+        "compaction_snapshot": {
+          "max_ms": 3808.937,
+          "median_ms": 3625.947,
+          "p95_ms": 3808.937,
+          "samples": 3
+        },
+        "create": {
+          "max_ms": 11013.296,
+          "median_ms": 10926.382,
+          "p95_ms": 11013.296,
+          "samples": 3
+        },
+        "exact_memory_id_lookup": {
+          "max_ms": 3934.726,
+          "median_ms": 3925.242,
+          "p95_ms": 3934.726,
+          "samples": 3
+        },
+        "fulltext_search": {
+          "max_ms": 3854.321,
+          "median_ms": 3726.453,
+          "p95_ms": 3854.321,
+          "samples": 3
+        },
+        "history_pruning": {
+          "max_ms": 5079.721,
+          "median_ms": 4214.574,
+          "p95_ms": 5079.721,
+          "samples": 3
+        },
+        "history_write": {
+          "max_ms": 40.393,
+          "median_ms": 14.652,
+          "p95_ms": 40.393,
+          "samples": 3
+        },
+        "list_todos": {
+          "max_ms": 3481.024,
+          "median_ms": 3480.108,
+          "p95_ms": 3481.024,
+          "samples": 3
+        },
+        "no_change": {
+          "max_ms": 11187.753,
+          "median_ms": 10976.892,
+          "p95_ms": 11187.753,
+          "samples": 3
+        },
+        "read": {
+          "max_ms": 3502.751,
+          "median_ms": 3419.434,
+          "p95_ms": 3502.751,
+          "samples": 3
+        },
+        "rebuild_index": {
+          "max_ms": 4157.842,
+          "median_ms": 4058.684,
+          "p95_ms": 4157.842,
+          "samples": 3
+        },
+        "scope_filtered_search": {
+          "max_ms": 3805.982,
+          "median_ms": 3643.267,
+          "p95_ms": 3805.982,
+          "samples": 3
+        },
+        "search_candidate_process_cold": {
+          "max_ms": 3809.702,
+          "median_ms": 3809.702,
+          "p95_ms": 3809.702,
+          "samples": 1
+        },
+        "search_candidate_warm": {
+          "max_ms": 3752.602,
+          "median_ms": 3700.78,
+          "p95_ms": 3752.602,
+          "samples": 3
+        },
+        "update": {
+          "max_ms": 11030.074,
+          "median_ms": 10950.698,
+          "p95_ms": 11030.074,
+          "samples": 3
+        },
+        "vault_initialization": {
+          "max_ms": 0.835,
+          "median_ms": 0.71,
+          "p95_ms": 0.835,
+          "samples": 3
+        },
+        "vault_lock_hold_search": {
+          "max_ms": 3721.875,
+          "median_ms": 3721.875,
+          "p95_ms": 3721.875,
+          "samples": 1
+        }
+      },
+      "peak_rss_mib": 259.891,
+      "sanity": {
+        "cold_search_status": "found",
+        "compaction_selected": 3001,
+        "exact_status": "found",
+        "fulltext_status": "found",
+        "read_found": true,
+        "rebuild": {
+          "changed_sources": [],
+          "events": 0,
+          "history": 1000,
+          "knowledge": 10000,
+          "native_segments": 0,
+          "native_sources": 0,
+          "native_unavailable": 0
+        },
+        "scope_status": "found",
+        "search_status": "found",
+        "todos_status": "found"
+      }
+    },
+    {
+      "disk": {
+        "history_bytes": 9905968,
+        "index_bytes": 7504887,
+        "knowledge_bytes": 93569159,
+        "state_bytes": 165,
+        "vault_bytes": 110982196
+      },
+      "generation_ms": 11367.554,
+      "history_seed_count": 5000,
+      "memory_count": 50000,
+      "metrics": {
+        "closed_todo_retirement": {
+          "max_ms": 37795.84,
+          "median_ms": 37710.833,
+          "p95_ms": 37795.84,
+          "samples": 3
+        },
+        "compaction_snapshot": {
+          "max_ms": 19619.114,
+          "median_ms": 19330.915,
+          "p95_ms": 19619.114,
+          "samples": 3
+        },
+        "create": {
+          "max_ms": 56745.539,
+          "median_ms": 56061.953,
+          "p95_ms": 56745.539,
+          "samples": 3
+        },
+        "exact_memory_id_lookup": {
+          "max_ms": 19834.327,
+          "median_ms": 19556.986,
+          "p95_ms": 19834.327,
+          "samples": 3
+        },
+        "fulltext_search": {
+          "max_ms": 20002.997,
+          "median_ms": 19855.403,
+          "p95_ms": 20002.997,
+          "samples": 3
+        },
+        "history_pruning": {
+          "max_ms": 21843.263,
+          "median_ms": 21802.002,
+          "p95_ms": 21843.263,
+          "samples": 3
+        },
+        "history_write": {
+          "max_ms": 70.687,
+          "median_ms": 5.971,
+          "p95_ms": 70.687,
+          "samples": 3
+        },
+        "list_todos": {
+          "max_ms": 18328.362,
+          "median_ms": 18160.793,
+          "p95_ms": 18328.362,
+          "samples": 3
+        },
+        "no_change": {
+          "max_ms": 56323.055,
+          "median_ms": 55934.604,
+          "p95_ms": 56323.055,
+          "samples": 3
+        },
+        "read": {
+          "max_ms": 18197.055,
+          "median_ms": 17648.84,
+          "p95_ms": 18197.055,
+          "samples": 3
+        },
+        "rebuild_index": {
+          "max_ms": 20560.472,
+          "median_ms": 20435.382,
+          "p95_ms": 20560.472,
+          "samples": 2
+        },
+        "scope_filtered_search": {
+          "max_ms": 18639.123,
+          "median_ms": 18576.396,
+          "p95_ms": 18639.123,
+          "samples": 3
+        },
+        "search_candidate_process_cold": {
+          "max_ms": 19243.749,
+          "median_ms": 19243.749,
+          "p95_ms": 19243.749,
+          "samples": 1
+        },
+        "search_candidate_warm": {
+          "max_ms": 19553.817,
+          "median_ms": 19148.126,
+          "p95_ms": 19553.817,
+          "samples": 3
+        },
+        "update": {
+          "max_ms": 56715.012,
+          "median_ms": 55893.789,
+          "p95_ms": 56715.012,
+          "samples": 3
+        },
+        "vault_initialization": {
+          "max_ms": 0.759,
+          "median_ms": 0.6,
+          "p95_ms": 0.759,
+          "samples": 3
+        },
+        "vault_lock_hold_search": {
+          "max_ms": 19650.941,
+          "median_ms": 19650.941,
+          "p95_ms": 19650.941,
+          "samples": 1
+        }
+      },
+      "peak_rss_mib": 1186.762,
+      "sanity": {
+        "cold_search_status": "found",
+        "compaction_selected": 15001,
+        "exact_status": "found",
+        "fulltext_status": "found",
+        "read_found": true,
+        "rebuild": {
+          "changed_sources": [],
+          "events": 0,
+          "history": 5000,
+          "knowledge": 50000,
+          "native_segments": 0,
+          "native_sources": 0,
+          "native_unavailable": 0
+        },
+        "scope_status": "found",
+        "search_status": "found",
+        "todos_status": "found"
+      }
+    }
+  ],
+  "run_utc": "2026-09-06T03:49:07Z",
+  "schema_version": 2
+}
