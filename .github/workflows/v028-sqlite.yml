@@ -1,4 +1,4 @@
-name: v0.2.28 SQLite derived-index acceptance
+name: v0.2.28 SQLite final acceptance
 
 on:
   push:
@@ -21,51 +21,106 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Apply SQLite derived-index implementation
+
+      - name: Preserve pre-SQLite benchmark evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin work/v0.2.28-maintenance
+          mkdir -p benchmarks/results
+          git show origin/work/v0.2.28-maintenance:benchmarks/results/v0.2.28-linux.json \
+            > benchmarks/results/v0.2.28-pre-sqlite-linux.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('benchmarks/results/v0.2.28-pre-sqlite-linux.json').read_text(encoding='utf-8'))
+          decision = payload['decision']
+          if decision.get('evaluated_memory_count') != 50000 or decision.get('sqlite_fts_recommended') is not True:
+              raise SystemExit('pre-SQLite benchmark no longer proves the acceleration requirement')
+          print(json.dumps(decision, sort_keys=True))
+          PY
+
+      - name: Apply final SQLite derived-index implementation
         run: |
           python scripts/apply_v028_sqlite_index.py
           python scripts/fix_v028_sqlite_index.py
+          python scripts/optimize_v028_sqlite_rebuild.py
+          python scripts/optimize_v028_sqlite_candidates.py
+          python scripts/update_v028_benchmark_report.py
+
       - name: Compile and install
         run: |
           python -m compileall -q src tests scripts/benchmark_long_run.py
           python -m pip install -e .
+
       - name: Run complete regression before scale benchmark
         run: python -m unittest discover -s tests -v
+
       - name: Run 1k 10k 50k benchmark
         run: |
           python scripts/benchmark_long_run.py \
             --counts 1000 10000 50000 \
             --json-out benchmarks/results/v0.2.28-linux.json \
             --markdown-out docs/performance.md
-      - name: Require 50k search target to pass
+
+      - name: Enforce v0.2.28 performance gates
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
           payload = json.loads(Path('benchmarks/results/v0.2.28-linux.json').read_text(encoding='utf-8'))
           decision = payload['decision']
-          if decision['sqlite_fts_recommended']:
-              raise SystemExit(f"50k search target still missed: {decision['search_targets_missed']}")
           largest = payload['results'][-1]
-          if largest['memory_count'] != 50000:
+          if largest.get('memory_count') != 50000:
               raise SystemExit('50k result missing')
-          print(json.dumps({
-              'search_candidate_warm_p95_ms': largest['metrics']['search_candidate_warm']['p95_ms'],
-              'fulltext_search_p95_ms': largest['metrics']['fulltext_search']['p95_ms'],
-              'scope_filtered_search_p95_ms': largest['metrics']['scope_filtered_search']['p95_ms'],
-              'rebuild_index_p95_ms': largest['metrics']['rebuild_index']['p95_ms'],
-              'peak_rss_mib': largest['peak_rss_mib'],
-          }, sort_keys=True))
+          if decision.get('search_backend') != 'sqlite_fts5' or decision.get('sqlite_fts_active') is not True:
+              raise SystemExit('final benchmark did not exercise the SQLite FTS derived index')
+          if decision.get('sqlite_fts_recommended') is not False:
+              raise SystemExit(f"50k search target still missed: {decision.get('search_targets_missed')}")
+          metrics = largest['metrics']
+          search_names = ('search_candidate_warm', 'fulltext_search', 'scope_filtered_search')
+          missed = {name: metrics[name]['p95_ms'] for name in search_names if metrics[name]['p95_ms'] > 2000.0}
+          if missed:
+              raise SystemExit(f'50k 2s search gate missed: {missed}')
+          rebuild = metrics['rebuild_index']['p95_ms']
+          if rebuild > 120000.0:
+              raise SystemExit(f'50k rebuild guardrail missed: {rebuild} ms')
+          before = json.loads(Path('benchmarks/results/v0.2.28-pre-sqlite-linux.json').read_text(encoding='utf-8'))
+          before50 = before['results'][-1]['metrics']
+          summary = {
+              'pre_sqlite_search_candidate_p95_ms': before50['search_candidate_warm']['p95_ms'],
+              'pre_sqlite_fulltext_p95_ms': before50['fulltext_search']['p95_ms'],
+              'pre_sqlite_scope_p95_ms': before50['scope_filtered_search']['p95_ms'],
+              'search_candidate_warm_p95_ms': metrics['search_candidate_warm']['p95_ms'],
+              'fulltext_search_p95_ms': metrics['fulltext_search']['p95_ms'],
+              'scope_filtered_search_p95_ms': metrics['scope_filtered_search']['p95_ms'],
+              'rebuild_index_p95_ms': rebuild,
+              'peak_rss_mib': largest.get('peak_rss_mib'),
+          }
+          print(json.dumps(summary, sort_keys=True))
           PY
-      - name: Commit implementation and benchmark evidence
+
+      - name: Commit clean implementation and benchmark evidence
         shell: bash
         run: |
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+
+          git rm .github/workflows/v028-sqlite.yml .github/workflows/v028-finalize.yml
+          git rm scripts/apply_v028_sqlite_index.py scripts/fix_v028_sqlite_index.py \
+            scripts/optimize_v028_sqlite_rebuild.py scripts/optimize_v028_sqlite_candidates.py \
+            scripts/update_v028_benchmark_report.py
+
           git add src/memleaf/sqlite_index.py src/memleaf/vault.py src/memleaf/service.py \
-            tests/test_sqlite_index_v028.py docs/config-migrations.md \
+            tests/test_sqlite_index_v028.py docs/config-migrations.md scripts/benchmark_long_run.py \
+            benchmarks/results/v0.2.28-pre-sqlite-linux.json \
             benchmarks/results/v0.2.28-linux.json docs/performance.md
+
           git diff --cached --check
-          git commit -m 'perf: add rebuildable SQLite FTS derived index for v0.2.28 [v028-sqlite]'
+          if git ls-files | grep -E '(^|/)(v028-|apply_v028|fix_v028|optimize_v028|update_v028)' ; then
+            echo 'temporary v0.2.28 maintenance scaffolding remains tracked' >&2
+            exit 1
+          fi
+          git commit -m 'perf: add rebuildable SQLite FTS derived index for v0.2.28'
           git push origin HEAD:work/v0.2.28-release
