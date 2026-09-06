@@ -22,7 +22,9 @@ jobs:
         with:
           python-version: '3.13'
       - name: Apply structural maintenance patch
-        run: python scripts/apply_v028_phase1.py
+        run: |
+          python scripts/apply_v028_phase1.py
+          python scripts/fix_v028_phase1.py
       - name: Compile source and tests
         run: python -m compileall -q src tests
       - name: Run state/config and core regression tests
