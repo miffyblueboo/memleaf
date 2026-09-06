@@ -106,7 +106,7 @@ class ModelDecisionContracts(unittest.TestCase):
         return {str(p): p.read_bytes() for area in ('knowledge', 'history') for p in self.core.vault.list_markdown(area)}
 
     def ledger(self):
-        p = json.loads(self.core.vault.processed_index_path.read_text(encoding='utf-8'))
+        p = json.loads(self.core.vault.processed_state_path.read_text(encoding='utf-8'))
         return p['sessions']['hermes/s']['processed_turns'][0]
 
     def setup_pair(self):
@@ -240,7 +240,7 @@ class ModelDecisionContracts(unittest.TestCase):
     def test_forget_cancels_every_member_of_frozen_group_and_preserves_sibling(self):
         extra = self.crashed_group(sibling=True)
         self.assertTrue(self.core.forget_memory('config'))
-        raw = self.core.vault.processed_index_path.read_text(encoding='utf-8')
+        raw = self.core.vault.processed_state_path.read_text(encoding='utf-8')
         self.assertNotIn(FIRST, raw)
         self.assertNotIn(SECOND, raw)
         self.assertNotIn(COMBINED, raw)
@@ -320,7 +320,7 @@ class ModelDecisionContracts(unittest.TestCase):
         from memleaf.turn_plan import FrozenTurn
         from memleaf.inbox import parse_inbox
         import hashlib
-        processed=json.loads(self.core.vault.processed_index_path.read_text(encoding='utf-8'))
+        processed=json.loads(self.core.vault.processed_state_path.read_text(encoding='utf-8'))
         stored=next(iter(processed['pending_turn_plans'].values()))
         turns=parse_inbox(self.core.vault.session_path('hermes','s'))
         turn=next(t for t in turns if t.complete)

@@ -221,7 +221,7 @@ class StageC2InitTests(unittest.TestCase):
 
         first = adapter.configure(adapter.detect(), self.vault)
         self.assertEqual("pending_user_review", first.hook_activation_status)
-        self.assertTrue(update_agents_index(vault.agents_index_path, {"codex": first.to_dict()}))
+        self.assertTrue(update_agents_index(vault.agents_state_path, {"codex": first.to_dict()}))
         self.assertTrue(mark_hook_active(self.vault, "codex"))
 
         active = adapter.configure(adapter.detect(), self.vault)
@@ -230,9 +230,9 @@ class StageC2InitTests(unittest.TestCase):
         self.assertFalse(active.user_action_required)
         self.assertIsNone(active.user_action)
 
-        index = json.loads(vault.agents_index_path.read_text(encoding="utf-8"))
+        index = json.loads(vault.agents_state_path.read_text(encoding="utf-8"))
         index["agents"]["codex"]["hook_definition_hash"] = "changed-definition"
-        vault.agents_index_path.write_text(json.dumps(index), encoding="utf-8")
+        vault.agents_state_path.write_text(json.dumps(index), encoding="utf-8")
         pending = adapter.configure(adapter.detect(), self.vault)
         self.assertEqual("pending_user_review", pending.hook_activation_status)
         self.assertTrue(pending.user_action_required)
@@ -542,7 +542,7 @@ class StageC2InitTests(unittest.TestCase):
         self.assertEqual("pending_restart", first.hook_activation_status)
         self.assertTrue(first.user_action_required)
         self.assertIn("quit and reopen", first.user_action)
-        self.assertTrue(update_agents_index(vault.agents_index_path, {"antigravity": first.to_dict()}))
+        self.assertTrue(update_agents_index(vault.agents_state_path, {"antigravity": first.to_dict()}))
         self.assertTrue(mark_hook_active(self.vault, "antigravity"))
 
         active = adapter.configure(adapter.detect(), self.vault)
@@ -550,9 +550,9 @@ class StageC2InitTests(unittest.TestCase):
         self.assertFalse(active.user_action_required)
         self.assertIsNone(active.user_action)
 
-        index = json.loads(vault.agents_index_path.read_text(encoding="utf-8"))
+        index = json.loads(vault.agents_state_path.read_text(encoding="utf-8"))
         index["agents"]["antigravity"]["hook_definition_hash"] = "changed-definition"
-        vault.agents_index_path.write_text(json.dumps(index), encoding="utf-8")
+        vault.agents_state_path.write_text(json.dumps(index), encoding="utf-8")
         pending = adapter.configure(adapter.detect(), self.vault)
         self.assertEqual("pending_restart", pending.hook_activation_status)
         self.assertTrue(pending.user_action_required)
@@ -583,8 +583,8 @@ class StageC2InitTests(unittest.TestCase):
 
     def test_vault_fresh_agents_index(self):
         vault = Vault.initialize(self.vault)
-        self.assertTrue(vault.agents_index_path.exists())
-        self.assertEqual({"version": 1, "agents": {}}, json.loads(vault.agents_index_path.read_text(encoding="utf-8")))
+        self.assertTrue(vault.agents_state_path.exists())
+        self.assertEqual({"version": 1, "agents": {}}, json.loads(vault.agents_state_path.read_text(encoding="utf-8")))
 
     def run_cli(self, *arguments, home: Path | None = None):
         environment = os.environ.copy()
@@ -625,7 +625,7 @@ class StageC2InitTests(unittest.TestCase):
         self.assertEqual("failure", output["model"]["status"])
         self.assertTrue(self.vault.exists())
         self.assertTrue(output["agents_index_written"])
-        index = json.loads((self.vault / "_index" / "agents.json").read_text(encoding="utf-8"))
+        index = json.loads((self.vault / "_state" / "agents.json").read_text(encoding="utf-8"))
         self.assertEqual(output["agents"], index["agents"])
 
     def test_cli_subprocess_configures_only_hermes_with_codex_present(self):
@@ -683,7 +683,7 @@ class StageC2InitTests(unittest.TestCase):
         )
         antigravity_before = antigravity.read_bytes()
         vault = Vault.initialize(self.vault)
-        vault.agents_index_path.write_text(
+        vault.agents_state_path.write_text(
             json.dumps(
                 {
                     "version": 1,
@@ -719,7 +719,7 @@ class StageC2InitTests(unittest.TestCase):
         self.assertIn("no detection or configuration performed", output["agents"]["antigravity"]["reason"])
         self.assertEqual(antigravity_before, antigravity.read_bytes())
         self.assertFalse((self.home / ".gemini" / "config" / "hooks.json").exists())
-        indexed = json.loads((self.vault / "_index" / "agents.json").read_text(encoding="utf-8"))
+        indexed = json.loads((self.vault / "_state" / "agents.json").read_text(encoding="utf-8"))
         self.assertEqual("disabled", indexed["agents"]["antigravity"]["status"])
         self.assertEqual("disabled", indexed["agents"]["antigravity"]["hook_activation_status"])
         self.assertEqual("", indexed["agents"]["antigravity"]["hook_definition_hash"])

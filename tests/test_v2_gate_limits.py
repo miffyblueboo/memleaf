@@ -50,7 +50,7 @@ class RetrievalGateV2LimitTests(unittest.TestCase):
                 begin_turn(self.vault, "codex", "session", f"turn-{index:03}")
                 for index in range(MAX_LEDGER_ENTRIES + 1)
             ]
-            ledger_path = self.vault.index_path / "retrieval_gate.json"
+            ledger_path = self.vault.retrieval_gate_state_path
             ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
             entries = ledger["entries"]
 

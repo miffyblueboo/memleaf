@@ -100,7 +100,7 @@ class ModelOwnedFields(unittest.TestCase):
         self.assertEqual(result["deferred_candidates"], 1)
         self.assertEqual([c["purpose"] for c in backend.calls], ["gate"] * 3 + ["summarize"])
         self.assertEqual(self.core.vault.list_markdown("history"), [])
-        state = json.loads(self.core.vault.processed_index_path.read_text(encoding="utf-8"))
+        state = json.loads(self.core.vault.processed_state_path.read_text(encoding="utf-8"))
         row = state["sessions"]["hermes/s"]["processed_turns"][0]["deferred_candidates"][0]
         self.assertEqual(row["candidate_id"], "c")
         self.assertEqual(row["scopes"], ["project:alpha"])

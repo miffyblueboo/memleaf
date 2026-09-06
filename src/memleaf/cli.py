@@ -398,12 +398,12 @@ def _init(args: argparse.Namespace) -> dict:
     agents = {name: result.to_dict() for name, result in results.items()}
     agents_index_written = False
     if not args.dry_run:
-        agents_index_written = update_agents_index(vault.agents_index_path, agents)
+        agents_index_written = update_agents_index(vault.agents_state_path, agents)
 
     return {
         "version": 1,
         "vault": str(vault.root),
-        "agents_index_path": str(vault.agents_index_path),
+        "agents_index_path": str(vault.agents_state_path),
         "agents_index_written": agents_index_written,
         "dry_run": bool(args.dry_run),
         "agents": agents,

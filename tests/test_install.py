@@ -262,7 +262,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertFalse((self.home / ".hermes" / "memleaf.json").exists())
         self.assertIn("Hermes executable not found", result.stderr)
         agents = json.loads(
-            (self.home / ".memleaf" / "_index" / "agents.json").read_text(encoding="utf-8")
+            (self.home / ".memleaf" / "_state" / "agents.json").read_text(encoding="utf-8")
         )
         self.assertNotEqual("active", agents["agents"]["hermes"].get("provider_status"))
         self.assertNotEqual("active", agents["agents"]["hermes"].get("status"))
@@ -303,7 +303,7 @@ class InstallScriptTests(unittest.TestCase):
 
     def test_hermes_activation_status_config_and_repeat_are_idempotent(self) -> None:
         self.configure_existing_model()
-        index_path = self.home / ".memleaf" / "_index" / "agents.json"
+        index_path = self.home / ".memleaf" / "_state" / "agents.json"
         index_path.parent.mkdir(parents=True)
         index_path.write_text(
             json.dumps(
@@ -340,7 +340,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(model_config["request_timeout"], 120)
         self.assertEqual(stat.S_IMODE((self.home / ".memleaf" / "config.yaml").stat().st_mode), 0o600)
         self.assertNotIn("install-secret", first.stdout + first.stderr)
-        agents_path = self.home / ".memleaf" / "_index" / "agents.json"
+        agents_path = self.home / ".memleaf" / "_state" / "agents.json"
         first_agents = json.loads(agents_path.read_text(encoding="utf-8"))
         hermes_agent = first_agents["agents"]["hermes"]
         self.assertEqual("configured", hermes_agent["status"])
@@ -395,7 +395,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertNotIn("provider_status", result.stdout + result.stderr)
         agents = json.loads(
-            (self.home / ".memleaf" / "_index" / "agents.json").read_text(encoding="utf-8")
+            (self.home / ".memleaf" / "_state" / "agents.json").read_text(encoding="utf-8")
         )
         hermes_agent = agents["agents"]["hermes"]
         self.assertNotEqual("active", hermes_agent.get("provider_status"))
@@ -407,7 +407,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertNotIn("mcp_status", result.stdout + result.stderr)
         agents = json.loads(
-            (self.home / ".memleaf" / "_index" / "agents.json").read_text(encoding="utf-8")
+            (self.home / ".memleaf" / "_state" / "agents.json").read_text(encoding="utf-8")
         )
         hermes_agent = agents["agents"]["hermes"]
         self.assertEqual("configured", hermes_agent["status"])

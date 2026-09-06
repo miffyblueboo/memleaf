@@ -160,7 +160,7 @@ class GeneralEvidenceAdmissionTests(unittest.TestCase):
         self.assertEqual(result['memories_written'],0)
         self.assertGreater(result['unresolved_evidence_count'],0)
         self.assertEqual(result['coverage_status'], 'partial')
-        ledger=json.loads(self.core.vault.processed_index_path.read_text())
+        ledger=json.loads(self.core.vault.processed_state_path.read_text())
         entry=ledger['sessions']['hermes/session']['processed_turns'][0]
         self.assertIsNone(entry['eligible_cleanup_at'])
         self.assertTrue(entry['evidence_dispositions'])
@@ -171,7 +171,7 @@ class GeneralEvidenceAdmissionTests(unittest.TestCase):
             return [dict(unit_id=u['unit_id'],decision='NO_CHANGE',reason='no_future_value' if u['origin']=='user_assertion' else 'assistant_restatement') for u in units]
         result=self.core.process(model=Backend([],coverage=coverage))
         self.assertEqual(result['deferred_candidates'],0)
-        ledger=json.loads(self.core.vault.processed_index_path.read_text())
+        ledger=json.loads(self.core.vault.processed_state_path.read_text())
         self.assertIsNotNone(ledger['sessions']['hermes/session']['processed_turns'][0]['eligible_cleanup_at'])
 
     def test_coverage_rejects_forged_and_missing_ids(self):
@@ -219,7 +219,7 @@ class GeneralEvidenceAdmissionTests(unittest.TestCase):
         duplicate=dict(c);duplicate.pop('update_memory_id');duplicate.update(
             duplicate=True,worth=False,duplicate_memory_id=old.memory_id)
         self.core.process(model=Backend([duplicate]))
-        ledger=json.loads(self.core.vault.processed_index_path.read_text())
+        ledger=json.loads(self.core.vault.processed_state_path.read_text())
         entry=ledger['sessions']['hermes/session']['processed_turns'][0]
         record=next(row for row in entry['candidate_dispositions'] if row['candidate_id']=='maintainer')
         self.assertEqual(record['disposition'],'UPDATE')

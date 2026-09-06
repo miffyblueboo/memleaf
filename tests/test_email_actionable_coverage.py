@@ -222,7 +222,7 @@ class EmailActionableCoverageTests(unittest.TestCase):
         return event_key(user_id), event_key(assistant_id)
 
     def processed_entry(self, session: str) -> dict[str, object]:
-        value = json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
+        value = json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))
         return value["sessions"][f"hermes/{session}"]["processed_turns"][0]
 
     def active_memories(self):

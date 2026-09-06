@@ -67,9 +67,9 @@ class SharedChangeContracts(unittest.TestCase):
 
     def test_capture_preserves_pending_frozen_plan(self):
         self.crashed_create()
-        before=json.loads(self.core.vault.processed_index_path.read_text(encoding="utf-8"))
+        before=json.loads(self.core.vault.processed_state_path.read_text(encoding="utf-8"))
         self.core.capture('codex','other','t2','user','Unrelated new message.')
-        after=json.loads(self.core.vault.processed_index_path.read_text(encoding="utf-8"))
+        after=json.loads(self.core.vault.processed_state_path.read_text(encoding="utf-8"))
         self.assertEqual(after.get('pending_turn_plans'),before['pending_turn_plans'])
         self.assertEqual(after.get('pending_operations'),before['pending_operations'])
         self.core.process(source='hermes',session_id='s',model=NoModel())
@@ -86,7 +86,7 @@ class SharedChangeContracts(unittest.TestCase):
         forgotten=next(m for m in memories if 'PostgreSQL' in m.body)
         kept=next(m for m in memories if 'JDK' in m.body)
         self.core.forget_memory(forgotten.memory_id)
-        state=self.core.vault.processed_index_path.read_text(encoding="utf-8")
+        state=self.core.vault.processed_state_path.read_text(encoding="utf-8")
         self.assertNotIn('PostgreSQL',state)
         self.core.process(source='hermes',session_id='s',model=NoModel())
         self.assertIsNone(self.core.read(forgotten.memory_id))

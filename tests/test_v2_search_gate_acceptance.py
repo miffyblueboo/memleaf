@@ -119,7 +119,7 @@ class V2SearchGateAcceptanceTest(unittest.TestCase):
             observed.append((turn_id, query, retrieval_id))
 
         ledger = json.loads(
-            (self.service.vault.index_path / "retrieval_gate.json").read_text(encoding="utf-8")
+            (self.service.vault.retrieval_gate_state_path).read_text(encoding="utf-8")
         )
         for _, _, retrieval_id in observed:
             entry = ledger["entries"][retrieval_id]

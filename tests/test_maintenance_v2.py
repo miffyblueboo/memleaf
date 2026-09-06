@@ -113,7 +113,7 @@ class MaintenanceV2Tests(unittest.TestCase):
         return event_key(user_event), event_key(assistant_event)
 
     def processed(self):
-        return json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
+        return json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))
 
     @staticmethod
     def related_payload(prompt):
@@ -862,7 +862,7 @@ class MaintenanceV2Tests(unittest.TestCase):
         calls = {"processed": 0}
 
         def fail_final_processed(path, value):
-            if path == self.service.vault.processed_index_path:
+            if path == self.service.vault.processed_state_path:
                 calls["processed"] += 1
                 if value.get("sessions", {}).get("hermes/forward-recovery", {}).get("watermark", 0) >= 2 and value["sessions"]["hermes/forward-recovery"].get("processing", {}).get("status") == "idle":
                     raise OSError("injected final processed write failure")

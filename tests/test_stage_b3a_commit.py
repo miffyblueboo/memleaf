@@ -342,7 +342,7 @@ class StageB3ACommitTest(unittest.TestCase):
 
         self.assertEqual(result["processed_turns"], 1)
         self.assertEqual(result["compaction"]["status"], "invalid_output")
-        processed = json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
+        processed = json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))
         self.assertEqual(processed["sessions"]["codex/s"]["watermark"], 1)
         self.assertEqual(len(self.service._read_memories_unlocked("knowledge")), 1)
 

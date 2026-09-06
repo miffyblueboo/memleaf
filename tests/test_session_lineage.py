@@ -86,7 +86,7 @@ class SessionLineageTests(unittest.TestCase):
         return event_key(user_event), event_key(assistant_event)
 
     def processed(self):
-        return json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
+        return json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))
 
     def _real_hermes_provider(self):
         hermes_home = self.root / "hermes"

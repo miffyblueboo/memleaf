@@ -102,7 +102,7 @@ class RetentionManager:
         return memory.memory_id.casefold()
 
     def _retire_closed_todos_unlocked(self, now: datetime, closed_days: int) -> int:
-        processed = _read_processed(self.service.vault.processed_index_path)
+        processed = _read_processed(self.service.vault.processed_state_path)
         pending = {
             "pending_operations": processed.get("pending_operations", {}),
             "pending_turn_plans": processed.get("pending_turn_plans", {}),
@@ -171,7 +171,7 @@ class RetentionManager:
             raise RetentionError("invalid retention clock")
         closed_days, policy, retention_days, max_versions = self._settings()
         with self.service._mutation_boundary():
-            processed = _read_processed(self.service.vault.processed_index_path)
+            processed = _read_processed(self.service.vault.processed_state_path)
             pending = {
                 "pending_operations": processed.get("pending_operations", {}),
                 "pending_turn_plans": processed.get("pending_turn_plans", {}),

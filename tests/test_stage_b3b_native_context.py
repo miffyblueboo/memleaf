@@ -249,7 +249,7 @@ class StageB3BNativeContextTest(unittest.TestCase):
         with patch.object(NativeIndexer, "apply_shadow_unlocked", side_effect=NativeIndexError("injected")):
             with self.assertRaises(NativeIndexError):
                 self.service.process(model=backend)
-        processed = json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
+        processed = json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))
         state = processed["sessions"]["codex/s"]
         self.assertEqual(state["processing"]["status"], "failed")
         self.assertNotIn("processed_turns", state)
@@ -260,7 +260,7 @@ class StageB3BNativeContextTest(unittest.TestCase):
         self.assertEqual(result["memories_written"], 0)
         self.assertEqual(len(self.service._read_memories_unlocked("knowledge")), 1)
         self.assertEqual(len(self.service._read_memories_unlocked("history")), 0)
-        processed = json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
+        processed = json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))
         self.assertEqual(processed["sessions"]["codex/s"]["watermark"], 1)
         active_memory_id = self.service._read_memories_unlocked("knowledge")[0].memory.memory_id
         self.assertEqual(

@@ -230,7 +230,7 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
         self.assertEqual(result["deferred_candidates"], 1)
         self.assertEqual(self.active(), [])
         self.assertTrue(self.inbox_exists("first-response-aggregate"))
-        state = json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
+        state = json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))
         row = state["sessions"]["hermes/first-response-aggregate"]["processed_turns"][0]["deferred_candidates"][0]
         self.assertEqual(row["candidate_id"], aggregate["candidate_id"])
         self.assertEqual(row["scopes"], ["unscoped"])
@@ -474,7 +474,7 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
                 )
                 self.assertEqual(service.vault.list_markdown("history"), [])
                 processed = json.loads(
-                    service.vault.processed_index_path.read_text(encoding="utf-8")
+                    service.vault.processed_state_path.read_text(encoding="utf-8")
                 )
                 entry = processed["sessions"][
                     f"hermes/authoritative-{scope_source}"
@@ -615,7 +615,7 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
         self.assertEqual(self.service.read(second_plan.memory_id).body, second_plan.body)
         self.assertEqual(self.service.vault.list_markdown("history"), [])
         processed = json.loads(
-            self.service.vault.processed_index_path.read_text(encoding="utf-8")
+            self.service.vault.processed_state_path.read_text(encoding="utf-8")
         )
         entry = processed["sessions"]["hermes/detach-ambiguous-plans"]["processed_turns"][0]
         self.assertEqual(entry["deferred_candidates"][0]["reason"], "update_target_type_mismatch")
@@ -831,7 +831,7 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
         self.assertEqual(self.service.read(old.memory_id).body, old.body)
         self.assertEqual(self.service.vault.list_markdown("history"), [])
         self.assertTrue(self.inbox_exists("same-use-type-conflict"))
-        processed = json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
+        processed = json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))
         entry = processed["sessions"]["hermes/same-use-type-conflict"]["processed_turns"][0]
         self.assertEqual(entry["deferred_candidates"][0]["reason"], "update_target_type_mismatch")
 

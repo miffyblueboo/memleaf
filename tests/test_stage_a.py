@@ -31,7 +31,7 @@ class StageATest(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_vault_initialization_and_restricted_yaml_frontmatter(self):
-        for name in ("inbox", "knowledge", "history", "_index"):
+        for name in ("inbox", "knowledge", "history", "_index", "_state"):
             self.assertTrue((self.vault_path / name).is_dir())
         self.assertFalse((self.vault_path / "logs").exists())
         self.assertTrue((self.vault_path / "config.yaml").is_file())
@@ -40,9 +40,9 @@ class StageATest(unittest.TestCase):
         self.assertEqual(config["process"]["memory_compact_threshold_tokens"], 100000)
         self.assertEqual(config["process"]["memory_compact_candidate_ratio"], 0.30)
         self.assertTrue((self.vault_path / "_index" / "tags.json").is_file())
-        self.assertTrue((self.vault_path / "_index" / "processed.json").is_file())
+        self.assertTrue((self.vault_path / "_state" / "processed.json").is_file())
         self.assertEqual(json.loads((self.vault_path / "_index" / "tags.json").read_text())["tags"], {})
-        self.assertEqual(json.loads((self.vault_path / "_index" / "processed.json").read_text())["event_keys"], [])
+        self.assertEqual(json.loads((self.vault_path / "_state" / "processed.json").read_text())["event_keys"], [])
 
         metadata = {
             "title": "数据库决定",
@@ -117,7 +117,7 @@ class StageATest(unittest.TestCase):
             len(set(line for line in text.splitlines() if "<!-- memleaf:event-key:v1:" in line)),
             count,
         )
-        processed = json.loads((self.vault_path / "_index" / "processed.json").read_text())
+        processed = json.loads((self.vault_path / "_state" / "processed.json").read_text())
         self.assertEqual(len(processed["events"]), count)
 
     def test_markdown_source_of_truth_and_rebuildable_indexes(self):
@@ -347,7 +347,7 @@ class StageATest(unittest.TestCase):
         self.assertNotIn(raw_event_id, session_text)
         expected_key = hashlib.sha256(raw_event_id.encode("utf-8")).hexdigest()
         self.assertIn(expected_key, session_text)
-        processed_text = (self.vault_path / "_index" / "processed.json").read_text(encoding="utf-8")
+        processed_text = (self.vault_path / "_state" / "processed.json").read_text(encoding="utf-8")
         self.assertNotIn("top-secret-token", processed_text)
         self.assertIn(expected_key, processed_text)
 
@@ -404,7 +404,7 @@ class StageATest(unittest.TestCase):
 
     def test_vault_initialization_preserves_existing_indexes(self):
         tags_path = self.vault_path / "_index" / "tags.json"
-        processed_path = self.vault_path / "_index" / "processed.json"
+        processed_path = self.vault_path / "_state" / "processed.json"
         tags_value = {
             "version": 1,
             "tags": {"keep": ["m-keep"]},

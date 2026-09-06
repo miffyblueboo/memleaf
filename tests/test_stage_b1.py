@@ -101,7 +101,7 @@ class StageB1Test(unittest.TestCase):
 
     def test_rebuild_preserves_session_state_and_removes_stale_events(self):
         self.service.capture("codex", "s", "turn-1", "user", "hello", event_id="live")
-        processed_path = self.vault_path / "_index" / "processed.json"
+        processed_path = self.vault_path / "_state" / "processed.json"
         current = json.loads(processed_path.read_text(encoding="utf-8"))
         stale = "f" * 64
         current["events"][stale] = {"event_key": stale, "event_id": "should-not-survive"}
@@ -359,7 +359,7 @@ class StageB1Test(unittest.TestCase):
         self.assertEqual(result["memories_written"], 0)
         self.assertEqual(result["deferred_candidates"], 1)
         self.assertEqual(calls, ["gate", "summarize", "summarize", "summarize"])
-        processed = json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
+        processed = json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))
         state = processed["sessions"]["codex/relative-failure"]
         self.assertEqual(state.get("watermark", 0), 1)
         self.assertEqual(state["processing"]["status"], "idle")
@@ -499,7 +499,7 @@ class StageB1Test(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         self.assertEqual([kwargs["purpose"] for _, kwargs in calls], ["gate", "gate", "gate"])
         self.assertTrue(all("Correction:" in prompt for prompt, _ in calls[1:]))
-        state = json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))["sessions"][
+        state = json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))["sessions"][
             "codex/schema-retry"
         ]
         self.assertEqual(state["watermark"], 1)
@@ -533,7 +533,7 @@ class StageB1Test(unittest.TestCase):
         self.assertEqual(error.stage, "gate")
         self.assertEqual(error.validation_reason, "schema_violation")
         self.assertEqual(error.attempt_count, 3)
-        processed = json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
+        processed = json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))
         marker = processed["sessions"]["codex/schema-failure"]["processing"]
         self.assertEqual(marker["status"], "failed")
         self.assertTrue(
@@ -559,7 +559,7 @@ class StageB1Test(unittest.TestCase):
         self.assertEqual(len(calls), 3)
 
     def test_capture_keeps_processing_owned_session_fields(self):
-        processed_path = self.vault_path / "_index" / "processed.json"
+        processed_path = self.vault_path / "_state" / "processed.json"
         value = json.loads(processed_path.read_text(encoding="utf-8"))
         owned = {
             "watermark": 3,

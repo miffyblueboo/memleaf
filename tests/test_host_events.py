@@ -73,7 +73,7 @@ class HostEventTests(unittest.TestCase):
 
     def seed_hook_agent(self, agent: str, status: str, action: str) -> None:
         self.vault.ensure()
-        index = json.loads(self.vault.agents_index_path.read_text(encoding="utf-8"))
+        index = json.loads(self.vault.agents_state_path.read_text(encoding="utf-8"))
         index["custom"] = {"preserve": True}
         index["agents"][agent] = {
             "agent": agent,
@@ -84,10 +84,10 @@ class HostEventTests(unittest.TestCase):
             "host_specific": {"preserve": True},
         }
         index["agents"]["other"] = {"sentinel": True}
-        self.vault.agents_index_path.write_text(json.dumps(index), encoding="utf-8")
+        self.vault.agents_state_path.write_text(json.dumps(index), encoding="utf-8")
 
     def hook_agent(self, agent: str) -> dict:
-        index = json.loads(self.vault.agents_index_path.read_text(encoding="utf-8"))
+        index = json.loads(self.vault.agents_state_path.read_text(encoding="utf-8"))
         return index["agents"][agent]
 
     def antigravity_event(self, **extra: object) -> dict:

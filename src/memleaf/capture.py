@@ -29,11 +29,6 @@ def _timestamp() -> str:
 
 
 
-_MAIL_EVIDENCE_FIELDS = frozenset({"message_id", "subject", "sender", "domain"})
-_MAIL_DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$", re.IGNORECASE)
-_MAX_MAIL_EVIDENCE_ITEMS = 8
-_MAX_MAIL_EVIDENCE_TEXT = 320
-
 
 def _normalize_tool_evidence(value: Any) -> list[dict[str, str]]:
     from .provenance import normalize_tool_evidence
@@ -241,19 +236,19 @@ def capture_event(
         return CaptureResult(resolved_event_id, stored=False, duplicate=False, content=safe_content)
 
     with vault.lock():
-        processed = _read_processed(vault.processed_index_path)
+        processed = _read_processed(vault.processed_state_path)
         from .recording_policy import apply_control
         allowed, changed = apply_control(processed, source=source, session_id=session_id,
             turn_key=resolved_turn_key, event_key=resolved_event_key, role=role, content=content, record=record)
         if not allowed:
             if changed:
-                atomic_write_json(vault.processed_index_path, processed)
+                atomic_write_json(vault.processed_state_path, processed)
             return CaptureResult(resolved_event_id, stored=False, duplicate=False, suppressed=True)
         # Only permitted data reaches normalization or any persistence path.
         from .evidence_policy import retain_tool_evidence
         safe_tool_evidence = retain_tool_evidence(tool_evidence, vault.config())
         if changed:
-            atomic_write_json(vault.processed_index_path, processed)
+            atomic_write_json(vault.processed_state_path, processed)
         known_keys = _known_event_keys(vault, processed)
         if resolved_event_key in known_keys:
             path = vault.session_path(source, session_id)
@@ -328,7 +323,7 @@ def capture_event(
             new_state["processing"] = old_state["processing"]
         sessions[session_key] = new_state
         atomic_write_json(
-            vault.processed_index_path,
+            vault.processed_state_path,
             {
                 **processed,
                 "version": 1,

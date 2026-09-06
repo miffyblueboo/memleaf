@@ -2303,7 +2303,7 @@ class HermesProviderTests(unittest.TestCase):
         # the provider does not issue a second process/write fallback.
         self.assertEqual([name for name, _ in core.calls], ["capture", "capture", "process"])
         self.assertEqual(model.gate_calls, 2)
-        processed = json.loads(service.vault.processed_index_path.read_text(encoding="utf-8"))
+        processed = json.loads(service.vault.processed_state_path.read_text(encoding="utf-8"))
         state = processed["sessions"][f"hermes/{session_id}"]
         self.assertEqual(state["watermark"], 1)
         self.assertEqual(state["processing"]["status"], "idle")
@@ -2359,7 +2359,7 @@ class HermesProviderTests(unittest.TestCase):
         ):
             self.assertNotIn(secret, inbox_and_knowledge)
 
-        processed_path = service.vault.processed_index_path
+        processed_path = service.vault.processed_state_path
         processed = json.loads(processed_path.read_text(encoding="utf-8"))
         state = processed["sessions"][f"hermes/{session_id}"]
         self.assertEqual(state["watermark"], 1)

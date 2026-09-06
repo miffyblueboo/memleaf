@@ -132,7 +132,7 @@ class StageB2ATest(unittest.TestCase):
         return event_key(user_event), event_key(assistant_event) if assistant_event else None
 
     def processed(self, service):
-        return json.loads(service.vault.processed_index_path.read_text(encoding="utf-8"))
+        return json.loads(service.vault.processed_state_path.read_text(encoding="utf-8"))
 
     def knowledge(self, service):
         return service._read_memories_unlocked("knowledge")
@@ -2206,7 +2206,7 @@ class StageB2ATest(unittest.TestCase):
             user="visible user statement",
             assistant="visible assistant answer",
         )
-        processed_path = service.vault.processed_index_path
+        processed_path = service.vault.processed_state_path
         value = self.processed(service)
         value["sessions"]["codex/s"]["scope"] = "project:visible"
         value["sessions"]["codex/s"]["system_prompt"] = "PRIVATE_SESSION_STATE"
@@ -2793,7 +2793,7 @@ class StageB2ATest(unittest.TestCase):
             "token": "orphan",
             "started_at": "2000-01-01T00:00:00Z",
         }
-        service.vault.processed_index_path.write_text(json.dumps(value), encoding="utf-8")
+        service.vault.processed_state_path.write_text(json.dumps(value), encoding="utf-8")
         self.assertEqual(service.process()["processed_turns"], 1)
 
         live = self.processed(service)
@@ -2805,7 +2805,7 @@ class StageB2ATest(unittest.TestCase):
                 "started_at": "2026-08-23T23:40:00Z",
             }
         }
-        service.vault.processed_index_path.write_text(json.dumps(live), encoding="utf-8")
+        service.vault.processed_state_path.write_text(json.dumps(live), encoding="utf-8")
         with self.assertRaises(ProcessingError):
             service.remember("conflicting remember", source="codex", session_id="live", event_id="r")
         self.assertEqual(self.processed(service)["sessions"]["codex/live"]["processing"]["token"], "owned")
@@ -2821,7 +2821,7 @@ class StageB2ATest(unittest.TestCase):
             "owner_pid": 12345,
             "started_at": "2026-08-24T00:00:00Z",
         }
-        service.vault.processed_index_path.write_text(json.dumps(value), encoding="utf-8")
+        service.vault.processed_state_path.write_text(json.dumps(value), encoding="utf-8")
         with patch("memleaf.process_journal.ProcessJournal._owner_pid_status", return_value=False):
             self.assertEqual(service.process()["processed_turns"], 1)
 
@@ -2835,7 +2835,7 @@ class StageB2ATest(unittest.TestCase):
             "token": "legacy-live",
             "started_at": "2026-08-23T23:55:00Z",
         }
-        service.vault.processed_index_path.write_text(json.dumps(value), encoding="utf-8")
+        service.vault.processed_state_path.write_text(json.dumps(value), encoding="utf-8")
         self.assertEqual(service.process()["processed_turns"], 0)
         self.clock.value += timedelta(minutes=6)
         self.assertEqual(service.process()["processed_turns"], 1)

@@ -265,7 +265,7 @@ class GlobalTodoQueryNoWriteTests(unittest.TestCase):
             {"todo-xinyuan", "todo-zhongyin", "todo-jinyuan"},
         )
         self.assertEqual([call["purpose"] for call in backend.calls], ["gate"])
-        processed = json.loads(service.vault.processed_index_path.read_text(encoding="utf-8"))
+        processed = json.loads(service.vault.processed_state_path.read_text(encoding="utf-8"))
         entry = processed["sessions"]["hermes/session-b"]["processed_turns"][0]
         self.assertEqual(
             {

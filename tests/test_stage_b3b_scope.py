@@ -98,7 +98,7 @@ class StageB3BScopeTest(unittest.TestCase):
         return event_key(user_event), event_key(assistant_event)
 
     def processed(self):
-        return json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
+        return json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))
 
     def set_registry(self, scopes):
         config = self.service.vault.config()
@@ -243,7 +243,7 @@ class StageB3BScopeTest(unittest.TestCase):
         self.add_scoped_memories()
         processed = self.processed()
         processed["sessions"]["codex/s"] = {"scopes": ["project:beta"], "custom": "keep"}
-        self.service.vault.processed_index_path.write_text(json.dumps(processed), encoding="utf-8")
+        self.service.vault.processed_state_path.write_text(json.dumps(processed), encoding="utf-8")
 
         default_ids = {memory.memory_id for memory in self.service.context("topic")}
         query_ids = {memory.memory_id for memory in self.service.context("alpha topic", source="codex", session_id="s")}
@@ -323,7 +323,7 @@ class StageB3BScopeTest(unittest.TestCase):
             "processing": {"status": "processing", "token": "owned"},
             "custom": "preserve",
         }
-        self.service.vault.processed_index_path.write_text(json.dumps(processed), encoding="utf-8")
+        self.service.vault.processed_state_path.write_text(json.dumps(processed), encoding="utf-8")
         errors = []
 
         def invoke():

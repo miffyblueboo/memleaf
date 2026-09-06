@@ -135,13 +135,13 @@ class StageB3DScopeMaintenanceTest(unittest.TestCase):
         with fault(service):
             with self.assertRaises(Exception):
                 service.process(model=backend)
-        processed = json.loads(service.vault.processed_index_path.read_text(encoding="utf-8"))
+        processed = json.loads(service.vault.processed_state_path.read_text(encoding="utf-8"))
         state = processed["sessions"]["codex/s"]
         self.assertNotIn("watermark", state)
         self.assertEqual(state["processing"]["status"], "failed")
         self.assertIn("project:old", service.vault.config()["scopes"])
         service.process(model=backend)
-        final = json.loads(service.vault.processed_index_path.read_text(encoding="utf-8"))
+        final = json.loads(service.vault.processed_state_path.read_text(encoding="utf-8"))
         self.assertEqual(final["sessions"]["codex/s"]["watermark"], 1)
         self.assertNotIn("project:old", service.vault.config()["scopes"])
         self.assertEqual(len(service.vault.list_markdown("knowledge")), 1)
@@ -239,7 +239,7 @@ class StageB3DScopeMaintenanceTest(unittest.TestCase):
             self.service.process(model=backend)
 
         self.assertEqual(self.service.vault.list_markdown("knowledge"), [])
-        processed = json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
+        processed = json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))
         state = processed["sessions"]["codex/s"]
         self.assertNotIn("watermark", state)
         self.assertEqual(state["processing"]["status"], "failed")
@@ -326,7 +326,7 @@ class StageB3DScopeMaintenanceTest(unittest.TestCase):
         self.assertIn("project:new", registry["portfolio:platform"]["children"])
         self.assertEqual(self.service.read("old-active").scopes, ["project:new"])
         self.assertEqual(self.service.read("old-history", include_history=True).scopes, ["project:new"])
-        state = json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))["sessions"]["codex/s"]
+        state = json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))["sessions"]["codex/s"]
         self.assertEqual(state["scopes"], ["project:new"])
         self.assertEqual(len(self.service.vault.list_markdown("history")), 1)
         self.assertEqual(self.service.read(result["memory_ids"][0]).scopes, ["project:new"])
@@ -431,7 +431,7 @@ class StageB3DScopeMaintenanceTest(unittest.TestCase):
         backend = QueueBackend([invalid_batch, invalid_batch, invalid_batch])
         with self.assertRaises(ModelOutputError):
             self.service.process(model=backend)
-        state = json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))["sessions"]["codex/s"]
+        state = json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))["sessions"]["codex/s"]
         self.assertNotIn("watermark", state)
         self.assertEqual(len(self.service.vault.list_markdown("history")), 0)
 
@@ -546,7 +546,7 @@ class StageB3DScopeMaintenanceTest(unittest.TestCase):
         calls = {"processed": 0}
 
         def fail_final_processed(path, value):
-            if path == self.service.vault.processed_index_path:
+            if path == self.service.vault.processed_state_path:
                 calls["processed"] += 1
                 # Target the final watermark commit, not the earlier claim
                 # or newly added pre-write plan journal.
@@ -562,7 +562,7 @@ class StageB3DScopeMaintenanceTest(unittest.TestCase):
         self.assertNotIn("project:old", config_after_failure["scopes"])
         aliases = config_after_failure["scopes"]["project:new"]["aliases"]
         self.assertIn("project:old", aliases)
-        processed = json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
+        processed = json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))
         state = processed["sessions"]["codex/s"]
         self.assertNotIn("watermark", state)
         self.assertEqual(state["processing"]["status"], "failed")
@@ -575,7 +575,7 @@ class StageB3DScopeMaintenanceTest(unittest.TestCase):
         self.assertEqual(len(self.service.vault.list_markdown("knowledge")), 1)
         self.assertEqual(len(self.service.vault.list_markdown("history")), 0)
         self.assertEqual(len(self.service.vault.list_markdown("inbox")), 1)
-        processed = json.loads(self.service.vault.processed_index_path.read_text(encoding="utf-8"))
+        processed = json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))
         state = processed["sessions"]["codex/s"]
         self.assertEqual(state["watermark"], 1)
         self.assertEqual(state["processing"]["status"], "idle")

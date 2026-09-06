@@ -200,7 +200,7 @@ class V2MCPFlowTest(unittest.TestCase):
 
         def seen_calls(retrieval_id):
             ledger = json.loads(
-                (self.service.vault.index_path / "retrieval_gate.json").read_text(encoding="utf-8")
+                (self.service.vault.retrieval_gate_state_path).read_text(encoding="utf-8")
             )
             return ledger["entries"][retrieval_id]["seen_call_hashes"]
 
@@ -279,7 +279,7 @@ class V2MCPFlowTest(unittest.TestCase):
         self.assertEqual(state["status"], "NOT_SEARCHED")
         self.assertEqual(state["search_attempts"], 0)
         ledger = json.loads(
-            (self.service.vault.index_path / "retrieval_gate.json").read_text(encoding="utf-8")
+            (self.service.vault.retrieval_gate_state_path).read_text(encoding="utf-8")
         )
         self.assertEqual(ledger["entries"][retrieval_id]["seen_call_hashes"], [])
 

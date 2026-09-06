@@ -147,7 +147,7 @@ class RetrievalGateTests(unittest.TestCase):
 
     def test_expired_id_is_rejected_on_every_direct_operation(self) -> None:
         retrieval_id = begin_turn(self.vault, "codex", "session", "turn-1")
-        ledger_path = self.vault.index_path / "retrieval_gate.json"
+        ledger_path = self.vault.retrieval_gate_state_path
         ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
         ledger["entries"][retrieval_id]["expires_at"] = 0
         ledger_path.write_text(json.dumps(ledger), encoding="utf-8")

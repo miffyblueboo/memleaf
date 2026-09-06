@@ -81,7 +81,7 @@ class Processor:
         try:
             for snapshot in snapshots:
                 with self.service.vault.lock():
-                    processed = _read_processed(self.service.vault.processed_index_path)
+                    processed = _read_processed(self.service.vault.processed_state_path)
                     state = self.journal._state_for_snapshot_unlocked(snapshot, processed)
                 stored_plan = processed.get("pending_turn_plans", {}).get(turn_plan_key(snapshot.turn))
                 if stored_plan is not None:
@@ -204,7 +204,7 @@ class Processor:
         self.audit._deferred_by_turn = {}
         try:
             with self.service.vault.lock():
-                processed = _read_processed(self.service.vault.processed_index_path)
+                processed = _read_processed(self.service.vault.processed_state_path)
                 state = self.journal._state_for_snapshot_unlocked(snapshot, processed)
             stored = processed.get("pending_turn_plans", {}).get(turn_plan_key(turn))
             if stored is not None:

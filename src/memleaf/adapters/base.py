@@ -210,10 +210,10 @@ def hook_definition_fingerprint(definition: Mapping[str, Any]) -> str:
 
 
 def agent_index_path(vault: Path | str) -> Path:
-    """Return the agents index path without creating or changing the vault."""
+    """Return the host activation state path without creating or changing the vault."""
 
     root = vault if isinstance(vault, (str, os.PathLike)) else getattr(vault, "root", vault)
-    return Path(root).expanduser().resolve() / "_index" / "agents.json"
+    return Path(root).expanduser().resolve() / "_state" / "agents.json"
 
 
 def _read_agents_index(path: Path) -> dict[str, Any] | None:

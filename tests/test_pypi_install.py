@@ -60,7 +60,7 @@ class PyPIInstallTests(unittest.TestCase):
             )
             initialized = SimpleNamespace(
                 root=vault_path,
-                agents_index_path=vault_path / "_index" / "agents.json",
+                agents_index_path=vault_path / "_state" / "agents.json",
             )
             model = {"status": "configured"}
             adapter = mock.Mock()

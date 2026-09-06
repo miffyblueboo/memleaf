@@ -172,7 +172,7 @@ class HostRuntime:
             except RetrievalGateError:
                 return
         with self.vault.lock():
-            permission = read_json(self.vault.processed_index_path)
+            permission = read_json(self.vault.processed_state_path)
             if not recording_allowed(permission, self.host, session_id, turn_key(turn_id)):
                 return
             incoming = observation_records(tool_name, call_id, payload,

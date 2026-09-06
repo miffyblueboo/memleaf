@@ -32,11 +32,7 @@ def _normalize_request_timeout(value: Any) -> int | float:
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "vault": "~/.memleaf",
-    "agents": {
-        "codex": True,
-        "hermes": True,
-        "antigravity": False,
-    },
+    "agents": {"codex": True, "hermes": True, "antigravity": False},
     "scopes": {},
     "native_sources": {},
     "process": {
@@ -55,10 +51,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "tool_evidence_mode": "bounded",
         "include_attachments": False,
         "redact_secrets": True,
-    },
-    "inject": {
-        "mode": "tag_full",
-        "abnormal_guard": True,
     },
     "llm": {
         "mode": "auto",
@@ -85,6 +77,31 @@ def _merge_defaults(value: Mapping[str, Any], defaults: Mapping[str, Any]) -> di
     return merged
 
 
+def _normalize_legacy_config(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Translate supported pre-v0.2.28 fields once, then forget their names."""
+    normalized = deepcopy(dict(value))
+    if "inject" in normalized:
+        if not isinstance(normalized["inject"], Mapping):
+            raise ValueError("invalid legacy memleaf inject settings")
+        normalized.pop("inject", None)
+    capture = normalized.get("capture")
+    if capture is not None and not isinstance(capture, Mapping):
+        raise ValueError("invalid memleaf capture settings")
+    if isinstance(capture, Mapping):
+        current = dict(capture)
+        if "include_tool_output" in current:
+            legacy = current.pop("include_tool_output")
+            if type(legacy) is not bool:
+                raise ValueError("invalid legacy memleaf capture.include_tool_output")
+            migrated_mode = "bounded" if legacy else "metadata"
+            explicit = current.get("tool_evidence_mode")
+            if explicit is not None and explicit != migrated_mode:
+                raise ValueError("conflicting legacy and current tool evidence settings")
+            current["tool_evidence_mode"] = migrated_mode
+        normalized["capture"] = current
+    return normalized
+
+
 def default_config(vault: Path | str | None = None) -> dict[str, Any]:
     config = deepcopy(DEFAULT_CONFIG)
     if vault is not None:
@@ -102,11 +119,10 @@ def load_config(path: Path | str, *, vault: Path | str | None = None) -> dict[st
         raise ValueError("invalid memleaf config.yaml") from error
     if not isinstance(parsed, dict):
         raise ValueError("invalid memleaf config.yaml")
+    parsed = _normalize_legacy_config(parsed)
     merged = _merge_defaults(parsed, default_config(vault))
-    # Resolve from the file BEFORE defaults, preserving a legacy explicit
-    # false value rather than manufacturing opt-in during an upgrade.
     from .evidence_policy import capture_settings
-    merged["capture"].update(capture_settings(parsed))
+    merged["capture"] = capture_settings(merged)
     if not isinstance(merged.get("vault"), str):
         raise ValueError("invalid memleaf vault setting")
     capture = merged.get("capture")
@@ -158,7 +174,7 @@ def load_config(path: Path | str, *, vault: Path | str | None = None) -> dict[st
 def save_config(path: Path | str, config: Mapping[str, Any]) -> None:
     if not isinstance(config, Mapping):
         raise ValueError("config must be a mapping")
-    normalized = deepcopy(dict(config))
+    normalized = _normalize_legacy_config(config)
     from .evidence_policy import capture_settings
     normalized["capture"] = capture_settings(normalized)
     try:

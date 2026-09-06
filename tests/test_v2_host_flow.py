@@ -72,7 +72,7 @@ class V2HostFlowTest(unittest.TestCase):
         self.assertEqual(len(turns[0].events), 2)
         self.assertNotIn("SHOULD_NOT_BE_CAPTURED", str([event.content for event in turns[0].events]))
         self.assertNotIn("memleaf continuation", str([event.content for event in turns[0].events]))
-        ledger = json.loads(self.service.vault.processed_index_path.read_text())
+        ledger = json.loads(self.service.vault.processed_state_path.read_text())
         state = ledger["sessions"]["codex/isolated-session"]
         self.assertEqual(state["processed_watermark"], 1)
         self.assertEqual(state["processing"]["status"], "idle")
@@ -118,7 +118,7 @@ class V2HostFlowTest(unittest.TestCase):
             self.assertEqual(before["permissionDecision"], "allow")
             self.assertEqual(before["updatedInput"]["retrieval_id"], retrieval_id)
         self.assertEqual({}, self.event("PreToolUse", tool_name="mcp__other__search", tool_input={}))
-        ledger_path = self.service.vault.index_path / "retrieval_gate.json"
+        ledger_path = self.service.vault.retrieval_gate_state_path
         ledger = json.loads(ledger_path.read_text())
         ledger["entries"][retrieval_id]["expires_at"] = 0
         ledger_path.write_text(json.dumps(ledger))

@@ -548,7 +548,7 @@ class HermesInstallerTransactionTests(unittest.TestCase):
             adapter.configure_mcp_lifecycle.return_value = False
             initialized = SimpleNamespace(
                 root=vault,
-                agents_index_path=vault / "_index" / "agents.json",
+                agents_index_path=vault / "_state" / "agents.json",
             )
             configured = ConfigureResult(
                 agent="hermes",

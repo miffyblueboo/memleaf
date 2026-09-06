@@ -1,4 +1,4 @@
-"""The stage-A local core API."""
+"""The local Markdown memory core API."""
 
 from __future__ import annotations
 
@@ -25,7 +25,6 @@ from .budget import (
 )
 from .capture import capture_event
 from .index import (
-    build_processed_index,
     build_tags_index,
     event_key,
     extract_event_keys,
@@ -267,7 +266,7 @@ class Memleaf:
         with self.vault.lock():
             self._recover_compaction_unlocked()
             try:
-                processed = read_json(self.vault.processed_index_path)
+                processed = read_json(self.vault.processed_state_path)
             except (OSError, UnicodeError, TypeError, ValueError):
                 processed = {}
             if not isinstance(processed, dict):
@@ -284,7 +283,7 @@ class Memleaf:
                 state.pop("lineage_parent_session_id", None)
                 if changed:
                     sessions[state_key] = state
-                    atomic_write_json(self.vault.processed_index_path, processed)
+                    atomic_write_json(self.vault.processed_state_path, processed)
                 return {
                     "session_id": session_id,
                     "parent_session_id": None,
@@ -296,7 +295,7 @@ class Memleaf:
                 raise ValueError("session lineage parent is already bound")
             state["lineage_parent_session_id"] = parent_session_id
             sessions[state_key] = state
-            atomic_write_json(self.vault.processed_index_path, processed)
+            atomic_write_json(self.vault.processed_state_path, processed)
             return {
                 "session_id": session_id,
                 "parent_session_id": parent_session_id,
@@ -493,14 +492,9 @@ class Memleaf:
             return value
 
     def _rebuild_index_unlocked(self) -> dict[str, int]:
+        """Rebuild only data that is fully derivable from source files."""
         knowledge = self._read_memories_unlocked("knowledge")
         history = self._read_memories_unlocked("history")
-        try:
-            previous_processed = read_json(self.vault.processed_index_path)
-        except (OSError, ValueError, TypeError, UnicodeError):
-            previous_processed = {}
-        if not isinstance(previous_processed, Mapping):
-            previous_processed = {}
         atomic_write_json(
             self.vault.tags_index_path,
             build_tags_index(
@@ -514,24 +508,6 @@ class Memleaf:
                 event_keys.update(extract_event_keys(path.read_text(encoding="utf-8")))
             except (OSError, UnicodeError):
                 continue
-        previous_sessions = previous_processed.get("sessions")
-        if isinstance(previous_sessions, Mapping):
-            for state in previous_sessions.values():
-                if not isinstance(state, Mapping):
-                    continue
-                processed_turns = state.get("processed_turns")
-                if not isinstance(processed_turns, list):
-                    continue
-                for entry in processed_turns:
-                    if not isinstance(entry, Mapping):
-                        continue
-                    for key in entry.get("event_keys", []):
-                        if isinstance(key, str) and len(key) == 64:
-                            event_keys.add(key.casefold())
-        atomic_write_json(
-            self.vault.processed_index_path,
-            build_processed_index(event_keys, existing=previous_processed),
-        )
         return {
             "knowledge": len(knowledge),
             "history": len(history),
@@ -1461,7 +1437,7 @@ class Memleaf:
             state: dict[str, Any] | None = None
             if session_key is not None:
                 try:
-                    loaded = read_json(self.vault.processed_index_path)
+                    loaded = read_json(self.vault.processed_state_path)
                 except (OSError, UnicodeError, TypeError, ValueError):
                     loaded = {}
                 if isinstance(loaded, dict):
@@ -1510,7 +1486,7 @@ class Memleaf:
                 updated_state = dict(state or {})
                 updated_state["scopes"] = [path_scope]
                 sessions[session_key] = updated_state
-                atomic_write_json(self.vault.processed_index_path, processed)
+                atomic_write_json(self.vault.processed_state_path, processed)
             records = self._search_unlocked(
                 query_value,
                 scope=effective_scope,

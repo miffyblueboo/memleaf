@@ -967,7 +967,7 @@ def install_hermes(
             rollback = _rollback_snapshots(snapshots)
             if failure.mark_mcp_failed:
                 update_agents_index(
-                    vault.agents_index_path,
+                    vault.agents_state_path,
                     {"hermes": {"mcp_status": "failed", "mcp_availability": "unavailable"}},
                 )
             return _failure_result(
@@ -988,7 +988,7 @@ def install_hermes(
             )
 
     update_agents_index(
-        vault.agents_index_path,
+        vault.agents_state_path,
         {
             "hermes": {
                 "agent": "hermes",
@@ -1064,7 +1064,7 @@ def install_codex(*, vault_path: Path | None = None) -> dict[str, Any]:
         skip_discovery=True,
     )
     configured = adapter.configure(detection, vault.root, attempt=True)
-    update_agents_index(vault.agents_index_path, {"codex": configured.to_dict()})
+    update_agents_index(vault.agents_state_path, {"codex": configured.to_dict()})
     if configured.status not in {"configured", "already_configured"}:
         return {
             "status": configured.status,

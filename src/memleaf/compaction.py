@@ -1,4 +1,4 @@
-"""Local, deterministic active-memory compaction for stage B3a."""
+"""Local, deterministic active-memory compaction."""
 
 from __future__ import annotations
 

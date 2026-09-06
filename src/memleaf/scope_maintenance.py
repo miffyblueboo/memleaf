@@ -467,7 +467,7 @@ class ScopeMaintainer:
         # metadata, derived indexes, then config last.
         for path, memory in writes:
             atomic_write_text(path, memory.to_markdown())
-        atomic_write_json(self.service.vault.processed_index_path, updated)
+        atomic_write_json(self.service.vault.processed_state_path, updated)
         self.service._rebuild_index_unlocked()
         if prepared.config != self.service.vault.config():
             save_config(self.service.vault.config_path, prepared.config)

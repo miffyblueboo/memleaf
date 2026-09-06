@@ -23,7 +23,7 @@ class ProcessJournal:
         self.service = service
 
     def _write_processed_unlocked(self, processed: Mapping[str, Any]) -> None:
-        atomic_write_json(self.service.vault.processed_index_path, dict(processed))
+        atomic_write_json(self.service.vault.processed_state_path, dict(processed))
 
 
     def _cleanup_hours(self) -> int:
@@ -252,7 +252,7 @@ class ProcessJournal:
     ) -> tuple[list[_Snapshot], int]:
         with self.service.vault.lock():
             self.service._recover_compaction_unlocked()
-            processed = _read_processed(self.service.vault.processed_index_path)
+            processed = _read_processed(self.service.vault.processed_state_path)
             cleaned = self._cleanup_due_unlocked(processed, now, cleanup_hours)
             grouped = self._turns_by_session()
             sessions = processed.setdefault("sessions", {})
@@ -345,7 +345,7 @@ class ProcessJournal:
             now = _now_value(getattr(self.service, "clock", None))
             failure_code, failure_stage, validation_reason, validation_detail, attempt_count = _failure_metadata(error)
             with self.service.vault.lock():
-                processed = _read_processed(self.service.vault.processed_index_path)
+                processed = _read_processed(self.service.vault.processed_state_path)
                 sessions = processed.setdefault("sessions", {})
                 for snapshot in snapshots:
                     state = sessions.get(snapshot.state_key)
@@ -451,7 +451,7 @@ class ProcessJournal:
         candidates = 0
         turns = 0
         with self.service.vault.lock():
-            processed = _read_processed(self.service.vault.processed_index_path)
+            processed = _read_processed(self.service.vault.processed_state_path)
         sessions = processed.get("sessions")
         if not isinstance(sessions, Mapping):
             return 0, 0
@@ -491,7 +491,7 @@ class ProcessJournal:
 
     def _coverage_result(self, source: str | None, session_id: str | None) -> dict[str, Any]:
         with self.service.vault.lock():
-            processed = _read_processed(self.service.vault.processed_index_path)
+            processed = _read_processed(self.service.vault.processed_state_path)
         unresolved = 0
         retryable = 0
         partial = False
@@ -523,7 +523,7 @@ class ProcessJournal:
     ) -> tuple[Optional[_Snapshot], Optional[Mapping[str, Any]], Optional[InboxTurn], int]:
         with self.service.vault.lock():
             self.service._recover_compaction_unlocked()
-            processed = _read_processed(self.service.vault.processed_index_path)
+            processed = _read_processed(self.service.vault.processed_state_path)
             cleaned = self._cleanup_due_unlocked(processed, now, cleanup_hours)
             existing = self._processed_memory_ids(processed, event_key_value)
             if existing is not None:
@@ -586,7 +586,7 @@ class ProcessJournal:
     def cancel_forgotten_unlocked(self, memory_ids: set[str]) -> None:
         """Cancel only old operations referencing explicitly forgotten targets."""
         from .turn_plan import cancel_frozen_targets, turn_identity_key
-        processed = _read_processed(self.service.vault.processed_index_path)
+        processed = _read_processed(self.service.vault.processed_state_path)
         changed = False
         revoked = set()
         plans = processed.get("pending_turn_plans", {})

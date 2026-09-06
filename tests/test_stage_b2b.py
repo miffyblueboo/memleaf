@@ -113,7 +113,7 @@ class StageB2BTest(unittest.TestCase):
         return event_key(user_event), event_key(assistant_event)
 
     def processed(self, service):
-        return json.loads(service.vault.processed_index_path.read_text(encoding="utf-8"))
+        return json.loads(service.vault.processed_state_path.read_text(encoding="utf-8"))
 
     def active(self, service):
         records = service._read_memories_unlocked("knowledge")
@@ -428,7 +428,7 @@ class StageB2BTest(unittest.TestCase):
         calls = {"count": 0}
 
         def fail_processed(path, value):
-            if path == service2.vault.processed_index_path:
+            if path == service2.vault.processed_state_path:
                 calls["count"] += 1
                 if value.get("sessions", {}).get("codex/s", {}).get("watermark", 0) >= 2 and value["sessions"]["codex/s"].get("processing", {}).get("status") == "idle":
                     raise OSError("processed write failed")
@@ -498,7 +498,7 @@ class StageB2BTest(unittest.TestCase):
         entries = value["sessions"]["codex/s"]["processed_turns"]
         entries[0]["eligible_cleanup_at"] = "2026-08-23T00:00:00Z"
         entries[1]["eligible_cleanup_at"] = "2026-08-25T00:00:00Z"
-        service.vault.processed_index_path.write_text(json.dumps(value), encoding="utf-8")
+        service.vault.processed_state_path.write_text(json.dumps(value), encoding="utf-8")
 
         result = service.process()
 
@@ -519,7 +519,7 @@ class StageB2BTest(unittest.TestCase):
         original_atomic = processing_module.atomic_write_json
 
         def fail_cleanup_processed(path, value):
-            if path == service.vault.processed_index_path:
+            if path == service.vault.processed_state_path:
                 raise OSError("cleanup ledger failed")
             return original_atomic(path, value)
 

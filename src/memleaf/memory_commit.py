@@ -77,7 +77,7 @@ class MemoryCommitter:
             key = _session_key(turn.source, turn.session_id)
             by_snapshot.setdefault(key, []).append(request)
         with self.service._mutation_boundary():
-            processed = _read_processed(self.service.vault.processed_index_path)
+            processed = _read_processed(self.service.vault.processed_state_path)
             sessions = processed.setdefault("sessions", {})
             for snapshot in snapshots:
                 state = sessions.get(snapshot.state_key)
@@ -272,7 +272,7 @@ class MemoryCommitter:
                     and item["native_id"].casefold() in shadow_keys
                 ]
                 native_indexer.apply_shadow_unlocked(refs, memory.memory_id)
-            processed = _read_processed(self.service.vault.processed_index_path)
+            processed = _read_processed(self.service.vault.processed_state_path)
             sessions = processed.setdefault("sessions", {})
             memory_ids_by_turn: dict[tuple[str, str], list[str]] = {}
             for request, memory in zip(all_requests, written):

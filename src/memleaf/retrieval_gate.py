@@ -62,7 +62,7 @@ def _coerce_vault(value: Vault | Path | str) -> Vault:
 
 def _ledger_path(vault: Vault | Path | str) -> Path:
     root = _coerce_vault(vault)
-    path = root.index_path / "retrieval_gate.json"
+    path = root.retrieval_gate_state_path
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise RetrievalGateError("retrieval_ledger_unavailable")
     return path
@@ -77,7 +77,7 @@ def _lock_path(vault: Vault | Path | str) -> Path:
     """
 
     root = _coerce_vault(vault)
-    path = root.index_path / "retrieval_gate.lock"
+    path = root.retrieval_gate_lock_path
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise RetrievalGateError("retrieval_ledger_unavailable")
     return path

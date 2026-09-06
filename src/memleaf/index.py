@@ -6,7 +6,6 @@ import hashlib
 import json
 import re
 from collections import defaultdict
-from copy import deepcopy
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
@@ -219,63 +218,3 @@ def build_tags_index(knowledge: Sequence[Memory], history: Sequence[Memory]) -> 
         "history": historical,
     }
 
-
-def build_processed_index(
-    event_keys: Iterable[str],
-    *,
-    existing: Mapping | None = None,
-    sessions: Mapping | None = None,
-) -> dict:
-    unique = sorted(
-        {
-            key.casefold()
-            for key in event_keys
-            if isinstance(key, str) and re.fullmatch(r"[0-9a-fA-F]{64}", key)
-        }
-    )
-    events: dict[str, dict] = {}
-    previous = existing.get("events", {}) if isinstance(existing, Mapping) else {}
-    if isinstance(previous, Mapping):
-        for key, value in previous.items():
-            if (
-                isinstance(key, str)
-                and re.fullmatch(r"[0-9a-fA-F]{64}", key)
-                and key.casefold() in unique
-                and isinstance(value, Mapping)
-            ):
-                # Preserve only safe, structural metadata.  In particular,
-                # never carry forward a legacy raw event_id field.
-                safe = {"event_key": key.casefold()}
-                for name in (
-                    "source",
-                    "session_id",
-                    "turn_id",
-                    "turn_key",
-                    "role",
-                    "turn_index",
-                    "captured_at",
-                ):
-                    item = value.get(name)
-                    if isinstance(item, (str, int)) and not isinstance(item, bool):
-                        safe[name] = item
-                events[key.casefold()] = safe
-    for key in unique:
-        events.setdefault(key, {"event_key": key})
-    value = {
-        "version": 1,
-        "event_keys": unique,
-        "events": events,
-    }
-    if isinstance(sessions, Mapping):
-        value["sessions"] = deepcopy(dict(sessions))
-    elif isinstance(existing, Mapping) and isinstance(existing.get("sessions"), Mapping):
-        value["sessions"] = deepcopy(dict(existing["sessions"]))
-    else:
-        value["sessions"] = {}
-    # Forward-recovery intent must survive index rebuilds between the Markdown
-    # write and final processed-turn commit. Dropping it falsifies replay audit.
-    if isinstance(existing, Mapping) and isinstance(existing.get("pending_operations"), Mapping):
-        value["pending_operations"] = deepcopy(dict(existing["pending_operations"]))
-    if isinstance(existing, Mapping) and isinstance(existing.get("pending_turn_plans"), Mapping):
-        value["pending_turn_plans"] = deepcopy(dict(existing["pending_turn_plans"]))
-    return value

@@ -247,7 +247,7 @@ class AdmissionFlowTests(unittest.TestCase):
             [record.memory.memory_id for record in service._read_memories_unlocked("knowledge")],
             ["mem-existing-mcp-fault"],
         )
-        processed = json.loads(service.vault.processed_index_path.read_text(encoding="utf-8"))
+        processed = json.loads(service.vault.processed_state_path.read_text(encoding="utf-8"))
         self.assertEqual(processed["sessions"]["hermes/mcp-failure"]["watermark"], 4)
         # The related fault is visible for duplicate/state comparison, but it
         # cannot turn a pure operational test into an automatic candidate.
@@ -661,7 +661,7 @@ class AdmissionFlowTests(unittest.TestCase):
             [path.name for path in service.vault.list_markdown("history")],
             history_before,
         )
-        processed = json.loads(service.vault.processed_index_path.read_text(encoding="utf-8"))
+        processed = json.loads(service.vault.processed_state_path.read_text(encoding="utf-8"))
         entry = processed["sessions"]["hermes/owner-query-duplicate"]["processed_turns"][0]
         self.assertEqual(entry["memory_ids"], [])
 
@@ -724,7 +724,7 @@ class AdmissionFlowTests(unittest.TestCase):
         )
         current = service.read(old.memory_id)
         self.assertEqual(current.extra, active_before.extra)
-        processed = json.loads(service.vault.processed_index_path.read_text(encoding="utf-8"))
+        processed = json.loads(service.vault.processed_state_path.read_text(encoding="utf-8"))
         entry = processed["sessions"]["codex/owner-query-update"]["processed_turns"][0]
         self.assertEqual(entry["memory_ids"], [])
 
@@ -973,7 +973,7 @@ class AdmissionFlowTests(unittest.TestCase):
             )],
             [],
         )
-        processed = json.loads(service.vault.processed_index_path.read_text(encoding="utf-8"))
+        processed = json.loads(service.vault.processed_state_path.read_text(encoding="utf-8"))
         marker = processed["sessions"]["hermes/natural-owner-update"]
         self.assertEqual(marker["watermark"], 2)
         self.assertEqual(marker["processing"]["status"], "idle")
@@ -1040,7 +1040,7 @@ class AdmissionFlowTests(unittest.TestCase):
 
         self.assertEqual(service.read(old.memory_id).body, old.body)
         self.assertEqual(service.vault.list_markdown("history"), [])
-        processed = json.loads(service.vault.processed_index_path.read_text(encoding="utf-8"))
+        processed = json.loads(service.vault.processed_state_path.read_text(encoding="utf-8"))
         self.assertEqual(processed["sessions"]["hermes/duplicate-update"].get("watermark", 0), 1)
         entry = processed["sessions"]["hermes/duplicate-update"]["processed_turns"][0]
         self.assertEqual({r["reason"] for r in entry["deferred_candidates"]}, {"same_turn_target_conflict"})
