@@ -1,0 +1,165 @@
+name: v0.2.28 finalizer
+
+on:
+  push:
+    branches:
+      - work/v0.2.28-release
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  finalize:
+    if: ${{ contains(github.event.head_commit.message, '[finalize-v028]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BENCHMARK_RUN_ID: '34008776413'
+    steps:
+      - name: Check out release candidate
+        uses: actions/checkout@v4
+        with:
+          ref: work/v0.2.28-release
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Wait for verified long-run benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 120); do
+            status="$(gh run view "$BENCHMARK_RUN_ID" --repo "$GITHUB_REPOSITORY" --json status --jq .status)"
+            if [ "$status" = "completed" ]; then
+              conclusion="$(gh run view "$BENCHMARK_RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion --jq .conclusion)"
+              test "$conclusion" = "success"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo 'Benchmark did not complete inside finalizer window' >&2
+          exit 1
+
+      - name: Import benchmark evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin work/v0.2.28-maintenance
+          mkdir -p benchmarks/results docs
+          git show origin/work/v0.2.28-maintenance:benchmarks/results/v0.2.28-linux.json > benchmarks/results/v0.2.28-linux.json
+          git show origin/work/v0.2.28-maintenance:docs/performance.md > docs/performance.md
+
+      - name: Validate benchmark and finalize release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+
+          result_path = Path('benchmarks/results/v0.2.28-linux.json')
+          payload = json.loads(result_path.read_text(encoding='utf-8'))
+          results = payload.get('results')
+          if not isinstance(results, list):
+              raise SystemExit('benchmark results missing')
+          counts = [row.get('memory_count') for row in results]
+          if counts != [1000, 10000, 50000]:
+              raise SystemExit(f'unexpected benchmark counts: {counts!r}')
+          largest = results[-1]
+          decision = payload.get('decision')
+          if not isinstance(decision, dict) or decision.get('evaluated_memory_count') != 50000:
+              raise SystemExit('benchmark decision is not a verified 50k decision')
+          metrics = largest.get('metrics')
+          if not isinstance(metrics, dict):
+              raise SystemExit('50k metrics missing')
+          required = ('search_candidate_warm', 'fulltext_search', 'scope_filtered_search', 'rebuild_index')
+          for name in required:
+              metric = metrics.get(name)
+              if not isinstance(metric, dict) or not isinstance(metric.get('p95_ms'), (int, float)):
+                  raise SystemExit(f'missing p95 metric: {name}')
+          sanity = largest.get('sanity') or {}
+          expected_status = ('search_status', 'cold_search_status', 'exact_status', 'fulltext_status', 'scope_status', 'todos_status')
+          for key in expected_status:
+              if sanity.get(key) != 'found':
+                  raise SystemExit(f'benchmark sanity failed: {key}={sanity.get(key)!r}')
+          if sanity.get('read_found') is not True:
+              raise SystemExit('benchmark read sanity failed')
+
+          sqlite_recommended = decision.get('sqlite_fts_recommended')
+          if sqlite_recommended is not False:
+              raise SystemExit('50k benchmark requires SQLite FTS evaluation; release intentionally blocked')
+
+          pyproject = Path('pyproject.toml')
+          text = pyproject.read_text(encoding='utf-8')
+          old = 'version = "0.2.27"'
+          new = 'version = "0.2.28"'
+          if text.count(old) != 1:
+              raise SystemExit('unexpected pyproject version declaration')
+          pyproject.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          candidate_p95 = metrics['search_candidate_warm']['p95_ms']
+          fulltext_p95 = metrics['fulltext_search']['p95_ms']
+          scope_p95 = metrics['scope_filtered_search']['p95_ms']
+          rebuild_p95 = metrics['rebuild_index']['p95_ms']
+          rss = largest.get('peak_rss_mib')
+          rss_text = f'{rss:.3f} MiB' if isinstance(rss, (int, float)) else 'n/a'
+
+          section = f'''## 0.2.28 — 2026-09-06
+
+- Separate rebuildable `_index/` data from correctness-critical `_state/` runtime state. Existing Vaults migrate crash-safely and idempotently with verified copy-before-cleanup semantics; conflicting old/new state fails closed, and `rebuild-index` no longer changes processing, retrieval, host-ingest, or compaction state.
+- Consolidate legacy configuration into the current schema: migrate old tool-evidence and injection settings once, preserve conservative legacy evidence semantics, reject contradictory old/current settings, and document the bounded 0.2.x CLI compatibility sunset.
+- Move host activation bookkeeping and first-party installer state to `_state/`, remove the obsolete derived agents-index ownership, and keep Hermes/Codex on one globally shared Markdown Vault across Windows, macOS, and Linux.
+- Remove the remaining Core todo urgency classifier based on words such as `urgent`, `ASAP`, `紧急`, or `尽快`; unscheduled todo ordering is deterministic and business semantics remain model-owned.
+- Add reproducible 1k/10k/50k long-run benchmarks covering initialization, rebuild, retrieval, CREATE/UPDATE/NO_CHANGE, history/todo retention, compaction, lock hold time, RSS, and disk footprint. At 50k, warm candidate/full-text/scope-search p95 values are {candidate_p95:.3f}/{fulltext_p95:.3f}/{scope_p95:.3f} ms; rebuild p95 is {rebuild_p95:.3f} ms and peak RSS is {rss_text}.
+- Do **not** introduce SQLite FTS in v0.2.28: all measured 50k search paths remain within the explicit 2,000 ms p95 interactive target. Markdown remains the sole source of truth and the existing derived index remains sufficient for the measured scale.
+
+'''
+          changelog = Path('CHANGELOG.md')
+          current = changelog.read_text(encoding='utf-8')
+          if '## 0.2.28 —' in current:
+              raise SystemExit('0.2.28 changelog section already exists')
+          marker = 'All notable changes to memleaf are documented here.\n\n'
+          if marker not in current:
+              raise SystemExit('changelog insertion marker missing')
+          changelog.write_text(current.replace(marker, marker + section, 1), encoding='utf-8')
+
+          performance = Path('docs/performance.md').read_text(encoding='utf-8')
+          if 'SQLite FTS recommended: no' not in performance:
+              raise SystemExit('performance report disagrees with benchmark decision')
+          print(json.dumps({
+              'sqlite_fts_recommended': sqlite_recommended,
+              'candidate_p95_ms': candidate_p95,
+              'fulltext_p95_ms': fulltext_p95,
+              'scope_p95_ms': scope_p95,
+              'rebuild_p95_ms': rebuild_p95,
+              'peak_rss_mib': rss,
+          }, sort_keys=True))
+          PY
+
+      - name: Verify final source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q src tests scripts/benchmark_long_run.py
+          python -m pip install -e .
+          test "$(memleaf --version)" = '0.2.28'
+          test "$(memleaf-mcp --version)" = '0.2.28'
+          python -m unittest tests.test_state_layout_v028 tests.test_config_migrations_v028 tests.test_source_neutral_todos_v028 tests.test_stage_c3_packaging -v
+
+      - name: Create clean release commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/v028-finalize.yml
+          git add CHANGELOG.md pyproject.toml docs/performance.md benchmarks/results/v0.2.28-linux.json
+          git diff --cached --check
+          git commit -m 'release: v0.2.28'
+          git push origin HEAD:work/v0.2.28-release
