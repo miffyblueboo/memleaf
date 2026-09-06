@@ -91,18 +91,8 @@ class Vault:
         return self._inside("_state", "processed.json")
 
     @property
-    def processed_index_path(self) -> Path:
-        """Deprecated compatibility alias; runtime state moved in v0.2.28."""
-        return self.processed_state_path
-
-    @property
     def agents_state_path(self) -> Path:
         return self._inside("_state", "agents.json")
-
-    @property
-    def agents_index_path(self) -> Path:
-        """Deprecated compatibility alias; host activation is runtime state."""
-        return self.agents_state_path
 
     @property
     def host_ingest_path(self) -> Path:

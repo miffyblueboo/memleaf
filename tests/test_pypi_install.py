@@ -60,7 +60,7 @@ class PyPIInstallTests(unittest.TestCase):
             )
             initialized = SimpleNamespace(
                 root=vault_path,
-                agents_index_path=vault_path / "_state" / "agents.json",
+                agents_state_path=vault_path / "_state" / "agents.json",
             )
             model = {"status": "configured"}
             adapter = mock.Mock()
@@ -194,7 +194,7 @@ class PyPIInstallTests(unittest.TestCase):
             adapter.configure.side_effect = [preflight, configured]
             initialized = SimpleNamespace(
                 root=vault_path,
-                agents_index_path=vault_path / "index" / "agents.json",
+                agents_state_path=vault_path / "index" / "agents.json",
             )
             model = {
                 "status": "not_configured",
@@ -207,7 +207,7 @@ class PyPIInstallTests(unittest.TestCase):
                  mock.patch("memleaf.installer._select_codex_vault_path", return_value=(vault_path, "default")), \
                  mock.patch("memleaf.installer.Vault.initialize", return_value=initialized), \
                  mock.patch("memleaf.installer._prepare_model_route", return_value=model), \
-                 mock.patch("memleaf.installer.update_agents_index"):
+                 mock.patch("memleaf.installer.update_agents_state"):
                 result = install_codex()
 
             self.assertEqual("configured", result["status"])

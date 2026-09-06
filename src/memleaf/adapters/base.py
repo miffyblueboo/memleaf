@@ -209,7 +209,7 @@ def hook_definition_fingerprint(definition: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def agent_index_path(vault: Path | str) -> Path:
+def agent_state_path(vault: Path | str) -> Path:
     """Return the host activation state path without creating or changing the vault."""
 
     root = vault if isinstance(vault, (str, os.PathLike)) else getattr(vault, "root", vault)
@@ -245,7 +245,7 @@ def hook_activation_status(
 ) -> str:
     """Keep ``active`` only when it belongs to the current hook definition."""
 
-    index = _read_agents_index(agent_index_path(vault))
+    index = _read_agents_index(agent_state_path(vault))
     if index is None:
         return pending_status
     entry = index["agents"].get(agent)
@@ -259,7 +259,7 @@ def hook_activation_status(
     return pending_status
 
 
-def update_agents_index(
+def update_agents_state(
     path: Path | str,
     updates: Mapping[str, Mapping[str, Any]],
 ) -> bool:
@@ -301,7 +301,7 @@ def update_agents_index(
 def mark_hook_active(vault: Path | str, agent: str) -> bool:
     """Record a successful real hook invocation without touching hook trust."""
 
-    target = agent_index_path(vault)
+    target = agent_state_path(vault)
     if target.is_symlink() or target.parent.is_symlink():
         return False
     lock_path = target.parent / "vault.lock"

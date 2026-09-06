@@ -24,7 +24,7 @@ from .adapters.base import (
     make_backup,
     result_from_detection,
     run_argv,
-    update_agents_index,
+    update_agents_state,
 )
 from .adapters.codex import CodexAdapter
 from .adapters.hermes import (
@@ -966,7 +966,7 @@ def install_hermes(
         if failure is not None:
             rollback = _rollback_snapshots(snapshots)
             if failure.mark_mcp_failed:
-                update_agents_index(
+                update_agents_state(
                     vault.agents_state_path,
                     {"hermes": {"mcp_status": "failed", "mcp_availability": "unavailable"}},
                 )
@@ -987,7 +987,7 @@ def install_hermes(
                 rollback_status=rollback,
             )
 
-    update_agents_index(
+    update_agents_state(
         vault.agents_state_path,
         {
             "hermes": {
@@ -1064,7 +1064,7 @@ def install_codex(*, vault_path: Path | None = None) -> dict[str, Any]:
         skip_discovery=True,
     )
     configured = adapter.configure(detection, vault.root, attempt=True)
-    update_agents_index(vault.agents_state_path, {"codex": configured.to_dict()})
+    update_agents_state(vault.agents_state_path, {"codex": configured.to_dict()})
     if configured.status not in {"configured", "already_configured"}:
         return {
             "status": configured.status,

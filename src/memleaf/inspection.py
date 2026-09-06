@@ -19,7 +19,7 @@ from .turn_plan import dedup_digest
 
 MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
 MAX_SNAPSHOT_FILES = 100_000
-_AREAS = frozenset({"knowledge", "history", "inbox", "_index"})
+_AREAS = frozenset({"knowledge", "history", "inbox", "_index", "_state"})
 
 
 class InspectionError(ValueError):
@@ -93,7 +93,7 @@ def audit_vault(path: Path | str | None = None) -> dict[str, Any]:
         if len(ids) > 1:
             issues.append({"kind": "identical_active_payloads", "memory_ids": sorted(ids)})
     try:
-        processed = json.loads(snapshot.get("_index/processed.json", b"{}"))
+        processed = json.loads(snapshot.get("_state/processed.json", b"{}"))
         if not isinstance(processed, dict):
             raise ValueError("invalid ledger")
         plans = processed.get("pending_turn_plans", {})
@@ -155,7 +155,7 @@ def preview_process(path: Path | str | None = None, *, model: Any = None, router
             changes.append({"path": name, "action": "DELETE" if name not in after else
                            "CREATE" if name not in before else "UPDATE",
                             "content": after[name].decode("utf-8") if name in after else None})
-        ledger = json.loads(after.get("_index/processed.json", b"{}"))
+        ledger = json.loads(after.get("_state/processed.json", b"{}"))
         dispositions = []
         for key, state in ledger.get("sessions", {}).items():
             if source is not None and not key.startswith(source + "/"):

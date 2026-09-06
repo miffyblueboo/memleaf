@@ -17,7 +17,7 @@ from .adapters.base import (
     ConfigureResult,
     Detection,
     result_from_detection,
-    update_agents_index,
+    update_agents_state,
 )
 from .adapters.hermes import HermesAdapter
 from .credentials import credential_text
@@ -366,7 +366,7 @@ def _init(args: argparse.Namespace) -> dict:
 
     # Retain legacy init result slots without implicitly configuring hosts.
     # Codex is supported only through the explicit install command; Antigravity
-    # remains unsupported. Clear stale activation claims in our own index only.
+    # remains unsupported. Clear stale activation claims in our own state only.
     legacy_slots = (
         (
             "codex",
@@ -396,15 +396,15 @@ def _init(args: argparse.Namespace) -> dict:
         )
 
     agents = {name: result.to_dict() for name, result in results.items()}
-    agents_index_written = False
+    agents_state_written = False
     if not args.dry_run:
-        agents_index_written = update_agents_index(vault.agents_state_path, agents)
+        agents_state_written = update_agents_state(vault.agents_state_path, agents)
 
     return {
         "version": 1,
         "vault": str(vault.root),
-        "agents_index_path": str(vault.agents_state_path),
-        "agents_index_written": agents_index_written,
+        "agents_state_path": str(vault.agents_state_path),
+        "agents_state_written": agents_state_written,
         "dry_run": bool(args.dry_run),
         "agents": agents,
         "model": model_result,
@@ -565,9 +565,9 @@ def _print_human_result(output: dict) -> None:
         else:
             print(f"model: {model.get('status')}")
     if output["dry_run"]:
-        print(f"agents index not written: {output['agents_index_path']}")
+        print(f"agents index not written: {output['agents_state_path']}")
     else:
-        print(f"agents index: {output['agents_index_path']}")
+        print(f"agents index: {output['agents_state_path']}")
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised by subprocess smoke tests.

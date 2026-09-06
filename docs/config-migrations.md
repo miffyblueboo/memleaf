@@ -12,7 +12,7 @@ The current persisted top-level sections are `vault`, `agents`, `scopes`, `nativ
 
 - Top-level `inject` (`mode`, `abnormal_guard`) belonged to the pre-Scope-Map injection path. v0.2.28 reads and discards this section; it is not written again.
 - `capture.include_tool_output` is replaced by `capture.tool_evidence_mode`.
-- `Vault.processed_index_path` and `Vault.agents_index_path` remain narrow Python compatibility aliases for v0.2.28, but both resolve to `_state/`; internal code uses the new state names. They are candidates for removal in a future major cleanup.
+- The old internal `processed_index_path` / `agents_index_path` names are removed in v0.2.28; runtime code uses explicit `_state/` properties.
 
 ## Automatic migration
 
@@ -20,7 +20,7 @@ When reading an older configuration, `capture.include_tool_output: true` becomes
 
 The obsolete `inject` section is removed during normalization. No current runtime component consumes it.
 
-On first v0.2.28 Vault use, runtime correctness state is migrated from `_index/` to `_state/` by one centralized layout owner. The new copy is atomically written and verified before a durable `_state/layout.json` completion marker is written; legacy files are removed only after that marker. Before the marker, old/new coexistence must be equivalent or startup fails closed. After the marker, `_state/` is authoritative and stale `_index/` state is cleanup debris, never merged or replayed.
+On first v0.2.28 Vault use, runtime correctness state is migrated from `_index/` to `_state/` by one centralized layout owner. Existing v0.2.27 Vault/retrieval lock files are acquired during migration so an already-running old worker cannot mutate the copied state concurrently. The new copy is atomically written and verified before a durable `_state/layout.json` completion marker is written; legacy files are removed only after that marker. Before the marker, old/new coexistence must be equivalent or startup fails closed. After the marker, `_state/` is authoritative and stale `_index/` state is cleanup debris, never merged or replayed.
 
 ## Incompatible cases
 

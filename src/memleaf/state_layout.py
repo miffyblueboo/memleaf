@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import ExitStack
 import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from .locking import atomic_unlink, atomic_write_bytes, atomic_write_json, read_json
+from .locking import VaultLock, atomic_unlink, atomic_write_bytes, atomic_write_json, read_json
 
 
 STATE_LAYOUT_VERSION = 1
@@ -170,20 +171,9 @@ def _cleanup_legacy(index_root: Path) -> None:
     staging = index_root / _STAGING_DIR
     if staging.exists() or staging.is_symlink():
         _remove_tree(staging)
-    for name in _LEGACY_LOCK_FILES:
-        path = index_root / name
-        if path.is_symlink():
-            raise StateLayoutError(f"unsafe legacy {name} path")
-        if path.exists():
-            try:
-                atomic_unlink(path)
-            except OSError as error:
-                raise StateLayoutError(
-                    "legacy memleaf process still owns the old vault lock; stop old processes and retry"
-                ) from error
 
 
-def migrate_state_layout(vault: Any) -> dict[str, Any]:
+def _migrate_state_layout_locked(vault: Any) -> dict[str, Any]:
     """Migrate runtime correctness state out of ``_index`` exactly once.
 
     The caller must hold the current Vault lock. Before the completion marker
@@ -247,3 +237,43 @@ def migrate_state_layout(vault: Any) -> dict[str, Any]:
         raise StateLayoutError("failed to verify state layout marker")
     _cleanup_legacy(index_root)
     return layout
+
+
+
+def migrate_state_layout(vault: Any) -> dict[str, Any]:
+    """Migrate while also honoring lock files used by pre-v0.2.28 writers.
+
+    The new Vault lock is already held by the caller. Existing legacy locks
+    are acquired in a fixed order before any legacy state is copied. This
+    prevents an already-running old worker from mutating Markdown/state during
+    migration. Starting an old binary after upgrade is unsupported; callers
+    should stop older host processes before upgrading a live Vault.
+    """
+
+    index_root = Path(vault.index_path)
+    legacy_locks: list[Path] = []
+    for name in _LEGACY_LOCK_FILES:
+        path = index_root / name
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise StateLayoutError(f"unsafe legacy {name} path")
+        if path.exists():
+            legacy_locks.append(path)
+
+    with ExitStack() as stack:
+        for path in legacy_locks:
+            stack.enter_context(VaultLock(path))
+        result = _migrate_state_layout_locked(vault)
+
+    # Remove obsolete lock files only after their handles are released; this
+    # matters on Windows. State files were already committed and verified.
+    for path in legacy_locks:
+        if path.is_symlink():
+            raise StateLayoutError("unsafe legacy lock path")
+        if path.exists():
+            try:
+                atomic_unlink(path)
+            except OSError as error:
+                raise StateLayoutError(
+                    "cannot retire legacy Vault lock; stop old processes and retry"
+                ) from error
+    return result

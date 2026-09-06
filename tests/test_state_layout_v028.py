@@ -96,6 +96,29 @@ class StateLayoutV028Tests(unittest.TestCase):
         self.assertEqual(before, second.processed_state_path.read_bytes())
         self.assertTrue(second.state_layout_path.exists())
 
+    def test_migration_acquires_existing_legacy_locks(self) -> None:
+        self._make_legacy()
+        for name in ("vault.lock", "retrieval_gate.lock"):
+            (self.root / "_index" / name).write_text("", encoding="utf-8")
+        entered: list[str] = []
+
+        class RecordingLock:
+            def __init__(self, lock_path):
+                self.path = Path(lock_path)
+
+            def __enter__(self):
+                entered.append(self.path.name)
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        with mock.patch("memleaf.state_layout.VaultLock", RecordingLock):
+            vault = Vault(self.root)
+        self.assertEqual(entered, ["vault.lock", "retrieval_gate.lock"])
+        self.assertFalse((vault.index_path / "vault.lock").exists())
+        self.assertFalse((vault.index_path / "retrieval_gate.lock").exists())
+
     def test_pre_marker_old_and_new_conflict_fails_closed(self) -> None:
         self._make_legacy()
         state = self.root / "_state"

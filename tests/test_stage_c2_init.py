@@ -15,7 +15,7 @@ from memleaf.adapters.base import (
     mark_hook_active,
     mcp_command,
     run_argv,
-    update_agents_index,
+    update_agents_state,
 )
 from memleaf.adapters.codex import CodexAdapter
 from memleaf.adapters.hermes import HermesAdapter
@@ -221,7 +221,7 @@ class StageC2InitTests(unittest.TestCase):
 
         first = adapter.configure(adapter.detect(), self.vault)
         self.assertEqual("pending_user_review", first.hook_activation_status)
-        self.assertTrue(update_agents_index(vault.agents_state_path, {"codex": first.to_dict()}))
+        self.assertTrue(update_agents_state(vault.agents_state_path, {"codex": first.to_dict()}))
         self.assertTrue(mark_hook_active(self.vault, "codex"))
 
         active = adapter.configure(adapter.detect(), self.vault)
@@ -542,7 +542,7 @@ class StageC2InitTests(unittest.TestCase):
         self.assertEqual("pending_restart", first.hook_activation_status)
         self.assertTrue(first.user_action_required)
         self.assertIn("quit and reopen", first.user_action)
-        self.assertTrue(update_agents_index(vault.agents_state_path, {"antigravity": first.to_dict()}))
+        self.assertTrue(update_agents_state(vault.agents_state_path, {"antigravity": first.to_dict()}))
         self.assertTrue(mark_hook_active(self.vault, "antigravity"))
 
         active = adapter.configure(adapter.detect(), self.vault)
@@ -608,7 +608,7 @@ class StageC2InitTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         output = json.loads(result.stdout)
         self.assertTrue(output["dry_run"])
-        self.assertFalse(output["agents_index_written"])
+        self.assertFalse(output["agents_state_written"])
         self.assertEqual("disabled", output["agents"]["codex"]["status"])
         self.assertEqual("diagnostic", output["agents"]["hermes"]["status"])
         self.assertFalse(self.vault.exists())
@@ -624,7 +624,7 @@ class StageC2InitTests(unittest.TestCase):
         output = json.loads(result.stdout)
         self.assertEqual("failure", output["model"]["status"])
         self.assertTrue(self.vault.exists())
-        self.assertTrue(output["agents_index_written"])
+        self.assertTrue(output["agents_state_written"])
         index = json.loads((self.vault / "_state" / "agents.json").read_text(encoding="utf-8"))
         self.assertEqual(output["agents"], index["agents"])
 
