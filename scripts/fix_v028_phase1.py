@@ -21,12 +21,18 @@ text = text.replace(
 )
 config_test.write_text(text, encoding="utf-8")
 
-retrieval_test = root / "tests" / "test_retrieval_gate.py"
-text = retrieval_test.read_text(encoding="utf-8")
-text = text.replace(
-    'ledger_path = self.vault.index_path / "retrieval_gate.json"',
-    'ledger_path = self.vault.retrieval_gate_state_path',
-)
-retrieval_test.write_text(text, encoding="utf-8")
+for test_path in (root / "tests").rglob("test_*.py"):
+    if test_path.name == "test_state_layout_v028.py":
+        continue
+    text = test_path.read_text(encoding="utf-8")
+    text = text.replace(
+        'self.vault.index_path / "retrieval_gate.json"',
+        'self.vault.retrieval_gate_state_path',
+    )
+    text = text.replace(
+        'self.service.vault.index_path / "retrieval_gate.json"',
+        'self.service.vault.retrieval_gate_state_path',
+    )
+    test_path.write_text(text, encoding="utf-8")
 
 print("v0.2.28 phase-1 test fixture fixes applied")
