@@ -35,11 +35,15 @@ jobs:
           echo '=== legacy config names ==='
           git grep -nE '(include_tool_output|abnormal_guard|tag_full|processed_index_path|agents_index_path)' -- src docs tests || true
           git grep -nE '"inject"|inject:' -- src docs tests || true
+          echo '=== compatibility CLI surfaces ==='
+          git grep -nEi '(no-codex|no-antigravity|no_codex|no_antigravity|legacy_slots)' -- . ':!docs/archive/**' || true
           echo '=== old stage/candidate/development naming ==='
           git grep -nEi '(stage[- _]?[abc][0-9a-z]*|candidate/development|development candidate)' -- src docs README.md README.en.md || true
-      - name: Core business-specific semantic lexicon audit
+      - name: Core semantic classification audit
         shell: bash
         run: |
           set -euo pipefail
           echo '=== business-specific terms in Core ==='
           git grep -nEi '(email|e-mail|邮件|日报|ppt|项目计划|工单|github)' -- src/memleaf || true
+          echo '=== text-derived todo urgency rules ==='
+          git grep -nEi '(_todo_is_asap|尽快|紧急|优先处理|asap|urgent)' -- src tests || true
