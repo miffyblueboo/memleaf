@@ -1,0 +1,48 @@
+name: v0.2.28 maintenance apply
+
+on:
+  push:
+    branches:
+      - work/v0.2.28-maintenance
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    if: ${{ !contains(github.event.head_commit.message, '[v028-generated]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out maintenance branch
+        uses: actions/checkout@v4
+        with:
+          ref: work/v0.2.28-maintenance
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Apply structural maintenance patch
+        run: python scripts/apply_v028_phase1.py
+      - name: Compile source and tests
+        run: python -m compileall -q src tests
+      - name: Run state/config and core regression tests
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m unittest tests.test_state_layout_v028 tests.test_config_migrations_v028 -v
+          python -m unittest tests.test_stage_a tests.test_retrieval_gate tests.test_session_lineage -v
+          python -m unittest tests.test_hermes_provider tests.test_hermes_stdio_transport tests.test_codex_install tests.test_host_events tests.test_v2_host_flow tests.test_v2_mcp_flow -v
+          python -m unittest tests.test_cross_host_acceptance tests.test_maintenance_v2 tests.test_long_run_hygiene -v
+      - name: Commit generated maintenance changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'No generated changes found' >&2
+            exit 1
+          fi
+          git commit -m 'feat: v0.2.28 state layout and config migration [v028-generated]'
+          git push origin HEAD:work/v0.2.28-maintenance
