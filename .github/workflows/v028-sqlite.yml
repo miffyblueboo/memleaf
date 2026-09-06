@@ -22,7 +22,9 @@ jobs:
         with:
           python-version: '3.13'
       - name: Apply SQLite derived-index implementation
-        run: python scripts/apply_v028_sqlite_index.py
+        run: |
+          python scripts/apply_v028_sqlite_index.py
+          python scripts/fix_v028_sqlite_index.py
       - name: Compile and install
         run: |
           python -m compileall -q src tests scripts/benchmark_long_run.py
