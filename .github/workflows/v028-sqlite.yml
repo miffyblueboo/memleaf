@@ -46,12 +46,23 @@ jobs:
           python scripts/fix_v028_sqlite_index.py
           python scripts/optimize_v028_sqlite_rebuild.py
           python scripts/optimize_v028_sqlite_candidates.py
+          python scripts/fix_v028_sqlite_internal_search.py
           python scripts/update_v028_benchmark_report.py
 
       - name: Compile and install
         run: |
           python -m compileall -q src tests scripts/benchmark_long_run.py
           python -m pip install -e .
+
+      - name: Run retrieval and processing regressions first
+        run: |
+          python -m unittest \
+            tests.test_sqlite_index_v028 \
+            tests.test_v2_nomatch_semantics \
+            tests.test_retrieval_v2 \
+            tests.test_phase2_model_decisions \
+            tests.test_admission_noise \
+            tests.test_email_actionable_coverage -v
 
       - name: Run complete regression before scale benchmark
         run: python -m unittest discover -s tests -v
@@ -110,7 +121,7 @@ jobs:
           git rm .github/workflows/v028-sqlite.yml .github/workflows/v028-finalize.yml
           git rm scripts/apply_v028_sqlite_index.py scripts/fix_v028_sqlite_index.py \
             scripts/optimize_v028_sqlite_rebuild.py scripts/optimize_v028_sqlite_candidates.py \
-            scripts/update_v028_benchmark_report.py
+            scripts/fix_v028_sqlite_internal_search.py scripts/update_v028_benchmark_report.py
 
           git add src/memleaf/sqlite_index.py src/memleaf/vault.py src/memleaf/service.py \
             tests/test_sqlite_index_v028.py docs/config-migrations.md scripts/benchmark_long_run.py \
