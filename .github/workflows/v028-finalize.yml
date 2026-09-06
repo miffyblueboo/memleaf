@@ -10,107 +10,32 @@ permissions:
 
 jobs:
   finalize:
-    if: ${{ contains(github.event.head_commit.message, '[finalize-v028-nosqlite]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 100
     steps:
-      - name: Check out release candidate
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: work/v0.2.28-release
           fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
 
-      - name: Remove SQLite experiment scaffolding and reframe benchmark
+      - name: Reframe benchmark and remove SQLite experiment files
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-          import re
-
-          path = Path('scripts/benchmark_long_run.py')
-          text = path.read_text(encoding='utf-8')
-
-          new_decision = '''def _decision(results: list[dict[str, Any]]) -> dict[str, Any]:
-              largest = max(results, key=lambda item: item["memory_count"])
-              search_names = ("search_candidate_warm", "fulltext_search", "scope_filtered_search")
-              stress_reference_misses = {
-                  name: largest["metrics"][name]["p95_ms"]
-                  for name in search_names
-                  if largest["metrics"][name]["p95_ms"] > SEARCH_P95_TARGET_MS
-              }
-              rebuild_ms = largest["metrics"]["rebuild_index"]["p95_ms"]
-              rss = largest.get("peak_rss_mib")
-              return {
-                  "evaluated_memory_count": largest["memory_count"],
-                  "workload_classification": "stress_boundary",
-                  "normal_steady_state_assumed": False,
-                  "stress_reference_search_p95_ms": SEARCH_P95_TARGET_MS,
-                  "stress_reference_misses": stress_reference_misses,
-                  "rebuild_p95_reference_ms": REBUILD_TARGET_MS,
-                  "peak_rss_reference_mib": RSS_TARGET_MIB,
-                  "rebuild_reference_missed": rebuild_ms > REBUILD_TARGET_MS,
-                  "rss_reference_missed": isinstance(rss, (int, float)) and rss > RSS_TARGET_MIB,
-                  "architecture_change_required": False,
-                  "reason": (
-                      "50k active memories is retained as an extreme stress boundary, not a normal steady-state assumption. "
-                      "The normal retrieval path is Scope Map -> scope-constrained search -> read, while UPDATE/NO_CHANGE, "
-                      "todo retirement, bounded history, and compaction are expected to control active-memory growth. "
-                      "Stress misses are recorded for capacity visibility and do not justify adding another storage/search backend."
-                  ),
-              }
-
-
-'''
-          text, count = re.subn(
-              r'def _decision\(results: list\[dict\[str, Any\]\]\) -> dict\[str, Any\]:\n.*?\n\ndef _render_markdown',
-              new_decision + 'def _render_markdown',
-              text,
-              count=1,
-              flags=re.S,
-          )
-          if count != 1:
-              raise SystemExit('failed to replace benchmark decision')
-
-          text = text.replace('"schema_version": 1,', '"schema_version": 2,', 1)
-          text = text.replace(
-              '"The hosted benchmark reports a process-cold first search and warm repeated searches. It does **not** claim a true OS cold-cache measurement because hosted CI cannot safely or reproducibly drop the kernel page cache.",',
-              '"The hosted benchmark reports a process-cold first search and warm repeated searches. It does **not** claim a true OS cold-cache measurement because hosted CI cannot safely or reproducibly drop the kernel page cache.",\n        "",\n        "The 50,000-active-memory dataset is deliberately an extreme stress boundary. It is not an assumption that a healthy Vault should normally retain 50,000 useful active memories. The dataset has 20% global memories and spreads the rest across 24 project scopes, so even one project scope contains roughly 1.6k-1.7k active records at 50k total.",\n        "",\n        "Normal product retrieval remains `Scope Map -> scope-constrained search -> read`; full-vault full-text search is a fallback/special case rather than the primary injection path.",'
-          )
-          text = text.replace('"## Performance target and SQLite FTS decision",', '"## Scale interpretation",')
-          text = text.replace(
-              '"The decision gate is explicit: at 50,000 active memories, candidate/tag search, full-text search, and scope-filtered search should each remain at or below 2,000 ms p95. Rebuild has a 120 s p95 guardrail and peak RSS a 1,024 MiB guardrail, but those two alone do not justify FTS.",',
-              '"The 2,000 ms search, 120 s rebuild, and 1,024 MiB RSS values are retained as stress references only. A miss at 50,000 active memories is capacity evidence, not a release blocker and not a reason to introduce a new database/search backend.",'
-          )
-          text = text.replace(
-              'f"**SQLite FTS recommended: {\'yes\' if decision[\'sqlite_fts_recommended\'] else \'no\'}.** {decision[\'reason\']}",',
-              'f"**Architecture change required from the 50k stress result: {\'yes\' if decision[\'architecture_change_required\'] else \'no\'}.** {decision[\'reason\']}",'
-          )
-          text = text.replace(
-              '"If SQLite is introduced after this decision, it is a deletable `_index/` acceleration layer only: Markdown remains the sole source of truth, runtime/recovery state stays in `_state/`, and `rebuild-index` must recreate the database completely.",',
-              '"If a real Vault grows into the tens of thousands of active memories, first audit CREATE-vs-UPDATE/NO_CHANGE behavior, todo retirement, history retention, duplicate control, and compaction. The product remains Markdown-only in v0.2.28.",\n        "",\n        "## Active-memory lifecycle health",\n        "",\n        "Active memory count is a health signal, not an archival counter. Repeated facts should update existing canonical memories, unchanged observations should be NO_CHANGE, completed/cancelled todos retire from active memory, historical versions are bounded, and compaction reduces redundant active material. A real Vault approaching the 50k stress dataset should therefore trigger lifecycle/quality investigation before search-backend expansion.",'
-          )
-          if 'sqlite_fts_recommended' in text or 'SQLite FTS' in text or 'sqlite' in text.lower():
-              raise SystemExit('SQLite decision language remains in benchmark script')
-          path.write_text(text, encoding='utf-8')
-          PY
-
-          rm -f \
-            .github/workflows/v028-sqlite.yml \
-            scripts/apply_v028_sqlite_index.py \
-            scripts/fix_v028_sqlite_index.py \
-            scripts/fix_v028_sqlite_internal_search.py \
-            scripts/optimize_v028_sqlite_candidates.py \
-            scripts/optimize_v028_sqlite_rebuild.py \
-            scripts/update_v028_benchmark_report.py
-
-          if git grep -nEi 'sqlite|fts5' -- src tests scripts ':!.github/workflows/v028-finalize.yml'; then
-            echo 'unexpected SQLite/FTS product or test reference remains' >&2
+          python scripts/finalize_v028_no_sqlite.py
+          rm -f .github/workflows/v028-sqlite.yml
+          rm -f scripts/apply_v028_sqlite_index.py
+          rm -f scripts/fix_v028_sqlite_index.py
+          rm -f scripts/fix_v028_sqlite_internal_search.py
+          rm -f scripts/optimize_v028_sqlite_candidates.py
+          rm -f scripts/optimize_v028_sqlite_rebuild.py
+          rm -f scripts/update_v028_benchmark_report.py
+          if git grep -nEi 'sqlite|fts5' -- src tests scripts/benchmark_long_run.py; then
+            echo 'unexpected SQLite/FTS product reference remains' >&2
             exit 1
           fi
 
@@ -121,61 +46,24 @@ jobs:
           python -m compileall -q src tests scripts/benchmark_long_run.py
           python -m pip install -e .
 
-      - name: Run full regression
+      - name: Full regression
         shell: bash
         run: |
           set -euo pipefail
           python -m unittest discover -s tests -v
 
-      - name: Run no-SQLite 1k 10k 50k stress benchmark
+      - name: Non-SQLite 1k 10k 50k stress benchmark
         shell: bash
         run: |
           set -euo pipefail
-          python scripts/benchmark_long_run.py \
-            --counts 1000 10000 50000 \
-            --json-out benchmarks/results/v0.2.28-linux.json \
-            --markdown-out docs/performance.md
+          python scripts/benchmark_long_run.py --counts 1000 10000 50000 --json-out benchmarks/results/v0.2.28-linux.json --markdown-out docs/performance.md
 
-      - name: Validate stress interpretation and lifecycle evidence
+      - name: Validate stress semantics and lifecycle coverage
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          payload = json.loads(Path('benchmarks/results/v0.2.28-linux.json').read_text(encoding='utf-8'))
-          if payload.get('schema_version') != 2:
-              raise SystemExit('unexpected benchmark schema')
-          results = payload.get('results') or []
-          if [row.get('memory_count') for row in results] != [1000, 10000, 50000]:
-              raise SystemExit('1k/10k/50k benchmark matrix missing')
-          decision = payload.get('decision') or {}
-          if decision.get('workload_classification') != 'stress_boundary':
-              raise SystemExit('50k must be classified as stress boundary')
-          if decision.get('normal_steady_state_assumed') is not False:
-              raise SystemExit('50k must not be treated as normal steady state')
-          if decision.get('architecture_change_required') is not False:
-              raise SystemExit('stress result must not request a new backend')
-          perf = Path('docs/performance.md').read_text(encoding='utf-8')
-          required = [
-              'extreme stress boundary',
-              'Scope Map -> scope-constrained search -> read',
-              'Active-memory lifecycle health',
-              'Markdown-only',
-          ]
-          for needle in required:
-              if needle not in perf:
-                  raise SystemExit(f'performance report missing: {needle}')
-          print(json.dumps(decision, ensure_ascii=False, sort_keys=True))
-          PY
-
-          python -m unittest \
-            tests.test_long_run_hygiene \
-            tests.test_state_layout_v028 \
-            tests.test_source_neutral_todos_v028 \
-            tests.test_global_todo_retrieval \
-            tests.test_stage_b3a_contract -v
+          python -c "import json; from pathlib import Path; p=json.loads(Path('benchmarks/results/v0.2.28-linux.json').read_text()); d=p['decision']; assert p['schema_version']==2; assert [r['memory_count'] for r in p['results']]==[1000,10000,50000]; assert d['workload_classification']=='stress_boundary'; assert d['normal_steady_state_assumed'] is False; assert d['architecture_change_required'] is False; t=Path('docs/performance.md').read_text(); assert 'extreme stress boundary' in t; assert 'Scope Map -> scope-constrained search -> read' in t; assert 'Active-memory lifecycle health' in t; assert 'Markdown-only' in t; print(json.dumps(d, ensure_ascii=False, sort_keys=True))"
+          python -m unittest tests.test_long_run_hygiene tests.test_state_layout_v028 tests.test_source_neutral_todos_v028 tests.test_global_todo_retrieval tests.test_stage_b3a_contract -v
 
       - name: Commit clean benchmarked candidate
         shell: bash
@@ -183,9 +71,8 @@ jobs:
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git rm -f .github/workflows/v028-finalize.yml
+          git rm -f .github/workflows/v028-finalize.yml scripts/finalize_v028_no_sqlite.py
           git add -A
           git diff --cached --check
-          git status --short
           git commit -m 'chore: finalize v0.2.28 maintenance without SQLite'
           git push origin HEAD:work/v0.2.28-release
