@@ -1,0 +1,43 @@
+name: v0.2.28 structural audit
+
+on:
+  push:
+    branches:
+      - work/v0.2.28-maintenance
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/v0.2.28-maintenance
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Compile
+        run: python -m compileall -q src tests
+      - name: Runtime state path audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== direct _index runtime-state references in src ==='
+          git grep -nE '(_index.{0,40}(processed|agents|host_ingest|retrieval_gate|compaction|vault\.lock)|index_path.{0,40}(processed|agents|host_ingest|retrieval_gate|compaction|vault\.lock))' -- src || true
+          echo '=== explicit state properties ==='
+          git grep -nE '(processed_state_path|agents_state_path|host_ingest_path|retrieval_gate_state_path|compaction_journal_path|state_layout_path)' -- src || true
+      - name: Legacy configuration and naming audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== legacy config names ==='
+          git grep -nE '(include_tool_output|abnormal_guard|tag_full|^[[:space:]]*["'"']inject["'"']|processed_index_path|agents_index_path)' -- src docs tests || true
+          echo '=== old stage/candidate/development naming ==='
+          git grep -nEi '(stage[- _]?[abc][0-9a-z]*|candidate/development|development candidate)' -- src docs README.md README.en.md || true
+      - name: Core business-specific semantic lexicon audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git grep -nEi '(email|e-mail|邮件|日报|ppt|项目计划|工单|github)' -- src/memleaf || true
