@@ -243,13 +243,14 @@ def _benchmark_one(base_dir: Path, count: int) -> dict[str, Any]:
     query_index = min(count - 1, 123)
     target_id = f"bench-{query_index:06d}"
     target_token = f"needle-{query_index:06d}"
+    indexed_query = f"bench-tag-{query_index % 64:02d}"
     project = f"project:p{query_index % PROJECT_COUNT:02d}"
 
     cold_stats, cold_result = _measure(
-        lambda: Memleaf(root).search_candidates("bench-tag-07", limit=20), 1
+        lambda: Memleaf(root).search_candidates(indexed_query, limit=20), 1
     )
     search_stats, search_result = _measure(
-        lambda: service.search_candidates("bench-tag-07", limit=20), 3
+        lambda: service.search_candidates(indexed_query, limit=20), 3
     )
     exact_stats, exact_result = _measure(
         lambda: service.search_candidates(target_id, limit=5), 3
@@ -258,7 +259,7 @@ def _benchmark_one(base_dir: Path, count: int) -> dict[str, Any]:
         lambda: service.search_candidates(target_token, limit=5), 3
     )
     scope_stats, scope_result = _measure(
-        lambda: service.search_candidates("bench-tag-07", scope=project, limit=20), 3
+        lambda: service.search_candidates(indexed_query, scope=project, limit=20), 3
     )
     todo_stats, todo_result = _measure(
         lambda: service.list_todos(status="active", limit=20), 3
@@ -416,7 +417,7 @@ def _benchmark_one(base_dir: Path, count: int) -> dict[str, Any]:
 
     service.vault.lock = tracking_lock  # type: ignore[method-assign]
     try:
-        service.search_candidates("bench-tag-07", limit=20)
+        service.search_candidates(indexed_query, limit=20)
     finally:
         service.vault.lock = real_lock  # type: ignore[method-assign]
 

@@ -1,4 +1,4 @@
-"""Model backends and explicit routing for stage B."""
+"""Model backends and explicit routing."""
 
 from .base import (
     DEFAULT_REQUEST_TIMEOUT,

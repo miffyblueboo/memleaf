@@ -99,7 +99,7 @@ class StageB1Test(unittest.TestCase):
     def tearDown(self):
         self.tempdir.cleanup()
 
-    def test_rebuild_preserves_session_state_and_removes_stale_events(self):
+    def test_rebuild_preserves_all_runtime_state_including_old_event_evidence(self):
         self.service.capture("codex", "s", "turn-1", "user", "hello", event_id="live")
         processed_path = self.vault_path / "_state" / "processed.json"
         current = json.loads(processed_path.read_text(encoding="utf-8"))
@@ -121,8 +121,8 @@ class StageB1Test(unittest.TestCase):
         rebuilt = json.loads(processed_path.read_text(encoding="utf-8"))
         live_key = event_key("live")
         self.assertIn(live_key, rebuilt["event_keys"])
-        self.assertNotIn(stale, rebuilt["event_keys"])
-        self.assertNotIn(stale, rebuilt["events"])
+        self.assertIn(stale, rebuilt["event_keys"])
+        self.assertEqual(rebuilt["events"][stale]["event_id"], "should-not-survive")
         self.assertEqual(rebuilt["sessions"]["codex/s"], state)
 
     def test_turn_key_survives_redaction_and_separates_colliding_display_ids(self):

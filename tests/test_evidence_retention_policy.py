@@ -49,14 +49,14 @@ class EvidenceRetentionPolicyTests(unittest.TestCase):
         self.observe()
         self.assertNotIn('RAW_SENTINEL',self.core.vault.host_ingest_path.read_text())
 
-    def test_existing_true_and_explicit_new_setting_have_documented_precedence(self):
-        config={'capture':{'include_tool_output':True}}
+    def test_current_policy_modes_do_not_understand_legacy_fields(self):
         record=observation_record('external.inspect','c','RAW_SENTINEL')
-        self.assertEqual(retain_tool_evidence([record],config)[0]['content'],'RAW_SENTINEL')
-        config['capture']['tool_evidence_mode']='off'
-        self.assertEqual(retain_tool_evidence([record],config),[])
-        config['capture'].update(include_tool_output=False,tool_evidence_mode='bounded')
-        self.assertEqual(retain_tool_evidence([record],config)[0]['content'],'RAW_SENTINEL')
+        bounded={'capture':{'tool_evidence_mode':'bounded','include_attachments':False}}
+        self.assertEqual(retain_tool_evidence([record],bounded)[0]['content'],'RAW_SENTINEL')
+        off={'capture':{'tool_evidence_mode':'off','include_attachments':False}}
+        self.assertEqual(retain_tool_evidence([record],off),[])
+        with self.assertRaises(ValueError):
+            retain_tool_evidence([record],{'capture':{'include_tool_output':True}})
 
     def test_metadata_keeps_identity_not_body_and_does_not_create_retry_evidence(self):
         self.mode('metadata'); self.observe()
@@ -120,7 +120,7 @@ class EvidenceRetentionPolicyTests(unittest.TestCase):
 
     def test_invalid_mode_and_boolean_fail_before_capture(self):
         for config in ({'tool_evidence_mode':'raw'}, {'tool_evidence_mode':False},
-                       {'include_tool_output':'false'}, {'include_attachments':'false'}):
+                       {'include_attachments':'false'}):
             with self.subTest(config=config),self.assertRaises(ValueError):
                 retain_tool_evidence([],{'capture':config})
 

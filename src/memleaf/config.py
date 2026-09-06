@@ -84,12 +84,20 @@ def _normalize_legacy_config(value: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(normalized["inject"], Mapping):
             raise ValueError("invalid legacy memleaf inject settings")
         normalized.pop("inject", None)
+    capture_present = "capture" in normalized
     capture = normalized.get("capture")
     if capture is not None and not isinstance(capture, Mapping):
         raise ValueError("invalid memleaf capture settings")
-    if isinstance(capture, Mapping):
+    if not capture_present:
+        # A persisted pre-policy config with no capture section behaved as
+        # metadata-only. A genuinely new Vault never reaches this branch:
+        # default_config() writes an explicit current bounded mode.
+        normalized["capture"] = {"tool_evidence_mode": "metadata"}
+    elif isinstance(capture, Mapping):
         current = dict(capture)
-        if "include_tool_output" in current:
+        legacy_present = "include_tool_output" in current
+        explicit_present = "tool_evidence_mode" in current
+        if legacy_present:
             legacy = current.pop("include_tool_output")
             if type(legacy) is not bool:
                 raise ValueError("invalid legacy memleaf capture.include_tool_output")
@@ -98,6 +106,10 @@ def _normalize_legacy_config(value: Mapping[str, Any]) -> dict[str, Any]:
             if explicit is not None and explicit != migrated_mode:
                 raise ValueError("conflicting legacy and current tool evidence settings")
             current["tool_evidence_mode"] = migrated_mode
+        elif not explicit_present:
+            # Old partial capture sections also inherited metadata-only tool
+            # evidence behavior before tool_evidence_mode existed.
+            current["tool_evidence_mode"] = "metadata"
         normalized["capture"] = current
     return normalized
 

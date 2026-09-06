@@ -43,13 +43,13 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument(
         "--no-codex",
         action="store_true",
-        help="compatibility no-op; use install --host codex for explicit Codex setup",
+        help="deprecated compatibility no-op through 0.2.x; use install --host codex (removal planned for 0.3)",
     )
     init.add_argument("--no-hermes", action="store_true", help="disable Hermes setup")
     init.add_argument(
         "--no-antigravity",
         action="store_true",
-        help="accepted for compatibility; Antigravity is currently unsupported",
+        help="deprecated compatibility no-op through 0.2.x; Antigravity is unsupported (removal planned for 0.3)",
     )
     init.add_argument(
         "--no-model-discovery",
@@ -565,9 +565,9 @@ def _print_human_result(output: dict) -> None:
         else:
             print(f"model: {model.get('status')}")
     if output["dry_run"]:
-        print(f"agents index not written: {output['agents_state_path']}")
+        print(f"agents state not written: {output['agents_state_path']}")
     else:
-        print(f"agents index: {output['agents_state_path']}")
+        print(f"agents state: {output['agents_state_path']}")
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised by subprocess smoke tests.

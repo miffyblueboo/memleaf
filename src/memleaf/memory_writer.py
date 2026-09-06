@@ -1,4 +1,4 @@
-"""Deterministic Markdown writes for the stage-B processing slice."""
+"""Deterministic Markdown writes for memory processing."""
 
 from __future__ import annotations
 

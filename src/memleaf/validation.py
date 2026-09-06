@@ -1,4 +1,4 @@
-"""Strict, side-effect-free validation for stage-B1 model JSON."""
+"""Strict, side-effect-free validation for model JSON."""
 
 from __future__ import annotations
 

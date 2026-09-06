@@ -1,4 +1,4 @@
-"""Small injectable model backend interfaces used by stage B."""
+"""Small injectable model backend interfaces."""
 
 from __future__ import annotations
 

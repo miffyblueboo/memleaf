@@ -171,9 +171,7 @@ done
 export PATH="$venv_path/bin:$user_bin:$PATH"
 "$venv_path/bin/memleaf" init \
   --vault "$vault_path" \
-  --no-codex \
-  --no-hermes \
-  --no-antigravity
+  --no-hermes
 
 hermes_bin=""
 candidate_hermes=$(command -v hermes 2>/dev/null || true)
@@ -265,7 +263,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from memleaf.adapters.base import update_agents_index
+from memleaf.adapters.base import update_agents_state
 
 vault_path = Path(sys.argv[1]).expanduser()
 hermes_executable = str(Path(sys.argv[2]).expanduser().resolve())
@@ -283,8 +281,8 @@ updates = {
         "user_action_required": False,
     }
 }
-if not update_agents_index(vault_path / "_index" / "agents.json", updates):
-    raise SystemExit("could not update Hermes provider status in agents index")
+if not update_agents_state(vault_path / "_state" / "agents.json", updates):
+    raise SystemExit("could not update Hermes provider status in agents state")
 PY
 
   # Configure the active MCP entry through Hermes' official CLI.  Keep this
@@ -332,17 +330,17 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from memleaf.adapters.base import update_agents_index
+from memleaf.adapters.base import update_agents_state
 
 vault_path = Path(sys.argv[1]).expanduser()
-if not update_agents_index(
-    vault_path / "_index" / "agents.json",
+if not update_agents_state(
+    vault_path / "_state" / "agents.json",
     {"hermes": {"mcp_status": "failed", "mcp_availability": "unavailable"}},
 ):
-    raise SystemExit("could not record Hermes MCP failure in agents index")
+    raise SystemExit("could not record Hermes MCP failure in agents state")
 PY
     then
-      die "could not record Hermes MCP failure in agents index"
+      die "could not record Hermes MCP failure in agents state"
     fi
     die "Hermes memleaf MCP configuration/test failed"
   fi
@@ -372,14 +370,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from memleaf.adapters.base import update_agents_index
+from memleaf.adapters.base import update_agents_state
 
 vault_path = Path(sys.argv[1]).expanduser()
-if not update_agents_index(
-    vault_path / "_index" / "agents.json",
+if not update_agents_state(
+    vault_path / "_state" / "agents.json",
     {"hermes": {"mcp_status": "active", "mcp_availability": "available"}},
 ):
-    raise SystemExit("could not update Hermes MCP status in agents index")
+    raise SystemExit("could not update Hermes MCP status in agents state")
 PY
   printf 'Hermes memory provider: verified active\n'
 fi

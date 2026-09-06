@@ -1021,11 +1021,6 @@ class Memleaf:
         return parsed
 
     @staticmethod
-    def _todo_is_asap(memory: Memory) -> bool:
-        text = "\n".join([memory.title, memory.body, *memory.tags, *memory.keywords]).casefold()
-        return any(marker in text for marker in ("尽快", "紧急", "优先处理", "asap", "urgent"))
-
-    @staticmethod
     def _bounded_todo_page(
         candidates: list[dict[str, Any]],
         *,
@@ -1122,8 +1117,7 @@ class Memleaf:
                 if parsed_due is None:
                     if not include_unscheduled:
                         continue
-                    bucket = 3 if self._todo_is_asap(memory) else 4
-                    sort_key = (bucket, date.max, memory.title.casefold(), memory.memory_id)
+                    sort_key = (3, date.max, memory.title.casefold(), memory.memory_id)
                 else:
                     in_range = (lower is None or parsed_due >= lower) and (upper is None or parsed_due <= upper)
                     overdue = include_overdue and parsed_due < today and (upper is None or parsed_due <= upper)
