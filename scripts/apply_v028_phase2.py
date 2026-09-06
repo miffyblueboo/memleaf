@@ -40,9 +40,8 @@ for root_name in ("src", "tests"):
         text = target.read_text(encoding="utf-8")
         updated = text.replace("update_agents_index", "update_agents_state")
         updated = updated.replace("agent_index_path", "agent_state_path")
+        updated = updated.replace("agents_index_path", "agents_state_path")
         updated = updated.replace("agents_index_written", "agents_state_written")
-        updated = updated.replace('"agents_index_path"', '"agents_state_path"')
-        updated = updated.replace('"agents_index_written"', '"agents_state_written"')
         if updated != text:
             target.write_text(updated, encoding="utf-8")
 
@@ -157,7 +156,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from memleaf.inspection import audit_vault, preview_process
+from memleaf.inspection import audit_vault
 from memleaf.vault import Vault
 from memleaf.locking import atomic_write_json
 
