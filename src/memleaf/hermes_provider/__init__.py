@@ -9,12 +9,14 @@ same local ``~/.memleaf`` vault as the standalone MCP server.
 from __future__ import annotations
 
 import json
+import importlib.util
 import logging
 import os
 import re
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from collections import OrderedDict, deque
@@ -23,6 +25,23 @@ from pathlib import Path
 from typing import Any, Deque, Dict, List, Mapping, Optional, Tuple
 
 from agent.memory_provider import MemoryProvider, RecallStatus
+
+try:
+    from .evidence_budget import apply_evidence_budget
+except (ImportError, ValueError):
+    # Hermes installs this file as a standalone plugin directory.  Load the
+    # adjacent copied module directly so the provider never imports Core (or
+    # Hermes' package initializer) just to apply the capture budget.
+    _BUDGET_SPEC = importlib.util.spec_from_file_location(
+        "_memleaf_hermes_evidence_budget",
+        Path(__file__).with_name("evidence_budget.py"),
+    )
+    if _BUDGET_SPEC is None or _BUDGET_SPEC.loader is None:
+        raise ImportError("Hermes evidence budget module is unavailable")
+    _BUDGET_MODULE = importlib.util.module_from_spec(_BUDGET_SPEC)
+    sys.modules[_BUDGET_SPEC.name] = _BUDGET_MODULE
+    _BUDGET_SPEC.loader.exec_module(_BUDGET_MODULE)
+    apply_evidence_budget = _BUDGET_MODULE.apply_evidence_budget
 
 logger = logging.getLogger(__name__)
 
@@ -1179,8 +1198,9 @@ def _bounded_current_tool_evidence(messages: Optional[List[Dict[str, Any]]], *, 
     """Match current-turn results strictly by call ID, not tool name/order.
 
     Kept standard-library-only: Hermes can load this copied provider while the
-    core runs in a separate environment. Core capture redacts and validates
-    these bounded records again before persistence.
+    core runs in a separate environment. The adjacent shared budget module is
+    the only body/record boundary; Core redacts and validates these records
+    again before persistence using the same idempotent rule.
     """
     if not isinstance(messages, list):
         return []
@@ -1220,12 +1240,11 @@ def _bounded_current_tool_evidence(messages: Optional[List[Dict[str, Any]]], *, 
                 return None
             if not text or "\x00" in text:
                 return None
-            partial = len(text) > 2000
             item = {"tool_name": name[:320], "call_id": cid[:320], "kind": kind,
                     "execution_status": "error" if execution_error else "success",
-                    "completeness": "partial" if partial else "complete", "schema_version": "2",
-                    "result_status": "truncated" if partial else "error" if execution_error else "success",
-                    "content": text[:2000],
+                    "completeness": "complete", "schema_version": "2",
+                    "result_status": "error" if execution_error else "success",
+                    "content": text,
                     "source_type": "document" if _has_document_arguments(call.get("arguments")) else "tool_result"}
             if isinstance(value, Mapping):
                 for key in ("record_id", "title", "message_id", "subject", "sender", "domain"):
@@ -1240,7 +1259,7 @@ def _bounded_current_tool_evidence(messages: Optional[List[Dict[str, Any]]], *, 
         if original is None:
             continue
         collection, context = None, {}
-        if original["completeness"] == "partial" and not execution_error:
+        if not execution_error:
             if isinstance(payload, list):
                 collection = payload
             elif isinstance(payload, Mapping):
@@ -1249,7 +1268,7 @@ def _bounded_current_tool_evidence(messages: Optional[List[Dict[str, Any]]], *, 
                     collection = payload[keys[0]]
                     context = {key: value for key, value in payload.items() if key != keys[0]}
         if collection:
-            for index, value in enumerate(collection[:8]):
+            for index, value in enumerate(collection):
                 item = record({"context": context, "record": value}, f"result-record-{index}")
                 if item is not None:
                     for field in ("message_id", "subject", "sender", "domain", "title"):
@@ -1259,20 +1278,10 @@ def _bounded_current_tool_evidence(messages: Optional[List[Dict[str, Any]]], *, 
                         if isinstance(field_value, str) and field_value.strip() and not any(ch in field_value for ch in "\x00\r\n"):
                             item[field] = field_value[:320]
                     output.append(item)
-            if len(collection) > 8:
-                output.append({"tool_name": "evidence.inventory", "call_id": cid[:320],
-                    "record_id": "overflow", "kind": "unknown", "result_status": "truncated",
-                    "completeness": "partial", "execution_status": "success", "schema_version": "2",
-                    "omitted_count": str(len(collection) - 8), "content": "Additional structured observations exceeded the capture budget."})
         else:
             output.append(original)
         seen.add(cid)
-    if len(output) > 8:
-        omitted = sum(int(row.get("omitted_count", "1")) for row in output[7:])
-        output = output[:7] + [{"tool_name": "evidence.inventory", "call_id": "overflow",
-            "kind": "unknown", "result_status": "truncated", "completeness": "partial",
-            "omitted_count": str(omitted), "content": "Additional host observations exceeded the capture budget."}]
-    return output
+    return apply_evidence_budget(output)
 
 
 class MemleafMemoryProvider(MemoryProvider):

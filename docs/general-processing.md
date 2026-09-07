@@ -80,12 +80,15 @@ labels them NO_CHANGE. Incomplete turns retain their source instead of being
 cleaned after the usual grace period. Scope-filtered retries may revisit them;
 no endless automatic model retry or extra external tool call is introduced.
 
-Tool evidence is bounded to eight records with at most 2,000 content characters
-per captured result record and 320-character metadata fields, with redaction at
-Core capture. Large unambiguous top-level record collections retain complete
-records and enclosing context within that budget. Per-record provenance takes
-precedence over common source metadata. An overflow slot reports omitted
-records. Arbitrary large prose is not split into falsely complete facts;
+Tool evidence uses one shared budget: 64 source records, at most 32 KiB of UTF-8
+body text per record and 128 KiB of total body text, plus 320-character metadata
+fields, with redaction at Core capture. Cache and inbox normalization are
+idempotent under this budget. Large unambiguous top-level record collections
+retain complete records and enclosing context within that budget. Per-record provenance takes
+precedence over common source metadata. Separate loss markers report omitted
+records, with at most 64 call identities plus one aggregate marker. These markers
+have fixed diagnostic bodies and cannot supply external facts.
+Arbitrary large prose is not split into falsely complete facts;
 unsupported/incomplete content needs a supported complete source excerpt or a
 later source input. Switching from `metadata` to `bounded` does not reconstruct
 body content that was never captured; bounded retention can still produce an

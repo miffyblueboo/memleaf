@@ -17,11 +17,19 @@ legacy boolean (false/absent -> metadata, true -> bounded). An explicit new mode
 wins over the legacy boolean. Invalid strings and non-boolean flags fail closed.
 Loading config does not rewrite it. Normal saves make the effective mode explicit.
 
-The inherited limits remain eight records, 2,000 characters per body, and 320 per
-metadata field. Oversized eligible evidence remains incomplete; its prefix is
-never promoted into a complete fact. Policy-excluded observations are marked
+The shared capture budget allows 64 source records, 32 KiB of UTF-8 text per body,
+128 KiB of total body text, and 320 characters per metadata field. Loss markers
+have a separate allowance of 64 call identities plus one aggregate marker, with
+fixed diagnostic bodies. Reapplying normalization does not reduce an
+already bounded inventory or count existing omissions again. Oversized eligible
+evidence remains incomplete; its prefix is never promoted into a complete fact.
+Policy-excluded observations are marked
 retention=metadata, have no content, and are not retried as missing evidence.
 No later relaxation recreates discarded original content.
+
+These are source-retention limits, not a guarantee that every configured model
+can process the resulting prompt. See [capture budget design](capture-budget-design.md)
+for the ingestion boundary, model-capacity limitation and acceptance contract.
 
 Document/attachment bodies require include_attachments=true and bounded mode.
 HostRuntime and the standalone Hermes adapter classify structural file arguments

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .locking import atomic_write_json, read_json
+from .evidence_budget import logical_observation_count
 from .provenance import observation_records, refers_to_vault, normalize_tool_evidence, observation_record
 from .retrieval_gate import (
     MAX_GATE_RETRIES,
@@ -151,8 +152,18 @@ class HostRuntime:
             saved = [record for turn in turns if turn.turn_key == turn_key(turn_id)
                      for event in turn.events if event.role == "assistant"
                      for record in event.tool_evidence]
-            permitted = retain_tool_evidence(pending, self.vault.config())
-            if not all(record in saved for record in permitted):
+            # Apply the same effective retention policy to both sides before
+            # comparing them.  In metadata mode, a truncated source record
+            # is persisted without content and its completeness is canonicalized
+            # to ``missing`` on the pending side, while inbox parsing restores
+            # the ``truncated`` result status and therefore derives
+            # ``partial`` before policy filtering.  This comparison must still
+            # require every pending record to be present; policy canonicalization
+            # only removes the representation mismatch.
+            policy_config = self.vault.config()
+            permitted = retain_tool_evidence(pending, policy_config)
+            saved_permitted = retain_tool_evidence(saved, policy_config)
+            if not all(record in saved_permitted for record in permitted):
                 return
             entry["tool_evidence"].pop(turn_id, None)
             entry["tool_evidence_lost"].pop(turn_id, None)
@@ -206,7 +217,11 @@ class HostRuntime:
             while len(pending) > 16:
                 evicted_id = next(iter(pending))
                 evicted = pending.pop(evicted_id)
-                lost[evicted_id] = sum(int(row.get("omitted_count", "1")) for row in evicted)
+                lost[evicted_id] = sum(
+                    logical_observation_count(row)
+                    for row in evicted
+                    if isinstance(row, Mapping)
+                )
             while len(lost) > 256:
                 lost.pop(next(iter(lost)))
                 entry["tool_evidence_earlier_loss"] = True

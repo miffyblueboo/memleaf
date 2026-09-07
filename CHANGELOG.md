@@ -2,6 +2,13 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.31 — 2026-09-07
+
+- Unify Core and the copied Hermes provider on one idempotent UTF-8 evidence budget: at most 64 source records, 32 KiB per body, and 128 KiB of aggregate body text. Complete matched sources above the former 2,000-character/eight-record limits remain available within those bounds.
+- Keep loss diagnostics bounded to 64 marker identities plus one aggregate marker. Per-record, aggregate, and marker overflow remains explicit incomplete evidence and cannot authorize a write or successful cleanup.
+- Preserve metadata/off, attachment, redaction, and call-ID behavior, and consume metadata-mode pending evidence after a successful capture using the same effective policy on pending and inbox sides.
+- Add provider-copy, capture-to-process, loss-defer, marker-capacity and lifecycle regressions. Deterministic tests do not claim real-model semantic quality, real-session replay, or customer acceptance.
+
 ## 0.2.30 — 2026-09-07
 
 - Add a physical evidence projection for the Gate: the complete local inventory remains available for provenance, replay and audit, while only user-origin units and complete external observations become bindable model evidence. Assistant synthesis, retrieved memory, incomplete observations and metadata-only records remain context or unresolved ledger state.

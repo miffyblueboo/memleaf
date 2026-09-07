@@ -213,15 +213,15 @@ class ProvenanceContractTests(unittest.TestCase):
         self.assertEqual(len(rows),1);self.assertNotIn("mirror",rows[0]["content"])
 
     def test_large_collection_keeps_complete_records_and_omission_count(self):
-        payload={"project":"Orion","records":[{"record_id":str(i),"body":"x"*250} for i in range(20)]}
+        payload={"project":"Orion","records":[{"record_id":str(i),"body":"x"*250} for i in range(80)]}
         rows=observation_records("tool.read","c",payload)
-        self.assertEqual(len(rows),8)
-        self.assertEqual(rows[-1]["omitted_count"],"13")
+        self.assertEqual(len(rows),65)
+        self.assertEqual(rows[-1]["omitted_count"],"16")
         self.assertTrue(all(row["completeness"]=="complete" for row in rows[:-1]))
         self.assertTrue(all("Orion" in row["content"] for row in rows[:-1]))
 
     def test_oversized_prose_is_never_complete(self):
-        row=observation_records("files.read","c","x"*5000)[0]
+        row=observation_records("files.read","c","x"*40000)[0]
         self.assertEqual(row["execution_status"],"success")
         self.assertEqual(row["completeness"],"partial")
         self.assertEqual(row["result_status"],"truncated")
@@ -243,8 +243,8 @@ class ProvenanceContractTests(unittest.TestCase):
         self.assertEqual(rows[0]["kind"],"unknown")
 
     def test_reader_accounts_all_overflow_records(self):
-        rows=read_tool_evidence([dict(tool_name="a",call_id=str(i),content=f"fact {i}") for i in range(30)])
-        self.assertEqual(rows[-1]["omitted_count"],"23")
+        rows=read_tool_evidence([dict(tool_name="a",call_id=str(i),content=f"fact {i}") for i in range(80)])
+        self.assertEqual(rows[-1]["omitted_count"],"16")
 
     def test_invalid_omission_counter_is_rejected(self):
         with self.assertRaises(ValueError):normalize_tool_evidence([dict(omitted_count="not-a-number")])

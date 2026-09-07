@@ -34,6 +34,7 @@ class PyPIInstallTests(unittest.TestCase):
             target = _copy_provider(hermes_home)
             self.assertEqual(target, hermes_home / "plugins" / "memleaf")
             self.assertTrue((target / "__init__.py").is_file())
+            self.assertTrue((target / "evidence_budget.py").is_file())
             self.assertTrue((target / "plugin.yaml").is_file())
             self.assertTrue((target / "README.md").is_file())
             self.assertIn("name: memleaf", (target / "plugin.yaml").read_text(encoding="utf-8"))

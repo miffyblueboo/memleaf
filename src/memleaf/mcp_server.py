@@ -148,7 +148,7 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                             "subject": {"type": "string"},
                             "sender": {"type": "string"},
                             "domain": {"type": "string"},
-                            **{key: {"type": "string"} for key in ("tool_name", "call_id", "record_id", "title", "kind", "result_status", "content", "result_digest", "execution_status", "completeness", "schema_version", "omitted_count", "source_type", "retention")},
+                            **{key: {"type": "string"} for key in ("tool_name", "call_id", "record_id", "title", "kind", "result_status", "content", "result_digest", "execution_status", "completeness", "schema_version", "omitted_count", "omitted_bytes", "source_type", "retention")},
                         }
                     ),
                 },

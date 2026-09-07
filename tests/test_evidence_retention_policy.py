@@ -79,11 +79,11 @@ class EvidenceRetentionPolicyTests(unittest.TestCase):
         self.mode('bounded',attachments=True)
         self.observe(tool_input={'path':'/work/requirements.md'})
         self.assertIn('RAW_SENTINEL',self.runtime._tool_evidence('s','t')[0]['content'])
-        raw=observation_record('external.inspect','c','api_key=secret-document-key\n'+'x'*3000)
+        raw=observation_record('external.inspect','c','api_key=secret-document-key\n'+'x'*40000)
         raw['source_type']='document'
         result=retain_tool_evidence([raw],self.core.vault.config())[0]
         self.assertNotIn('secret-document-key',str(result))
-        self.assertLessEqual(len(result['content']),2000)
+        self.assertLessEqual(len(result['content'].encode('utf-8')),32*1024)
         self.assertEqual(result['completeness'],'partial')
 
     def test_cached_body_is_filtered_if_policy_tightens_before_capture(self):

@@ -24,9 +24,9 @@ class ToolProvenanceTests(unittest.TestCase):
             self.assertIn('external_observation',text)
 
     def test_truncation_cannot_look_complete(self):
-        value=normalize_tool_evidence([dict(tool_name='terminal.exec',call_id='c',kind='external_observation',content='x'*3000,result_status='success')])[0]
+        value=normalize_tool_evidence([dict(tool_name='terminal.exec',call_id='c',kind='external_observation',content='x'*40000,result_status='success')])[0]
         self.assertEqual(value['result_status'],'truncated')
-        self.assertEqual(len(value['content']),2000)
+        self.assertLessEqual(len(value['content'].encode('utf-8')),32*1024)
 
     def test_host_pending_results_do_not_leak_to_other_turns(self):
         with tempfile.TemporaryDirectory() as tmp:
