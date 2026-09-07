@@ -293,6 +293,19 @@ COVERAGE_REASONS = frozenset({"query_only", "assistant_restatement", "retrieved_
     "no_future_value", "exact_duplicate", "quoted_or_example", "negated", "already_completed",
     "scope_ambiguous", "scope_conflict", "ownership_ambiguous", "target_ambiguous", "coverage_unresolved"})
 
+# Coverage is a semantic accounting ledger, not a second candidate decision.
+# Keep the disposition implied by the reason so a model cannot leave known
+# read-only/irrelevant evidence retryable, or mark unresolved evidence clean.
+_NO_CHANGE_COVERAGE_REASONS = frozenset({
+    "query_only", "assistant_restatement", "retrieved_memory_only",
+    "no_future_value", "exact_duplicate", "quoted_or_example", "negated",
+    "already_completed",
+})
+_DEFERRED_COVERAGE_REASONS = frozenset({
+    "scope_ambiguous", "scope_conflict", "ownership_ambiguous",
+    "target_ambiguous", "coverage_unresolved",
+})
+
 
 def parse_coverage(value: Any, units: Iterable[EvidenceUnit], candidates: Iterable[Mapping[str, Any]], *, require_complete: bool = True) -> dict[str, dict[str, Any]]:
     """Validate accounting without trusting the model's evidence identities."""
@@ -317,12 +330,22 @@ def parse_coverage(value: Any, units: Iterable[EvidenceUnit], candidates: Iterab
             if any(units[uid].event_key not in candidates[i]["evidence_event_ids"] for i in ids):
                 raise ModelOutputError("coverage event mismatch", validation_detail="invalid_evidence")
         elif decision in {"NO_CHANGE", "DEFERRED"}:
-            if (row.get("candidate_ids") or not isinstance(row.get("reason"), str)
-                or row.get("reason") not in COVERAGE_REASONS):
+            reason = row.get("reason")
+            if (row.get("candidate_ids") or not isinstance(reason, str)
+                or reason not in COVERAGE_REASONS):
                 raise ModelOutputError("invalid coverage decision", validation_detail="invalid_evidence")
+            # Normalize only the model's declared reason. This keeps the
+            # protocol source-neutral: no local topic or business heuristic
+            # decides whether a fragment is retryable.
+            if reason in _NO_CHANGE_COVERAGE_REASONS:
+                decision = "NO_CHANGE"
+            elif reason in _DEFERRED_COVERAGE_REASONS:
+                decision = "DEFERRED"
         else:
             raise ModelOutputError("unknown coverage decision", validation_detail="invalid_evidence")
-        result[uid] = dict(row)
+        normalized = dict(row)
+        normalized["decision"] = decision
+        result[uid] = normalized
     if require_complete and set(result) != set(units):
         raise ModelOutputError("incomplete evidence coverage", validation_detail="invalid_evidence")
     return result
@@ -376,6 +399,10 @@ def evidence_prompt(units: Iterable[EvidenceUnit]) -> str:
         '{"unit_id":"supplied id","decision":"CANDIDATE","candidate_ids":["id"]} or '
         '{"unit_id":"supplied id","decision":"NO_CHANGE or DEFERRED","reason":"reason"}. '
         'Allowed reasons: ' + ', '.join(sorted(COVERAGE_REASONS)) + '. '
+        'Use NO_CHANGE only with reasons: ' + ', '.join(sorted(_NO_CHANGE_COVERAGE_REASONS)) + '. '
+        'Use DEFERRED only with reasons: ' + ', '.join(sorted(_DEFERRED_COVERAGE_REASONS)) + '. '
+        'Tool records retained with retention=metadata may appear in the event envelope but are not evidence units: '
+        'do not invent a unit ID for them or bind their call ID, digest, tool name, or other metadata. '
         'Only actual user assertions or complete external observations can support writes. User origin labels are hints. Questions, examples, '
         'retrieved memories and assistant synthesis cannot. Account for missing or ambiguous facts '
         'as DEFERRED; do not invent a candidate to satisfy coverage. Interpret mixed assertions '

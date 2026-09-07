@@ -2,6 +2,12 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.29 — 2026-09-07
+
+- Clarify the source-neutral Gate contract for tool records retained as `metadata`: they are not evidence units, cannot be bound by metadata identifiers, and cannot authorize CREATE or UPDATE.
+- Normalize coverage dispositions from their declared reasons so `query_only`, `assistant_restatement`, and other known no-write reasons close as `NO_CHANGE`, while unresolved evidence, ownership, target, or Scope ambiguity remains `DEFERRED`.
+- Add a bounded `invalid_evidence` correction path and regressions for metadata-only one-off operations, failed watermark recovery, cleanup eligibility, idempotent retry, and protection against knowledge/history pollution. Keep Markdown as the sole source of truth without adding SQLite, FTS, or other runtime services.
+
 ## 0.2.28 — 2026-09-06
 
 - Separate rebuildable derived data in `_index/` from correctness/runtime state in `_state/`. Existing Vaults migrate processed-event, agent activation, host-ingest, retrieval-gate and compaction state crash-safely and idempotently; conflicting or corrupt legacy/current state fails closed, and `rebuild-index` never rewrites runtime state.

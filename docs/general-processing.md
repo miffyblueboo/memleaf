@@ -1,4 +1,4 @@
-# General processing reliability contract — 0.2.27
+# General processing reliability contract — 0.2.29
 
 This is source-neutral processing, not a mail extractor. Dialogue, documents,
 calendars, issue trackers and terminal/tool observations use the same admission
@@ -40,6 +40,13 @@ A Gate may map multiple facts in one evidence unit to several candidates, or
 one candidate to several units. Coverage is checked against real supplied IDs.
 One source-neutral correction can classify missing units; its candidates pass
 the same validator/deduplication path, never a post-Gate business-pattern writer.
+Tool records retained as `metadata` may remain visible in the event envelope for
+diagnostics, but they are not evidence units and cannot be bound by call ID,
+digest, tool name or other metadata. They therefore require no coverage row and
+cannot authorize CREATE/UPDATE. Coverage reasons are normalized at the boundary:
+`query_only`, `assistant_restatement`, `retrieved_memory_only`, `no_future_value`,
+duplicate/example and completed/negated reasons resolve to `NO_CHANGE`; unresolved
+coverage, ownership, target or Scope reasons remain `DEFERRED`.
 Already valid siblings survive a malformed correction. Work that remains
 ambiguous is retained and explicitly reported, not guessed into a global scope.
 

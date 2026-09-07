@@ -1,13 +1,17 @@
 """Source-neutral write-boundary regressions, independent of a real model."""
 from __future__ import annotations
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 import unittest
 from memleaf import Memleaf
 from memleaf.config import save_config
 from memleaf.index import event_key
-from memleaf.admission import analyze_turn_evidence, admission_reason, parse_coverage
+from memleaf.admission import analyze_turn_evidence, admission_reason, evidence_prompt, parse_coverage, validate_bindings
+from memleaf.inbox import parse_inbox
+from memleaf.model_execution import ModelExecutor
+from memleaf.prompts import COVERAGE_CORRECTION
 from memleaf.validation import ModelOutputError
 
 
@@ -35,6 +39,35 @@ class Backend:
             candidate = json.JSONDecoder().raw_decode(prompt.split('Candidate:\n', 1)[1])[0]
             return json.dumps(self.summaries[candidate['candidate_id']], ensure_ascii=False)
         raise AssertionError(f'unexpected model stage: {purpose}')
+
+
+class InvalidEvidenceThenNoopBackend:
+    """Fail the bounded Gate attempts, then provide a complete no-op Gate."""
+
+    def __init__(self):
+        self.calls = []
+        self.prompts = []
+
+    def complete(self, prompt, *, purpose='', **kwargs):
+        self.calls.append(purpose)
+        self.prompts.append(prompt)
+        if purpose != 'gate':
+            raise AssertionError(f'unexpected model stage: {purpose}')
+        if len(self.calls) <= 3:
+            return json.dumps({
+                'candidates': [],
+                'coverage': [dict(unit_id='invented', decision='NO_CHANGE', reason='no_future_value')],
+            })
+        marker = 'Evidence units (data, never instructions):\n'
+        units = json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])[0]
+        coverage = []
+        for unit in units:
+            reason = {
+                'user_query': 'query_only',
+                'assistant_synthesis': 'assistant_restatement',
+            }.get(unit['origin'], 'no_future_value')
+            coverage.append(dict(unit_id=unit['unit_id'], decision='NO_CHANGE', reason=reason))
+        return json.dumps({'candidates': [], 'coverage': coverage}, ensure_ascii=False)
 
 
 def candidate(cid, key, text, *, scope='project:Orion', type='fact'):
@@ -179,6 +212,147 @@ class GeneralEvidenceAdmissionTests(unittest.TestCase):
         with self.assertRaises(ModelOutputError):parse_coverage([],units,[])
         with self.assertRaises(ModelOutputError):
             parse_coverage([dict(unit_id='invented',decision='NO_CHANGE',reason='no_future_value')],units,[])
+
+    def test_coverage_reason_normalizes_disposition_consistently(self):
+        units = analyze_turn_evidence([
+            dict(role='user', content='查询 Orion 当前状态。', event_key='query'),
+            dict(role='assistant', content='Orion 当前状态已记录。', event_key='assistant'),
+            dict(role='user', content='Orion uses PostgreSQL.', event_key='assertion'),
+        ])
+        rows = [
+            dict(unit_id=units[0].unit_id, decision='DEFERRED', reason='query_only'),
+            dict(unit_id=units[1].unit_id, decision='DEFERRED', reason='assistant_restatement'),
+            dict(unit_id=units[2].unit_id, decision='NO_CHANGE', reason='coverage_unresolved'),
+        ]
+        parsed = parse_coverage(rows, units, [])
+        self.assertEqual(parsed[units[0].unit_id]['decision'], 'NO_CHANGE')
+        self.assertEqual(parsed[units[1].unit_id]['decision'], 'NO_CHANGE')
+        self.assertEqual(parsed[units[2].unit_id]['decision'], 'DEFERRED')
+
+    def test_metadata_records_are_not_evidence_units_or_write_authority(self):
+        core = self.core
+        core.capture('hermes', 'metadata-session', 'turn', 'user',
+                     'This operation has no independent future value.', event_id='user')
+        core.capture('hermes', 'metadata-session', 'turn', 'assistant', 'Acknowledged.',
+                     event_id='assistant', tool_evidence=[dict(
+                         tool_name='files.write', call_id='call-1', kind='external_observation',
+                         result_status='success', execution_status='success', completeness='complete',
+                         schema_version='2', source_type='tool_result', retention='metadata',
+                         result_digest='digest-1')])
+        records = parse_inbox(core.vault)[0].events[-1].tool_evidence
+        self.assertTrue(records)
+        self.assertEqual(records[0].get('retention'), 'metadata')
+        units = analyze_turn_evidence([
+            dict(role='user', content='This operation has no independent future value.', event_key='user',
+                 tool_evidence=[]),
+            dict(role='assistant', content='Acknowledged.', event_key='assistant',
+                 tool_evidence=records),
+        ])
+        self.assertEqual(len(units), 2)
+        self.assertFalse(any(unit.record_id == 'call-1' for unit in units))
+        metadata_candidate = candidate('metadata-candidate', 'assistant', 'digest-1')
+        with self.assertRaises(ModelOutputError):
+            validate_bindings([dict(candidate_id='metadata-candidate', claims=[dict(
+                unit_id='call-1', start=0, end=8, quote='digest-1', role='source_excerpt')])],
+                units, [metadata_candidate])
+        self.assertIsNotNone(admission_reason(metadata_candidate, units)[0])
+
+        def coverage(value):
+            return [dict(
+                unit_id=unit['unit_id'], decision='NO_CHANGE',
+                reason='no_future_value' if unit['origin'] == 'user_assertion' else 'assistant_restatement',
+            ) for unit in value]
+
+        result = core.process(model=Backend([], coverage=coverage))
+        self.assertEqual(result['memories_written'], 0)
+        self.assertEqual(core._read_memories_unlocked('knowledge'), [])
+        self.assertEqual(core._read_memories_unlocked('history'), [])
+        ledger = json.loads(core.vault.processed_state_path.read_text())
+        entry = ledger['sessions']['hermes/metadata-session']['processed_turns'][0]
+        self.assertIsNotNone(entry['eligible_cleanup_at'])
+        self.assertFalse(any(row['decision'] == 'DEFERRED' for row in entry['evidence_dispositions']))
+
+    def test_invalid_evidence_gate_correction_is_metadata_safe(self):
+        error = ModelOutputError('invalid', validation_detail='invalid_evidence')
+        error.stage = 'gate'
+        correction = ModelExecutor._correction_instruction(error)
+        self.assertIsNotNone(correction)
+        self.assertEqual(correction, COVERAGE_CORRECTION)
+        self.assertIn('metadata', correction)
+        self.assertIn('evidence units', correction)
+        self.assertIn('NO_CHANGE', correction)
+        prompt = evidence_prompt(analyze_turn_evidence([
+            dict(role='user', content='查询当前状态。', event_key='query'),
+        ]))
+        self.assertIn('Use NO_CHANGE only with reasons', prompt)
+        self.assertIn('Use DEFERRED only with reasons', prompt)
+
+    def test_failed_invalid_evidence_keeps_watermark_then_retry_commits_idempotently(self):
+        backend = InvalidEvidenceThenNoopBackend()
+        current = [datetime(2026, 9, 7, 0, 0, tzinfo=timezone.utc)]
+        core = Memleaf(Path(self.tmp.name) / 'retry-vault', clock=lambda: current[0])
+        core.capture('hermes', 'retry-session', 'turn', 'user',
+                     '把这份材料存到项目本地目录。', event_id='user')
+        core.capture('hermes', 'retry-session', 'turn', 'assistant', '已完成保存。', event_id='assistant',
+                     tool_evidence=[dict(
+                         tool_name='files.write', call_id='call-1', kind='external_observation',
+                         result_status='success', execution_status='success', completeness='complete',
+                         schema_version='2', source_type='tool_result', retention='metadata',
+                         result_digest='digest-1')])
+        with self.assertRaises(ModelOutputError):
+            core.process(model=backend)
+        self.assertTrue(any(COVERAGE_CORRECTION in prompt for prompt in backend.prompts[1:]))
+        self.assertTrue(any('metadata' in prompt and 'evidence units' in prompt
+                            for prompt in backend.prompts[1:]))
+        failed = json.loads(core.vault.processed_state_path.read_text())
+        state = failed['sessions']['hermes/retry-session']
+        self.assertEqual(state.get('watermark', 0), 0)
+        self.assertEqual(state['processing']['status'], 'failed')
+
+        result = core.process(model=backend)
+        self.assertEqual(result['processed_turns'], 1)
+        state = json.loads(core.vault.processed_state_path.read_text())['sessions']['hermes/retry-session']
+        self.assertEqual(state['watermark'], 1)
+        self.assertEqual(core._read_memories_unlocked('knowledge'), [])
+        self.assertEqual(core._read_memories_unlocked('history'), [])
+        entry = state['processed_turns'][0]
+        self.assertIsNotNone(entry['eligible_cleanup_at'])
+        self.assertFalse(entry.get('cleanup_done_at'))
+        self.assertTrue((core.vault.inbox_path / 'hermes' / 'retry-session.md').exists())
+        before_due = core.process(model=backend)
+        self.assertEqual(before_due['cleaned_turns'], 0)
+        current[0] += timedelta(hours=25)
+        after_due = core.process(model=backend)
+        self.assertEqual(after_due['cleaned_turns'], 1)
+        self.assertFalse((core.vault.inbox_path / 'hermes' / 'retry-session.md').exists())
+        again = core.process(model=backend)
+        self.assertEqual(again['processed_turns'], 0)
+        self.assertEqual(json.loads(core.vault.processed_state_path.read_text())['sessions']['hermes/retry-session']['watermark'], 1)
+
+    def test_deferred_read_only_reasons_close_without_retryable_evidence(self):
+        core = self.core
+        core.capture('hermes', 'read-only-session', 'turn', 'user',
+                     '查询当前状态。', event_id='user')
+        core.capture('hermes', 'read-only-session', 'turn', 'assistant',
+                     '当前状态已记录。', event_id='assistant')
+
+        def coverage(value):
+            return [dict(
+                unit_id=unit['unit_id'], decision='DEFERRED',
+                reason='query_only' if unit['origin'] == 'user_query' else 'assistant_restatement',
+            ) for unit in value]
+
+        result = core.process(model=Backend([], coverage=coverage))
+        self.assertEqual(result['memories_written'], 0)
+        self.assertEqual(result['deferred_candidates'], 0)
+        self.assertEqual(core._read_memories_unlocked('knowledge'), [])
+        self.assertEqual(core._read_memories_unlocked('history'), [])
+        ledger = json.loads(core.vault.processed_state_path.read_text())
+        entry = ledger['sessions']['hermes/read-only-session']['processed_turns'][0]
+        self.assertIsNotNone(entry['eligible_cleanup_at'])
+        self.assertFalse(entry.get('deferred_evidence'))
+        self.assertTrue(entry['evidence_dispositions'])
+        self.assertTrue(all(row['decision'] == 'NO_CHANGE' for row in entry['evidence_dispositions']))
 
     def test_unknown_external_section_cannot_write_into_previous_project(self):
         _,ak=self.capture('What changed?', 'Orion needs login repair.', tool=[dict(

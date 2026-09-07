@@ -5,7 +5,7 @@ import os
 from typing import Any, Callable, Mapping, Optional
 from .llm import MODEL_VALIDATION_REASONS, CallableBackend, ModelError, ModelUnavailable, ModelRouter
 from .models import utc_now
-from .prompts import DUPLICATE_TARGET_CORRECTION, GATE_TYPE_CORRECTION, JSON_CORRECTION, MIXED_FUTURE_USE_CORRECTION, MIXED_PROJECT_SCOPES_CORRECTION, RELATIVE_TIME_CORRECTION, SCOPE_GROUNDING_CORRECTION, SUMMARY_SCOPE_CORRECTION, SUMMARY_TARGET_CORRECTION, SUMMARY_TYPE_CORRECTION, TARGET_RELEVANCE_CORRECTION, UPDATE_TARGET_TYPE_CORRECTION
+from .prompts import COVERAGE_CORRECTION, DUPLICATE_TARGET_CORRECTION, GATE_TYPE_CORRECTION, JSON_CORRECTION, MIXED_FUTURE_USE_CORRECTION, MIXED_PROJECT_SCOPES_CORRECTION, RELATIVE_TIME_CORRECTION, SCOPE_GROUNDING_CORRECTION, SUMMARY_SCOPE_CORRECTION, SUMMARY_TARGET_CORRECTION, SUMMARY_TYPE_CORRECTION, TARGET_RELEVANCE_CORRECTION, UPDATE_TARGET_TYPE_CORRECTION
 from .validation import MODEL_VALIDATION_DETAILS, ModelOutputError
 from .process_common import _DIAGNOSTIC_FILENAME, _DIAGNOSTIC_MAX_BYTES, _failure_metadata, _model_output_statistics
 
@@ -113,6 +113,8 @@ class ModelExecutor:
             return SCOPE_GROUNDING_CORRECTION
         if stage == "gate" and hint == "target_not_relevant":
             return TARGET_RELEVANCE_CORRECTION
+        if stage == "gate" and hint == "invalid_evidence":
+            return COVERAGE_CORRECTION
         if stage == "summarize" and hint == "scope_drift":
             return SUMMARY_SCOPE_CORRECTION
         if hint == "relative_time":

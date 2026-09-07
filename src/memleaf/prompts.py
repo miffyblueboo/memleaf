@@ -50,6 +50,22 @@ JSON_CORRECTION = (
 )
 
 
+COVERAGE_CORRECTION = (
+    "Previous output violated: invalid_evidence. Rebuild the same strict Gate "
+    "object from the supplied evidence units only. The event envelope may contain "
+    "tool records retained as metadata; those records have no retained source text, "
+    "are not evidence units, and must never be copied into evidence_bindings, "
+    "coverage, or a CREATE/UPDATE candidate. Do not invent unit IDs, event keys, "
+    "quotes, offsets, or source content. Cover every listed evidence unit exactly "
+    "once. Use CANDIDATE only for an authoritative unit with a valid exact binding. "
+    "Use NO_CHANGE with query_only or assistant_restatement for read-only or "
+    "assistant-only material, and use NO_CHANGE with no_future_value when the "
+    "model explicitly judges a listed unit to have no independent future use. "
+    "Use DEFERRED only for genuinely unresolved evidence or ownership/Scope "
+    "ambiguity. Return only the strict Gate JSON object."
+)
+
+
 RELATIVE_TIME_CORRECTION = (
     "Previous output violated: relative_time. Re-read the evidence events and use "
     "the timestamp of the event supporting each date as the anchor; recompute "
@@ -340,6 +356,10 @@ GATE_SYSTEM += """\nSource-neutral evidence contract: ordinary chat, calendars, 
 files, web results and other tools follow the same rules. No tool name or topic
 is a write exemption. Assistant prose is context only, not new evidence. Bind
 each candidate to the supplied authoritative evidence units through coverage.
+A tool record retained with ``retention=metadata`` may appear in the event
+envelope, but it has no retained source text and is not an evidence unit. Do not
+bind its call ID, digest, result metadata or tool name, and do not use it to
+authorize CREATE or UPDATE. Only the listed evidence units need coverage rows.
 A section heading scopes only its own children; a different unknown heading
 ends that context. Do not inherit the preceding project's ownership. Negative,
 completed, cancelled, hypothetical/example-only, or third-party-only tasks must not

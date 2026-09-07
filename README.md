@@ -4,8 +4,8 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **版本：0.2.27。**
-> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。本版收口长期运行治理：Core 语义判断保持 source-neutral，并为来源、关闭待办、历史版本和压缩身份增加有界生命周期。真实模型语义效果仍需结合本地模型和代表性样本验收。
+> **版本：0.2.29。**
+> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。本版补齐 metadata 工具证据的 Gate 覆盖协议，修复查询和助手复述误标 DEFERRED 的收口问题，同时保持 source-neutral 语义、Markdown 唯一事实源和无 SQLite 运行时依赖。真实模型语义效果仍需结合本地模型和代表性样本验收。
 > **当前版本支持 Hermes 和 Codex。** Antigravity（反重力）不检测、不安装、不配置。
 
 ## 项目定位
@@ -471,7 +471,7 @@ MIT，见 [LICENSE](LICENSE)。
 *Your memories, in files you own.*
 
 
-## 通用处理与只读验收（0.2.27）
+## 通用处理与只读验收（0.2.29）
 
 邮件、日历、工单、文件、浏览器与普通对话共用证据准入、覆盖检查和写入路径。
 自动摘要只能使用获准引用的原文；助手复述和旧记忆回读不能单独授权新增写入。
