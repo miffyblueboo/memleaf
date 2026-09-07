@@ -62,6 +62,18 @@ Record a separate, allowlisted evidence-check identifier for the failing
 constraint. Diagnostics must not contain raw model responses, message text,
 credentials or arbitrary exception strings.
 
+An unknown unit reference must identify the exact response field, such as
+`coverage[2].unit_id` or `evidence_bindings[0].claims[1].unit_id`. Persist only
+the field path, value type/length/digest and expected-set count/digest. The
+invalid value and legal ID list do not belong in normal logs or failed state.
+
+A bounded retry receives the failed constraint, exact field path and the legal
+IDs from the same immutable model-visible inventory used by the validator.
+These IDs are a reference constraint, not a suggested semantic decision. The
+model must regenerate a consistent response; the host must not substitute a
+nearby ID, guess a source, or relax evidence authority. Prompt examples must not
+provide a literal placeholder that looks like a usable evidence reference.
+
 A failed Gate cannot advance the turn watermark or create a cleanup deadline.
 A successful no-change decision can advance the watermark and start the normal
 retention period. Incomplete physical observations remain deferred even if other
@@ -97,3 +109,9 @@ That adapter/capture limitation must be reported independently of Gate success.
 - Deterministic tests establish the protocol. Live synthetic tests establish
   behavior only for those samples. A synthetic success does not identify the
   cause of an earlier real-model failure; do not claim otherwise.
+
+A successful replay is evidence about that new run. If an earlier raw response
+was not retained, its precise invalid value cannot be recovered from an
+`unknown_unit` category alone. Verify recovery with controlled invalid coverage
+and binding references as well as ordinary live samples, and distinguish those
+results from reproduction of the original incident.

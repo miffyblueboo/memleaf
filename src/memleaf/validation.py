@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -43,10 +44,48 @@ class ModelOutputError(ValueError):
             if isinstance(evidence_check, str) and evidence_check in MODEL_EVIDENCE_CHECKS
             else None
         )
+        # Evidence diagnostics are attached by the local Gate validator. They
+        # are intentionally kept separate from ``str(error)`` so callers can
+        # safely expose only the allowlisted structural fields below.
+        self.evidence_path: str | None = None
+        self.evidence_actual_type: str | None = None
+        self.evidence_actual_length: int | None = None
+        self.evidence_actual_sha256: str | None = None
+        self.evidence_expected_ids: tuple[str, ...] = ()
+        self.evidence_expected_count: int | None = None
+        self.evidence_expected_sha256: str | None = None
 
     def with_detail(self, detail: str | None) -> "ModelOutputError":
         if isinstance(detail, str) and detail in MODEL_VALIDATION_DETAILS:
             self.validation_detail = detail
+        return self
+
+    def with_evidence_context(
+        self,
+        *,
+        path: str,
+        actual: Any,
+        expected_ids: Iterable[Any],
+    ) -> "ModelOutputError":
+        """Attach bounded evidence-reference diagnostics without raw values.
+
+        Expected IDs are retained on the exception for the transient retry
+        prompt. Persistent diagnostics must use ``safe_evidence_context``
+        below, which deliberately omits both the IDs and the invalid value.
+        """
+
+        if not isinstance(path, str) or not _EVIDENCE_PATH_RE.fullmatch(path):
+            return self
+        expected = tuple(dict.fromkeys(
+            item for item in expected_ids if isinstance(item, str) and item
+        ))
+        self.evidence_path = path
+        self.evidence_actual_type, self.evidence_actual_length, self.evidence_actual_sha256 = (
+            _evidence_value_descriptor(actual)
+        )
+        self.evidence_expected_ids = expected
+        self.evidence_expected_count = len(expected)
+        self.evidence_expected_sha256 = _evidence_ids_digest(expected)
         return self
 
 
@@ -101,6 +140,88 @@ MODEL_EVIDENCE_CHECKS = frozenset((
     "coverage_binding_conflict",
     "candidate_evidence",
 ))
+
+_EVIDENCE_PATH_RE = re.compile(
+    r"(?:coverage\[\d+\]\.unit_id|evidence_bindings\[\d+\]\.claims\[\d+\]\.unit_id)"
+)
+_EVIDENCE_VALUE_TYPES = frozenset(("null", "boolean", "number", "string", "array", "object", "other"))
+_EVIDENCE_DIAGNOSTIC_MAX_LENGTH = 1_000_000
+
+
+def _evidence_value_descriptor(value: Any) -> tuple[str, int | None, str]:
+    """Return a safe type/length/digest descriptor for a model JSON value."""
+
+    if value is None:
+        value_type = "null"
+        length = None
+    elif isinstance(value, bool):
+        value_type = "boolean"
+        length = None
+    elif isinstance(value, (int, float)):
+        value_type = "number"
+        length = None
+    elif isinstance(value, str):
+        value_type = "string"
+        length = min(len(value), _EVIDENCE_DIAGNOSTIC_MAX_LENGTH)
+    elif isinstance(value, list):
+        value_type = "array"
+        length = min(len(value), _EVIDENCE_DIAGNOSTIC_MAX_LENGTH)
+    elif isinstance(value, dict):
+        value_type = "object"
+        length = min(len(value), _EVIDENCE_DIAGNOSTIC_MAX_LENGTH)
+    else:
+        value_type = "other"
+        length = None
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False,
+                             sort_keys=True, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError):
+        encoded = value_type.encode("ascii")
+    return value_type, length, hashlib.sha256(encoded).hexdigest()
+
+
+def _evidence_ids_digest(ids: Iterable[str]) -> str:
+    encoded = json.dumps(list(ids), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def safe_evidence_context(error: BaseException) -> dict[str, Any]:
+    """Return only allowlisted structural evidence diagnostics for persistence."""
+
+    path = getattr(error, "evidence_path", None)
+    if not isinstance(path, str) or not _EVIDENCE_PATH_RE.fullmatch(path):
+        path = None
+    value_type = getattr(error, "evidence_actual_type", None)
+    if not isinstance(value_type, str) or value_type not in _EVIDENCE_VALUE_TYPES:
+        value_type = None
+    length = getattr(error, "evidence_actual_length", None)
+    if isinstance(length, bool) or not isinstance(length, int) or not 0 <= length <= _EVIDENCE_DIAGNOSTIC_MAX_LENGTH:
+        length = None
+    digest = getattr(error, "evidence_actual_sha256", None)
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        digest = None
+    expected_count = getattr(error, "evidence_expected_count", None)
+    if isinstance(expected_count, bool) or not isinstance(expected_count, int) or not 0 <= expected_count <= _EVIDENCE_DIAGNOSTIC_MAX_LENGTH:
+        expected_count = None
+    expected_digest = getattr(error, "evidence_expected_sha256", None)
+    if not isinstance(expected_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+        expected_digest = None
+    result: dict[str, Any] = {}
+    if path is not None:
+        result["evidence_path"] = path
+    if value_type is not None:
+        result["evidence_actual_type"] = value_type
+    if length is not None:
+        result["evidence_actual_length"] = length
+    if digest is not None:
+        result["evidence_actual_sha256"] = digest
+    if expected_count is not None:
+        result["evidence_expected_count"] = expected_count
+    if expected_digest is not None:
+        result["evidence_expected_sha256"] = expected_digest
+    return result
+
+
 _SCOPE_NAME = re.compile(r"^[^\s/\\:\x00\r\n]+$")
 _RELATIVE_DATE_TOKEN = (
     r"(?:"
@@ -1372,6 +1493,7 @@ __all__ = [
     "MODEL_VALIDATION_REASONS",
     "ModelOutputError",
     "NO_CHANGE_DECISION",
+    "safe_evidence_context",
     "SCOPE_SOURCES",
     "TODO_STATUSES",
     "parse_gate",

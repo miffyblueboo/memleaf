@@ -4,8 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.31.**
-> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. This release unifies Core and the Hermes provider on an idempotent UTF-8 evidence budget: at most 64 source records, 32 KiB per body, and 128 KiB of aggregate body text, with bounded loss markers; metadata-mode pending evidence from an oversized observation is consumed after successful capture under the same effective policy. The Gate still uses the physical evidence projection, the `candidates`, `coverage`, and `evidence_bindings` contract, and allowlisted `evidence_check` diagnostics while preserving source-neutral semantics, Markdown as the sole source of truth, and zero SQLite runtime dependencies. Real-model semantics still require local acceptance with the selected model and representative inputs.
+> **Version: 0.2.32.**
+> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. Building on the existing UTF-8 evidence budget and metadata-mode pending-evidence policy, this release adds bounded `unknown_unit` Gate diagnostics for field path, type/length/digest and expected-set summaries, with at most three attempts and two corrections constrained by the same legal-ID inventory; it never logs the raw value or guesses an ID, and a persistently failed Gate does not advance the watermark or trigger cleanup. This preserves source-neutral semantics, Markdown as the sole source of truth, and zero SQLite runtime dependencies. Real-model semantics still require local acceptance with the selected model and representative inputs.
 > **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.
 
 ## Project scope
@@ -474,7 +474,7 @@ MIT; see [LICENSE](LICENSE).
 *Your memories, in files you own.*
 
 
-## General processing and read-only inspection (0.2.31)
+## General processing and read-only inspection (0.2.32)
 
 Dialogue, calendars, tickets, files, web results and other tools share the evidence, coverage and write path.
 Models interpret semantics; Core validates physical provenance and exact original quotations.

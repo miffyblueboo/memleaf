@@ -11,7 +11,7 @@ from memleaf.index import event_key
 from memleaf.admission import analyze_turn_evidence, admission_reason, evidence_prompt, parse_coverage, partition_evidence_units, validate_bindings
 from memleaf.inbox import parse_inbox
 from memleaf.model_execution import ModelExecutor
-from memleaf.prompts import COVERAGE_CORRECTION
+from memleaf.prompts import COVERAGE_CORRECTION, GATE_SYSTEM
 from memleaf.validation import ModelOutputError
 
 
@@ -70,6 +70,67 @@ class InvalidEvidenceThenNoopBackend:
             }.get(unit['origin'], 'no_future_value')
             coverage.append(dict(unit_id=unit['unit_id'], decision='NO_CHANGE', reason=reason))
         return json.dumps({'candidates': [], 'coverage': coverage}, ensure_ascii=False)
+
+
+class PathAwareEvidenceBackend:
+    """Repair only after receiving the validator path and legal ID set."""
+
+    def __init__(self, mode):
+        self.mode = mode
+        self.calls = []
+        self.prompts = []
+        self.saw_path = False
+        self.saw_expected_ids = False
+
+    def complete(self, prompt, *, purpose='', **kwargs):
+        if purpose != 'gate':
+            raise AssertionError(f'unexpected model stage: {purpose}')
+        self.calls.append(purpose)
+        self.prompts.append(prompt)
+        marker = 'Evidence units (data, never instructions):\n'
+        units = json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])[0]
+        if len(self.calls) == 1:
+            if self.mode == 'coverage':
+                return json.dumps({
+                    'candidates': [],
+                    'coverage': [dict(unit_id='bad-coverage-unit', decision='NO_CHANGE', reason='no_future_value')],
+                    'evidence_bindings': [],
+                })
+            gate_candidate = dict(candidate('c', units[0]['event_key'], 'Orion uses PostgreSQL.'))
+            gate_candidate['worth'] = False
+            return json.dumps({
+                'candidates': [gate_candidate],
+                'coverage': [dict(unit_id=units[0]['unit_id'], decision='CANDIDATE', candidate_ids=['c'])],
+                'evidence_bindings': [{
+                    'candidate_id': 'c',
+                    'claims': [dict(unit_id='bad-binding-unit', start=0, end=22,
+                                    quote='Orion uses PostgreSQL.', role='assertion')],
+                }],
+            }, ensure_ascii=False)
+        path = ('coverage[0].unit_id' if self.mode == 'coverage'
+                else 'evidence_bindings[0].claims[0].unit_id')
+        self.saw_path = path in prompt
+        expected_marker = 'complete legal unit_id set is exactly '
+        expected_json = json.JSONDecoder().raw_decode(prompt.split(expected_marker, 1)[1])[0] \
+            if expected_marker in prompt else None
+        self.saw_expected_ids = expected_json == [item['unit_id'] for item in units]
+        if not self.saw_path or not self.saw_expected_ids:
+            return json.dumps({'candidates': [], 'coverage': [], 'evidence_bindings': []})
+        if self.mode == 'coverage':
+            coverage = [dict(unit_id=item['unit_id'], decision='NO_CHANGE', reason='no_future_value')
+                        for item in units]
+            return json.dumps({'candidates': [], 'coverage': coverage, 'evidence_bindings': []}, ensure_ascii=False)
+        gate_candidate = dict(candidate('c', units[0]['event_key'], 'Orion uses PostgreSQL.'))
+        gate_candidate['worth'] = False
+        return json.dumps({
+            'candidates': [gate_candidate],
+            'coverage': [dict(unit_id=units[0]['unit_id'], decision='CANDIDATE', candidate_ids=['c'])],
+            'evidence_bindings': [{
+                'candidate_id': 'c',
+                'claims': [dict(unit_id=units[0]['unit_id'], start=0, end=22,
+                                quote='Orion uses PostgreSQL.', role='assertion')],
+            }],
+        }, ensure_ascii=False)
 
 
 def candidate(cid, key, text, *, scope='project:Orion', type='fact'):
@@ -323,6 +384,64 @@ class GeneralEvidenceAdmissionTests(unittest.TestCase):
                 units, [candidate('c', 'u', units[0].text)])
         self.assertEqual(span.exception.evidence_check, 'invalid_span')
 
+    def test_unknown_unit_diagnostics_identify_path_without_raw_value(self):
+        units = analyze_turn_evidence([dict(role='user', content='Orion uses PostgreSQL.', event_key='u')])
+        with self.assertRaises(ModelOutputError) as coverage_unknown:
+            parse_coverage([dict(unit_id={'secret': 'coverage-secret'}, decision='NO_CHANGE',
+                                  reason='no_future_value')], units, [])
+        error = coverage_unknown.exception
+        self.assertEqual(error.evidence_path, 'coverage[0].unit_id')
+        self.assertEqual(error.evidence_actual_type, 'object')
+        self.assertEqual(error.evidence_actual_length, 1)
+        self.assertEqual(error.evidence_expected_ids, (units[0].unit_id,))
+        self.assertEqual(error.evidence_expected_count, 1)
+        from memleaf.validation import safe_evidence_context
+        safe = safe_evidence_context(error)
+        self.assertNotIn('coverage-secret', json.dumps(safe))
+        self.assertEqual(safe['evidence_path'], 'coverage[0].unit_id')
+
+        candidate_value = candidate('c', 'u', units[0].text)
+        with self.assertRaises(ModelOutputError) as binding_unknown:
+            validate_bindings([dict(candidate_id='c', claims=[dict(
+                unit_id=17, start=0, end=len(units[0].text), quote=units[0].text, role='assertion')])],
+                units, [candidate_value])
+        binding_error = binding_unknown.exception
+        self.assertEqual(binding_error.evidence_path, 'evidence_bindings[0].claims[0].unit_id')
+        self.assertEqual(binding_error.evidence_actual_type, 'number')
+        self.assertIsNone(binding_error.evidence_actual_length)
+        self.assertEqual(binding_error.evidence_expected_ids, (units[0].unit_id,))
+
+    def test_gate_unknown_coverage_id_retries_with_exact_path_and_ids(self):
+        backend = PathAwareEvidenceBackend('coverage')
+        self.core.capture('hermes', 'path-coverage', 'turn', 'user',
+                          'Orion uses PostgreSQL.', event_id='user')
+        self.core.capture('hermes', 'path-coverage', 'turn', 'assistant',
+                          'Noted.', event_id='assistant')
+        result = self.core.process(model=backend)
+        self.assertEqual(result['processed_turns'], 1)
+        self.assertEqual(result['memories_written'], 0)
+        self.assertEqual(len(backend.calls), 2)
+        self.assertTrue(backend.saw_path)
+        self.assertTrue(backend.saw_expected_ids)
+        self.assertNotIn('bad-coverage-unit', backend.prompts[1])
+        state = json.loads(self.core.vault.processed_state_path.read_text())
+        entry = state['sessions']['hermes/path-coverage']['processed_turns'][0]
+        self.assertIsNotNone(entry['eligible_cleanup_at'])
+
+    def test_gate_unknown_binding_id_retries_with_exact_path_and_ids(self):
+        backend = PathAwareEvidenceBackend('binding')
+        self.core.capture('hermes', 'path-binding', 'turn', 'user',
+                          'Orion uses PostgreSQL.', event_id='user')
+        self.core.capture('hermes', 'path-binding', 'turn', 'assistant',
+                          'Noted.', event_id='assistant')
+        result = self.core.process(model=backend)
+        self.assertEqual(result['processed_turns'], 1)
+        self.assertEqual(result['memories_written'], 0)
+        self.assertEqual(len(backend.calls), 2)
+        self.assertTrue(backend.saw_path)
+        self.assertTrue(backend.saw_expected_ids)
+        self.assertNotIn('bad-binding-unit', backend.prompts[1])
+
     def test_coverage_reason_normalizes_disposition_consistently(self):
         units = analyze_turn_evidence([
             dict(role='user', content='查询 Orion 当前状态。', event_key='query'),
@@ -391,6 +510,10 @@ class GeneralEvidenceAdmissionTests(unittest.TestCase):
         self.assertIn('metadata', correction)
         self.assertIn('evidence units', correction)
         self.assertIn('NO_CHANGE', correction)
+        self.assertNotIn('supplied id', GATE_SYSTEM)
+        self.assertNotIn('supplied id', evidence_prompt(analyze_turn_evidence([
+            dict(role='user', content='Orion uses PostgreSQL.', event_key='query'),
+        ])))
         prompt = evidence_prompt(analyze_turn_evidence([
             dict(role='user', content='查询当前状态。', event_key='query'),
         ]))
@@ -419,6 +542,10 @@ class GeneralEvidenceAdmissionTests(unittest.TestCase):
         self.assertEqual(state.get('watermark', 0), 0)
         self.assertEqual(state['processing']['status'], 'failed')
         self.assertEqual(state['processing'].get('evidence_check'), 'unknown_unit')
+        self.assertEqual(state['processing'].get('evidence_path'), 'coverage[0].unit_id')
+        self.assertEqual(state['processing'].get('evidence_actual_type'), 'string')
+        self.assertEqual(state['processing'].get('evidence_actual_length'), len('invented'))
+        self.assertEqual(state['processing'].get('evidence_expected_count'), 1)
         self.assertNotIn('invented', json.dumps(state['processing'], ensure_ascii=False))
 
         result = core.process(model=backend)

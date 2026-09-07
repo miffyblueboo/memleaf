@@ -7,7 +7,7 @@ from .llm import MODEL_VALIDATION_REASONS, CallableBackend, ModelError, ModelUna
 from .models import utc_now
 from .prompts import COVERAGE_CORRECTION, DUPLICATE_TARGET_CORRECTION, GATE_TYPE_CORRECTION, JSON_CORRECTION, MIXED_FUTURE_USE_CORRECTION, MIXED_PROJECT_SCOPES_CORRECTION, RELATIVE_TIME_CORRECTION, SCOPE_GROUNDING_CORRECTION, SUMMARY_SCOPE_CORRECTION, SUMMARY_TARGET_CORRECTION, SUMMARY_TYPE_CORRECTION, TARGET_RELEVANCE_CORRECTION, UPDATE_TARGET_TYPE_CORRECTION
 from .validation import MODEL_VALIDATION_DETAILS, ModelOutputError
-from .process_common import _DIAGNOSTIC_FILENAME, _DIAGNOSTIC_MAX_BYTES, _failure_metadata, _model_output_statistics, _safe_evidence_check
+from .process_common import _DIAGNOSTIC_FILENAME, _DIAGNOSTIC_MAX_BYTES, _failure_metadata, _model_output_statistics, _safe_evidence_check, _safe_evidence_diagnostics
 
 
 class ModelExecutor:
@@ -114,7 +114,8 @@ class ModelExecutor:
         if stage == "gate" and hint == "target_not_relevant":
             return TARGET_RELEVANCE_CORRECTION
         if stage == "gate" and hint == "invalid_evidence":
-            return COVERAGE_CORRECTION
+            context = ModelExecutor._evidence_correction_context(error)
+            return COVERAGE_CORRECTION if context is None else COVERAGE_CORRECTION + "\n" + context
         if stage == "summarize" and hint == "scope_drift":
             return SUMMARY_SCOPE_CORRECTION
         if hint == "relative_time":
@@ -126,6 +127,39 @@ class ModelExecutor:
         if hint is not None:
             return f"Previous output violated: {hint}."
         return None
+
+
+    @staticmethod
+    def _evidence_correction_context(error: BaseException) -> Optional[str]:
+        """Build a bounded Gate repair hint from validator-owned context only."""
+
+        if getattr(error, "evidence_check", None) != "unknown_unit":
+            return None
+        diagnostics = _safe_evidence_diagnostics(error)
+        path = diagnostics.get("evidence_path")
+        expected = getattr(error, "evidence_expected_ids", ())
+        if not isinstance(path, str) or not isinstance(expected, tuple) or not all(
+            isinstance(item, str) and item for item in expected
+        ):
+            return None
+        expected_json = json.dumps(list(expected), ensure_ascii=False, separators=(",", ":"))
+        actual_parts = []
+        for key, label in (("evidence_actual_type", "type"), ("evidence_actual_length", "length"),
+                           ("evidence_actual_sha256", "sha256")):
+            if key in diagnostics:
+                actual_parts.append(f"{label}={diagnostics[key]}")
+        descriptor = ", ".join(actual_parts) or "no safe value descriptor"
+        legal = (
+            f"the complete legal unit_id set is exactly {expected_json}. "
+            if expected else "there are no legal unit_id values in this call. "
+        )
+        return (
+            "Evidence reference diagnostic (structural only): evidence_check=unknown_unit; "
+            "the invalid unit_id was at "
+            f"{path}. Safe descriptor: {descriptor}. For this call, {legal}"
+            "Copy one legal unit_id character-for-character from that set when one exists; "
+            "do not use the invalid value, a placeholder, event_key, call ID, digest, or a guessed mapping."
+        )
 
 
     def _diagnostic_enabled(self) -> bool:
@@ -187,6 +221,7 @@ class ModelExecutor:
         }
         if evidence_check is not None:
             entry["evidence_check"] = evidence_check
+        entry.update(_safe_evidence_diagnostics(error) if error is not None else {})
         response_diagnostics = getattr(error, "response_diagnostics", None) if error is not None else None
         if isinstance(response_diagnostics, Mapping):
             allowed_diagnostics = {

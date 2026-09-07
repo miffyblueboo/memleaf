@@ -15,7 +15,7 @@ from .locking import atomic_write_json, atomic_write_text
 from .turn_plan import turn_identity_key
 from .redaction import redact_text
 from .vault import safe_component
-from .process_common import ProcessingError, _FAILED_STATUS, _LEGACY_PROCESSING_GRACE_SECONDS, _MAX_SESSION_LINEAGE_DEPTH, _PROCESSING_LEASE_SECONDS, _PROCESSING_STATUS, _Snapshot, _as_int, _failure_metadata, _now_value, _parse_time, _read_processed, _safe_evidence_check, _safe_scope_background, _session_key
+from .process_common import ProcessingError, _FAILED_STATUS, _LEGACY_PROCESSING_GRACE_SECONDS, _MAX_SESSION_LINEAGE_DEPTH, _PROCESSING_LEASE_SECONDS, _PROCESSING_STATUS, _Snapshot, _as_int, _failure_metadata, _now_value, _parse_time, _read_processed, _safe_evidence_check, _safe_evidence_diagnostics, _safe_scope_background, _session_key
 
 
 class ProcessJournal:
@@ -371,6 +371,7 @@ class ProcessJournal:
                         failed_marker["validation_detail"] = validation_detail
                     if evidence_check is not None:
                         failed_marker["evidence_check"] = evidence_check
+                    failed_marker.update(_safe_evidence_diagnostics(error))
                     if attempt_count is not None:
                         failed_marker["attempt_count"] = attempt_count
                     state["processing"] = failed_marker

@@ -242,7 +242,7 @@ def validate_bindings(value: Any, units: Iterable[EvidenceUnit],
                                evidence_check="binding_shape")
     result: dict[str, list[dict[str, Any]]] = {}
     allowed_roles = {"assertion", "source_excerpt", "user_confirmation"}
-    for row in value:
+    for binding_index, row in enumerate(value):
         if not isinstance(row, dict) or set(row) != {"candidate_id", "claims"}:
             raise ModelOutputError("invalid evidence binding", validation_detail="invalid_evidence",
                                    evidence_check="binding_shape")
@@ -255,7 +255,7 @@ def validate_bindings(value: Any, units: Iterable[EvidenceUnit],
             raise ModelOutputError("empty evidence claims", validation_detail="invalid_evidence",
                                    evidence_check="binding_shape")
         checked = []
-        for claim in claims:
+        for claim_index, claim in enumerate(claims):
             if not isinstance(claim, dict) or set(claim) not in (
                     {"unit_id", "start", "end", "quote", "role"}, {"unit_id", "quote", "role"}):
                 raise ModelOutputError("invalid evidence claim", validation_detail="invalid_evidence",
@@ -263,8 +263,13 @@ def validate_bindings(value: Any, units: Iterable[EvidenceUnit],
             claim = dict(claim)
             uid = claim["unit_id"]
             if not isinstance(uid, str) or uid not in by_unit:
-                raise ModelOutputError("unknown evidence unit", validation_detail="invalid_evidence",
-                                       evidence_check="unknown_unit")
+                error = ModelOutputError("unknown evidence unit", validation_detail="invalid_evidence",
+                                         evidence_check="unknown_unit")
+                raise error.with_evidence_context(
+                    path=f"evidence_bindings[{binding_index}].claims[{claim_index}].unit_id",
+                    actual=uid,
+                    expected_ids=tuple(by_unit),
+                )
             unit = by_unit[uid]
             quote = claim["quote"]
             if "start" not in claim:
@@ -356,20 +361,27 @@ _DEFERRED_COVERAGE_REASONS = frozenset({
 
 def parse_coverage(value: Any, units: Iterable[EvidenceUnit], candidates: Iterable[Mapping[str, Any]], *, require_complete: bool = True) -> dict[str, dict[str, Any]]:
     """Validate accounting without trusting the model's evidence identities."""
+    units = tuple(units)
+    expected_units = tuple(dict.fromkeys(u.unit_id for u in units))
     units = {u.unit_id: u for u in units}
     candidates = {c["candidate_id"]: c for c in candidates}
     if not isinstance(value, list):
         raise ModelOutputError("coverage must be a list", validation_detail="invalid_evidence",
                                evidence_check="coverage_shape")
     result = {}
-    for row in value:
+    for row_index, row in enumerate(value):
         if not isinstance(row, dict) or set(row) - {"unit_id", "decision", "candidate_ids", "reason"}:
             raise ModelOutputError("invalid coverage row", validation_detail="invalid_evidence",
                                    evidence_check="coverage_shape")
         uid = row.get("unit_id")
         if not isinstance(uid, str) or uid not in units:
-            raise ModelOutputError("invalid coverage unit", validation_detail="invalid_evidence",
-                                   evidence_check="unknown_unit")
+            error = ModelOutputError("invalid coverage unit", validation_detail="invalid_evidence",
+                                     evidence_check="unknown_unit")
+            raise error.with_evidence_context(
+                path=f"coverage[{row_index}].unit_id",
+                actual=uid,
+                expected_ids=expected_units,
+            )
         if uid in result:
             raise ModelOutputError("duplicate coverage unit", validation_detail="invalid_evidence",
                                    evidence_check="duplicate_coverage")
@@ -466,9 +478,10 @@ def evidence_prompt(units: Iterable[EvidenceUnit]) -> str:
         "candidates, coverage, and evidence_bindings. "
         "Coverage must contain exactly one row for EVERY supplied evidence unit. "
         "A response with coverage omitted or with coverage=[] is complete only when no units are supplied. "
-        "Each row is "
-        '{"unit_id":"supplied id","decision":"CANDIDATE","candidate_ids":["id"]} or '
-        '{"unit_id":"supplied id","decision":"NO_CHANGE or DEFERRED","reason":"reason"}. '
+        "For each row, copy unit_id character-for-character from the supplied evidence list. "
+        "Use decision=CANDIDATE with candidate_ids, or decision=NO_CHANGE/DEFERRED with reason. "
+        "The words in this schema description are labels only; never return a placeholder, event key, "
+        "call ID, or digest as unit_id. "
         'Allowed reasons: ' + ', '.join(sorted(COVERAGE_REASONS)) + '. '
         'Use NO_CHANGE only with reasons: ' + ', '.join(sorted(_NO_CHANGE_COVERAGE_REASONS)) + '. '
         'Use DEFERRED only with reasons: ' + ', '.join(sorted(_DEFERRED_COVERAGE_REASONS)) + '. '
@@ -489,9 +502,12 @@ def evidence_prompt(units: Iterable[EvidenceUnit]) -> str:
 
 
 SEMANTIC_BINDING_INSTRUCTIONS = """
-For every worth=true candidate, also return top-level evidence_bindings:
-[{"candidate_id":"existing candidate id","claims":[{"unit_id":"supplied id",
-"start":0,"end":10,"quote":"exact substring","role":"assertion"}]}].
+For every worth=true candidate, also return top-level evidence_bindings. Each
+binding must name a candidate_id copied from the candidates list and claims
+whose unit_id is copied character-for-character from the supplied evidence
+list. Do not return schema labels, placeholders, event keys, call IDs or
+digests as unit_id values. Each claim contains an exact quote and role, and
+may include start/end offsets.
 Offsets are relative to the supplied unit text. Roles: assertion (a current
 statement of fact or change), source_excerpt (actual quoted material, not a
 demonstration), user_confirmation (explicit adoption of a uniquely identified

@@ -4,8 +4,8 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **版本：0.2.31。**
-> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。本版统一 Core 与 Hermes Provider 的 UTF-8 证据留存预算：最多 64 条 source records、每条正文 32 KiB、正文总量 128 KiB，并保留有界 loss markers 与幂等规范化；同时将 metadata 模式下成功捕获的超限 pending 证据按相同有效策略消费。Gate 继续使用 physical evidence projection、`candidates`、`coverage`、`evidence_bindings` 和 allowlisted `evidence_check` 诊断，保持 source-neutral 语义、Markdown 唯一事实源和无 SQLite 运行时依赖。真实模型语义效果仍需结合本地模型和代表性样本验收。
+> **版本：0.2.32。**
+> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。本版在既有 UTF-8 证据留存预算和 metadata pending 消费策略上，为 Gate 的 `unknown_unit` 提供字段路径、类型/长度/摘要和期望集合摘要等受限诊断，并在同一合法 ID 清单约束下最多三次尝试、最多两次纠正；不记录原始值、不做 ID 猜测，持续失败不推进水位且不触发清理。保持 source-neutral 语义、Markdown 唯一事实源和无 SQLite 运行时依赖。真实模型语义效果仍需结合本地模型和代表性样本验收。
 > **当前版本支持 Hermes 和 Codex。** Antigravity（反重力）不检测、不安装、不配置。
 
 ## 项目定位
@@ -471,7 +471,7 @@ MIT，见 [LICENSE](LICENSE)。
 *Your memories, in files you own.*
 
 
-## 通用处理与只读验收（0.2.31）
+## 通用处理与只读验收（0.2.32）
 
 邮件、日历、工单、文件、浏览器与普通对话共用证据准入、覆盖检查和写入路径。
 自动摘要只能使用获准引用的原文；助手复述和旧记忆回读不能单独授权新增写入。

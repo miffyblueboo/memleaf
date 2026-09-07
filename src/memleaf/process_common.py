@@ -16,7 +16,7 @@ from .llm import MODEL_ERROR_CODES, MODEL_VALIDATION_REASONS, ModelUnavailable
 from .locking import read_json
 from .models import Memory, utc_now
 from .retrieval import candidate_matches_query, normalize_term
-from .validation import MODEL_EVIDENCE_CHECKS, MODEL_VALIDATION_DETAILS, ModelOutputError, parse_strict_json, normalize_relative_calendar_text
+from .validation import MODEL_EVIDENCE_CHECKS, MODEL_VALIDATION_DETAILS, ModelOutputError, parse_strict_json, normalize_relative_calendar_text, safe_evidence_context
 
 _PROCESSING_LEASE_SECONDS = 3600
 
@@ -296,6 +296,12 @@ def _safe_evidence_check(error: BaseException) -> Optional[str]:
 
     value = getattr(error, "evidence_check", None)
     return value if isinstance(value, str) and value in MODEL_EVIDENCE_CHECKS else None
+
+
+def _safe_evidence_diagnostics(error: BaseException) -> dict[str, Any]:
+    """Return allowlisted structural evidence details for local diagnostics."""
+
+    return safe_evidence_context(error)
 
 
 def _json_top_level_type(value: Any) -> str:

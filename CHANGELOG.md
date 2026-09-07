@@ -2,6 +2,12 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.32 — 2026-09-07
+
+- Add bounded `unknown_unit` Gate diagnostics that identify the exact response field and retain only allowlisted type/length/digest and expected-set summaries; raw invalid values, legal ID lists and model output remain excluded from normal logs and failed state.
+- Give bounded correction attempts the failed constraint, field path and immutable legal-ID inventory used by validation, so coverage and evidence-binding references are repaired by regeneration rather than host-side ID substitution or relaxed evidence authority.
+- Keep `invalid_evidence` compatibility, source-neutral physical evidence boundaries, and watermark/cleanup safety unchanged: a persistently failed Gate does not advance the watermark or trigger cleanup.
+
 ## 0.2.31 — 2026-09-07
 
 - Unify Core and the copied Hermes provider on one idempotent UTF-8 evidence budget: at most 64 source records, 32 KiB per body, and 128 KiB of aggregate body text. Complete matched sources above the former 2,000-character/eight-record limits remain available within those bounds.
