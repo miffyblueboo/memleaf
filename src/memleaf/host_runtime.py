@@ -35,7 +35,7 @@ from .retrieval_gate import (
     validate_turn,
 )
 from .service import Memleaf
-from .evidence_policy import document_arguments, retain_tool_evidence
+from .evidence_policy import attachment_arguments, document_arguments, retain_tool_evidence
 
 
 _GATE_RETRY_REASON = (
@@ -189,7 +189,11 @@ class HostRuntime:
             incoming = observation_records(tool_name, call_id, payload,
                 source_kind="retrieved_memory" if refers_to_vault(tool_input, self.vault.root) else None)
             for record in incoming:
-                record["source_type"] = "document" if document_arguments(tool_input) else "tool_result"
+                record["source_type"] = (
+                    "attachment" if attachment_arguments(tool_input)
+                    else "document" if document_arguments(tool_input)
+                    else "tool_result"
+                )
             incoming = retain_tool_evidence(incoming, self.vault.config())
             if not incoming:
                 self._discard_private_evidence_unlocked(session_id, turn_id)

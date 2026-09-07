@@ -9,7 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from memleaf import Memleaf
+from memleaf.admission import analyze_turn_evidence, partition_evidence_units
 from memleaf.index import event_key, turn_key
+from memleaf.inbox import parse_inbox
 from memleaf.memory_writer import MemoryWriter
 from memleaf.planning_context import PlanningContext
 from memleaf.process_common import (
@@ -18,6 +20,7 @@ from memleaf.process_common import (
     _RELATED_MAX_ITEMS,
     _SCOPE_DIRECTORY_MAX_CHARS,
     _SCOPE_DIRECTORY_MAX_ITEMS,
+    _event_payload,
 )
 from memleaf.prompts import SUMMARIZE_SYSTEM
 
@@ -363,6 +366,44 @@ class MaintenanceV2Tests(unittest.TestCase):
         self.assertIn("TARGET-BODY", related[0]["body"])
         self.assertLessEqual(len(related[0]["body"]), _RELATED_MAX_BODY_CHARS)
 
+    def test_related_todo_context_preserves_due_date_and_explicit_null(self):
+        dated = self.service.create_memory(
+            memory_id="mem-todo-dated-context",
+            title="Cedar project deadline",
+            body="Finish the Cedar project by 2026-09-14.",
+            type="todo",
+            scopes=["project:cedar"],
+            status="active",
+            due_date="2026-09-14",
+        )
+        undated = self.service.create_memory(
+            memory_id="mem-todo-undated-context",
+            title="Cedar project review",
+            body="Review the Cedar project deliverables.",
+            type="todo",
+            scopes=["project:cedar"],
+            status="active",
+        )
+        self.capture(
+            "todo-context",
+            "turn-1",
+            "Cedar project deadline",
+            "Reviewing the Cedar project tasks.",
+        )
+        backend = QueueBackend([gate([])])
+
+        self.service.process(
+            source="hermes",
+            session_id="todo-context",
+            model=backend,
+            scope=["project:cedar"],
+        )
+
+        related = self.related_payload(backend.calls[0]["prompt"])
+        by_id = {item["memory_id"]: item for item in related}
+        self.assertEqual(by_id[dated.memory_id]["due_date"], "2026-09-14")
+        self.assertIsNone(by_id[undated.memory_id]["due_date"])
+
     def test_summary_related_context_uses_same_budget_and_keeps_target(self):
         memory_ids = []
         tails = []
@@ -479,6 +520,228 @@ class MaintenanceV2Tests(unittest.TestCase):
         self.assertTrue(all(body not in backend.calls[0]["prompt"] for body in bodies))
         self.assertEqual(len(self.service._read_memories_unlocked("knowledge")), 2)
         self.assertEqual(self.service._read_memories_unlocked("history"), [])
+
+    def test_sparse_multi_scope_fallback_exposes_bounded_union_directory(self):
+        memories = []
+        bodies = []
+        for scope_name in ("cedar", "birch"):
+            for index in range(2):
+                memory_id = f"mem-{scope_name}-{index}"
+                body = f"{scope_name.upper()}-BODY-{index} " + "x" * 1400
+                memories.append(
+                    self.service.create_memory(
+                        memory_id=memory_id,
+                        title=f"{scope_name.title()} project record {index}",
+                        body=body,
+                        type="project",
+                        scopes=[f"project:{scope_name}"],
+                    )
+                )
+                bodies.append(body)
+        unrelated = self.service.create_memory(
+            memory_id="mem-maple-0",
+            title="Maple project record",
+            body="MAPLE-BODY " + "m" * 1400,
+            type="project",
+            scopes=["project:maple"],
+        )
+        target = memories[0]
+        user_event, assistant_event = self.capture(
+            "multi-scope-directory",
+            "turn-1",
+            "已同步。",
+            "已完成。",
+        )
+        backend = QueueBackend(
+            [
+                gate(
+                    [
+                        candidate(
+                            "cedar-sync",
+                            [user_event, assistant_event],
+                            "Cedar 项目记录已同步。",
+                            scopes=["project:cedar"],
+                            type="project",
+                            update_memory_id=target.memory_id,
+                        )
+                    ]
+                ),
+                summary(
+                    user_event,
+                    "Cedar 项目记录已同步。",
+                    title=target.title,
+                    scopes=["project:cedar"],
+                    type="project",
+                    update_memory_id=target.memory_id,
+                ),
+            ]
+        )
+
+        result = self.service.process(
+            source="hermes",
+            session_id="multi-scope-directory",
+            model=backend,
+            scope=["project:cedar", "project:birch"],
+        )
+
+        self.assertEqual(result["memory_ids"], [target.memory_id])
+        gate_call = next(call for call in backend.calls if call["purpose"] == "gate")
+        gate_prompt_text = gate_call["prompt"]
+        self.assertEqual(self.related_payload(gate_prompt_text), [])
+        directory_marker = "Bounded scope candidate directory (metadata only; not evidence):\n"
+        self.assertIn(directory_marker, gate_prompt_text)
+        directory_start = gate_prompt_text.index(directory_marker) + len(directory_marker)
+        directory = json.JSONDecoder().raw_decode(gate_prompt_text[directory_start:])[0]
+        self.assertLessEqual(len(directory), _SCOPE_DIRECTORY_MAX_ITEMS)
+        self.assertLessEqual(
+            len(json.dumps(directory, ensure_ascii=False, separators=(",", ":"))),
+            _SCOPE_DIRECTORY_MAX_CHARS,
+        )
+        self.assertEqual(
+            {entry["memory_id"] for entry in directory},
+            {memory.memory_id for memory in memories},
+        )
+        self.assertNotIn(unrelated.memory_id, {entry["memory_id"] for entry in directory})
+        self.assertTrue(
+            all(
+                set(entry) == {"memory_id", "title", "type", "scopes"}
+                for entry in directory
+            )
+        )
+        self.assertTrue(all(body not in gate_prompt_text for body in bodies))
+        self.assertNotIn(unrelated.body, gate_prompt_text)
+
+
+    def test_retained_external_units_extend_local_related_search_only(self):
+        target = self.service.create_memory(
+            memory_id="mem-cedar-source-match",
+            title="Cedar project record",
+            body="Project Cedar plan is complete.",
+            type="project",
+            scopes=["project:cedar"],
+        )
+        self.service.create_memory(
+            memory_id="mem-birch-source-match",
+            title="Birch project record",
+            body="Project Birch contact is Morgan.",
+            type="project",
+            scopes=["project:birch"],
+        )
+        tool_body = target.body
+        self.service.capture(
+            "hermes",
+            "retained-source-related",
+            "turn-1",
+            "user",
+            "已同步。",
+            event_id="retained-source-user",
+        )
+        self.service.capture(
+            "hermes",
+            "retained-source-related",
+            "turn-1",
+            "assistant",
+            "已完成。",
+            event_id="retained-source-assistant",
+            tool_evidence=[
+                {
+                    "tool_name": "records.read",
+                    "call_id": "retained-source-call",
+                    "kind": "external_observation",
+                    "result_status": "success",
+                    "execution_status": "success",
+                    "completeness": "complete",
+                    "source_type": "tool_result",
+                    "content": tool_body,
+                }
+            ],
+        )
+        turn = parse_inbox(self.service.vault)[0]
+        units = partition_evidence_units(
+            analyze_turn_evidence(_event_payload(turn))
+        ).physical
+        external = next(unit for unit in units if unit.origin == "external_observation")
+        user_event = next(event for event in turn.events if event.role == "user")
+        assistant_event = next(event for event in turn.events if event.role == "assistant")
+        candidate_id = "cedar-source-update"
+        candidate_value = {
+            "candidate_id": candidate_id,
+            "memory": tool_body,
+            "duplicate": False,
+            "worth": True,
+            "type": "project",
+            "scopes": ["project:cedar"],
+            "scope_source": "model",
+            "update_memory_id": target.memory_id,
+        }
+        coverage = [
+            (
+                {
+                    "unit_id": unit.unit_id,
+                    "decision": "CANDIDATE",
+                    "candidate_ids": [candidate_id],
+                }
+                if unit is external
+                else {
+                    "unit_id": unit.unit_id,
+                    "decision": "NO_CHANGE",
+                    "reason": "no_future_value",
+                }
+            )
+            for unit in units
+        ]
+        backend = QueueBackend(
+            [
+                json.dumps(
+                    {
+                        "candidates": [candidate_value],
+                        "coverage": coverage,
+                        "evidence_bindings": [
+                            {
+                                "candidate_id": candidate_id,
+                                "claims": [
+                                    {
+                                        "unit_id": external.unit_id,
+                                        "quote": tool_body,
+                                        "role": "assertion",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                summary(
+                    assistant_event.event_key,
+                    "Project Cedar plan is complete and retained.",
+                    title=target.title,
+                    scopes=["project:cedar"],
+                    type="project",
+                    update_memory_id=target.memory_id,
+                ),
+            ]
+        )
+        native_queries = []
+        self.service.native_memory_reader = (
+            lambda query, scope: native_queries.append((query, scope)) or []
+        )
+
+        result = self.service.process(
+            source="hermes",
+            session_id="retained-source-related",
+            model=backend,
+            scope=["project:cedar", "project:birch"],
+        )
+
+        self.assertEqual(result["memory_ids"], [target.memory_id])
+        gate_call = next(call for call in backend.calls if call["purpose"] == "gate")
+        related = self.related_payload(gate_call["prompt"])
+        self.assertIn(target.body, json.dumps(related, ensure_ascii=False))
+        self.assertTrue(native_queries)
+        self.assertEqual(native_queries[0][0], "已同步。 已完成。")
+        self.assertNotIn(tool_body, native_queries[0][0])
+        self.assertEqual(native_queries[0][1], ["project:cedar", "project:birch"])
+
 
     def test_sparse_inherited_scope_uses_metadata_directory_then_selected_body(self):
         target_body = "技术路线：达梦数据库与东方通；负责人吴江波；期限为2026-10-27；约束是按既定信创方案推进。"

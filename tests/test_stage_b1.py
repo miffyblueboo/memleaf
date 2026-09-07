@@ -1298,6 +1298,44 @@ class ValidationTest(unittest.TestCase):
                     "invalid_update_target" if field == "update_memory_id" else "invalid_type",
                 )
 
+    def test_create_summary_can_forbid_model_added_update_target(self):
+        summary = {
+            "title": "Fact",
+            "body": "Created fact.",
+            "tags": ["fact"],
+            "type": "fact",
+            "scopes": ["global"],
+            "sources": [{"event_key": "event-a"}],
+            "update_memory_id": "mem-target",
+        }
+        with self.assertRaises(ModelOutputError) as raised:
+            parse_summarize_output(
+                json.dumps(summary),
+                current_event_keys=["event-a"],
+                related_memory_ids=["mem-target"],
+                expected_type="fact",
+                allow_update_target=False,
+            )
+        self.assertEqual(raised.exception.validation_detail, "invalid_update_target")
+
+        # Existing direct callers retain the historical permissive behavior.
+        parsed = parse_summarize_output(
+            json.dumps(summary),
+            current_event_keys=["event-a"],
+            related_memory_ids=["mem-target"],
+        )
+        self.assertEqual(parsed["update_memory_id"], "mem-target")
+
+    def test_create_summary_still_rejects_targeted_no_change(self):
+        with self.assertRaises(ModelOutputError) as raised:
+            parse_summarize_output(
+                json.dumps({"decision": NO_CHANGE_DECISION, "update_memory_id": "mem-target"}),
+                current_event_keys=["event-a"],
+                allow_no_change=True,
+                allow_update_target=False,
+            )
+        self.assertEqual(raised.exception.validation_detail, "unknown_fields")
+
     def test_correction_prompts_explain_target_and_type_repairs(self):
         self.assertIn("merge", DUPLICATE_TARGET_CORRECTION.lower())
         self.assertIn("only once", DUPLICATE_TARGET_CORRECTION.lower())

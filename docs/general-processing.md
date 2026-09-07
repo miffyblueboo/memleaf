@@ -1,4 +1,4 @@
-# General processing reliability contract — 0.2.32
+# General processing reliability contract — 0.2.33
 
 This is source-neutral processing, not a mail extractor. Dialogue, documents,
 calendars, issue trackers and terminal/tool observations use the same admission
@@ -189,8 +189,8 @@ not a passing semantic test. Never publish based only on deterministic mocks.
 
 ## Capture policy (shared-core refactor)
 
-Tool evidence is controlled by `capture.tool_evidence_mode` and document opt-in,
-not the presence of business words. The same policy runs before cache/inbox writes
+Tool evidence is controlled by `capture.tool_evidence_mode`; only explicitly
+identified attachment evidence also requires the attachment opt-in. The same policy runs before cache/inbox writes
 and new model-planning calls. Intentional exclusion is not missing evidence.
 See [retention contract](evidence-retention.md) for legacy settings, plaintext
 metadata, opaque-resource limitations and the distinction from explicit forget.

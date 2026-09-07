@@ -68,8 +68,9 @@ class MemoryWriter:
             left_extra.pop("archived_at", None)
             right_extra.pop("archived_at", None)
         if ignore_runtime_metadata:
-            left_extra.pop("source", None)
-            right_extra.pop("source", None)
+            for key in ("source", "source_count", "source_digest", "sources_omitted"):
+                left_extra.pop(key, None)
+                right_extra.pop(key, None)
         return (
             left.memory_id == right.memory_id
             and (ignore_title or left.title == right.title)

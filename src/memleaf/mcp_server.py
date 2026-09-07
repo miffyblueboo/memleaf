@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from . import __version__
+from .evidence_policy import capture_policy_status
 from .host_runtime import HostRuntime
 from .llm import MODEL_ERROR_CODES, MODEL_VALIDATION_REASONS, ModelError, ModelUnavailable
 from .models import CaptureResult, ForgetAboutResult, Memory, MemoryVersionError
@@ -77,7 +78,9 @@ INSTRUCTIONS = (
     "Capture only user-visible and assistant-visible text. Never capture system or developer "
     "messages or hidden reasoning. Do not place raw tool output or attachment bodies in "
     "visible-message content. Matched current-turn tool_evidence is governed by the Vault's "
-    "capture.tool_evidence_mode (bounded, metadata, off) and include_attachments policy. "
+    "capture.tool_evidence_mode (bounded, metadata, off); only evidence explicitly labeled "
+    "source_type=attachment is additionally gated by "
+    "include_attachments; ordinary structural file/document results follow the mode. "
     "Process only complete user+assistant turns; do not process incomplete turns. "
     "Use remember only when the user explicitly asks to remember something. If the user has "
     "previously or currently explicitly said not to record corresponding text, skip capture for it. "
@@ -917,6 +920,8 @@ def _invoke_tool(
             value = service.rebuild_index(**args)
         elif name == "stats":
             value = service.stats(**args)
+            value = dict(value)
+            value["capture"] = capture_policy_status(service.vault.config())
         else:  # pragma: no cover - guarded by the name lookup above
             raise _InvalidParams
     except Exception as error:

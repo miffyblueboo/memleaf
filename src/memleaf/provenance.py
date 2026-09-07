@@ -63,7 +63,7 @@ def normalize_tool_evidence(value: Any) -> list[dict[str, str]]:
             raise ValueError("invalid evidence completeness")
         if item.get("result_status") == "truncated":
             item["completeness"] = "partial"
-        if "source_type" in item and item["source_type"] not in {"document", "tool_result", "unknown"}:
+        if "source_type" in item and item["source_type"] not in {"document", "attachment", "tool_result", "unknown"}:
             raise ValueError("invalid tool evidence source type")
         if "retention" in item and item["retention"] not in {"metadata", "bounded"}:
             raise ValueError("invalid tool evidence retention")

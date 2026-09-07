@@ -31,12 +31,17 @@ These are source-retention limits, not a guarantee that every configured model
 can process the resulting prompt. See [capture budget design](capture-budget-design.md)
 for the ingestion boundary, model-capacity limitation and acceptance contract.
 
-Document/attachment bodies require include_attachments=true and bounded mode.
-HostRuntime and the standalone Hermes adapter classify structural file arguments
-using the same tested contract (path/file_path/file_id/attachment_id/file URI,
-including bounded nesting). This is not a claim to identify every file hidden
-behind arbitrary terminal commands or undocumented remote tools. Direct callers
-must truthfully identify document evidence with source_type=document.
+Document bodies follow the selected `tool_evidence_mode`; ordinary structural
+file arguments do not require `include_attachments=true`. Bodies explicitly
+identified as attachments (`source_type=attachment`, or an `attachment_id`
+argument in the host adapters) require `include_attachments=true` and bounded
+mode. A path that happens to point at an attachment cannot be classified as an
+attachment from the path alone. HostRuntime and the standalone Hermes adapter
+use the same tested contract: path/file/file_id/file URI means `document`, while
+an explicit `attachment_id` means `attachment`, including bounded nesting. This
+is not a claim to identify every file hidden behind arbitrary terminal commands
+or undocumented remote tools. Direct callers must truthfully identify document
+or attachment evidence with the matching `source_type`.
 
 ## Lifecycle
 

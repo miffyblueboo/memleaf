@@ -2,6 +2,13 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.33 — 2026-09-07
+
+- Extend the Gate with bounded physical-evidence batches, exact unit/quote bindings, isolated cross-batch candidate IDs, same-target update coordination, and bounded model reconciliation for compatible CREATE proposals. Failed batches remain retryable and fail closed without advancing the watermark or cleanup.
+- Align Core, HostRuntime, and the copied Hermes provider on document/attachment classification and effective capture-policy reporting: ordinary structural files follow the selected retention mode, while explicitly identified attachments still require attachment opt-in and bounded retention.
+- Keep automatic UPDATEs as `NO_CHANGE` when current evidence only restates the target or adds provenance/source metadata; preserve the selected target for real semantic state changes. Add synthetic-document real-model lifecycle acceptance and regressions for coverage, deadlines, todo completion, capture policy, and lifecycle behavior.
+- Validation for this release: 835 deterministic tests passed with 2 skips, and a four-phase synthetic-input real-model acceptance passed in 17 model calls. This does not claim real-mail or customer-business acceptance.
+
 ## 0.2.32 — 2026-09-07
 
 - Add bounded `unknown_unit` Gate diagnostics that identify the exact response field and retain only allowlisted type/length/digest and expected-set summaries; raw invalid values, legal ID lists and model output remain excluded from normal logs and failed state.

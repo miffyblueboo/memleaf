@@ -643,12 +643,14 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
             user="alpha 已发送实施方案邮件；alpha 实施计划新增信创测试环境要求。",
             assistant="邮件已归档，正式实施计划需要更新。",
         )
+        # Gate selects the formal plan; summarize must retain that decision.
         plan_candidate = candidate(
             "alpha-formal-plan-update",
             [user_key, assistant_key],
             memory="alpha 实施计划新增信创测试环境要求。",
             type="project",
             scopes=["project:alpha"],
+            update_memory_id=formal.memory_id,
         )
         backend = QueueBackend(
             [
@@ -834,6 +836,58 @@ class UpdateTargetRecoveryTests(unittest.TestCase):
         processed = json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))
         entry = processed["sessions"]["hermes/same-use-type-conflict"]["processed_turns"][0]
         self.assertEqual(entry["deferred_candidates"][0]["reason"], "update_target_type_mismatch")
+
+    def test_automatic_same_update_with_only_provenance_changes_is_no_change(self):
+        """A repeated semantic update must not create a history version for provenance alone."""
+
+        old = self.service.create_memory(
+            memory_id="mem-alpha-status",
+            title="alpha 项目状态",
+            body="alpha 项目状态已记录。",
+            tags=["update-target-recovery"],
+            type="fact",
+            scopes=["project:alpha"],
+            scope_source="model",
+            sources=[{"event_key": "old-source"}],
+        )
+        user_key, assistant_key = self.capture_turn(
+            "same-semantic-update",
+            user="alpha 项目状态已记录，无新增变化。",
+            assistant="已确认 alpha 项目状态仍保持不变。",
+        )
+        repeated = candidate(
+            "alpha-status-repeat",
+            [user_key, assistant_key],
+            memory=old.body,
+            type=old.type,
+            scopes=list(old.scopes),
+            update_memory_id=old.memory_id,
+        )
+        backend = QueueBackend(
+            [
+                gate([repeated]),
+                summary(
+                    user_key,
+                    title=old.title,
+                    body=old.body,
+                    type=old.type,
+                    scopes=list(old.scopes),
+                    update_memory_id=old.memory_id,
+                ),
+            ]
+        )
+
+        before = self.service.vault.memory_path(old.memory_id, "knowledge").read_text(encoding="utf-8")
+        result = self.service.process(
+            source="hermes", session_id="same-semantic-update", model=backend
+        )
+
+        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["memory_ids"], [])
+        self.assertEqual(result["metadata_merged"], 0)
+        self.assertEqual(self.service.vault.list_markdown("history"), [])
+        self.assertEqual(self.service.read(old.memory_id).to_markdown(), before)
+        self.assertEqual(len(self.active()), 1)
 
     def test_bad_cross_project_candidate_does_not_block_valid_candidate(self):
         """One invalid update in a digest is isolated while another candidate commits."""

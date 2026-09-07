@@ -774,7 +774,7 @@ def _path_from_tool_arguments(arguments: Any) -> Optional[str]:
 
 
 def _has_document_arguments(value: Any, depth: int = 0) -> bool:
-    """Classify structural file handles in the standalone copied provider.
+    """Classify structural document handles in the standalone copied provider.
 
     Kept dependency-free; contract tests compare this adapter projection with
     Core's document_arguments. Tool names and shell command text are not used.
@@ -783,7 +783,7 @@ def _has_document_arguments(value: Any, depth: int = 0) -> bool:
         return False
     if isinstance(value, Mapping):
         for key, item in list(value.items())[:32]:
-            if key in {"path", "file", "file_path", "filepath", "filename", "attachment_id", "file_id"}:
+            if key in {"path", "file", "file_path", "filepath", "filename", "file_id"}:
                 if isinstance(item, str) and item.strip():
                     return True
             if key == "uri" and isinstance(item, str) and item.startswith("file://"):
@@ -792,6 +792,21 @@ def _has_document_arguments(value: Any, depth: int = 0) -> bool:
                 return True
     elif isinstance(value, (list, tuple)):
         return any(_has_document_arguments(item, depth + 1) for item in value[:32])
+    return False
+
+
+def _has_attachment_arguments(value: Any, depth: int = 0) -> bool:
+    """Classify only explicit attachment handles in the standalone provider."""
+    if depth > 4:
+        return False
+    if isinstance(value, Mapping):
+        for key, item in list(value.items())[:32]:
+            if key == "attachment_id" and isinstance(item, str) and item.strip():
+                return True
+            if isinstance(item, (Mapping, list, tuple)) and _has_attachment_arguments(item, depth + 1):
+                return True
+    elif isinstance(value, (list, tuple)):
+        return any(_has_attachment_arguments(item, depth + 1) for item in value[:32])
     return False
 
 
@@ -835,6 +850,47 @@ def _provider_manifest_version() -> Optional[str]:
 def _default_hermes_home() -> Path:
     configured = os.environ.get("HERMES_HOME")
     return Path(configured).expanduser() if configured else Path.home() / ".hermes"
+
+
+def _capture_policy_status(config: Mapping[str, Any], vault: Path) -> dict[str, Any]:
+    """Read the effective policy through the public Core MCP stats result.
+
+    Hermes installs this module as a standalone provider, so it must not import
+    Core or duplicate its YAML migration rules. If the read-only stats call is
+    unavailable, return an explicit unknown status instead of guessing from the
+    Vault file.
+    """
+
+    unknown = {
+        "tool_evidence_mode": "unknown",
+        "include_attachments": "unknown",
+        "body_retention": "unknown",
+        "source": "mcp_unavailable",
+    }
+    command = _resolve_command(config)
+    if command is None or not vault.is_dir():
+        return unknown
+    client: Optional[_MCPClient] = None
+    try:
+        client = _MCPClient(
+            command,
+            str(vault),
+            config["timeout"],
+            config["process_timeout"],
+        )
+        result = client.call_tool("stats", {})
+    except Exception:
+        return unknown
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+    capture = result.get("capture") if isinstance(result, Mapping) else None
+    if not isinstance(capture, Mapping):
+        return unknown
+    return dict(capture)
 
 
 def _as_bool(value: Any, default: bool = True) -> bool:
@@ -1245,7 +1301,11 @@ def _bounded_current_tool_evidence(messages: Optional[List[Dict[str, Any]]], *, 
                     "completeness": "complete", "schema_version": "2",
                     "result_status": "error" if execution_error else "success",
                     "content": text,
-                    "source_type": "document" if _has_document_arguments(call.get("arguments")) else "tool_result"}
+                    "source_type": (
+                        "attachment" if _has_attachment_arguments(call.get("arguments"))
+                        else "document" if _has_document_arguments(call.get("arguments"))
+                        else "tool_result"
+                    )}
             if isinstance(value, Mapping):
                 for key in ("record_id", "title", "message_id", "subject", "sender", "domain"):
                     field = value.get(key)
@@ -1699,12 +1759,14 @@ class MemleafMemoryProvider(MemoryProvider):
 
     def get_status_config(self, provider_config: Mapping[str, Any]) -> dict[str, Any]:
         config = _load_config(self._hermes_home or _default_hermes_home())
+        vault = _resolve_vault(config)
         return {
-            "vault": str(_resolve_vault(config)),
+            "vault": str(vault),
             "mcp_command": _resolve_command(config) or str(config.get("command", _DEFAULT_COMMAND)),
             "auto_process": config["auto_process"],
             "timeout": config["timeout"],
             "process_timeout": config["process_timeout"],
+            "capture": _capture_policy_status(config, vault),
         }
 
     @staticmethod

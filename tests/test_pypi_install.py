@@ -196,6 +196,12 @@ class PyPIInstallTests(unittest.TestCase):
             initialized = SimpleNamespace(
                 root=vault_path,
                 agents_state_path=vault_path / "index" / "agents.json",
+                config=lambda: {
+                    "capture": {
+                        "tool_evidence_mode": "bounded",
+                        "include_attachments": False,
+                    }
+                },
             )
             model = {
                 "status": "not_configured",

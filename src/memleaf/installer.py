@@ -33,6 +33,7 @@ from .adapters.hermes import (
     hermes_home_for_platform,
 )
 from .cli import _home_from_environment, _prepare_model_route
+from .evidence_policy import capture_policy_status
 from .hermes_runtime import (
     HermesMcpInspection,
     inspect_hermes_mcp,
@@ -1018,6 +1019,7 @@ def install_hermes(
         "mcp_runtime": runtime_details,
         "model": model,
         "native_sources": native_registration,
+        "capture": capture_policy_status(vault.config()),
     }
 
 
@@ -1094,6 +1096,7 @@ def install_codex(*, vault_path: Path | None = None) -> dict[str, Any]:
         "codex": configured.to_dict(),
         "user_action_required": bool(actions),
         "user_action": " ".join(actions) if actions else None,
+        "capture": capture_policy_status(vault.config()),
     }
 
 

@@ -5,7 +5,7 @@ import os
 from typing import Any, Callable, Mapping, Optional
 from .llm import MODEL_VALIDATION_REASONS, CallableBackend, ModelError, ModelUnavailable, ModelRouter
 from .models import utc_now
-from .prompts import COVERAGE_CORRECTION, DUPLICATE_TARGET_CORRECTION, GATE_TYPE_CORRECTION, JSON_CORRECTION, MIXED_FUTURE_USE_CORRECTION, MIXED_PROJECT_SCOPES_CORRECTION, RELATIVE_TIME_CORRECTION, SCOPE_GROUNDING_CORRECTION, SUMMARY_SCOPE_CORRECTION, SUMMARY_TARGET_CORRECTION, SUMMARY_TYPE_CORRECTION, TARGET_RELEVANCE_CORRECTION, UPDATE_TARGET_TYPE_CORRECTION
+from .prompts import COVERAGE_ALREADY_COMPLETED_CORRECTION, COVERAGE_CANDIDATE_CORRECTION, COVERAGE_CORRECTION, DUPLICATE_TARGET_CORRECTION, EVIDENCE_EVENT_MAPPING_CORRECTION, EVIDENCE_SPAN_CORRECTION, GATE_TYPE_CORRECTION, JSON_CORRECTION, MIXED_FUTURE_USE_CORRECTION, MIXED_PROJECT_SCOPES_CORRECTION, RELATIVE_TIME_CORRECTION, SCOPE_GROUNDING_CORRECTION, SUMMARY_SCOPE_CORRECTION, SUMMARY_TARGET_CORRECTION, SUMMARY_TYPE_CORRECTION, TARGET_RELEVANCE_CORRECTION, UPDATE_TARGET_TYPE_CORRECTION
 from .validation import MODEL_VALIDATION_DETAILS, ModelOutputError
 from .process_common import _DIAGNOSTIC_FILENAME, _DIAGNOSTIC_MAX_BYTES, _failure_metadata, _model_output_statistics, _safe_evidence_check, _safe_evidence_diagnostics
 
@@ -114,6 +114,16 @@ class ModelExecutor:
         if stage == "gate" and hint == "target_not_relevant":
             return TARGET_RELEVANCE_CORRECTION
         if stage == "gate" and hint == "invalid_evidence":
+            if getattr(error, "evidence_check", None) == "invalid_span":
+                return EVIDENCE_SPAN_CORRECTION
+            if getattr(error, "evidence_check", None) == "coverage_candidate":
+                return COVERAGE_CANDIDATE_CORRECTION
+            if getattr(error, "evidence_check", None) in {
+                "event_mismatch", "omitted_evidence_binding",
+            }:
+                return EVIDENCE_EVENT_MAPPING_CORRECTION
+            if getattr(error, "evidence_check", None) == "coverage_terminal_witness":
+                return COVERAGE_ALREADY_COMPLETED_CORRECTION
             context = ModelExecutor._evidence_correction_context(error)
             return COVERAGE_CORRECTION if context is None else COVERAGE_CORRECTION + "\n" + context
         if stage == "summarize" and hint == "scope_drift":

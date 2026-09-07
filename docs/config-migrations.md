@@ -6,7 +6,7 @@ This document describes the configuration and Vault-layout compatibility boundar
 
 The current persisted top-level sections are `vault`, `agents`, `scopes`, `native_sources`, `process`, `history`, `capture`, and `llm`. Retrieval remains Scope Map -> search -> read; there is no configurable legacy injection mode.
 
-`capture.tool_evidence_mode` is the current tool-evidence retention setting and accepts `bounded`, `metadata`, or `off`. `capture.include_attachments` is independent and defaults to `false`.
+`capture.tool_evidence_mode` is the current tool-evidence retention setting and accepts `bounded`, `metadata`, or `off`. `capture.include_attachments` is independent, defaults to `false`, and gates only evidence explicitly identified as an attachment. Ordinary structural file/document results follow the selected mode.
 
 ## Deprecated fields
 

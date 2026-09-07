@@ -4,8 +4,8 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **版本：0.2.32。**
-> 核心库、Vault、stdio MCP Server、初始化 CLI、模型路由、提炼流程、受控检索协议和宿主适配器已经实现。本版在既有 UTF-8 证据留存预算和 metadata pending 消费策略上，为 Gate 的 `unknown_unit` 提供字段路径、类型/长度/摘要和期望集合摘要等受限诊断，并在同一合法 ID 清单约束下最多三次尝试、最多两次纠正；不记录原始值、不做 ID 猜测，持续失败不推进水位且不触发清理。保持 source-neutral 语义、Markdown 唯一事实源和无 SQLite 运行时依赖。真实模型语义效果仍需结合本地模型和代表性样本验收。
+> **版本：0.2.33。**
+> 本版扩展有界物理证据 Gate：支持精确 unit/quote 绑定、分批覆盖、跨批候选隔离与受限协调，并在失败时保留可重试的原始轮次；统一 Core、HostRuntime 与 Hermes Provider 的文件/附件留存分类，普通结构化文件遵循所选模式，显式附件仍需单独放行；自动 UPDATE 在仅措辞、复述或来源元数据变化时保持 `NO_CHANGE`，真实状态变化才更新原目标。新增合成文档真实模型生命周期验收示例与对应回归测试。Markdown 仍是唯一事实源，运行时不引入 SQLite。验收仅覆盖合成输入和真实模型路由，不代表真实邮件或客户业务验收。
 > **当前版本支持 Hermes 和 Codex。** Antigravity（反重力）不检测、不安装、不配置。
 
 ## 项目定位
@@ -424,7 +424,7 @@ history:
 
 ## 隐私与安全边界
 
-- 对话捕获只接收 user/assistant 可见文本，不捕获 system/developer 指令或隐藏推理。匹配到当前轮工具调用的证据另由 `capture.tool_evidence_mode` 控制；新建 Vault 默认 `bounded`（脱敏、有界正文），文件/附件正文默认不留存。旧配置显式关闭工具输出时不自动升级为保留正文；
+- 对话捕获只接收 user/assistant 可见文本，不捕获 system/developer 指令或隐藏推理。匹配到当前轮工具调用的证据另由 `capture.tool_evidence_mode` 控制；新建 Vault 默认 `bounded`（脱敏、有界正文），显式标记为附件的正文默认不留存，普通结构化文件正文按该模式保留。旧配置显式关闭工具输出时不自动升级为保留正文；
 - 捕获落盘前尽力脱敏常见 API key、Bearer token、Cookie、JWT 和私钥，但脱敏不是加密，也不能保证识别所有敏感信息；
 - 路径校验、符号链接检查、Vault 锁、同目录临时文件、fsync 和原子替换用于保护本地写入；
 - memleaf 不主动上传整个 Vault，也没有托管后台、遥测或账号系统；
@@ -471,7 +471,7 @@ MIT，见 [LICENSE](LICENSE)。
 *Your memories, in files you own.*
 
 
-## 通用处理与只读验收（0.2.32）
+## 通用处理与只读验收（0.2.33）
 
 邮件、日历、工单、文件、浏览器与普通对话共用证据准入、覆盖检查和写入路径。
 自动摘要只能使用获准引用的原文；助手复述和旧记忆回读不能单独授权新增写入。
@@ -505,9 +505,11 @@ capture:
 
 现有配置未提供新字段时，旧 `include_tool_output: false` 或未设置该开关均按
 `metadata` 处理，旧 `true` 按 `bounded` 处理。显式新字段优先；新建 Vault 只写
-新字段，不再同时写含义冲突的旧开关。`include_attachments: true` 仍受上述总模式限制。
-宿主通过结构化文件路径、文件/附件标识识别文档；不承诺识别任意 Shell 命令或不透明工具
-隐藏读取的文件。用户粘贴的可见文档和显式 `remember` 内容不属于自动附件抓取。
+新字段，不再同时写含义冲突的旧开关。`include_attachments: true` 只放行显式标记的
+attachment，且仍受上述总模式限制；普通结构化文件结果不需要该开关。宿主把路径、file、
+file_id 或 file URI 归为 document，只有明确的 `attachment_id` 才归为 attachment；无法仅凭
+路径判断某个文件是否为附件，也不承诺识别任意 Shell 命令或不透明工具隐藏读取的文件。用户
+粘贴的可见文档和显式 `remember` 内容不属于自动附件抓取。
 
 策略在待捕获缓存、inbox 写入和新模型提炼输入处共同执行。配置收紧不会自动删除已提交
 记忆或改写已捕获 inbox；失败前已经冻结的提交计划也不作为新的模型调用重新提炼。

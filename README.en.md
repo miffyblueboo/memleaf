@@ -4,8 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.32.**
-> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. Building on the existing UTF-8 evidence budget and metadata-mode pending-evidence policy, this release adds bounded `unknown_unit` Gate diagnostics for field path, type/length/digest and expected-set summaries, with at most three attempts and two corrections constrained by the same legal-ID inventory; it never logs the raw value or guesses an ID, and a persistently failed Gate does not advance the watermark or trigger cleanup. This preserves source-neutral semantics, Markdown as the sole source of truth, and zero SQLite runtime dependencies. Real-model semantics still require local acceptance with the selected model and representative inputs.
+> **Version: 0.2.33.**
+> This release extends bounded physical-evidence Gate processing with exact unit/quote bindings, batch coverage, isolated cross-batch candidates and bounded model reconciliation, while failed batches remain retryable and fail closed. Core, HostRuntime and the Hermes provider now share document/attachment classification: ordinary structural files follow the selected retention mode, while explicitly marked attachments still require separate opt-in. Automatic UPDATEs return `NO_CHANGE` for wording, restatement or provenance-only changes and retain the selected target only for real semantic state changes. It adds a synthetic-document real-model lifecycle acceptance example and regression coverage. Markdown remains the sole source of truth with no SQLite runtime dependency. Acceptance covers synthetic inputs and the configured real-model route; it does not claim real-mail or customer-business acceptance.
 > **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.
 
 ## Project scope
@@ -426,7 +426,7 @@ Directories are normally created with mode `0700`, and files are stored as plain
 
 ## Privacy and security boundaries
 
-- Conversation capture accepts visible user/assistant text, never system/developer instructions or hidden reasoning. Matched current-turn tool evidence is controlled separately by `capture.tool_evidence_mode`: new Vaults use bounded/redacted observations; document/attachment bodies are excluded by default. Legacy configurations disabling tool output are not silently opted into body retention.
+- Conversation capture accepts visible user/assistant text, never system/developer instructions or hidden reasoning. Matched current-turn tool evidence is controlled separately by `capture.tool_evidence_mode`: new Vaults use bounded/redacted observations; explicitly marked attachment bodies are excluded by default, while ordinary structural file/document bodies follow the selected mode. Legacy configurations disabling tool output are not silently opted into body retention.
 - Common API keys, Bearer tokens, cookies, JWTs, and private keys are redacted on a best-effort basis before capture is written. Redaction is not encryption and cannot detect every secret.
 - Path validation, symlink checks, Vault locks, same-directory temporary files, fsync, and atomic replacement protect local writes.
 - memleaf does not upload the entire Vault and has no hosted backend, telemetry, or account system.
@@ -474,7 +474,7 @@ MIT; see [LICENSE](LICENSE).
 *Your memories, in files you own.*
 
 
-## General processing and read-only inspection (0.2.32)
+## General processing and read-only inspection (0.2.33)
 
 Dialogue, calendars, tickets, files, web results and other tools share the evidence, coverage and write path.
 Models interpret semantics; Core validates physical provenance and exact original quotations.
@@ -508,8 +508,10 @@ assistant synthesis or retrieved old memory independent evidence of new facts.
 For an existing file without the new mode, legacy `include_tool_output: false` or an
 absent boolean means `metadata`; true means `bounded`. An explicit new mode takes
 precedence. New Vaults write only the new mode. Attachment opt-in remains subject to the
-mode. Adapters classify structural file paths, file IDs and attachment handles, not
-arbitrary opaque shell commands. Pasted visible documents and explicit remember text
+mode and applies only to explicitly marked attachments. Adapters classify structural file
+paths, file IDs and file URIs as documents, and an explicit `attachment_id` as an attachment;
+a path alone cannot identify every file that happens to be an attachment. They do not
+classify arbitrary opaque shell commands. Pasted visible documents and explicit remember text
 are not automatic attachment capture.
 
 The policy applies to pending cache, inbox writes, and new model-planning inputs.

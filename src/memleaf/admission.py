@@ -15,6 +15,16 @@ from typing import Any, Iterable, Mapping
 
 from .validation import ModelOutputError, parse_strict_json
 
+
+# Tool capture already bounds ordinary records to 32 KiB. JSON and unstructured
+# prose remain whole so a document/mail header stays available as context;
+# explicit plain-text structure may be split into bounded semantic sections.
+# Oversized legacy records are split only when necessary; every block retains
+# the original record identity in its EvidenceUnit metadata.
+MAX_EXTERNAL_UNIT_BYTES = 32 * 1024
+MAX_GATE_BATCH_UNITS = 8
+MAX_GATE_BATCH_BYTES = 64 * 1024
+
 # Syntax recognizers, not a catalogue of business scenarios or tool names.
 _POLITE = re.compile(r"^(?:(?:麻烦你|麻烦|请问|请|帮我|替我|劳驾)\s*)+")
 _QUERY_START = re.compile(
@@ -110,6 +120,212 @@ def partition_evidence_units(units: Iterable[EvidenceUnit]) -> EvidencePartition
     return EvidencePartition(tuple(physical), tuple(non_physical), tuple(unresolved))
 
 
+def _external_blocks(text: str) -> Iterable[tuple[int, int, str, str, tuple[str, ...]]]:
+    """Yield deterministic, exact source blocks for one external record.
+
+    JSON documents remain whole records.  Plain text that contains explicit
+    structure is divided at paragraphs, headings, numbered items and bullets
+    so coverage can account for each actionable item.  Ordinary prose and
+    line oriented logs remain whole records; punctuation never creates a
+    fragment.  The oversized fallback is byte bounded and always returns
+    Python character offsets.
+    """
+
+    stripped = text.lstrip()
+    is_json = False
+    if stripped.startswith(("{", "[")):
+        try:
+            json.loads(text)
+        except (TypeError, ValueError):
+            pass
+        else:
+            is_json = True
+
+    if len(text.encode("utf-8")) <= MAX_EXTERNAL_UNIT_BYTES and (
+        is_json or not _has_external_structure(text)
+    ):
+        yield 0, len(text), text, "external_record", ()
+        return
+
+    if len(text.encode("utf-8")) <= MAX_EXTERNAL_UNIT_BYTES:
+        yield from _structured_external_blocks(text)
+        return
+
+    start = 0
+    while start < len(text):
+        end = start
+        encoded = 0
+        while end < len(text):
+            width = len(text[end].encode("utf-8"))
+            if end > start and encoded + width > MAX_EXTERNAL_UNIT_BYTES:
+                break
+            encoded += width
+            end += 1
+        if end <= start:
+            # A single code point larger than the budget is impossible for a
+            # normal Unicode scalar, but make progress defensively.
+            end = min(start + 1, len(text))
+        yield start, end, text[start:end], "external_block", ()
+        start = end
+
+
+_EXTERNAL_MARKER = re.compile(r"^\s*(?:#{1,6}\s+|[-*+•]\s+|\d+[.)、]\s+)")
+
+
+def _has_external_structure(text: str) -> bool:
+    """Recognize structural boundaries without treating every line as one."""
+
+    if "\n\n" in text or "\r\n\r\n" in text:
+        return True
+    for line in text.splitlines():
+        value = line.strip()
+        if not value:
+            continue
+        if _EXTERNAL_MARKER.match(line) or value.endswith((":", "：")):
+            return True
+    return False
+
+
+def _structured_external_blocks(
+    text: str,
+) -> Iterable[tuple[int, int, str, str, tuple[str, ...]]]:
+    """Split explicit text structure while retaining parent section context."""
+
+    # ``splitlines(True)`` keeps offsets exact while allowing us to discard
+    # only structural whitespace at each emitted boundary.
+    lines: list[tuple[int, int, str, str]] = []
+    cursor = 0
+    for raw in text.splitlines(True):
+        line_end = cursor + len(raw)
+        body = raw[:-1] if raw.endswith("\n") else raw
+        if body.endswith("\r"):
+            body = body[:-1]
+        lines.append((cursor, line_end, body, raw))
+        cursor = line_end
+    if cursor < len(text):
+        lines.append((cursor, len(text), text[cursor:], text[cursor:]))
+    if not lines:
+        return
+
+    # Stack entries are ``(indent, label, kind)``. Headings remain in scope for
+    # sibling numbered items; prior items only remain in scope for indented
+    # children such as the two Morgan bullets in the regression digest.
+    contexts: list[tuple[int, str, str]] = []
+    current_start: int | None = None
+    current_end: int | None = None
+    current_section: tuple[str, ...] = ()
+    current_syntax = "external_paragraph"
+
+    def emit_current() -> tuple[int, int, str, str, tuple[str, ...]] | None:
+        if current_start is None or current_end is None or current_start >= current_end:
+            return None
+        return (
+            current_start,
+            current_end,
+            text[current_start:current_end],
+            current_syntax,
+            current_section,
+        )
+
+    for line_start, line_end, body, raw in lines:
+        left = len(body) - len(body.lstrip())
+        right = len(body.rstrip())
+        value = body.strip()
+        if not value:
+            emitted = emit_current()
+            if emitted is not None:
+                yield emitted
+            current_start = current_end = None
+            current_section = ()
+            current_syntax = "external_paragraph"
+            continue
+
+        indent = left
+        marker = _EXTERNAL_MARKER.match(body)
+        heading = bool(re.match(r"^\s*#{1,6}\s+", body)) or (
+            not marker and value.endswith((":", "："))
+        )
+        structural = bool(marker) or heading
+        if structural:
+            emitted = emit_current()
+            if emitted is not None:
+                yield emitted
+            current_start = line_start + left
+            current_end = line_start + right
+            current_syntax = "external_section"
+
+            if heading:
+                contexts = [
+                    (level, label, kind)
+                    for level, label, kind in contexts
+                    if level < indent
+                ]
+                current_section = tuple(label for _, label, _ in contexts)
+                contexts.append((indent, value, "heading"))
+            else:
+                # Same-level numbered/bullet siblings replace the previous
+                # item, while a heading at that level remains their context.
+                contexts = [
+                    (level, label, kind)
+                    for level, label, kind in contexts
+                    if level < indent or (level == indent and kind == "heading")
+                ]
+                current_section = tuple(label for _, label, _ in contexts)
+                contexts.append((indent, value, "item"))
+            continue
+
+        # Non-structural lines continue the current item/paragraph. This keeps
+        # wrapped prose together and avoids turning line-oriented logs into one
+        # evidence unit per line.
+        line_content_start = line_start + left
+        line_content_end = line_start + right
+        if current_start is None:
+            current_start = line_content_start
+            current_section = tuple(label for _, label, _ in contexts)
+            current_syntax = "external_paragraph"
+        current_end = line_content_end
+
+    emitted = emit_current()
+    if emitted is not None:
+        yield emitted
+
+
+def gate_evidence_batches(
+    units: Iterable[EvidenceUnit],
+    *,
+    max_units: int = MAX_GATE_BATCH_UNITS,
+    max_bytes: int = MAX_GATE_BATCH_BYTES,
+) -> tuple[tuple[EvidenceUnit, ...], ...]:
+    """Partition physical evidence into bounded, ordered Gate inputs.
+
+    The unit itself is never truncated.  A singleton over the soft batch byte
+    limit is allowed so a complete source record can still be cited; the
+    model-output validator remains the hard safety boundary for such input.
+    Empty evidence keeps one empty batch for the existing no-evidence shape.
+    """
+
+    if type(max_units) is not int or max_units <= 0:
+        raise ValueError("max_units must be a positive integer")
+    if type(max_bytes) is not int or max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer")
+    current: list[EvidenceUnit] = []
+    current_bytes = 0
+    batches: list[tuple[EvidenceUnit, ...]] = []
+
+    for unit in units:
+        encoded = json.dumps(unit.to_dict(), ensure_ascii=False, separators=(",", ":"))
+        unit_bytes = len(encoded.encode("utf-8"))
+        if current and (len(current) >= max_units or current_bytes + unit_bytes > max_bytes):
+            batches.append(tuple(current))
+            current = []
+            current_bytes = 0
+        current.append(unit)
+        current_bytes += unit_bytes
+    if current:
+        batches.append(tuple(current))
+    return tuple(batches) if batches else ((),)
+
+
 def _query(text: str) -> bool:
     text = _POLITE.sub("", text.strip())
     return bool(_QUERY_START.search(text) or _QUERY_WORD.search(text)
@@ -154,20 +370,33 @@ def analyze_turn_evidence(events: Iterable[Mapping[str, Any]]) -> tuple[Evidence
 
     def inventory(key: str, role: str, text: str, meta: Mapping[str, Any] | None = None) -> None:
         meta = meta or {}
-        cursor = 0
-        for clause, section, quoted in _clauses(text):
-            start = text.find(clause, cursor)
-            # Never manufacture an offset for a transformed fragment.
-            if start < 0:
-                start = text.find(clause)
-            if start < 0:
-                continue
-            end = start + len(clause)
-            cursor = end
+        if role == "external":
+            # A tool result is one physical source record.  Splitting it on
+            # punctuation made JSON/document bodies look like thousands of
+            # independent claims and forced the Gate to account for each comma.
+            fragments = (
+                (start, end, fragment, syntax, section)
+                for start, end, fragment, syntax, section in _external_blocks(text)
+            )
+        else:
+            cursor = 0
+            fragments = []
+            for clause, section, quoted in _clauses(text):
+                start = text.find(clause, cursor)
+                # Never manufacture an offset for a transformed fragment.
+                if start < 0:
+                    start = text.find(clause)
+                if start < 0:
+                    continue
+                end = start + len(clause)
+                cursor = end
+                fragments.append((start, end, clause, "quoted" if quoted else "plain", section))
+
+        for start, end, clause, syntax, section in fragments:
             if role == "user":
                 if _EXAMPLE.search(clause):
                     origin = "quoted_or_example"
-                elif quoted:
+                elif syntax == "quoted":
                     origin = "user_document"
                 else:
                     origin = "user_query" if _query(clause) else "user_assertion"
@@ -183,7 +412,7 @@ def analyze_turn_evidence(events: Iterable[Mapping[str, Any]]) -> tuple[Evidence
             seen.add(uid)
             output.append(EvidenceUnit(uid, key, origin, clause, section,
                 *[meta.get(k) for k in ("tool_name", "call_id", "record_id", "domain")],
-                source_role=role, start=start, end=end, syntax="quoted" if quoted else "plain"))
+                source_role=role, start=start, end=end, syntax=syntax))
 
     for event in events:
         key = str(event.get("event_key", ""))
@@ -286,7 +515,11 @@ def validate_bindings(value: Any, units: Iterable[EvidenceUnit],
                 or not isinstance(claim["role"], str) or claim["role"] not in allowed_roles):
                 raise ModelOutputError("invalid or unauthorized evidence span", validation_detail="invalid_evidence",
                                        evidence_check="invalid_span")
-            if not unit.can_support or unit.event_key not in by_candidate[cid]["evidence_event_ids"]:
+            candidate = by_candidate[cid]
+            omitted_event_ids = candidate.get("_evidence_event_ids_omitted") is True
+            if not unit.can_support or (
+                not omitted_event_ids and unit.event_key not in candidate["evidence_event_ids"]
+            ):
                 raise ModelOutputError("evidence binding is outside candidate scope", validation_detail="invalid_evidence",
                                        evidence_check="binding_scope")
             if claim["role"] == "user_confirmation" and unit.source_role != "user":
@@ -295,6 +528,62 @@ def validate_bindings(value: Any, units: Iterable[EvidenceUnit],
             checked.append(dict(claim))
         result[cid] = checked
     return result
+
+
+def resolve_omitted_candidate_event_ids(
+    candidates: Iterable[Mapping[str, Any]],
+    bindings: Mapping[str, Iterable[Mapping[str, Any]]],
+    units: Iterable[EvidenceUnit],
+) -> None:
+    """Derive omitted candidate source IDs from already validated bindings.
+
+    The model may omit ``evidence_event_ids`` when it supplies exact bindings.
+    This helper runs only after :func:`validate_bindings` has checked each unit,
+    quote and role, so the source mapping is deterministic and cannot infer a
+    business meaning from candidate text. Explicit IDs are never rewritten.
+    """
+
+    by_unit = {unit.unit_id: unit for unit in units}
+    for candidate in candidates:
+        if candidate.get("_evidence_event_ids_omitted") is not True:
+            continue
+        candidate_id = candidate.get("candidate_id")
+        claims = bindings.get(candidate_id) if isinstance(candidate_id, str) else None
+        if not isinstance(claims, Iterable) or isinstance(claims, (str, bytes)):
+            claims = None
+        if claims is None:
+            raise ModelOutputError(
+                "omitted evidence_event_ids require a validated evidence binding",
+                validation_detail="invalid_evidence",
+                evidence_check="omitted_evidence_binding",
+            )
+        event_keys: list[str] = []
+        for claim in claims:
+            if not isinstance(claim, Mapping):
+                raise ModelOutputError(
+                    "omitted evidence_event_ids require a validated evidence binding",
+                    validation_detail="invalid_evidence",
+                    evidence_check="omitted_evidence_binding",
+                )
+            unit = by_unit.get(claim.get("unit_id"))
+            if unit is None or not unit.can_support:
+                raise ModelOutputError(
+                    "omitted evidence_event_ids require a validated evidence binding",
+                    validation_detail="invalid_evidence",
+                    evidence_check="omitted_evidence_binding",
+                )
+            if unit.event_key not in event_keys:
+                event_keys.append(unit.event_key)
+        if not event_keys:
+            raise ModelOutputError(
+                "omitted evidence_event_ids require a validated evidence binding",
+                validation_detail="invalid_evidence",
+                evidence_check="omitted_evidence_binding",
+            )
+        # This assignment is source mapping only. It is deliberately based on
+        # the exact unit IDs accepted by validate_bindings above.
+        candidate["evidence_event_ids"] = event_keys
+        candidate.pop("_evidence_event_ids_omitted", None)
 
 
 def supporting_units(candidate: Mapping[str, Any], units: Iterable[EvidenceUnit]) -> tuple[EvidenceUnit, ...]:
@@ -359,7 +648,55 @@ _DEFERRED_COVERAGE_REASONS = frozenset({
 })
 
 
-def parse_coverage(value: Any, units: Iterable[EvidenceUnit], candidates: Iterable[Mapping[str, Any]], *, require_complete: bool = True) -> dict[str, dict[str, Any]]:
+def _coverage_todo_witnesses(value: Any) -> dict[str, tuple[str, str]]:
+    """Normalize the bounded current-knowledge todo comparison context.
+
+    Coverage may prove ``already_completed`` only with a memory ID from this
+    context.  The context is metadata supplied by the host; model text never
+    adds IDs to it.  Values are accepted as either a status string or a small
+    metadata mapping to keep the parser useful to callers that already hold
+    projected memory records.
+    """
+
+    if value is None:
+        return {}
+    if isinstance(value, Mapping):
+        items = value.items()
+    elif isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
+        items = (
+            (item.get("memory_id"), item)
+            for item in value
+            if isinstance(item, Mapping)
+        )
+    else:
+        items = ()
+    result: dict[str, tuple[str, str]] = {}
+    for raw_id, raw_value in items:
+        if not isinstance(raw_id, str) or not raw_id:
+            continue
+        if isinstance(raw_value, Mapping):
+            if raw_value.get("type") != "todo":
+                continue
+            status = raw_value.get("status")
+        else:
+            status = raw_value
+        # Missing legacy todo status is treated as active.  It cannot witness
+        # a terminal no-change, while still remaining an allowed comparison ID
+        # for a corrective UPDATE candidate.
+        if not isinstance(status, str) or status not in {"active", "completed", "cancelled"}:
+            status = "active"
+        result[raw_id.casefold()] = (raw_id, status)
+    return result
+
+
+def parse_coverage(
+    value: Any,
+    units: Iterable[EvidenceUnit],
+    candidates: Iterable[Mapping[str, Any]],
+    *,
+    require_complete: bool = True,
+    todo_witnesses: Mapping[str, Any] | Iterable[Mapping[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Validate accounting without trusting the model's evidence identities."""
     units = tuple(units)
     expected_units = tuple(dict.fromkeys(u.unit_id for u in units))
@@ -368,9 +705,10 @@ def parse_coverage(value: Any, units: Iterable[EvidenceUnit], candidates: Iterab
     if not isinstance(value, list):
         raise ModelOutputError("coverage must be a list", validation_detail="invalid_evidence",
                                evidence_check="coverage_shape")
+    terminal_todos = _coverage_todo_witnesses(todo_witnesses)
     result = {}
     for row_index, row in enumerate(value):
-        if not isinstance(row, dict) or set(row) - {"unit_id", "decision", "candidate_ids", "reason"}:
+        if not isinstance(row, dict) or set(row) - {"unit_id", "decision", "candidate_ids", "reason", "memory_id"}:
             raise ModelOutputError("invalid coverage row", validation_detail="invalid_evidence",
                                    evidence_check="coverage_shape")
         uid = row.get("unit_id")
@@ -386,15 +724,26 @@ def parse_coverage(value: Any, units: Iterable[EvidenceUnit], candidates: Iterab
             raise ModelOutputError("duplicate coverage unit", validation_detail="invalid_evidence",
                                    evidence_check="duplicate_coverage")
         decision = row.get("decision")
+        reason = None
         if not isinstance(decision, str):
             raise ModelOutputError("invalid coverage decision type", validation_detail="invalid_evidence",
                                    evidence_check="coverage_shape")
         if decision == "CANDIDATE":
             ids = row.get("candidate_ids")
+            if "memory_id" in row:
+                raise ModelOutputError(
+                    "coverage memory_id is only valid for already_completed",
+                    validation_detail="invalid_evidence",
+                    evidence_check="coverage_terminal_witness",
+                )
             if not units[uid].can_support or not isinstance(ids, list) or not ids or any(not isinstance(i, str) or i not in candidates for i in ids):
                 raise ModelOutputError("invalid coverage candidate", validation_detail="invalid_evidence",
                                        evidence_check="coverage_candidate")
-            if any(units[uid].event_key not in candidates[i]["evidence_event_ids"] for i in ids):
+            if any(
+                candidates[i].get("_evidence_event_ids_omitted") is not True
+                and units[uid].event_key not in candidates[i]["evidence_event_ids"]
+                for i in ids
+            ):
                 raise ModelOutputError("coverage event mismatch", validation_detail="invalid_evidence",
                                        evidence_check="event_mismatch")
         elif decision in {"NO_CHANGE", "DEFERRED"}:
@@ -403,6 +752,25 @@ def parse_coverage(value: Any, units: Iterable[EvidenceUnit], candidates: Iterab
                 or reason not in COVERAGE_REASONS):
                 raise ModelOutputError("invalid coverage decision", validation_detail="invalid_evidence",
                                        evidence_check="invalid_reason")
+            if reason == "already_completed":
+                memory_id = row.get("memory_id")
+                witness = (
+                    terminal_todos.get(memory_id.casefold())
+                    if isinstance(memory_id, str) and memory_id
+                    else None
+                )
+                if witness is None or witness[1] not in {"completed", "cancelled"}:
+                    raise ModelOutputError(
+                        "already_completed coverage requires a current terminal todo witness",
+                        validation_detail="invalid_evidence",
+                        evidence_check="coverage_terminal_witness",
+                    )
+            elif "memory_id" in row:
+                raise ModelOutputError(
+                    "coverage memory_id is only valid for already_completed",
+                    validation_detail="invalid_evidence",
+                    evidence_check="coverage_terminal_witness",
+                )
             # Normalize only the model's declared reason. This keeps the
             # protocol source-neutral: no local topic or business heuristic
             # decides whether a fragment is retryable.
@@ -415,6 +783,10 @@ def parse_coverage(value: Any, units: Iterable[EvidenceUnit], candidates: Iterab
                                    evidence_check="invalid_reason")
         normalized = dict(row)
         normalized["decision"] = decision
+        if reason == "already_completed":
+            # Keep the canonical current-memory spelling for audit and the
+            # frozen plan, even if the model varied casing in its witness.
+            normalized["memory_id"] = terminal_todos[row["memory_id"].casefold()][0]
         result[uid] = normalized
     if require_complete and set(result) != set(units):
         raise ModelOutputError("incomplete evidence coverage", validation_detail="invalid_evidence",
@@ -466,7 +838,13 @@ def split_gate_envelope(raw: str) -> tuple[str, Any]:
     return json.dumps(value, ensure_ascii=False), coverage
 
 
-def evidence_prompt(units: Iterable[EvidenceUnit]) -> str:
+def evidence_prompt(
+    units: Iterable[EvidenceUnit],
+    *,
+    batch_index: int | None = None,
+    batch_count: int | None = None,
+    todo_witnesses: Mapping[str, Any] | Iterable[Mapping[str, Any]] | None = None,
+) -> str:
     units = tuple(units)
     encoded = json.dumps([u.to_dict() for u in units], ensure_ascii=False)
     prompt = (
@@ -480,6 +858,9 @@ def evidence_prompt(units: Iterable[EvidenceUnit]) -> str:
         "A response with coverage omitted or with coverage=[] is complete only when no units are supplied. "
         "For each row, copy unit_id character-for-character from the supplied evidence list. "
         "Use decision=CANDIDATE with candidate_ids, or decision=NO_CHANGE/DEFERRED with reason. "
+        "Every coverage candidate_ids value and every evidence_bindings candidate_id must be copied exactly "
+        "from a candidate_id in this same response's candidates list; if candidates=[] then no row may use "
+        "CANDIDATE and evidence_bindings must be []. Never invent or reuse a candidate ID from another batch. "
         "The words in this schema description are labels only; never return a placeholder, event key, "
         "call ID, or digest as unit_id. "
         'Allowed reasons: ' + ', '.join(sorted(COVERAGE_REASONS)) + '. '
@@ -490,15 +871,41 @@ def evidence_prompt(units: Iterable[EvidenceUnit]) -> str:
         'Physical source_role is immutable; origin labels remain semantic hints. Questions, examples, quoted documents, '
         'retrieved memories and assistant synthesis must be interpreted from the supplied evidence and context, not by '
         'a Core keyword rule. Account for unresolved physical evidence as DEFERRED; do not invent a candidate to satisfy coverage. '
-        'Interpret mixed assertions and questions separately. Ownership belongs to evidence, never an adjacent unrelated section.'
+        'Interpret mixed assertions and questions separately. Ownership belongs to evidence, never an adjacent unrelated section. '
+        'Evidence bindings are quote-first: each claim contains unit_id, an exact contiguous quote copied from the listed '
+        'unit, and role. Omit start/end by default so Core can locate the unique exact quote and compute offsets. If a quote '
+        'is repeated, expand it until unique; never count or guess offsets. Supplied legacy start/end values must be exact '
+        'Python Unicode offsets whose slice equals quote, or validation rejects the binding. '
+        'When a candidate has these bindings, omit evidence_event_ids; Core derives the exact event_key from the '
+        'validated bound unit. Never copy the surrounding user or assistant event key for an external unit.'
     )
+    if batch_index is not None and batch_count is not None:
+        prompt += (
+            f"\nThis is Gate evidence batch {batch_index + 1} of {batch_count}. "
+            "The complete turn context may mention material from other batches, but only "
+            "the evidence units listed in this batch may be bound or used to authorize "
+            "a candidate. A later batch may account for another source record; do not "
+            "invent a unit or quote for material not listed here."
+        )
     if not units:
         prompt += (
             '\nWhen no physical evidence units are supplied, the only complete no-admission object is '
             '{"candidates":[],"coverage":[],"evidence_bindings":[]}. '
             'Do not invent evidence bindings or candidates from event metadata.'
         )
-    return prompt + SEMANTIC_BINDING_INSTRUCTIONS
+    terminal_witnesses = [
+        {"memory_id": memory_id, "status": status}
+        for memory_id, status in _coverage_todo_witnesses(todo_witnesses).values()
+        if status in {"completed", "cancelled"}
+    ]
+    terminal_witnesses.sort(key=lambda item: item["memory_id"].casefold())
+    return (
+        prompt
+        + SEMANTIC_BINDING_INSTRUCTIONS
+        + "\nTerminal todo witness metadata for coverage reason already_completed "
+        "(copy memory_id exactly; an empty list means already_completed is invalid):\n"
+        + json.dumps(terminal_witnesses, ensure_ascii=False, separators=(",", ":"))
+    )
 
 
 SEMANTIC_BINDING_INSTRUCTIONS = """
@@ -506,9 +913,13 @@ For every worth=true candidate, also return top-level evidence_bindings. Each
 binding must name a candidate_id copied from the candidates list and claims
 whose unit_id is copied character-for-character from the supplied evidence
 list. Do not return schema labels, placeholders, event keys, call IDs or
-digests as unit_id values. Each claim contains an exact quote and role, and
-may include start/end offsets.
-Offsets are relative to the supplied unit text. Roles: assertion (a current
+digests as unit_id values. Each claim contains unit_id, an exact contiguous
+quote copied from that unit's text, and role. Omit start/end by default: Core
+locates the unique exact quote and computes Python Unicode offsets. If the
+quote occurs more than once, expand it until unique instead of counting
+characters. start/end are optional legacy fields only when known exactly; any
+supplied values must satisfy unit.text[start:end] == quote or validation rejects
+the binding. Roles: assertion (a current
 statement of fact or change), source_excerpt (actual quoted material, not a
 demonstration), user_confirmation (explicit adoption of a uniquely identified
 proposal). Source_role is immutable. User origin labels are syntax HINTS only:
@@ -521,6 +932,9 @@ Do not transfer one fragment's role, owner or scope to unrelated siblings.
 A summary may paraphrase, but must preserve polarity, ownership, state and
 scope and must not add dates, actors, decisions or obligations not supported
 by these claims. Explain no-op or unresolved evidence in coverage.
+When a candidate has these validated bindings, omit its evidence_event_ids field;
+Core maps each claim unit_id to that unit's exact event_key after validation.
+Never use a surrounding user/assistant event key for an external source unit.
 """
 
 

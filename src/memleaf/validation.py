@@ -138,11 +138,13 @@ MODEL_EVIDENCE_CHECKS = frozenset((
     "invalid_span",
     "binding_scope",
     "coverage_binding_conflict",
+    "coverage_terminal_witness",
     "candidate_evidence",
+    "omitted_evidence_binding",
 ))
 
 _EVIDENCE_PATH_RE = re.compile(
-    r"(?:coverage\[\d+\]\.unit_id|evidence_bindings\[\d+\]\.claims\[\d+\]\.unit_id)"
+    r"(?:coverage\[\d+\]\.(?:unit_id|memory_id)|evidence_bindings\[\d+\]\.claims\[\d+\]\.unit_id)"
 )
 _EVIDENCE_VALUE_TYPES = frozenset(("null", "boolean", "number", "string", "array", "object", "other"))
 _EVIDENCE_DIAGNOSTIC_MAX_LENGTH = 1_000_000
@@ -933,6 +935,7 @@ def validate_gate_output(
     allow_mixed_future_use: bool = False,
     allow_shared_update_targets: bool = False,
     defer_semantic_errors: bool = False,
+    allow_omitted_evidence_event_ids: bool = False,
 ) -> dict[str, Any]:
     """Validate and return a normalized gate object without writing anything."""
 
@@ -966,7 +969,10 @@ def validate_gate_output(
     for candidate in candidates:
         if not isinstance(candidate, Mapping):
             raise ModelOutputError("each gate candidate must be an object", validation_detail="candidate_shape")
-        _require_keys(candidate, allowed - {"reason", "duplicate_memory_id", "update_memory_id"}, allowed)
+        required = allowed - {"reason", "duplicate_memory_id", "update_memory_id"}
+        if allow_omitted_evidence_event_ids:
+            required.discard("evidence_event_ids")
+        _require_keys(candidate, required, allowed)
         item = dict(candidate)
         _string(item["candidate_id"], "candidate_id", validation_detail="candidate_shape")
         candidate_id = item["candidate_id"].casefold()
@@ -974,20 +980,25 @@ def validate_gate_output(
             raise ModelOutputError("duplicate candidate_id", validation_detail="duplicate_candidate_id")
         candidate_ids.add(candidate_id)
         _string(item["memory"], "memory", validation_detail="candidate_shape")
-        try:
-            evidence = _string_list(
-                item["evidence_event_ids"],
-                "evidence_event_ids",
-                nonempty=True,
-                validation_detail="invalid_evidence",
-            )
-        except ModelOutputError as error:
-            if error.validation_detail == "invalid_evidence":
-                error.evidence_check = "candidate_evidence"
-            raise
-        if any(event_id.casefold() not in allowed_event_keys for event_id in evidence):
-            raise ModelOutputError("candidate evidence references another turn", validation_detail="invalid_evidence",
-                                   evidence_check="candidate_evidence")
+        evidence_omitted = "evidence_event_ids" not in item
+        if evidence_omitted:
+            evidence = []
+            item["_evidence_event_ids_omitted"] = True
+        else:
+            try:
+                evidence = _string_list(
+                    item["evidence_event_ids"],
+                    "evidence_event_ids",
+                    nonempty=True,
+                    validation_detail="invalid_evidence",
+                )
+            except ModelOutputError as error:
+                if error.validation_detail == "invalid_evidence":
+                    error.evidence_check = "candidate_evidence"
+                raise
+            if any(event_id.casefold() not in allowed_event_keys for event_id in evidence):
+                raise ModelOutputError("candidate evidence references another turn", validation_detail="invalid_evidence",
+                                       evidence_check="candidate_evidence")
         if type(item["duplicate"]) is not bool or type(item["worth"]) is not bool:
             raise ModelOutputError("duplicate and worth must be booleans", validation_detail="invalid_flags")
         candidate_type = item["type"]
@@ -1114,6 +1125,7 @@ def parse_gate_output(
     allow_mixed_future_use: bool = False,
     allow_shared_update_targets: bool = False,
     defer_semantic_errors: bool = False,
+    allow_omitted_evidence_event_ids: bool = False,
 ) -> dict[str, Any]:
     try:
         parsed = parse_strict_json(raw)
@@ -1133,6 +1145,7 @@ def parse_gate_output(
             allow_mixed_future_use=allow_mixed_future_use,
             allow_shared_update_targets=allow_shared_update_targets,
             defer_semantic_errors=defer_semantic_errors,
+            allow_omitted_evidence_event_ids=allow_omitted_evidence_event_ids,
         )
     except ModelOutputError as error:
         if error.validation_reason is None:
@@ -1185,6 +1198,7 @@ def validate_summarize_output(
     expected_scope_source: str | None = None,
     allowed_due_dates: Iterable[str] | None = None,
     allow_no_change: bool = False,
+    allow_update_target: bool = True,
 ) -> dict[str, Any]:
     """Validate one atomic memory summary; this function has no filesystem effects."""
 
@@ -1277,6 +1291,11 @@ def validate_summarize_output(
         item["memory_id"] = _memory_id(item["memory_id"], "memory_id")
     if "update_memory_id" in item:
         item["update_memory_id"] = _memory_id(item["update_memory_id"], "update_memory_id")
+        if not allow_update_target:
+            raise ModelOutputError(
+                "CREATE summary cannot add an update target",
+                validation_detail="invalid_update_target",
+            )
         if (
             expected_update_memory_id is not None
             and (
@@ -1359,6 +1378,7 @@ def parse_summarize_output(
     expected_scope_source: str | None = None,
     allowed_due_dates: Iterable[str] | None = None,
     allow_no_change: bool = False,
+    allow_update_target: bool = True,
 ) -> dict[str, Any]:
     try:
         parsed = parse_strict_json(raw)
@@ -1380,6 +1400,7 @@ def parse_summarize_output(
             expected_scope_source=expected_scope_source,
             allowed_due_dates=allowed_due_dates,
             allow_no_change=allow_no_change,
+            allow_update_target=allow_update_target,
         )
     except ModelOutputError as error:
         if error.validation_reason is None:

@@ -4,15 +4,16 @@ import hashlib
 import json
 from copy import deepcopy
 from typing import Any, Iterable, Mapping, Optional
-from .admission import analyze_turn_evidence, admission_reason, partition_evidence_units, read_only_turn, summary_evidence, evidence_prompt, parse_coverage, split_gate_envelope, supporting_units, split_semantic_envelope, validate_bindings, validate_coverage_bindings
+from .admission import analyze_turn_evidence, admission_reason, partition_evidence_units, read_only_turn, summary_evidence, evidence_prompt, gate_evidence_batches, parse_coverage, resolve_omitted_candidate_event_ids, split_gate_envelope, supporting_units, split_semantic_envelope, validate_bindings, validate_coverage_bindings
 from .index import turn_key
 from .inbox import InboxTurn
 from .llm import ModelError
 from .memory_writer import MemoryWriter
 from .turn_plan import dedup_digest, revision_digest
+from .create_coordinator import CreateCoordinator
 from .update_coordinator import UpdateCoordinator
 from .evidence_policy import retain_tool_evidence
-from .prompts import GATE_SYSTEM, SUMMARIZE_SYSTEM, gate_prompt, summarize_prompt
+from .prompts import COVERAGE_ALREADY_COMPLETED_CORRECTION, COVERAGE_CORRECTION, GATE_SYSTEM, SUMMARIZE_SYSTEM, gate_prompt, summarize_prompt
 from .retrieval import normalize_term
 from .validation import ModelOutputError, NO_CHANGE_DECISION, _model_scope_grounding_evidence, parse_gate_output, parse_strict_json, parse_summarize_output
 from .process_common import ProcessingError, _TARGET_NOT_RELATED, _TARGET_SAME_USE, _TARGET_UNKNOWN, _automatic_create_conflicts, _candidate_lookup_queries, _event_payload, _grounded_due_dates, _normalize_summary_dates
@@ -55,6 +56,27 @@ class MemoryPlanner:
             "due_date": summary.get("due_date"),
         }
         return value
+
+    def _todo_witnesses(self, memory_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """Project only current knowledge todo state for coverage witnesses."""
+
+        witnesses: dict[str, dict[str, Any]] = {}
+        seen: set[str] = set()
+        for memory_id in memory_ids:
+            if not isinstance(memory_id, str) or not memory_id:
+                continue
+            key = memory_id.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            memory = self.inputs._active_memory_by_id(memory_id)
+            if memory is None or memory.type != "todo":
+                continue
+            witnesses[memory.memory_id] = {
+                "type": "todo",
+                "status": memory.status,
+            }
+        return witnesses
 
 
     def _request(
@@ -167,6 +189,7 @@ class MemoryPlanner:
             state,
             scope,
             overlay=self.audit._planned_related,
+            physical_units=model_evidence_units,
         )
         # When a compressed turn has no lexical hit but inherits one concrete
         # scope containing several active memories, expose only a bounded
@@ -186,7 +209,7 @@ class MemoryPlanner:
         gate_related_memory_ids = list(related_memory_ids)
         if scope_fallback is not None:
             scoped_records, scope_ambiguous = scope_fallback
-            if scope_ambiguous and self.inputs._single_specific_scope(scope_background):
+            if scope_ambiguous and self.inputs._has_specific_scope(scope_background):
                 scope_directory, scope_directory_complete = self.inputs._scope_directory(scoped_records)
                 gate_related = []
                 for entry in scope_directory:
@@ -195,6 +218,7 @@ class MemoryPlanner:
                         value.casefold() for value in gate_related_memory_ids
                     }:
                         gate_related_memory_ids.append(memory_id)
+        todo_witnesses = self._todo_witnesses(gate_related_memory_ids)
         scope_registry = self.inputs._scope_registry_projection()
         with self.service.vault.lock():
             validation_scope_registry = self.service.vault.config().get("scopes", {})
@@ -247,19 +271,27 @@ class MemoryPlanner:
                 request["expected_revision"] = expected
             return [request], list(summary["scopes"])
 
-        gate_attempt_count = 0
         target_relations: dict[str, str] = {}
         unknown_target_ids: set[str] = set()
         candidate_level_target_ids: set[str] = set()
         scope_correction_plans: dict[str, dict[str, Any]] = {}
 
-        def parse_gate(raw: str) -> dict[str, Any]:
-            nonlocal gate_attempt_count, coverage_rows
-            gate_attempt_count += 1
-            target_relations.clear()
-            unknown_target_ids.clear()
-            candidate_level_target_ids.clear()
-            scope_correction_plans.clear()
+        def parse_gate(
+            raw: str,
+            batch_units: tuple[Any, ...],
+            batch_state: dict[str, Any],
+        ) -> dict[str, Any]:
+            batch_state["attempt_count"] = batch_state.get("attempt_count", 0) + 1
+            gate_attempt_count = batch_state["attempt_count"]
+            coverage_rows: dict[str, dict[str, Any]] = {}
+            batch_target_relations: dict[str, str] = batch_state["target_relations"]
+            batch_unknown_target_ids: set[str] = batch_state["unknown_target_ids"]
+            batch_candidate_level_target_ids: set[str] = batch_state["candidate_level_target_ids"]
+            batch_scope_correction_plans: dict[str, dict[str, Any]] = batch_state["scope_correction_plans"]
+            batch_target_relations.clear()
+            batch_unknown_target_ids.clear()
+            batch_candidate_level_target_ids.clear()
+            batch_scope_correction_plans.clear()
             raw, binding_value = split_semantic_envelope(raw)
             raw, coverage_value = split_gate_envelope(raw)
             raw_for_parse = raw
@@ -297,6 +329,7 @@ class MemoryPlanner:
                 scope_registry=validation_scope_registry,
                 defer_semantic_errors=gate_attempt_count >= 3,
                 allow_shared_update_targets=True,
+                allow_omitted_evidence_event_ids=True,
             )
             for item in parsed["candidates"]:
                 for field in ("duplicate_memory_id", "update_memory_id"):
@@ -306,10 +339,11 @@ class MemoryPlanner:
                             or allowed_corrections.get(item["candidate_id"].casefold()) != target_id):
                             raise ModelOutputError("target is not authorized for this candidate",
                                                    validation_detail="invalid_update_target")
-            coverage_rows = (parse_coverage(coverage_value, model_evidence_units, parsed["candidates"], require_complete=False)
+            coverage_rows = (parse_coverage(coverage_value, batch_units, parsed["candidates"], require_complete=False,
+                                            todo_witnesses=todo_witnesses)
                              if coverage_value is not None else {})
             if binding_value is not None:
-                bindings = validate_bindings(binding_value, model_evidence_units, parsed["candidates"])
+                bindings = validate_bindings(binding_value, batch_units, parsed["candidates"])
                 for item in parsed["candidates"]:
                     if item["candidate_id"] in bindings:
                         claims = bindings[item["candidate_id"]]
@@ -320,7 +354,23 @@ class MemoryPlanner:
                                 raise ModelOutputError("binding contradicts coverage", validation_detail="invalid_evidence",
                                                        evidence_check="coverage_binding_conflict")
                         item["_evidence_bindings"] = claims
-            validate_coverage_bindings(coverage_rows, model_evidence_units, parsed["candidates"])
+            resolve_omitted_candidate_event_ids(
+                parsed["candidates"],
+                bindings if binding_value is not None else {},
+                batch_units,
+            )
+            validate_coverage_bindings(coverage_rows, batch_units, parsed["candidates"])
+
+            # Freeze legacy exact-text support at the batch boundary.  Without
+            # this marker, a candidate emitted by an earlier Gate call could
+            # be re-matched against an identical unit from a later batch when
+            # final admission scans the complete turn.  Explicit bindings are
+            # already validated against this batch; recording their unit IDs
+            # keeps the same source boundary for audit and summary projection.
+            for item in parsed["candidates"]:
+                item["_evidence_unit_ids"] = [
+                    unit.unit_id for unit in supporting_units(item, batch_units)
+                ]
 
             prepared_candidates: list[dict[str, Any]] = []
             for candidate in parsed["candidates"]:
@@ -335,7 +385,7 @@ class MemoryPlanner:
                         item["update_memory_id"] = plan["target_memory_id"]
                     else:
                         item.pop("update_memory_id", None)
-                    scope_correction_plans[str(item["candidate_id"]).casefold()] = plan
+                    batch_scope_correction_plans[str(item["candidate_id"]).casefold()] = plan
                 prepared_candidates.append(item)
             parsed = dict(parsed)
             parsed["candidates"] = prepared_candidates
@@ -351,7 +401,7 @@ class MemoryPlanner:
                 if not target_fields:
                     continue
                 candidate_id = candidate["candidate_id"].casefold()
-                correction = scope_correction_plans.get(candidate_id)
+                correction = batch_scope_correction_plans.get(candidate_id)
                 relation = (
                     _TARGET_SAME_USE
                     if correction is not None and not correction.get("ambiguous")
@@ -362,15 +412,15 @@ class MemoryPlanner:
                         scope_directory_complete=scope_directory_complete,
                     )
                 )
-                target_relations[candidate_id] = relation
+                batch_target_relations[candidate_id] = relation
                 if relation == _TARGET_NOT_RELATED:
                     invalid_targets[candidate_id] = target_fields
                 elif relation == _TARGET_UNKNOWN:
-                    unknown_target_ids.add(candidate_id)
+                    batch_unknown_target_ids.add(candidate_id)
                 if "update_memory_id" in target_fields:
                     target = self.inputs._active_memory_by_id(candidate["update_memory_id"])
                     if target is None:
-                        unknown_target_ids.add(candidate_id)
+                        batch_unknown_target_ids.add(candidate_id)
                     elif target.type != candidate.get("type"):
                         type_mismatches.add(candidate_id)
 
@@ -397,88 +447,171 @@ class MemoryPlanner:
                 for candidate in parsed["candidates"]:
                     item = dict(candidate)
                     cid = item["candidate_id"].casefold()
-                    if cid not in scope_correction_plans:
+                    if cid not in batch_scope_correction_plans:
                         if cid in type_mismatches:
                             item["_defer_reason"] = "update_target_type_mismatch"
                         elif cid in invalid_targets:
                             item["_defer_reason"] = "target_not_relevant"
                     candidates.append(item)
                 parsed = {**parsed, "candidates": candidates}
+            batch_state["coverage_rows"] = coverage_rows
             return parsed
 
-        gate = self.model._complete_json_stage(
-            backend,
-            gate_prompt(
-                gate_events,
-                related_memories=gate_related,
-                scope_directory=scope_directory,
-                scope_directory_complete=scope_directory_complete,
-                scope_background=scope_background,
-                scope_registry=scope_registry,
-            ) + evidence_prompt(model_evidence_units),
-            system=GATE_SYSTEM,
-            purpose="gate",
-            parser=parse_gate,
-            diagnostic_context={
-                "source": turn.source,
-                "session_id": turn.session_id,
-                "turn_index": turn.turn_index,
-            },
-        )
-        # One bounded, source-neutral coverage repair. This is NOT a writer:
-        # every returned candidate is parsed again by the same Gate boundary.
-        accounted = set(coverage_rows)
-        for initial in gate["candidates"]:
-            # A legacy candidate-only response remains compatible when its
-            # exact text or validated binding already supplies an explicit
-            # semantic judgment.  Unclaimed physical units still go through
-            # bounded correction and remain unresolved if omitted.
-            accounted.update(unit.unit_id for unit in supporting_units(initial, model_evidence_units))
-        missing = tuple(unit for unit in model_evidence_units if unit.unit_id not in accounted)
-        if missing:
-            saved_gate = deepcopy(gate)
-            saved_coverage = deepcopy(coverage_rows)
-            saved_maps = [deepcopy(value) for value in (target_relations, unknown_target_ids,
-                candidate_level_target_ids, scope_correction_plans)]
-            try:
-                correction_raw = self.model._complete(backend,
-                    "Coverage correction: classify ONLY the supplied unresolved evidence units. "
-                    "Do not re-emit already handled items. Return the same Gate JSON contract.\n"
-                    + gate_prompt([], related_memories=gate_related, scope_background=scope_background,
-                                  scope_registry=scope_registry)
-                    + evidence_prompt(missing)
-                    + "\nAlready handled candidate IDs: "
-                    + json.dumps([item["candidate_id"] for item in gate["candidates"]]),
-                    system=GATE_SYSTEM, purpose="gate")
-                correction_raw, correction_bindings = split_semantic_envelope(correction_raw)
-                correction_raw, correction_coverage = split_gate_envelope(correction_raw)
-                correction_gate = parse_gate_output(correction_raw,
-                    current_event_keys=tuple(dict.fromkeys(unit.event_key for unit in missing)),
-                    related_memory_ids=gate_related_memory_ids, scope_registry=validation_scope_registry,
-                    allow_shared_update_targets=True)
-                new_ids = {item["candidate_id"] for item in correction_gate["candidates"]}
-                if new_ids.intersection(item["candidate_id"] for item in gate["candidates"]):
-                    raise ModelOutputError("coverage correction reused a candidate id", validation_detail="duplicate_candidate_id")
-                if correction_bindings is not None:
-                    validate_bindings(correction_bindings, missing, correction_gate["candidates"])
-                new_coverage = (parse_coverage(correction_coverage, missing, correction_gate["candidates"],
-                                require_complete=False) if correction_coverage is not None else {})
-                public_candidates = [{key: value for key, value in item.items()
-                    if not key.startswith("_") and key != "evidence_unit_ids"} for item in gate["candidates"]]
-                old_bindings = [{"candidate_id": item["candidate_id"], "claims": item["_evidence_bindings"]}
-                    for item in gate["candidates"] if item.get("_evidence_bindings")]
-                merged = {"candidates": public_candidates + correction_gate["candidates"],
-                          "coverage": list(saved_coverage.values()) + list(new_coverage.values()),
-                          "evidence_bindings": old_bindings + (correction_bindings or [])}
-                gate = parse_gate(json.dumps(merged, ensure_ascii=False))
-            except (ModelError, ModelOutputError):
-                # A failed correction cannot invalidate already validated siblings.
-                gate = saved_gate
-                coverage_rows = saved_coverage
-                for current, old in zip((target_relations, unknown_target_ids,
-                    candidate_level_target_ids, scope_correction_plans), saved_maps):
-                    current.clear()
-                    current.update(old)
+        def _namespace_batch(
+            parsed_gate: dict[str, Any],
+            batch_state: dict[str, Any],
+            batch_index: int,
+            batch_count: int,
+        ) -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, str], set[str], set[str], dict[str, dict[str, Any]]]:
+            """Keep candidate/audit identities unique across independent Gate calls."""
+
+            prefix = f"b{batch_index}-" if batch_count > 1 else ""
+            id_map = {
+                str(item["candidate_id"]): prefix + str(item["candidate_id"])
+                for item in parsed_gate["candidates"]
+            }
+            candidates = []
+            for item in parsed_gate["candidates"]:
+                value = dict(item)
+                value["candidate_id"] = id_map[str(item["candidate_id"])]
+                value["_gate_batch_index"] = batch_index
+                candidates.append(value)
+            coverage: dict[str, dict[str, Any]] = {}
+            for unit_id, row in batch_state.get("coverage_rows", {}).items():
+                value = dict(row)
+                value["candidate_ids"] = [
+                    id_map.get(str(candidate_id), str(candidate_id))
+                    for candidate_id in row.get("candidate_ids", [])
+                ]
+                coverage[unit_id] = value
+            relations = {
+                (prefix + candidate_id if prefix else candidate_id): relation
+                for candidate_id, relation in batch_state["target_relations"].items()
+            }
+            unknown = {
+                prefix + candidate_id if prefix else candidate_id
+                for candidate_id in batch_state["unknown_target_ids"]
+            }
+            candidate_level = {
+                prefix + candidate_id if prefix else candidate_id
+                for candidate_id in batch_state["candidate_level_target_ids"]
+            }
+            corrections = {
+                (prefix + candidate_id if prefix else candidate_id): value
+                for candidate_id, value in batch_state["scope_correction_plans"].items()
+            }
+            return ({"candidates": candidates}, coverage, relations, unknown, candidate_level, corrections)
+
+        gate_batches = gate_evidence_batches(model_evidence_units)
+        batch_count = len(gate_batches)
+        all_candidates: list[dict[str, Any]] = []
+        for batch_index, batch_units in enumerate(gate_batches):
+            batch_state: dict[str, Any] = {
+                "attempt_count": 0,
+                "coverage_rows": {},
+                "target_relations": {},
+                "unknown_target_ids": set(),
+                "candidate_level_target_ids": set(),
+                "scope_correction_plans": {},
+            }
+            batch_gate = self.model._complete_json_stage(
+                backend,
+                    gate_prompt(
+                    gate_events,
+                    related_memories=gate_related,
+                    scope_directory=scope_directory,
+                    scope_directory_complete=scope_directory_complete,
+                    scope_background=scope_background,
+                    scope_registry=scope_registry,
+                ) + evidence_prompt(batch_units, batch_index=batch_index, batch_count=batch_count,
+                                     todo_witnesses=todo_witnesses),
+                system=GATE_SYSTEM,
+                purpose="gate",
+                parser=lambda raw, units=batch_units, state=batch_state: parse_gate(raw, units, state),
+                diagnostic_context={
+                    "source": turn.source,
+                    "session_id": turn.session_id,
+                    "turn_index": turn.turn_index,
+                },
+            )
+            # One bounded, source-neutral coverage repair per batch. This is
+            # NOT a writer: every returned candidate is parsed again by the
+            # same Gate boundary. A failed repair leaves only validated
+            # siblings from this batch, while any hard model failure aborts the
+            # complete turn before admission or commit.
+            accounted = set(batch_state.get("coverage_rows", {}))
+            for initial in batch_gate["candidates"]:
+                accounted.update(unit.unit_id for unit in supporting_units(initial, batch_units))
+            missing = tuple(unit for unit in batch_units if unit.unit_id not in accounted)
+            if missing:
+                saved_gate = deepcopy(batch_gate)
+                saved_coverage = deepcopy(batch_state.get("coverage_rows", {}))
+                saved_maps = [deepcopy(batch_state[key]) for key in (
+                    "target_relations", "unknown_target_ids", "candidate_level_target_ids",
+                    "scope_correction_plans")]
+                try:
+                    correction_raw = self.model._complete(backend,
+                        "Coverage correction: classify ONLY the supplied unresolved evidence units. "
+                        "Do not re-emit already handled items. Return the same Gate JSON contract.\n"
+                        + gate_prompt([], related_memories=gate_related, scope_background=scope_background,
+                                      scope_registry=scope_registry)
+                        + evidence_prompt(missing, batch_index=batch_index, batch_count=batch_count,
+                                          todo_witnesses=todo_witnesses)
+                        + "\n"
+                        + COVERAGE_CORRECTION
+                        + "\n"
+                        + COVERAGE_ALREADY_COMPLETED_CORRECTION
+                        + "\nAlready handled candidate IDs: "
+                        + json.dumps([item["candidate_id"] for item in batch_gate["candidates"]]),
+                        system=GATE_SYSTEM, purpose="gate")
+                    correction_raw, correction_bindings = split_semantic_envelope(correction_raw)
+                    correction_raw, correction_coverage = split_gate_envelope(correction_raw)
+                    correction_gate = parse_gate_output(correction_raw,
+                        current_event_keys=tuple(dict.fromkeys(unit.event_key for unit in missing)),
+                        related_memory_ids=gate_related_memory_ids, scope_registry=validation_scope_registry,
+                        allow_shared_update_targets=True,
+                        allow_omitted_evidence_event_ids=True)
+                    new_ids = {item["candidate_id"] for item in correction_gate["candidates"]}
+                    if new_ids.intersection(item["candidate_id"] for item in batch_gate["candidates"]):
+                        raise ModelOutputError("coverage correction reused a candidate id", validation_detail="duplicate_candidate_id")
+                    if correction_bindings is not None:
+                        validate_bindings(correction_bindings, missing, correction_gate["candidates"])
+                    resolve_omitted_candidate_event_ids(
+                        correction_gate["candidates"],
+                        correction_bindings if correction_bindings is not None else {},
+                        missing,
+                    )
+                    new_coverage = (parse_coverage(correction_coverage, missing, correction_gate["candidates"],
+                                    require_complete=False, todo_witnesses=todo_witnesses)
+                                    if correction_coverage is not None else {})
+                    public_candidates = [{key: value for key, value in item.items()
+                        if not key.startswith("_") and key != "evidence_unit_ids"} for item in batch_gate["candidates"]]
+                    old_bindings = [{"candidate_id": item["candidate_id"], "claims": item["_evidence_bindings"]}
+                        for item in batch_gate["candidates"] if item.get("_evidence_bindings")]
+                    merged = {"candidates": public_candidates + correction_gate["candidates"],
+                              "coverage": list(saved_coverage.values()) + list(new_coverage.values()),
+                              "evidence_bindings": old_bindings + (correction_bindings or [])}
+                    batch_gate = parse_gate(json.dumps(merged, ensure_ascii=False), batch_units, batch_state)
+                except (ModelError, ModelOutputError):
+                    # A failed correction cannot invalidate already validated
+                    # siblings, but the unresolved units remain retryable.
+                    batch_gate = saved_gate
+                    batch_state["coverage_rows"] = saved_coverage
+                    for key, old in zip(("target_relations", "unknown_target_ids",
+                        "candidate_level_target_ids", "scope_correction_plans"), saved_maps):
+                        batch_state[key].clear()
+                        batch_state[key].update(old)
+
+            (namespaced_gate, batch_coverage, batch_relations, batch_unknown,
+             batch_candidate_level, batch_corrections) = _namespace_batch(
+                batch_gate, batch_state, batch_index, batch_count)
+            all_candidates.extend(namespaced_gate["candidates"])
+            coverage_rows.update(batch_coverage)
+            target_relations.update(batch_relations)
+            unknown_target_ids.update(batch_unknown)
+            candidate_level_target_ids.update(batch_candidate_level)
+            scope_correction_plans.update(batch_corrections)
+        gate = {"candidates": all_candidates}
 
         requests: list[dict[str, Any]] = []
         observed_scopes: list[str] = []
@@ -487,12 +620,26 @@ class MemoryPlanner:
         covered_unit_ids: set[str] = set()
         covered_by_unit: dict[str, list[str]] = {}
         seen_candidates: set[tuple[Any, ...]] = set()
+        seen_duplicate_targets: set[str] = set()
         admitted_candidates: dict[str, dict[str, Any]] = {}
         for candidate in gate["candidates"]:
             candidate = dict(candidate)
+            duplicate_target = candidate.get("duplicate_memory_id")
+            if isinstance(duplicate_target, str) and duplicate_target:
+                duplicate_key = duplicate_target.casefold()
+                if duplicate_key in seen_duplicate_targets:
+                    self.audit._record_disposition(
+                        turn_ref,
+                        candidate,
+                        "NO_CHANGE",
+                        reason="same_target_duplicate",
+                        memory_id=duplicate_target,
+                    )
+                    continue
+                seen_duplicate_targets.add(duplicate_key)
             unit_ids = [uid for uid, row in coverage_rows.items()
                         if candidate.get("candidate_id") in row.get("candidate_ids", [])]
-            if unit_ids:
+            if unit_ids and "_evidence_unit_ids" not in candidate:
                 candidate["_evidence_unit_ids"] = unit_ids
             reason, support = admission_reason(candidate, evidence_units)
             candidate["evidence_unit_ids"] = [u.unit_id for u in support]
@@ -832,13 +979,17 @@ class MemoryPlanner:
                         scope_registry=validation_scope_registry,
                         expected_scopes=candidate["scopes"],
                         expected_scope_source=candidate["scope_source"],
-                        allowed_due_dates=_grounded_due_dates(turn),
+                        allowed_due_dates=_grounded_due_dates(
+                            turn,
+                            evidence_events=admitted_summary_events,
+                        ),
                         allow_no_change=True,
                         # The summarize stage may not reinterpret a gate
                         # candidate, including CREATE candidates. Updates
                         # additionally retain the active target's immutable
                         # type below.
                         expected_type=candidate.get("type"),
+                        allow_update_target=gate_update_target is not None,
                         expected_update_memory_id=gate_update_target,
                         expected_target_type=gate_target_type,
                     )
@@ -932,6 +1083,9 @@ class MemoryPlanner:
             )
             if correction_plan is not None:
                 pending_request["scope_correction"] = dict(correction_plan)
+            gate_batch_index = candidate.get("_gate_batch_index")
+            if isinstance(gate_batch_index, int) and not isinstance(gate_batch_index, bool):
+                pending_request["_gate_batch_index"] = gate_batch_index
             current_turn_request_ids.add(pending_request["memory_id"].casefold())
             summary_update_target = summary.get("update_memory_id")
             final_is_create = not (
@@ -978,6 +1132,9 @@ class MemoryPlanner:
                     and observed_scope not in observed_scopes
                 ):
                     observed_scopes.append(observed_scope)
+        requests = CreateCoordinator(self.model, self.audit).resolve(
+            requests, candidates=admitted_candidates, evidence_units=evidence_units, events=events,
+            backend=backend, scope_registry=scope_registry, validation_scope_registry=validation_scope_registry)
         requests = UpdateCoordinator(self.model, self.audit, self.inputs._active_memory_by_id).resolve(
             requests, candidates=admitted_candidates, evidence_units=evidence_units, events=events,
             backend=backend, scope_registry=scope_registry, validation_scope_registry=validation_scope_registry)
@@ -1000,9 +1157,20 @@ class MemoryPlanner:
                 decision, reason = "DEFERRED", "coverage_unresolved"
             else:
                 decision, reason = "NO_CHANGE", unit.origin
-            evidence_dispositions.append({"unit_id": unit.unit_id, "event_key": unit.event_key,
-                                          "decision": decision, "reason": reason,
+            evidence_disposition = {
+                "unit_id": unit.unit_id,
+                "event_key": unit.event_key,
+                "decision": decision,
+                "reason": reason,
                 "candidate_ids": list(dict.fromkeys(covered_by_unit.get(unit.unit_id, [])
-                    or (row.get("candidate_ids", []) if row else [])))})
+                    or (row.get("candidate_ids", []) if row else []))),
+            }
+            if (
+                row is not None
+                and row.get("reason") == "already_completed"
+                and isinstance(row.get("memory_id"), str)
+            ):
+                evidence_disposition["memory_id"] = row["memory_id"]
+            evidence_dispositions.append(evidence_disposition)
         self.audit._evidence_by_turn[turn_ref] = evidence_dispositions
         return requests, observed_scopes

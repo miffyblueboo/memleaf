@@ -118,6 +118,35 @@ class AdmissionPromptTests(unittest.TestCase):
         prompt = summarize_prompt(candidate("risk", ["event-1"], memory="a durable constraint"), [event], explicit=False)
         self.assertIn("Mode: candidate passed the gate", prompt)
 
+    def test_update_summary_prompt_allows_semantic_no_change(self):
+        event = {"event_key": "event-1", "role": "user", "content": "the same confirmed state"}
+        prompt = summarize_prompt(
+            candidate(
+                "existing-state",
+                ["event-1"],
+                memory="the same confirmed state",
+                update_memory_id="mem-existing-state",
+            ),
+            [event],
+            explicit=False,
+        )
+        for text in (SUMMARIZE_SYSTEM, prompt):
+            normalized = " ".join(text.casefold().split())
+            self.assertIn(
+                "first compare current evidence with the supplied target's state, facts, deadlines, and obligations",
+                normalized,
+            )
+            self.assertIn(
+                "no new confirmed state, fact, deadline, or obligation change",
+                normalized,
+            )
+            self.assertIn(
+                "wording changes, restatements, and new source/provenance alone do not count",
+                normalized,
+            )
+            self.assertIn('return exactly {"decision":"no_change"}', normalized)
+            self.assertIn("only when current evidence confirms a real semantic change", normalized)
+
 
 class AdmissionFlowTests(unittest.TestCase):
     def setUp(self):

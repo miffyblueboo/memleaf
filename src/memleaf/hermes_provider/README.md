@@ -23,6 +23,11 @@ hermes config set memory.provider memleaf
 hermes memory status
 ```
 
+The status output includes the effective Vault capture policy from the
+read-only MCP `stats` result. It distinguishes the general tool-evidence mode
+from the `include_attachments` opt-in; if MCP is unavailable, the policy is
+shown as unknown rather than inferred from `config.yaml`.
+
 The optional provider config is `~/.hermes/memleaf.json`:
 
 ```json

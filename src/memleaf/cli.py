@@ -137,6 +137,15 @@ def _print_install_failure(output: dict, *, host: str) -> None:
             file=sys.stderr,
         )
 
+    capture = output.get("capture")
+    if isinstance(capture, dict):
+        print(
+            "capture policy: "
+            f"{capture.get('tool_evidence_mode', 'unknown')} "
+            f"(attachments={'enabled' if capture.get('include_attachments') is True else 'disabled'})",
+            file=sys.stderr,
+        )
+
     runtime = output.get("mcp_runtime")
     if isinstance(runtime, dict):
         config_path = runtime.get("config_path")
@@ -276,6 +285,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"core={output.get('core_version') or 'unknown'}, "
                     f"Hermes provider={output.get('provider_version') or 'unknown'}"
                 )
+            capture = output.get("capture")
+            if isinstance(capture, dict):
+                print(
+                    "capture policy: "
+                    f"{capture.get('tool_evidence_mode', 'unknown')} "
+                    f"(attachments={'enabled' if capture.get('include_attachments') is True else 'disabled'})"
+                )
             if output.get("vault_source") == "hermes_config":
                 print("Preserved the Vault from the existing Hermes memleaf configuration.")
             if args.host == "hermes":
@@ -320,6 +336,8 @@ def _host_event(args: argparse.Namespace) -> dict:
 
 
 def _init(args: argparse.Namespace) -> dict:
+    from .evidence_policy import capture_policy_status
+
     home = _home_from_environment()
     requested_vault = args.vault if args.vault is not None else home / ".memleaf"
     if args.dry_run:
@@ -408,6 +426,7 @@ def _init(args: argparse.Namespace) -> dict:
         "dry_run": bool(args.dry_run),
         "agents": agents,
         "model": model_result,
+        "capture": capture_policy_status(vault.config()),
     }
 
 
@@ -564,6 +583,13 @@ def _print_human_result(output: dict) -> None:
             print(f"model: {model.get('status')} {selected['provider']}/{selected['model']}")
         else:
             print(f"model: {model.get('status')}")
+    capture = output.get("capture")
+    if isinstance(capture, dict):
+        print(
+            "capture: "
+            f"{capture.get('tool_evidence_mode', 'unknown')} "
+            f"(attachments={'enabled' if capture.get('include_attachments') is True else 'disabled'})"
+        )
     if output["dry_run"]:
         print(f"agents state not written: {output['agents_state_path']}")
     else:

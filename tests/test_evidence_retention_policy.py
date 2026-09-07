@@ -1,14 +1,17 @@
 """Capture permission is shared by core, hooks and the copied Hermes provider."""
 from __future__ import annotations
 import json
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from memleaf import Memleaf
 from memleaf.admission import analyze_turn_evidence
 from memleaf.config import load_config, save_config
-from memleaf.evidence_policy import document_arguments, retain_tool_evidence
+from memleaf.evidence_policy import attachment_arguments, capture_policy_status, document_arguments, retain_tool_evidence
 from memleaf.frontmatter import dump_yaml
 from memleaf.host_runtime import HostRuntime
 from memleaf.inbox import parse_inbox_file
@@ -68,12 +71,12 @@ class EvidenceRetentionPolicyTests(unittest.TestCase):
         self.assertEqual(len(units),1)
         self.assertFalse(any(u.eligible for u in units))
 
-    def test_document_disabled_by_default_for_structural_file_inputs(self):
+    def test_document_body_follows_bounded_mode_for_structural_file_inputs(self):
         self.observe(tool_input={'file_path':'/work/requirements.md'})
-        self.assertNotIn('RAW_SENTINEL',self.core.vault.host_ingest_path.read_text())
+        self.assertIn('RAW_SENTINEL',self.core.vault.host_ingest_path.read_text())
         records=self.runtime._tool_evidence('s','t')
         self.assertEqual(records[0]['source_type'],'document')
-        self.assertEqual(records[0]['retention'],'metadata')
+        self.assertNotEqual(records[0].get('retention'),'metadata')
 
     def test_document_opt_in_still_bounded_and_redacted(self):
         self.mode('bounded',attachments=True)
@@ -85,6 +88,31 @@ class EvidenceRetentionPolicyTests(unittest.TestCase):
         self.assertNotIn('secret-document-key',str(result))
         self.assertLessEqual(len(result['content'].encode('utf-8')),32*1024)
         self.assertEqual(result['completeness'],'partial')
+
+    def test_document_body_uses_bounded_mode_without_attachment_opt_in(self):
+        self.mode('bounded', attachments=False)
+        self.observe(tool_input={'path': '/work/mail-body.txt'})
+        record = self.runtime._tool_evidence('s', 't')[0]
+        self.assertEqual(record['source_type'], 'document')
+        self.assertNotEqual(record.get('retention'), 'metadata')
+        self.assertIn('RAW_SENTINEL', record['content'])
+
+    def test_attachment_body_alone_requires_attachment_opt_in(self):
+        self.mode('bounded', attachments=False)
+        self.observe(tool_input={'attachment_id': 'att-1'})
+        denied = self.runtime._tool_evidence('s', 't')[0]
+        self.assertEqual(denied['source_type'], 'attachment')
+        self.assertEqual(denied['retention'], 'metadata')
+        self.assertNotIn('content', denied)
+
+        self.mode('bounded', attachments=True)
+        self.runtime.observe_external_tool(session_id='s', turn_id='t2',
+            tool_name='external.inspect', call_id='c2', payload='RAW_SENTINEL Orion uses PostgreSQL.',
+            tool_input={'attachment_id': 'att-2'})
+        allowed = self.runtime._tool_evidence('s', 't2')[0]
+        self.assertEqual(allowed['source_type'], 'attachment')
+        self.assertNotEqual(allowed.get('retention'), 'metadata')
+        self.assertIn('RAW_SENTINEL', allowed['content'])
 
     def test_cached_body_is_filtered_if_policy_tightens_before_capture(self):
         self.runtime.capture_visible(session_id='s',turn_id='t',role='user',content='What changed?')
@@ -116,7 +144,7 @@ class EvidenceRetentionPolicyTests(unittest.TestCase):
         records=provider._bounded_current_tool_evidence(messages)
         self.assertEqual(records[0]['source_type'],'document')
         self.core.capture('hermes','s','t','assistant','OK',tool_evidence=records)
-        self.assertNotIn('RAW_SENTINEL',self.core.vault.session_path('hermes','s').read_text())
+        self.assertIn('RAW_SENTINEL',self.core.vault.session_path('hermes','s').read_text())
 
     def test_invalid_mode_and_boolean_fail_before_capture(self):
         for config in ({'tool_evidence_mode':'raw'}, {'tool_evidence_mode':False},
@@ -125,7 +153,8 @@ class EvidenceRetentionPolicyTests(unittest.TestCase):
                 retain_tool_evidence([],{'capture':config})
 
     def test_structural_detection_does_not_infer_from_tool_names_or_shell_strings(self):
-        self.assertTrue(document_arguments({'source':{'attachment_id':'a'}}))
+        self.assertTrue(attachment_arguments({'source': {'attachment_id': 'a'}}))
+        self.assertFalse(document_arguments({'source': {'attachment_id': 'a'}}))
         self.assertTrue(document_arguments({'uri':'file:///work/file.md'}))
         self.assertFalse(document_arguments({'command':'cat /work/file.md'}))
         self.assertFalse(document_arguments({'query':'email attachment follow-up'}))
@@ -163,6 +192,168 @@ class EvidenceRetentionPolicyTests(unittest.TestCase):
                 {'command': 'cat /work/x'}, {'query': 'attachment requirements'}, {}, None):
             with self.subTest(arguments=arguments):
                 self.assertEqual(document_arguments(arguments), provider._has_document_arguments(arguments))
+
+    def test_copied_hermes_and_core_agree_on_attachment_handles(self):
+        provider = load_provider_module()[0]
+        for arguments in ({'attachment_id': 'a'}, {'source': {'attachment_id': 'a'}},
+                          {'path': '/work/x'}, {'command': 'cat /work/x'}, {}, None):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(attachment_arguments(arguments), provider._has_attachment_arguments(arguments))
+
+    def test_capture_policy_status_is_safe_and_consistent(self):
+        self.assertEqual(
+            capture_policy_status(self.core.vault.config()),
+            {'tool_evidence_mode': 'bounded', 'include_attachments': False, 'body_retention': 'bounded'},
+        )
+        config = self.core.vault.config()
+        config['capture'].update(tool_evidence_mode='metadata', include_attachments=True)
+        save_config(self.core.vault.config_path, config)
+        self.assertEqual(
+            capture_policy_status(self.core.vault.config()),
+            {'tool_evidence_mode': 'metadata', 'include_attachments': True, 'body_retention': 'metadata'},
+        )
+
+    def test_mcp_stats_exposes_effective_capture_policy(self):
+        from memleaf.mcp_server import _invoke_tool
+        value = _invoke_tool(self.core, 'stats', {})['structuredContent']
+        self.assertEqual(value['capture'], capture_policy_status(self.core.vault.config()))
+
+    def test_init_cli_human_status_exposes_capture_policy(self):
+        from memleaf.cli import _print_human_result
+        output = StringIO()
+        with redirect_stdout(output):
+            _print_human_result({
+                'dry_run': True,
+                'vault': str(self.core.vault.root),
+                'agents': {},
+                'model': {'status': 'not_configured'},
+                'agents_state_path': str(self.core.vault.agents_state_path),
+                'capture': capture_policy_status(self.core.vault.config()),
+            })
+        self.assertIn('capture: bounded (attachments=disabled)', output.getvalue())
+
+    def test_hermes_status_exposes_effective_capture_policy(self):
+        provider_module = load_provider_module()[0]
+        provider = provider_module.MemleafMemoryProvider()
+        hermes_home = self.core.vault.root.parent / 'hermes-status'
+        hermes_home.mkdir()
+        (hermes_home / 'memleaf.json').write_text(
+            json.dumps({'vault': str(self.core.vault.root)}), encoding='utf-8'
+        )
+        provider._hermes_home = str(hermes_home)
+        stats_client = type('StatsClient', (), {
+            'call_tool': lambda _client, name, arguments, core=self.core: {
+                'capture': capture_policy_status(core.vault.config())
+            },
+            'close': lambda _client: None,
+        })()
+        with patch.object(provider_module, '_resolve_command', return_value='memleaf-mcp'), \
+             patch.object(provider_module, '_MCPClient', return_value=stats_client):
+            status = provider.get_status_config({})
+        self.assertEqual(status['capture'], capture_policy_status(self.core.vault.config()))
+
+    def test_standalone_hermes_status_reads_legacy_true_as_bounded_from_core_stats(self):
+        provider_module = load_provider_module()[0]
+        config = self.core.vault.config()
+        config['capture'] = {'include_tool_output': True, 'include_attachments': False}
+        self.core.vault.config_path.write_text(dump_yaml(config), encoding='utf-8')
+        hermes_home = self.core.vault.root.parent / 'hermes-legacy-status'
+        hermes_home.mkdir()
+        (hermes_home / 'memleaf.json').write_text(
+            json.dumps({'vault': str(self.core.vault.root)}), encoding='utf-8'
+        )
+
+        from memleaf.mcp_server import _invoke_tool
+
+        class StatsClient:
+            def __init__(self):
+                self.calls = []
+
+            def call_tool(self, name, arguments):
+                self.calls.append((name, dict(arguments)))
+                return _invoke_tool(self.core, name, arguments)['structuredContent']
+
+            def close(self):
+                return None
+
+        stats_client = StatsClient()
+        stats_client.core = self.core
+        with patch.object(provider_module, '_resolve_command', return_value='memleaf-mcp'), \
+             patch.object(provider_module, '_MCPClient', return_value=stats_client):
+            status = provider_module.MemleafMemoryProvider()
+            status._hermes_home = str(hermes_home)
+            value = status.get_status_config({})
+
+        self.assertEqual(
+            value['capture'],
+            {'tool_evidence_mode': 'bounded', 'include_attachments': False, 'body_retention': 'bounded'},
+        )
+        self.assertEqual(stats_client.calls, [('stats', {})])
+
+    def test_standalone_hermes_status_reports_unknown_when_stats_is_unavailable(self):
+        provider_module = load_provider_module()[0]
+        hermes_home = self.core.vault.root.parent / 'hermes-unavailable-status'
+        hermes_home.mkdir()
+        (hermes_home / 'memleaf.json').write_text(
+            json.dumps({'vault': str(self.core.vault.root)}), encoding='utf-8'
+        )
+
+        class FailedStatsClient:
+            def call_tool(self, name, arguments):
+                raise RuntimeError('stats unavailable')
+
+            def close(self):
+                return None
+
+        with patch.object(provider_module, '_resolve_command', return_value='memleaf-mcp'), \
+             patch.object(provider_module, '_MCPClient', return_value=FailedStatsClient()):
+            status = provider_module.MemleafMemoryProvider()
+            status._hermes_home = str(hermes_home)
+            value = status.get_status_config({})
+
+        self.assertEqual(
+            value['capture'],
+            {
+                'tool_evidence_mode': 'unknown',
+                'include_attachments': 'unknown',
+                'body_retention': 'unknown',
+                'source': 'mcp_unavailable',
+            },
+        )
+
+    def test_explicit_attachment_id_has_the_same_core_host_and_provider_classification(self):
+        provider_module = load_provider_module()[0]
+        arguments = {'attachment_id': 'attachment-1'}
+        messages = [
+            {'role': 'user', 'content': 'Read the attachment.'},
+            {'role': 'assistant', 'tool_calls': [{
+                'id': 'call-attachment',
+                'function': {
+                    'name': 'external.inspect',
+                    'arguments': json.dumps(arguments),
+                },
+            }]},
+            {'role': 'tool', 'tool_call_id': 'call-attachment', 'content': 'ATTACHMENT_BODY'},
+        ]
+        provider_records = provider_module._bounded_current_tool_evidence(messages)
+        self.assertEqual(len(provider_records), 1)
+        self.assertEqual(provider_records[0]['source_type'], 'attachment')
+        self.assertTrue(attachment_arguments(arguments))
+        self.assertTrue(provider_module._has_attachment_arguments(arguments))
+        self.assertFalse(document_arguments(arguments))
+        self.assertFalse(provider_module._has_document_arguments(arguments))
+
+        self.runtime.observe_external_tool(
+            session_id='attachment-session',
+            turn_id='attachment-turn',
+            tool_name='external.inspect',
+            call_id='call-attachment',
+            payload='ATTACHMENT_BODY',
+            tool_input=arguments,
+        )
+        host_records = self.runtime._tool_evidence('attachment-session', 'attachment-turn')
+        self.assertEqual(len(host_records), 1)
+        self.assertEqual(host_records[0]['source_type'], provider_records[0]['source_type'])
 
     def test_already_captured_body_does_not_enter_new_model_calls_after_tightening(self):
         from tests.test_phase2_model_decisions import gate_result

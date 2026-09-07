@@ -77,6 +77,8 @@ class StageB2BTest(unittest.TestCase):
         }
         if update:
             value["memory"] = f"update {memory}"
+        if target is not None:
+            value["update_memory_id"] = target
         return value
 
     @staticmethod
@@ -158,6 +160,7 @@ class StageB2BTest(unittest.TestCase):
             [user_key],
             memory=f"{active.title} {active.body}",
             type=type,
+            target=active_id,
         )
         summary_extra = dict(extra or {})
         summary_extra["update_memory_id"] = active_id
@@ -342,7 +345,8 @@ class StageB2BTest(unittest.TestCase):
             user="user t2 old",
         )
         candidate = self.candidate(
-            "candidate-t2", [user_key], memory=f"{active.title} {active.body}"
+            "candidate-t2", [user_key], memory=f"{active.title} {active.body}",
+            target=active.memory_id,
         )
         responses = [
             self.gate([candidate]),
@@ -384,7 +388,8 @@ class StageB2BTest(unittest.TestCase):
             user="user t2 b2b old",
         )
         candidate = self.candidate(
-            "candidate-t2", [user_key], memory=f"{active.title} {active.body}"
+            "candidate-t2", [user_key], memory=f"{active.title} {active.body}",
+            target=active.memory_id,
         )
         responses = [self.gate([candidate]), self.summary(user_key, title="Updated", body="b2b new", update_memory_id=active.memory_id)]
 
@@ -418,7 +423,8 @@ class StageB2BTest(unittest.TestCase):
             user="user t2 b2b old",
         )
         candidate2 = self.candidate(
-            "candidate-t2", [user_key2], memory=f"{active2.title} {active2.body}"
+            "candidate-t2", [user_key2], memory=f"{active2.title} {active2.body}",
+            target=active2.memory_id,
         )
         responses2 = [self.gate([candidate2]), self.summary(user_key2, title="Updated", body="b2b new", update_memory_id=active2.memory_id)]
         backend2.responses.extend(responses2)
@@ -558,8 +564,8 @@ class StageB2BTest(unittest.TestCase):
             user="user t2 b2b old",
         )
         candidates = [
-            self.candidate("c1", [user_key], memory=f"{active.title} {active.body}"),
-            self.candidate("c2", [user_key], memory=f"{active.title} {active.body} second"),
+            self.candidate("c1", [user_key], memory=f"{active.title} {active.body}", target=active.memory_id),
+            self.candidate("c2", [user_key], memory=f"{active.title} {active.body} second", target=active.memory_id),
         ]
         backend.responses.extend(
             [

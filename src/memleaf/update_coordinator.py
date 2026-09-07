@@ -156,7 +156,10 @@ class UpdateCoordinator:
                 scope_registry=validation_scope_registry, expected_scopes=scopes,
                 expected_scope_source=scope_source, expected_type=memory_type,
                 expected_target_type=target.type, expected_update_memory_id=target_id,
-                allowed_due_dates=_grounded_due_dates(turn), allow_no_change=False)
+                allowed_due_dates=_grounded_due_dates(
+                    turn,
+                    evidence_events=projected,
+                ), allow_no_change=False)
             if summary.get('update_memory_id') != target_id:
                 raise ModelOutputError('group must retain its target', validation_detail='invalid_update_target')
             if summary.get('scope_operations') or summary.get('shadow_native_ids'):

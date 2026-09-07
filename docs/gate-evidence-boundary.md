@@ -44,6 +44,12 @@ The documented response contains `candidates`, `coverage` and
 including a decision that no candidate is warranted. An empty candidate list is
 not, by itself, proof of complete coverage.
 
+Candidates with exact `evidence_bindings` may omit `evidence_event_ids`. Core
+validates the bound unit, quote and role before deriving the source event IDs
+from those units. Explicit event IDs remain strict constraints and are never
+silently replaced. Likewise, unique exact quotes can omit numeric offsets;
+Core computes their source positions without asking the model to count them.
+
 The three empty lists describe a complete response only when there are no
 model-visible evidence units. With units present, no-admission still needs
 explicit `NO_CHANGE` or `DEFERRED` accounting. Examples must obey the same rules
@@ -54,6 +60,49 @@ validated bindings account for the supported units; remaining units take the
 bounded coverage-repair path. Missing accounting must not
 silently become permission to clean the source turn. Unknown unit IDs,
 contradictory coverage, invalid spans and unauthorized sources remain errors.
+
+## Bounded external records and Gate batches
+
+Retained JSON and unstructured external observations remain complete source
+records. Plain-text documents with explicit paragraphs, headings or list items
+use those structural boundaries and preserve the parent section path. Commas
+and sentence punctuation do not create independent units. Every unit retains
+its source record identity and exact text. If a legacy
+record exceeds the capture bound, the host may split it into contiguous
+UTF-8-safe blocks. Every block keeps the same tool/call/record identity and
+exact character offsets; the host never inserts a header or copies text from
+another record into a block.
+
+Physical units are sent to the Gate in ordered batches of at most eight units
+and 64 KiB of serialized evidence metadata/body. A complete unit is never
+truncated to fit a batch; a single oversized unit remains a singleton and the
+normal model-output limit is still a hard failure boundary. Every batch receives
+the full current-turn conversation and the same bounded related-memory and
+scope context. Coverage is complete per batch. Candidate IDs are namespaced by
+batch before they enter the turn audit, while unit IDs and source spans remain
+global and immutable.
+
+The retained physical text also supplies local related-memory search terms, so
+a short conversation accompanying a document can still retrieve the facts
+already stored from that document. Scope filtering and related-context limits
+still apply. Native memory readers receive the original conversation query;
+this local retrieval step does not send document bodies to another reader.
+
+The host waits for all Gate batches before running admission or summarization,
+so a hard failure in a later batch cannot commit an earlier batch's proposals.
+Each batch uses its own candidate IDs and does not receive earlier batches'
+proposals. Same-target updates are reconciled by the update coordinator.
+Cross-batch CREATE proposals with the same validated type and scopes go through
+a bounded model reconciliation step. It must account for every proposal and
+retain the contributing evidence; Core does not merge by keyword or text
+similarity. Failed reconciliation produces a deferred outcome.
+
+Partial coverage keeps the unresolved physical units deferred and the source
+turn available for retry without a cleanup deadline. A hard Gate/model failure
+keeps the existing failed processing marker and does not advance the turn
+watermark. These are separate outcomes: accepted partial coverage retains the
+existing journal behavior, while a failed batch never reaches the commit
+boundary.
 
 ## Diagnostics and recovery
 

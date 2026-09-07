@@ -12,6 +12,8 @@ from .provenance import normalize_tool_evidence
 
 
 MODES = frozenset({"bounded", "metadata", "off"})
+_DOCUMENT_ARGUMENT_KEYS = frozenset({"path", "file", "file_path", "filepath", "filename", "file_id"})
+_ATTACHMENT_ARGUMENT_KEYS = frozenset({"attachment_id"})
 
 
 def capture_settings(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -30,13 +32,24 @@ def capture_settings(value: Mapping[str, Any]) -> dict[str, Any]:
     return settings
 
 
+def capture_policy_status(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the effective, non-sensitive capture policy for status output."""
+    settings = capture_settings(value)
+    mode = settings["tool_evidence_mode"]
+    return {
+        "tool_evidence_mode": mode,
+        "include_attachments": settings["include_attachments"],
+        "body_retention": mode,
+    }
+
+
 def document_arguments(value: Any, depth: int = 0) -> bool:
-    """Recognize structural file/attachment handles, not business semantics."""
+    """Recognize structural document handles, not business semantics."""
     if depth > 4:
         return False
     if isinstance(value, Mapping):
         for key, item in list(value.items())[:32]:
-            if key in {"path", "file", "file_path", "filepath", "filename", "attachment_id", "file_id"}:
+            if key in _DOCUMENT_ARGUMENT_KEYS:
                 if isinstance(item, str) and item.strip():
                     return True
             if key == "uri" and isinstance(item, str) and item.startswith("file://"):
@@ -45,6 +58,22 @@ def document_arguments(value: Any, depth: int = 0) -> bool:
                 return True
     elif isinstance(value, (list, tuple)):
         return any(document_arguments(item, depth + 1) for item in value[:32])
+    return False
+
+
+def attachment_arguments(value: Any, depth: int = 0) -> bool:
+    """Recognize only explicit attachment handles without inspecting content."""
+    if depth > 4:
+        return False
+    if isinstance(value, Mapping):
+        for key, item in list(value.items())[:32]:
+            if key in _ATTACHMENT_ARGUMENT_KEYS:
+                if isinstance(item, str) and item.strip():
+                    return True
+            if isinstance(item, (Mapping, list, tuple)) and attachment_arguments(item, depth + 1):
+                return True
+    elif isinstance(value, (list, tuple)):
+        return any(attachment_arguments(item, depth + 1) for item in value[:32])
     return False
 
 
@@ -59,7 +88,7 @@ def retain_tool_evidence(value: Any, config: Mapping[str, Any]) -> list[dict[str
         excluded = (
             policy["tool_evidence_mode"] == "metadata"
             or record.get("retention") == "metadata"
-            or (record.get("source_type") == "document" and not policy["include_attachments"])
+            or (record.get("source_type") == "attachment" and not policy["include_attachments"])
         )
         if excluded:
             record.pop("content", None)

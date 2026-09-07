@@ -135,6 +135,7 @@ class PlanningContext:
         priority_memory_ids: Iterable[str] = (),
         priority_only: bool = False,
         scope_records: Optional[list[Any]] = None,
+        native_query: Optional[str] = None,
     ) -> tuple[
         list[dict[str, Any]],
         Any,
@@ -150,6 +151,11 @@ class PlanningContext:
                 if isinstance(item, str) and item.strip()
             ]
         visible = query_value if isinstance(query_value, str) else " ".join(query_value)
+        native_visible = (
+            native_query.strip()
+            if isinstance(native_query, str)
+            else visible
+        )
         scope = _safe_scope_background(state, explicit_scope)
         local: list[dict[str, Any]] = []
         indexed_native: list[dict[str, Any]] = []
@@ -215,16 +221,16 @@ class PlanningContext:
                     ]
             local = _native_result([record.memory for record in records])
             if visible:
-                if not priority_only:
+                if not priority_only and native_visible:
                     indexed_native = NativeIndexer(self.service.vault).search_unlocked(
-                        query_value,
+                        native_visible,
                         target_agent=turn.source,
                         for_context=False,
                         limit=None,
                     )
         native = (
-            _invoke_native(getattr(self.service, "native_memory_reader", None), visible, scope)
-            if visible and not priority_only
+            _invoke_native(getattr(self.service, "native_memory_reader", None), native_visible, scope)
+            if native_visible and not priority_only
             else []
         )
         related = self._overlay_related(
@@ -332,7 +338,7 @@ class PlanningContext:
                     continue
                 minimal = {
                     key: value[key]
-                    for key in ("memory_id", "title", "body", "type", "scopes")
+                    for key in ("memory_id", "title", "body", "type", "scopes", "due_date")
                     if key in value
                 }
                 size = cls._related_payload_size(minimal)
@@ -377,15 +383,21 @@ class PlanningContext:
         title_truncated = len(title) > _SCOPE_DIRECTORY_MAX_TITLE_CHARS
         if title_truncated:
             title = title[: _SCOPE_DIRECTORY_MAX_TITLE_CHARS - 1].rstrip() + "…"
-        return (
-            {
-                "memory_id": memory.memory_id,
-                "title": title,
-                "type": memory.type,
-                "scopes": list(memory.scopes),
-            },
-            title_truncated,
-        )
+        entry = {
+            "memory_id": memory.memory_id,
+            "title": title,
+            "type": memory.type,
+            "scopes": list(memory.scopes),
+        }
+        if memory.type == "todo":
+            # Gate may use a terminal todo only as a structural witness for
+            # already_completed coverage.  Keep the state metadata bounded;
+            # the todo body remains outside the directory projection.
+            entry["status"] = memory.status if memory.status in {
+                "active", "completed", "cancelled"
+            } else "active"
+            entry["due_date"] = memory.due_date
+        return entry, title_truncated
 
 
     @classmethod
@@ -425,6 +437,7 @@ class PlanningContext:
         explicit_scope: Any = None,
         *,
         overlay: Iterable[Mapping[str, Any]] = (),
+        physical_units: Iterable[Any] = (),
     ) -> tuple[
         list[dict[str, Any]],
         Any,
@@ -432,14 +445,57 @@ class PlanningContext:
         Optional[tuple[list[Any], bool]],
     ]:
         visible = " ".join(event.content for event in turn.events if isinstance(event.content, str)).strip()
+        physical_units = tuple(physical_units or ())
+        physical_queries = self._physical_query_texts(physical_units)
+        scope = _safe_scope_background(state, explicit_scope)
+        scoped_external_context = self._has_specific_scope(scope) and any(
+            getattr(unit, "can_support", False) is True
+            and getattr(unit, "origin", None) == "external_observation"
+            for unit in physical_units
+        )
+        query: str | list[str] = (
+            [visible, *physical_queries]
+            if physical_queries and self._has_specific_scope(scope)
+            else visible
+        )
+        # The physical projection has already passed capture retention and
+        # admission provenance.  It is a local retrieval hint only.  Its
+        # complete source text may contain dates/IDs that intentionally fail
+        # the ordinary lexical strictness check, so allow the scoped local
+        # search to return bounded existing bodies when external evidence is
+        # present.  The native reader/index continue to receive visible text.
         return self._related_query(
             turn,
             state,
-            visible,
+            query,
             explicit_scope,
             overlay=overlay,
-            strict_relevance=True,
+            strict_relevance=not scoped_external_context,
+            native_query=visible,
         )
+
+
+    @staticmethod
+    def _physical_query_texts(units: Iterable[Any]) -> list[str]:
+        """Project only planner-approved physical text into local retrieval."""
+
+        result: list[str] = []
+        seen: set[str] = set()
+        for unit in units:
+            if getattr(unit, "can_support", False) is not True:
+                continue
+            text = getattr(unit, "text", None)
+            if not isinstance(text, str):
+                continue
+            text = text.strip()
+            if not text:
+                continue
+            key = text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(text)
+        return result
 
 
     def _active_memory_by_id(self, memory_id: Any) -> Optional[Memory]:

@@ -571,22 +571,43 @@ def _normalize_summary_dates(
     return json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
 
 
-def _grounded_due_dates(turn: InboxTurn) -> set[str]:
-    """Return absolute dates actually supported by current visible evidence."""
+def _grounded_due_dates(
+    turn: InboxTurn,
+    *,
+    evidence_events: Iterable[Mapping[str, Any]] | None = None,
+) -> set[str]:
+    """Return absolute dates supported by current visible/admitted evidence.
+
+    When ``evidence_events`` is supplied it is the already admitted
+    ``summary_evidence`` projection.  Only user assertions and external tool
+    observations in that projection can ground a date; omitted content (for
+    example metadata-only records) and assistant prose are ignored.  Omitting
+    the argument retains the legacy visible-turn behavior.
+    """
 
     result: set[str] = set()
-    for event in turn.events:
-        timestamp = _parse_time(event.timestamp)
-        if timestamp is None or not isinstance(event.content, str):
+    if evidence_events is None:
+        records: list[tuple[Any, Any]] = [
+            (event.timestamp, event.content) for event in turn.events
+        ]
+    else:
+        records = [
+            (event.get("timestamp"), event.get("content"))
+            for event in evidence_events
+            if isinstance(event, Mapping) and event.get("role") in {"user", "tool"}
+        ]
+    for timestamp_value, content in records:
+        timestamp = _parse_time(timestamp_value)
+        if timestamp is None or not isinstance(content, str):
             continue
-        normalized = normalize_relative_calendar_text(event.content, timestamp) or event.content
+        normalized = normalize_relative_calendar_text(content, timestamp) or content
         for value in re.findall(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)", normalized):
             try:
                 parsed = datetime.strptime(value, "%Y-%m-%d").date()
             except ValueError:
                 continue
             result.add(parsed.isoformat())
-        for year, month, day in re.findall(r"(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?", event.content):
+        for year, month, day in re.findall(r"(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?", content):
             try:
                 parsed = datetime(
                     int(year) if year else timestamp.year,
@@ -629,13 +650,20 @@ def _native_result(value: Any) -> list[dict[str, Any]]:
         "keywords",
         "status",
         "completed_at",
+        "due_date",
     }
     for item in values:
         if isinstance(item, Memory):
             value = item.to_dict()
-            result.append({key: value[key] for key in allowed_fields if key in value})
+            projected = {key: value[key] for key in allowed_fields if key in value}
+            if item.type == "todo":
+                projected["due_date"] = item.due_date
+            result.append(projected)
         elif isinstance(item, Mapping):
-            result.append({key: item[key] for key in allowed_fields if key in item})
+            projected = {key: item[key] for key in allowed_fields if key in item}
+            if projected.get("type") == "todo":
+                projected["due_date"] = item.get("due_date")
+            result.append(projected)
         else:
             result.append({"body": str(item)})
     return result
