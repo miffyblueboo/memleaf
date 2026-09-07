@@ -4,8 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.29.**
-> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. This release completes the metadata-only tool evidence Gate contract and prevents query or assistant restatement coverage from remaining DEFERRED, while preserving source-neutral semantics, Markdown as the sole source of truth, and zero SQLite runtime dependencies. Real-model semantics still require local acceptance with the selected model and representative inputs.
+> **Version: 0.2.30.**
+> The core library, Vault, stdio MCP server, initialization CLI, model routing, memory extraction, controlled retrieval protocol, and host adapters are implemented. This release separates the complete evidence inventory from the Gate's bindable physical evidence projection, unifies the `candidates`, `coverage`, and `evidence_bindings` contract, preserves legacy candidate-only exact/bound compatibility, keeps unresolved evidence safe, and adds allowlisted `evidence_check` diagnostics while preserving source-neutral semantics, Markdown as the sole source of truth, and zero SQLite runtime dependencies. Real-model semantics still require local acceptance with the selected model and representative inputs.
 > **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.
 
 ## Project scope
@@ -474,7 +474,7 @@ MIT; see [LICENSE](LICENSE).
 *Your memories, in files you own.*
 
 
-## General processing and read-only inspection (0.2.29)
+## General processing and read-only inspection (0.2.30)
 
 Dialogue, calendars, tickets, files, web results and other tools share the evidence, coverage and write path.
 Models interpret semantics; Core validates physical provenance and exact original quotations.

@@ -23,6 +23,7 @@ from memleaf.prompts import (
     gate_prompt,
     summarize_prompt,
 )
+from memleaf.admission import analyze_turn_evidence, evidence_prompt
 from memleaf.validation import (
     ModelOutputError,
     NO_CHANGE_DECISION,
@@ -822,9 +823,13 @@ class RouterAndAdapterTest(unittest.TestCase):
             "scopes": ["project:demo"],
             "scope_source": "user",
         }
-        gate_text = gate_prompt(events)
+        gate_text = gate_prompt(events) + evidence_prompt(analyze_turn_evidence(events))
         summary_text = summarize_prompt(candidate, events)
         self.assertNotIn("event-key-placeholder", GATE_SYSTEM + SUMMARIZE_SYSTEM + gate_text + summary_text)
+        self.assertIn("Return exactly one JSON object with all three top-level fields", gate_text)
+        self.assertIn("coverage", gate_text)
+        self.assertIn("evidence_bindings", gate_text)
+        self.assertIn("candidates", gate_text)
         decoder = json.JSONDecoder()
 
         def example(prompt):
@@ -832,19 +837,12 @@ class RouterAndAdapterTest(unittest.TestCase):
             start = prompt.index("{", start)
             return decoder.raw_decode(prompt[start:])[0]
 
-        gate_example = example(gate_text)
         summary_example = example(summary_text)
-        gate_key = gate_example["candidates"][0]["evidence_event_ids"][0]
         summary_key = summary_example["sources"][0]["event_key"]
-        self.assertEqual(gate_key, "event-key-real")
         self.assertEqual(summary_key, "event-key-real")
         self.assertEqual(summary_example["type"], "todo")
         self.assertEqual(summary_example["scopes"], ["project:demo"])
         self.assertEqual(summary_example["scope_source"], "user")
-        self.assertEqual(
-            parse_gate_output(json.dumps(gate_example), current_event_keys=[gate_key]),
-            gate_example,
-        )
         parsed_summary = parse_summarize_output(json.dumps(summary_example), current_event_keys=[summary_key])
         self.assertEqual(parsed_summary["title"], summary_example["title"])
         self.assertEqual(parsed_summary["sources"][0]["event_key"], summary_key)

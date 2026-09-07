@@ -7,7 +7,7 @@ from .llm import MODEL_VALIDATION_REASONS, CallableBackend, ModelError, ModelUna
 from .models import utc_now
 from .prompts import COVERAGE_CORRECTION, DUPLICATE_TARGET_CORRECTION, GATE_TYPE_CORRECTION, JSON_CORRECTION, MIXED_FUTURE_USE_CORRECTION, MIXED_PROJECT_SCOPES_CORRECTION, RELATIVE_TIME_CORRECTION, SCOPE_GROUNDING_CORRECTION, SUMMARY_SCOPE_CORRECTION, SUMMARY_TARGET_CORRECTION, SUMMARY_TYPE_CORRECTION, TARGET_RELEVANCE_CORRECTION, UPDATE_TARGET_TYPE_CORRECTION
 from .validation import MODEL_VALIDATION_DETAILS, ModelOutputError
-from .process_common import _DIAGNOSTIC_FILENAME, _DIAGNOSTIC_MAX_BYTES, _failure_metadata, _model_output_statistics
+from .process_common import _DIAGNOSTIC_FILENAME, _DIAGNOSTIC_MAX_BYTES, _failure_metadata, _model_output_statistics, _safe_evidence_check
 
 
 class ModelExecutor:
@@ -167,10 +167,12 @@ class ModelExecutor:
         failure_code = ""
         validation_reason = ""
         validation_detail = ""
+        evidence_check = None
         if error is not None:
             failure_code, _failure_stage, reason, detail, _attempt = _failure_metadata(error)
             validation_reason = reason or ""
             validation_detail = detail or ""
+            evidence_check = _safe_evidence_check(error)
         entry = {
             "timestamp": utc_now(),
             "source": source,
@@ -183,6 +185,8 @@ class ModelExecutor:
             "validation_detail": validation_detail,
             **_model_output_statistics(raw, purpose),
         }
+        if evidence_check is not None:
+            entry["evidence_check"] = evidence_check
         response_diagnostics = getattr(error, "response_diagnostics", None) if error is not None else None
         if isinstance(response_diagnostics, Mapping):
             allowed_diagnostics = {

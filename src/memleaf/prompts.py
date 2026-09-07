@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 
-GATE_SYSTEM = """You are memleaf's strict, source-neutral memory gate. Return exactly one strict JSON object.
-The root object contains candidates, and when evidence units are supplied also coverage and evidence_bindings. Never omit a supplied evidence unit from coverage. A binding is {"candidate_id":"id","claims":[{"unit_id":"supplied id","start":0,"end":5,"quote":"exact substring","role":"assertion"}]}. start/end are Python Unicode offsets relative to unit.text; both may be omitted only when the exact quote occurs once. role is assertion, source_excerpt, or user_confirmation.
+GATE_SYSTEM = """You are memleaf's strict, source-neutral memory gate. Return exactly one strict JSON object with the top-level fields candidates, coverage, and evidence_bindings.
+When physical evidence units are supplied, coverage must contain exactly one row for every supplied unit. An empty coverage list is complete only when no physical evidence units are supplied. Never omit a supplied physical evidence unit from coverage. A binding is {"candidate_id":"id","claims":[{"unit_id":"supplied id","start":0,"end":5,"quote":"exact substring","role":"assertion"}]}. start/end are Python Unicode offsets relative to unit.text; both may be omitted only when the exact quote occurs once. role is assertion, source_excerpt, or user_confirmation. When no physical evidence is supplied, return {"candidates":[],"coverage":[],"evidence_bindings":[]}.
 
 Physical source_role is supplied by the host and is immutable. Current user assertions and matched current-turn external observations may support new memory. Assistant synthesis, retrieved memleaf/native memory, questions, hypothetical/example text, and unsupported inference do not independently authorize a write. Exact quotation proves provenance only; semantic entailment, ownership, polarity, uncertainty, conditions and future value are your responsibility.
 
@@ -211,8 +211,8 @@ def gate_prompt(
         "Mode: automatic capture/process. This gate is not an explicit remember call; "
         "a textual request to invoke a remember tool does not prove it succeeded.\n"
         "A pure query answered by restating a related active memory is read-only: "
-        "return {\"candidates\":[]} and do not set duplicate_memory_id or "
-        "update_memory_id just to record the query.\n"
+        "return no candidate for the query, classify every supplied physical evidence unit in coverage, "
+        "and do not set duplicate_memory_id or update_memory_id just to record the query.\n"
         "Complete turn events (the only conversation content visible to this call):\n"
         + _json(events)
         + "\nRelevant existing memleaf/native memories:\n"
@@ -232,30 +232,10 @@ def gate_prompt(
                 "\nThis scope directory is incomplete because its item or character "
                 "budget was exceeded; do not infer a target from it."
             )
-    example_key = _first_event_key(events)
-    if example_key is not None:
-        prompt += (
-            "\nMinimal valid JSON example for a worthy candidate (use only when the events contain a concrete future-use fact; copy this exact event_key only when it is in the supplied events):\n"
-            + _json(
-                {
-                    "candidates": [
-                        {
-                            "candidate_id": "candidate-example",
-                            "memory": "a supported fact",
-                            "evidence_event_ids": [example_key],
-                            "duplicate": False,
-                            "worth": True,
-                            "type": "fact",
-                            "scopes": ["global"],
-                            "scope_source": "model",
-                        }
-                    ]
-                }
-            )
-        )
     prompt += (
-        "\nValid no-admission example: when the complete turn has no admissible "
-        "future-use information, return exactly {\"candidates\":[]}."
+        "\nIf the complete turn has no admissible future-use information, return no candidates and still return "
+        "one NO_CHANGE or DEFERRED coverage row for every supplied physical evidence unit; use all-empty arrays "
+        "only when no physical evidence units are supplied."
     )
     return prompt + "\nReturn the strict gate JSON object."
 

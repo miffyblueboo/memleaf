@@ -24,6 +24,7 @@ class ModelOutputError(ValueError):
         *,
         validation_reason: str | None = None,
         validation_detail: str | None = None,
+        evidence_check: str | None = None,
     ):
         super().__init__(message)
         self.validation_reason = (
@@ -35,6 +36,11 @@ class ModelOutputError(ValueError):
         self.validation_detail = (
             validation_detail
             if isinstance(validation_detail, str) and validation_detail in MODEL_VALIDATION_DETAILS
+            else None
+        )
+        self.evidence_check = (
+            evidence_check
+            if isinstance(evidence_check, str) and evidence_check in MODEL_EVIDENCE_CHECKS
             else None
         )
 
@@ -81,6 +87,20 @@ MODEL_VALIDATION_DETAILS = frozenset(
         "other_schema_violation",
     )
 )
+MODEL_EVIDENCE_CHECKS = frozenset((
+    "coverage_shape",
+    "coverage_candidate",
+    "event_mismatch",
+    "incomplete_coverage",
+    "binding_shape",
+    "unknown_unit",
+    "duplicate_coverage",
+    "invalid_reason",
+    "invalid_span",
+    "binding_scope",
+    "coverage_binding_conflict",
+    "candidate_evidence",
+))
 _SCOPE_NAME = re.compile(r"^[^\s/\\:\x00\r\n]+$")
 _RELATIVE_DATE_TOKEN = (
     r"(?:"
@@ -833,14 +853,20 @@ def validate_gate_output(
             raise ModelOutputError("duplicate candidate_id", validation_detail="duplicate_candidate_id")
         candidate_ids.add(candidate_id)
         _string(item["memory"], "memory", validation_detail="candidate_shape")
-        evidence = _string_list(
-            item["evidence_event_ids"],
-            "evidence_event_ids",
-            nonempty=True,
-            validation_detail="invalid_evidence",
-        )
+        try:
+            evidence = _string_list(
+                item["evidence_event_ids"],
+                "evidence_event_ids",
+                nonempty=True,
+                validation_detail="invalid_evidence",
+            )
+        except ModelOutputError as error:
+            if error.validation_detail == "invalid_evidence":
+                error.evidence_check = "candidate_evidence"
+            raise
         if any(event_id.casefold() not in allowed_event_keys for event_id in evidence):
-            raise ModelOutputError("candidate evidence references another turn", validation_detail="invalid_evidence")
+            raise ModelOutputError("candidate evidence references another turn", validation_detail="invalid_evidence",
+                                   evidence_check="candidate_evidence")
         if type(item["duplicate"]) is not bool or type(item["worth"]) is not bool:
             raise ModelOutputError("duplicate and worth must be booleans", validation_detail="invalid_flags")
         candidate_type = item["type"]
@@ -1342,6 +1368,7 @@ parse_summary_output = parse_summarize_output
 __all__ = [
     "MEMORY_TYPES",
     "MODEL_VALIDATION_DETAILS",
+    "MODEL_EVIDENCE_CHECKS",
     "MODEL_VALIDATION_REASONS",
     "ModelOutputError",
     "NO_CHANGE_DECISION",

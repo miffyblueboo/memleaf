@@ -15,7 +15,7 @@ from .locking import atomic_write_json, atomic_write_text
 from .turn_plan import turn_identity_key
 from .redaction import redact_text
 from .vault import safe_component
-from .process_common import ProcessingError, _FAILED_STATUS, _LEGACY_PROCESSING_GRACE_SECONDS, _MAX_SESSION_LINEAGE_DEPTH, _PROCESSING_LEASE_SECONDS, _PROCESSING_STATUS, _Snapshot, _as_int, _failure_metadata, _now_value, _parse_time, _read_processed, _safe_scope_background, _session_key
+from .process_common import ProcessingError, _FAILED_STATUS, _LEGACY_PROCESSING_GRACE_SECONDS, _MAX_SESSION_LINEAGE_DEPTH, _PROCESSING_LEASE_SECONDS, _PROCESSING_STATUS, _Snapshot, _as_int, _failure_metadata, _now_value, _parse_time, _read_processed, _safe_evidence_check, _safe_scope_background, _session_key
 
 
 class ProcessJournal:
@@ -344,6 +344,7 @@ class ProcessJournal:
         try:
             now = _now_value(getattr(self.service, "clock", None))
             failure_code, failure_stage, validation_reason, validation_detail, attempt_count = _failure_metadata(error)
+            evidence_check = _safe_evidence_check(error)
             with self.service.vault.lock():
                 processed = _read_processed(self.service.vault.processed_state_path)
                 sessions = processed.setdefault("sessions", {})
@@ -368,6 +369,8 @@ class ProcessJournal:
                         failed_marker["validation_reason"] = validation_reason
                     if validation_detail is not None:
                         failed_marker["validation_detail"] = validation_detail
+                    if evidence_check is not None:
+                        failed_marker["evidence_check"] = evidence_check
                     if attempt_count is not None:
                         failed_marker["attempt_count"] = attempt_count
                     state["processing"] = failed_marker

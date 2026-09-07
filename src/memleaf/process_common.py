@@ -16,7 +16,7 @@ from .llm import MODEL_ERROR_CODES, MODEL_VALIDATION_REASONS, ModelUnavailable
 from .locking import read_json
 from .models import Memory, utc_now
 from .retrieval import candidate_matches_query, normalize_term
-from .validation import MODEL_VALIDATION_DETAILS, ModelOutputError, parse_strict_json, normalize_relative_calendar_text
+from .validation import MODEL_EVIDENCE_CHECKS, MODEL_VALIDATION_DETAILS, ModelOutputError, parse_strict_json, normalize_relative_calendar_text
 
 _PROCESSING_LEASE_SECONDS = 3600
 
@@ -289,6 +289,13 @@ def _failure_metadata(
     if isinstance(attempt_count, bool) or not isinstance(attempt_count, int) or attempt_count not in (1, 2, 3):
         attempt_count = None
     return code, stage, validation_reason, validation_detail, attempt_count
+
+
+def _safe_evidence_check(error: BaseException) -> Optional[str]:
+    """Return only the bounded evidence diagnostic code, never raw output."""
+
+    value = getattr(error, "evidence_check", None)
+    return value if isinstance(value, str) and value in MODEL_EVIDENCE_CHECKS else None
 
 
 def _json_top_level_type(value: Any) -> str:

@@ -4,7 +4,7 @@ import hashlib
 import json
 from copy import deepcopy
 from typing import Any, Iterable, Mapping, Optional
-from .admission import analyze_turn_evidence, admission_reason, read_only_turn, summary_evidence, evidence_prompt, parse_coverage, split_gate_envelope, supporting_units, split_semantic_envelope, validate_bindings, validate_coverage_bindings
+from .admission import analyze_turn_evidence, admission_reason, partition_evidence_units, read_only_turn, summary_evidence, evidence_prompt, parse_coverage, split_gate_envelope, supporting_units, split_semantic_envelope, validate_bindings, validate_coverage_bindings
 from .index import turn_key
 from .inbox import InboxTurn
 from .llm import ModelError
@@ -148,6 +148,17 @@ class MemoryPlanner:
         for event in events:
             event["tool_evidence"] = retain_tool_evidence(event["tool_evidence"], policy_config)
         evidence_units = analyze_turn_evidence(events)
+        evidence_partition = partition_evidence_units(evidence_units)
+        # Keep the complete retained event inventory for replay/audit and for
+        # exact turn digests.  Gate receives conversation text for context, but
+        # tool record identities are deliberately projected out because the
+        # retained bodies already appear in physical evidence units.
+        gate_events = []
+        for event in events:
+            projected = dict(event)
+            projected.pop("tool_evidence", None)
+            gate_events.append(projected)
+        model_evidence_units = evidence_partition.physical
         coverage_rows: dict[str, dict[str, Any]] = {}
         turn_ref = (turn.source, turn.session_id, turn.turn_key)
         self.audit._deferred_by_turn.setdefault(turn_ref, [])
@@ -295,10 +306,10 @@ class MemoryPlanner:
                             or allowed_corrections.get(item["candidate_id"].casefold()) != target_id):
                             raise ModelOutputError("target is not authorized for this candidate",
                                                    validation_detail="invalid_update_target")
-            coverage_rows = (parse_coverage(coverage_value, evidence_units, parsed["candidates"], require_complete=False)
+            coverage_rows = (parse_coverage(coverage_value, model_evidence_units, parsed["candidates"], require_complete=False)
                              if coverage_value is not None else {})
             if binding_value is not None:
-                bindings = validate_bindings(binding_value, evidence_units, parsed["candidates"])
+                bindings = validate_bindings(binding_value, model_evidence_units, parsed["candidates"])
                 for item in parsed["candidates"]:
                     if item["candidate_id"] in bindings:
                         claims = bindings[item["candidate_id"]]
@@ -306,9 +317,10 @@ class MemoryPlanner:
                             row = coverage_rows.get(claim["unit_id"])
                             if row is not None and (row["decision"] != "CANDIDATE"
                                 or item["candidate_id"] not in row["candidate_ids"]):
-                                raise ModelOutputError("binding contradicts coverage", validation_detail="invalid_evidence")
+                                raise ModelOutputError("binding contradicts coverage", validation_detail="invalid_evidence",
+                                                       evidence_check="coverage_binding_conflict")
                         item["_evidence_bindings"] = claims
-            validate_coverage_bindings(coverage_rows, evidence_units, parsed["candidates"])
+            validate_coverage_bindings(coverage_rows, model_evidence_units, parsed["candidates"])
 
             prepared_candidates: list[dict[str, Any]] = []
             for candidate in parsed["candidates"]:
@@ -397,13 +409,13 @@ class MemoryPlanner:
         gate = self.model._complete_json_stage(
             backend,
             gate_prompt(
-                events,
+                gate_events,
                 related_memories=gate_related,
                 scope_directory=scope_directory,
                 scope_directory_complete=scope_directory_complete,
                 scope_background=scope_background,
                 scope_registry=scope_registry,
-            ) + evidence_prompt(evidence_units),
+            ) + evidence_prompt(model_evidence_units),
             system=GATE_SYSTEM,
             purpose="gate",
             parser=parse_gate,
@@ -417,8 +429,12 @@ class MemoryPlanner:
         # every returned candidate is parsed again by the same Gate boundary.
         accounted = set(coverage_rows)
         for initial in gate["candidates"]:
-            accounted.update(unit.unit_id for unit in supporting_units(initial, evidence_units))
-        missing = tuple(unit for unit in evidence_units if (unit.eligible or unit.origin == "user_document") and unit.unit_id not in accounted)
+            # A legacy candidate-only response remains compatible when its
+            # exact text or validated binding already supplies an explicit
+            # semantic judgment.  Unclaimed physical units still go through
+            # bounded correction and remain unresolved if omitted.
+            accounted.update(unit.unit_id for unit in supporting_units(initial, model_evidence_units))
+        missing = tuple(unit for unit in model_evidence_units if unit.unit_id not in accounted)
         if missing:
             saved_gate = deepcopy(gate)
             saved_coverage = deepcopy(coverage_rows)
@@ -974,9 +990,13 @@ class MemoryPlanner:
                 decision, reason = "DEFERRED", "incomplete_tool_evidence"
             elif unit.unit_id in covered_unit_ids:
                 decision, reason = "CANDIDATE", "candidate_checked"
+            elif unit.can_support and row is None:
+                # A physical unit with neither explicit coverage nor validated
+                # candidate support remains unresolved; never clean it up.
+                decision, reason = "DEFERRED", "coverage_unresolved"
             elif row is not None:
                 decision, reason = row["decision"], row.get("reason", "coverage_unresolved")
-            elif unit.eligible or unit.origin == "user_document":
+            elif unit.can_support:
                 decision, reason = "DEFERRED", "coverage_unresolved"
             else:
                 decision, reason = "NO_CHANGE", unit.origin

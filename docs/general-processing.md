@@ -1,4 +1,4 @@
-# General processing reliability contract — 0.2.29
+# General processing reliability contract — 0.2.30
 
 This is source-neutral processing, not a mail extractor. Dialogue, documents,
 calendars, issue trackers and terminal/tool observations use the same admission
@@ -27,6 +27,14 @@ quotation, in which case Core locates it without model character counting.
 Malformed/ambiguous references fail the contract. Matching a quote proves
 provenance, not semantic truth. This mechanism is not a universal NLP proof.
 
+Core keeps the complete evidence inventory for audit, replay and input digests.
+The Gate receives a bounded physical-source projection: all user-origin units
+and complete current-turn external observations are included, while assistant
+prose, retrieved memory and incomplete observations remain host-side context or
+unresolved ledger entries. This is a provenance boundary, not a semantic
+classification; query, example and quoted-document hints remain visible to the
+Gate so it can judge them in context.
+
 Legacy candidate-only output has no n-gram or short-text authorization bypass.
 It must repeat a complete non-query source statement, or produce an explicit
 validated quotation via the bounded correction path. Automatic summarization
@@ -36,10 +44,24 @@ scope/type/target/date checks remain active.
 
 ## Coverage, limits and no-op behavior
 
-A Gate may map multiple facts in one evidence unit to several candidates, or
-one candidate to several units. Coverage is checked against real supplied IDs.
-One source-neutral correction can classify missing units; its candidates pass
-the same validator/deduplication path, never a post-Gate business-pattern writer.
+A Gate response always has the top-level fields `candidates`, `coverage` and
+`evidence_bindings`. When physical evidence units are supplied, `coverage` must
+contain exactly one row for each supplied unit, including units the model marks
+`NO_CHANGE` or `DEFERRED`; an omitted or empty coverage list is incomplete in
+that case. With zero physical units, the complete no-admission object is
+`{"candidates":[],"coverage":[],"evidence_bindings":[]}`. A Gate may map
+multiple facts in one evidence unit to several candidates, or one candidate to
+several units. Coverage is checked against real supplied IDs. One source-neutral
+correction can classify missing units; its candidates pass the same
+validator/deduplication path, never a post-Gate business-pattern writer.
+Legacy candidate-only output remains compatible when a candidate already has
+validated exact or bound physical support. Any remaining physical unit without
+coverage or validated candidate support is sent through bounded correction and
+remains unresolved; it cannot silently authorize inbox cleanup.
+Evidence failures retain the public `invalid_evidence` category and may expose
+an allowlisted `evidence_check` such as an unknown unit, duplicate row, invalid
+span or incomplete coverage. Diagnostic state never stores raw model output or
+error text.
 Tool records retained as `metadata` may remain visible in the event envelope for
 diagnostics, but they are not evidence units and cannot be bound by call ID,
 digest, tool name or other metadata. They therefore require no coverage row and
@@ -65,7 +87,10 @@ records and enclosing context within that budget. Per-record provenance takes
 precedence over common source metadata. An overflow slot reports omitted
 records. Arbitrary large prose is not split into falsely complete facts;
 unsupported/incomplete content needs a supported complete source excerpt or a
-later source input. Execution outcome and completeness are distinct.
+later source input. Switching from `metadata` to `bounded` does not reconstruct
+body content that was never captured; bounded retention can still produce an
+unknown or overflow record when the adapter/result exceeds its capture limits.
+Execution outcome and completeness are distinct.
 
 Codex pending tool data retains sixteen turns; bounded tombstones make evicted
 uncaptured evidence visible as incomplete. Older loss beyond 256 tombstones

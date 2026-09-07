@@ -603,10 +603,7 @@ class MaintenanceV2Tests(unittest.TestCase):
         directory_marker = "Bounded scope candidate directory (metadata only; not evidence):\n"
         self.assertIn(directory_marker, gate_prompt_text)
         directory_start = gate_prompt_text.index(directory_marker) + len(directory_marker)
-        directory_end = gate_prompt_text.index(
-            "\nMinimal valid JSON example", directory_start
-        )
-        directory = json.loads(gate_prompt_text[directory_start:directory_end])
+        directory = json.JSONDecoder().raw_decode(gate_prompt_text[directory_start:])[0]
         self.assertLessEqual(len(directory), _SCOPE_DIRECTORY_MAX_ITEMS)
         self.assertLessEqual(
             len(json.dumps(directory, ensure_ascii=False, separators=(",", ":"))),

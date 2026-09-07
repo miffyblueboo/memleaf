@@ -2,6 +2,13 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.30 — 2026-09-07
+
+- Add a physical evidence projection for the Gate: the complete local inventory remains available for provenance, replay and audit, while only user-origin units and complete external observations become bindable model evidence. Assistant synthesis, retrieved memory, incomplete observations and metadata-only records remain context or unresolved ledger state.
+- Require one unified Gate response with `candidates`, `coverage` and `evidence_bindings`, including explicit per-unit coverage and bounded correction for missing physical units. Preserve legacy candidate-only compatibility when exact or validated bound support already accounts for a unit.
+- Preserve the public `invalid_evidence` failure category while adding safe, allowlisted `evidence_check` diagnostics for distinguishable coverage, binding and span failures. Diagnostics do not retain raw model output or error text.
+- Add regression coverage and documentation for the evidence boundary, metadata-only capture behavior and cleanup/watermark safety. This release does not claim reproduction or repair of any earlier real-model session.
+
 ## 0.2.29 — 2026-09-07
 
 - Clarify the source-neutral Gate contract for tool records retained as `metadata`: they are not evidence units, cannot be bound by metadata identifiers, and cannot authorize CREATE or UPDATE.
