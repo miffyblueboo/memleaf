@@ -32,6 +32,14 @@ class Processor:
 
         return Compactor(self.service).auto(model=model, router=router)
 
+    def _attach_failure_metrics(self, error: BaseException) -> None:
+        """Attach structural-only model telemetry for outer failure reporters."""
+
+        try:
+            setattr(error, "model_metrics", self.model.metrics())
+        except Exception:
+            # Failure reporting must never mask the original processing error.
+            return
 
     def process(
         self,
@@ -147,9 +155,9 @@ class Processor:
                 "compaction": compaction,
             }
         except Exception as error:
+            self._attach_failure_metrics(error)
             self.journal._mark_failed(snapshots, error)
             raise
-
 
     def remember(
         self,
@@ -247,9 +255,9 @@ class Processor:
                 "compaction": self._auto_compact(model=backend),
             }
         except Exception as error:
+            self._attach_failure_metrics(error)
             self.journal._mark_failed([snapshot], error)
             raise
-
 
 
 __all__ = ["Processor", "ProcessingError"]
