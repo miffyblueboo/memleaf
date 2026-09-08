@@ -6,6 +6,7 @@ import time
 import unittest
 
 from memleaf.model_execution import ModelExecutor
+from memleaf.parallel_model import run_ordered_keyed_jobs
 from memleaf.process_jobs import _safe_result
 from memleaf.update_coordinator import UpdateCoordinator
 from memleaf.update_review import CREATE_SEMANTIC_REVIEW_SYSTEM, UPDATE_SEMANTIC_REVIEW_SYSTEM
@@ -117,6 +118,44 @@ class ProcessingObservabilityConcurrencyTests(unittest.TestCase):
             backend=_UnsafeBackend(),
         )
         self.assertEqual(active["peak"], 1)
+
+    def test_keyed_scheduler_serializes_same_target_and_preserves_input_order(self):
+        executor = ModelExecutor(_ServiceStub(concurrency=3))
+        backend = _ParallelBackend()
+        lock = threading.Lock()
+        active = {"current": 0, "peak": 0}
+        per_key_active: dict[str, int] = {}
+        per_key_peak: dict[str, int] = {}
+
+        def make_job(key: str, label: str):
+            def job():
+                with lock:
+                    active["current"] += 1
+                    active["peak"] = max(active["peak"], active["current"])
+                    per_key_active[key] = per_key_active.get(key, 0) + 1
+                    per_key_peak[key] = max(per_key_peak.get(key, 0), per_key_active[key])
+                try:
+                    time.sleep(0.04)
+                    return label
+                finally:
+                    with lock:
+                        active["current"] -= 1
+                        per_key_active[key] -= 1
+            return job
+
+        jobs = [
+            ("update:a", make_job("update:a", "a1")),
+            ("update:b", make_job("update:b", "b1")),
+            ("update:a", make_job("update:a", "a2")),
+            ("create:c", make_job("create:c", "c1")),
+            ("update:b", make_job("update:b", "b2")),
+            ("update:a", make_job("update:a", "a3")),
+        ]
+        outcomes = run_ordered_keyed_jobs(executor, backend, jobs)
+        self.assertEqual(outcomes, ["a1", "b1", "a2", "c1", "b2", "a3"])
+        self.assertEqual(active["peak"], 3)
+        self.assertTrue(per_key_peak)
+        self.assertTrue(all(value == 1 for value in per_key_peak.values()))
 
     def test_background_result_projects_only_structural_model_metrics(self):
         result = _safe_result({
