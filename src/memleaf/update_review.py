@@ -188,23 +188,21 @@ transitions that can be completed, tracked, or updated independently must not be
 merged merely because they share a source message, project, owner, deadline, or
 coordination step. Keep generic coordination with the deliverable it governs.
 If the proposal aggregates independent topics, use REVISE only when it remains
-one topic after removing unsupported expansion; if splitting it would omit an
-independent sibling, use DEFERRED rather than selecting one sibling or approving
-the aggregate. When the admitted source contains sibling claims, keep each
-claim's polarity, completion state, uncertainty, ownership, and scope local to
-its exact source span; a negative or completed clause for one sibling does not
-suppress or alter another. Treat a title or body that lists multiple
-independently closable deliverables under one shared coordination action as an
-aggregate proposal, even if every listed detail is source-supported. Two
-separately named changes followed by one sentence to coordinate them remain
-separate topics; this is an illustrative example, not a fixed-count rule. A
-single review cannot create the missing sibling candidates, so use DEFERRED
-rather than selecting one sibling, replacing them with only the coordination
-action, or retaining the aggregate.
+one topic after removing unsupported expansion; if splitting the aggregate would omit an independent sibling, use
+DEFERRED rather than selecting one sibling or approving the aggregate. When the
+admitted source contains sibling claims, keep each claim's polarity, completion
+state, uncertainty, ownership, and scope local to its exact source span; a
+negative or completed clause for one sibling does not suppress or alter another.
+Treat a title or body that lists multiple independently closable deliverables
+under one shared coordination action as an aggregate proposal, even if every
+listed detail is source-supported. Two separately named changes followed by one
+sentence to coordinate them remain separate topics; this is an illustrative
+example, not a fixed-count rule. A single review cannot create the missing
+sibling candidates, so use DEFERRED rather than selecting one sibling, replacing
+them with only the coordination action, or retaining the aggregate.
 
 Use REVISE only to remove unsupported expansion or restore omitted supported
-meaning while retaining all supported facts and future-use content. A topic or
-activity name by itself establishes only that the source mentions that topic or
+meaning while retaining all supported facts and future-use content. A topic or activity name by itself establishes only that the source mentions that topic or
 activity; it does not establish that the activity occurred or was completed. An
 organization name next to an activity title does not establish that the
 organization performed or owned it. Without an explicit subject-action
