@@ -318,12 +318,18 @@ def _aggregate_attempt_results(attempts: list[Any]) -> dict[str, Any]:
                 ids.append(value)
     if ids:
         aggregate["memory_ids"] = ids
-    metrics = _aggregate_model_metrics([
-        attempt.get("result", {}).get("model_metrics")
-        for attempt in attempts
-        if isinstance(attempt, Mapping) and isinstance(attempt.get("result"), Mapping)
-        and isinstance(attempt["result"].get("model_metrics"), Mapping)
-    ])
+    metric_values: list[Mapping[str, Any]] = []
+    for attempt in attempts:
+        if not isinstance(attempt, Mapping):
+            continue
+        for field in ("result", "error"):
+            container = attempt.get(field)
+            if not isinstance(container, Mapping):
+                continue
+            value = container.get("model_metrics")
+            if isinstance(value, Mapping):
+                metric_values.append(value)
+    metrics = _aggregate_model_metrics(metric_values)
     if metrics:
         aggregate["model_metrics"] = metrics
     # The terminal result's coverage status is authoritative for the final
@@ -337,9 +343,9 @@ def _aggregate_attempt_results(attempts: list[Any]) -> dict[str, Any]:
     return aggregate
 
 
-def _safe_error(error: BaseException) -> dict[str, str]:
+def _safe_error(error: BaseException) -> dict[str, Any]:
     message = str(error).replace("\x00", " ").replace("\r", " ").replace("\n", " ")
-    result = {"type": type(error).__name__[:80], "message": message[:500]}
+    result: dict[str, Any] = {"type": type(error).__name__[:80], "message": message[:500]}
     # Retain code locations even when the detached worker has no stderr. Never
     # serialize source lines, absolute paths, locals, or model response bodies.
     frames: list[str] = []
@@ -356,6 +362,9 @@ def _safe_error(error: BaseException) -> dict[str, str]:
         trace = trace.tb_next
     if frames:
         result["code_locations"] = " > ".join(frames[-12:])[:2000]
+    model_metrics = _safe_model_metrics(getattr(error, "model_metrics", None))
+    if model_metrics:
+        result["model_metrics"] = model_metrics
     return result
 
 
@@ -516,6 +525,7 @@ def _finish(vault: Vault, job_id: str, *, status_value: str, result: Any = None,
             job["result"] = dict(job["aggregate_result"])
         if error is not None:
             job["error"] = _safe_error(error)
+            job["aggregate_result"] = _aggregate_attempt_results(job["attempts"])
         state["active_job_id"] = None
         _prune_terminal(state)
         _write_state(vault, state)
