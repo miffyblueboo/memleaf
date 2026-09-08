@@ -17,7 +17,7 @@ from .llm import ModelError
 from .prompts import UPDATE_GROUP_SYSTEM, summarize_prompt
 from .process_common import ProcessingError, _grounded_due_dates, _normalize_summary_dates, _summary_date_grounding_violations
 from .turn_plan import revision_digest
-from .update_review import review_create, review_update
+from .update_review import _complete_json_stage_compat, review_create, review_update
 from .validation import ModelOutputError, parse_strict_json, parse_summarize_output
 
 # Exceptional prompt safety guards, not a truncation policy. Over-budget groups
@@ -220,7 +220,8 @@ class UpdateCoordinator:
 
         if not jobs:
             return []
-        workers = min(len(jobs), self.model.max_parallel_calls(backend))
+        max_parallel = getattr(self.model, "max_parallel_calls", None)
+        workers = min(len(jobs), max_parallel(backend)) if callable(max_parallel) else 1
         if workers <= 1:
             return [job() for job in jobs]
         # No Vault or audit mutation occurs in worker threads. All request/audit
@@ -816,11 +817,17 @@ class UpdateCoordinator:
             return {**value, 'summary': summary}
 
         try:
-            outcome = self.model._complete_json_stage(backend, prompt, system=UPDATE_GROUP_SYSTEM,
-                purpose='summarize', parser=parse,
+            outcome = _complete_json_stage_compat(
+                self.model,
+                backend,
+                prompt,
+                system=UPDATE_GROUP_SYSTEM,
+                purpose='summarize',
+                parser=parse,
                 diagnostic_context={'source': turn.source, 'session_id': turn.session_id,
                                     'turn_index': turn.turn_index},
-                metric_stage='target_reconciliation')
+                metric_stage='target_reconciliation',
+            )
         except (ModelError, ModelOutputError):
             # No fragment wins after model failure, and unrelated targets remain
             # independently committable. The complete original turn is retained.
