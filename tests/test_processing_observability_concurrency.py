@@ -47,6 +47,29 @@ class _ParallelBackend:
             return self.outputs[0]
 
 
+class _DelayedEchoBackend:
+    parallel_safe = True
+
+    def __init__(self, delay: float = 0.04):
+        self.delay = delay
+        self.calls = 0
+        self.active = 0
+        self.peak = 0
+        self._lock = threading.Lock()
+
+    def complete(self, prompt, *, system="", purpose="", temperature=0.0):
+        with self._lock:
+            self.calls += 1
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        try:
+            time.sleep(self.delay)
+            return prompt
+        finally:
+            with self._lock:
+                self.active -= 1
+
+
 class _UnsafeBackend:
     parallel_safe = False
 
@@ -182,6 +205,49 @@ class ProcessingObservabilityConcurrencyTests(unittest.TestCase):
         self.assertEqual(active["peak"], 3)
         self.assertTrue(per_key_peak)
         self.assertTrue(all(value == 1 for value in per_key_peak.values()))
+
+    def test_same_input_serial_and_parallel_keep_output_and_call_count(self):
+        prompts = [f"candidate-{index}" for index in range(6)]
+
+        def run(concurrency: int):
+            executor = ModelExecutor(_ServiceStub(concurrency=concurrency))
+            backend = _DelayedEchoBackend()
+            jobs = []
+            for index, prompt in enumerate(prompts):
+                def call(value=prompt):
+                    return executor._complete(
+                        backend,
+                        value,
+                        system="",
+                        purpose="summarize",
+                        metric_stage="summarize",
+                    )
+                jobs.append((f"create:{index}", call))
+            started = time.perf_counter()
+            outputs = run_ordered_keyed_jobs(executor, backend, jobs)
+            elapsed = time.perf_counter() - started
+            return outputs, backend, executor.metrics()["stages"]["summarize"], elapsed
+
+        serial_outputs, serial_backend, serial_metrics, serial_elapsed = run(1)
+        parallel_outputs, parallel_backend, parallel_metrics, parallel_elapsed = run(3)
+
+        self.assertEqual(serial_outputs, prompts)
+        self.assertEqual(parallel_outputs, prompts)
+        self.assertEqual(serial_outputs, parallel_outputs)
+        self.assertEqual(serial_backend.calls, len(prompts))
+        self.assertEqual(parallel_backend.calls, len(prompts))
+        self.assertEqual(serial_metrics["call_count"], len(prompts))
+        self.assertEqual(parallel_metrics["call_count"], len(prompts))
+        self.assertEqual(serial_metrics["retry_count"], 0)
+        self.assertEqual(parallel_metrics["retry_count"], 0)
+        self.assertEqual(serial_metrics["input_chars"], parallel_metrics["input_chars"])
+        self.assertEqual(serial_metrics["output_chars"], parallel_metrics["output_chars"])
+        self.assertEqual(serial_backend.peak, 1)
+        self.assertEqual(parallel_backend.peak, 3)
+        self.assertEqual(serial_metrics["max_in_flight"], 1)
+        self.assertEqual(parallel_metrics["max_in_flight"], 3)
+        self.assertLess(parallel_elapsed, serial_elapsed)
+        self.assertLess(parallel_metrics["wall_clock_ms"], serial_metrics["wall_clock_ms"])
 
     def test_background_result_projects_only_structural_model_metrics(self):
         result = _safe_result({
