@@ -10,7 +10,8 @@ from pathlib import Path
 from memleaf.config import DEFAULT_MODEL_CONCURRENCY, load_config, save_config
 from memleaf.model_execution import ModelExecutor
 from memleaf.parallel_model import run_ordered_keyed_jobs
-from memleaf.process_jobs import _safe_result
+from memleaf.process_jobs import _aggregate_attempt_results, _safe_error, _safe_result
+from memleaf.processing import Processor
 from memleaf.prompts import GATE_SYSTEM, SUMMARIZE_SYSTEM
 from memleaf.update_coordinator import UpdateCoordinator
 from memleaf.update_review import CREATE_SEMANTIC_REVIEW_SYSTEM, UPDATE_SEMANTIC_REVIEW_SYSTEM
@@ -282,6 +283,48 @@ class ProcessingObservabilityConcurrencyTests(unittest.TestCase):
         serialized = json.dumps(result, ensure_ascii=False)
         self.assertNotIn("DO-NOT-PERSIST", serialized)
         self.assertNotIn("evil-stage", serialized)
+
+    def test_failed_job_metrics_are_attached_projected_and_aggregated_safely(self):
+        executor = ModelExecutor(_ServiceStub())
+        backend = _ParallelBackend(['{"ok":true}'])
+        executor._complete(
+            backend,
+            "FAILED-SECRET-PROMPT",
+            system="FAILED-SECRET-SYSTEM",
+            purpose="gate",
+            metric_stage="gate",
+        )
+        processor = Processor.__new__(Processor)
+        processor.model = executor
+        error = RuntimeError("safe failure")
+        processor._attach_failure_metrics(error)
+        error.model_metrics["prompt"] = "DO-NOT-PERSIST"
+        error.model_metrics["stages"]["evil-stage"] = {
+            "call_count": 999,
+            "body": "DO-NOT-PERSIST",
+        }
+
+        projected = _safe_error(error)
+        self.assertEqual(projected["model_metrics"]["total"]["call_count"], 1)
+        self.assertEqual(projected["model_metrics"]["stages"]["gate"]["call_count"], 1)
+        serialized = json.dumps(projected, ensure_ascii=False)
+        self.assertNotIn("FAILED-SECRET-PROMPT", serialized)
+        self.assertNotIn("FAILED-SECRET-SYSTEM", serialized)
+        self.assertNotIn("DO-NOT-PERSIST", serialized)
+        self.assertNotIn("evil-stage", serialized)
+
+        aggregate = _aggregate_attempt_results([
+            {"status": "failed", "error": projected},
+            {"status": "succeeded", "result": {
+                "model_metrics": {
+                    "total": {"call_count": 2, "retry_count": 1, "max_in_flight": 2},
+                    "stages": {"summarize": {"call_count": 2, "retry_count": 1, "max_in_flight": 2}},
+                },
+            }},
+        ])
+        self.assertEqual(aggregate["model_metrics"]["total"]["call_count"], 3)
+        self.assertEqual(aggregate["model_metrics"]["total"]["retry_count"], 1)
+        self.assertEqual(aggregate["model_metrics"]["total"]["max_in_flight"], 2)
 
     def test_gate_and_summary_contracts_preserve_meaning_and_attribution(self):
         gate = " ".join(GATE_SYSTEM.split())
