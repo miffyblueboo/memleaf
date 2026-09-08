@@ -61,7 +61,7 @@ class Processor:
                 session_id=session_id,
             )
             return {
-                **self.journal._coverage_result(source, session_id),
+                **self.journal._coverage_result(source, session_id, turns=()),
                 "processed_turns": 0,
                 "memories_written": 0,
                 "memory_ids": [],
@@ -78,6 +78,7 @@ class Processor:
         self.audit._deferred_by_turn = {}
         self.audit._dispositions_by_turn = {}
         self.audit._evidence_by_turn = {}
+        self.audit._planned_settled_sources = set()
         try:
             for snapshot in snapshots:
                 with self.service.vault.lock():
@@ -129,7 +130,11 @@ class Processor:
                 session_id=session_id,
             )
             return {
-                **self.journal._coverage_result(source, session_id),
+                **self.journal._coverage_result(
+                    source,
+                    session_id,
+                    turns=[snapshot.turn for snapshot in snapshots],
+                ),
                 "processed_turns": len(snapshots),
                 "memories_written": len(ids),
                 "memory_ids": ids,

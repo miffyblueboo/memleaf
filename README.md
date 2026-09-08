@@ -488,6 +488,10 @@ memleaf process --vault /path/to/existing/vault --source hermes --session-id SES
 
 工具执行状态与证据完整性分别记录；超限、丢失或不完整内容不会被模型的 NO_CHANGE 升级为完整。
 执行成功但尚有未解决项时，结果显示 `coverage_status=partial`，并保留来源以供有界重试或补充证据。
+`external_evidence_status` 另外说明本批工具正文是否实际可供提炼：`metadata_only` 是仅留元数据，
+`disabled` 是关闭采集，`unavailable` 是没有可用完整正文，`partial` 是只有部分可用，
+`available` 是有可用正文，`not_provided` 是本批没有外部记录。可用正文不等于业务事项已提炼完整，
+也不证明工具读取了原始邮件或文档的全文。
 行为、限制、测试协议变更见 [通用处理说明](docs/general-processing.md)。
 
 ### 工具证据留存配置

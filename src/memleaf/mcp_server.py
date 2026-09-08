@@ -620,7 +620,7 @@ def _safe_model_diagnostics(error: BaseException, *, default_reason: str | None 
     if not isinstance(reason, str) or reason not in MODEL_VALIDATION_REASONS:
         reason = default_reason
     attempt_count = getattr(error, "attempt_count", None)
-    if isinstance(attempt_count, bool) or not isinstance(attempt_count, int) or attempt_count not in (1, 2, 3):
+    if isinstance(attempt_count, bool) or not isinstance(attempt_count, int) or attempt_count not in (1, 2, 3, 4):
         attempt_count = None
     detail = getattr(error, "validation_detail", None)
     if not isinstance(detail, str) or detail not in MODEL_VALIDATION_DETAILS:

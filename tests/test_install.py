@@ -26,7 +26,7 @@ class InstallScriptTests(unittest.TestCase):
         shutil.copytree(
             ROOT,
             self.install_root,
-            ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__", "*.pyc", "*.egg-info"),
+            ignore=shutil.ignore_patterns(".git", ".codegraph", ".venv", "__pycache__", "*.pyc", "*.egg-info"),
         )
         self.bin = self.home / "bin"
         self.bin.mkdir()

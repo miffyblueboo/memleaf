@@ -22,8 +22,23 @@ be evidence; examples, suggestions and hypothetical content are not new facts.
 The Gate still decides future value, entailment, semantic role, ownership and
 CREATE/UPDATE/NO_CHANGE. Each writable candidate quotes actual evidence units.
 Core validates the unit/event identity, physical source, exact text and bounds.
+Summary title/body dates are also checked against the admitted source spans.
+Current user timestamps can anchor supported relative dates; external retrieval
+timestamps cannot. An explicit yearless source date can remain yearless, and
+an update may preserve dates already present in its selected target. Neither
+case authorizes inventing a new year or borrowing dates from another memory.
 Start/end are relative to unit.text; they may both be omitted for a unique exact
 quotation, in which case Core locates it without model character counting.
+The model may instead explicitly select a complete supplied unit with
+`unit_id`, `whole_unit: true`, and `role`, omitting quote/start/end. Core resolves
+the original text and canonical offsets from that same batch's inventory.
+This avoids copying multiline text back through the model; it does not repair
+an inaccurate quote, grant authority to metadata or assistant text, or prove
+semantic entailment. Both forms use the same downstream source checks.
+An unregistered model-generated project name must also be supported by that
+candidate's own bound source unit. A name introduced only in the model's
+proposal cannot establish a new Scope. Registered names/aliases and explicit
+user/session scope attribution keep their existing rules.
 Malformed/ambiguous references fail the contract. Matching a quote proves
 provenance, not semantic truth. This mechanism is not a universal NLP proof.
 
@@ -80,6 +95,20 @@ labels them NO_CHANGE. Incomplete turns retain their source instead of being
 cleaned after the usual grace period. Scope-filtered retries may revisit them;
 no endless automatic model retry or extra external tool call is introduced.
 
+`external_evidence_status` reports the effective capture-policy and physical
+source boundary separately from model coverage. Its detail object counts raw
+external records, usable retained body records/bytes, and metadata-only,
+incomplete or unusable records. `available` means complete source text is
+available to the planner; it is not a semantic extraction verdict or proof
+that the host read an entire underlying document. Error and partial native
+execution outputs do not gain authority merely because they contain text.
+
+Native Hermes terminal/code `output` envelopes are projected as observed text,
+with execution and host truncation kept as metadata. Explicit text record
+dividers retain each record's header and paragraphs in one exact source span;
+arbitrary application JSON remains JSON. Historical document dates must not
+be shifted to the time at which a tool retrieved the document.
+
 Tool evidence uses one shared budget: 64 source records, at most 32 KiB of UTF-8
 body text per record and 128 KiB of total body text, plus 320-character metadata
 fields, with redaction at Core capture. Cache and inbox normalization are
@@ -121,6 +150,33 @@ commit-time duplicates include title and complete state-bearing content, so two
 independent titled tasks are not merged solely because their bodies match.
 Model-assisted same-future-use matching still uses bounded existing candidates;
 it is not replaced with fuzzy string authorization or embeddings.
+
+When candidate-specific retrieval discovers an active local memory missing
+from the initial Gate context, a bounded target reconciliation stage compares
+the validated proposal and its evidence against the current records. The model
+chooses CREATE, UPDATE, NO_CHANGE or DEFERRED; an UPDATE must explicitly retain
+the target's type. Insufficient or oversized context defers the proposal.
+This contract is shared by conversation, document and arbitrary tool evidence.
+
+Final automatic UPDATE proposals receive a separate semantic review after
+same-target consolidation. The reviewer compares the selected current target,
+admitted source spans and proposed replacement, retaining still-valid old
+information unless current evidence supersedes it. It can accept, revise,
+return NO_CHANGE or defer. Revisions must pass the same source, date, type,
+Scope and target checks; review failure preserves the original memory. This
+adds a bounded model stage, not a local text-concatenation or keyword rule.
+Automatic duplicate observations remain NO_CHANGE ledger entries and do not
+enter the mutation batch as empty metadata operations.
+
+Partial semantic retries submit only unresolved evidence units. Settled outcomes
+are retained in the ledger; an identical external observation in a later turn
+is recognized by its source identity and exact content, without interpreting
+business keywords. New conversation assertions keep their distinct turn identity.
+When all newly pending turns in a session are read-only, automatic processing
+does not bundle retries of older deferred turns into that query. Those deferred
+records and their retry allowance remain available; an explicit scope retry
+keeps its existing behavior. Classification uses the current capture policy,
+including when an older inbox record still contains an excluded body.
 
 A retry resumes a matching persisted plan without asking the model for a new
 summary. CREATE/UPDATE outcomes survive interrupted final-ledger writes.

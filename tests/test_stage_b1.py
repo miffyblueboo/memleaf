@@ -239,7 +239,7 @@ class StageB1Test(unittest.TestCase):
             return responses.pop(0)
 
         with mock.patch("memleaf.capture._timestamp", return_value=anchor):
-            self.service.capture("codex", "relative-retry", "turn-1", "user", "Finish before Wednesday", event_id="relative-retry-user")
+            self.service.capture("codex", "relative-retry", "turn-1", "user", "Finish before this Wednesday", event_id="relative-retry-user")
             self.service.capture(
                 "codex",
                 "relative-retry",
@@ -859,8 +859,8 @@ class RouterAndAdapterTest(unittest.TestCase):
             "temporary execution details",
             "transient observations",
             "one-off chatter",
-            "zero or one candidate",
-            "independent future questions/actions",
+            "candidate count follows the independent future uses",
+            "do not impose a zero-or-one default",
             "explicit remember mode only",
         ):
             self.assertIn(phrase, normalized_gate_text)
@@ -875,8 +875,8 @@ class RouterAndAdapterTest(unittest.TestCase):
             "independently retrievable and updateable future-use topic",
             "independent future uses",
             "details that belong to the same future question/action",
-            "zero or one candidate",
-            "genuinely independent future questions/actions",
+            "candidate count follows the independent future uses",
+            "do not impose a zero-or-one default",
         ):
             self.assertIn(phrase, normalized_gate_text)
 

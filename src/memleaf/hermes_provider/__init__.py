@@ -154,7 +154,7 @@ class _MCPToolError(RuntimeError):
         )
         self.attempt_count = (
             attempt_count
-            if isinstance(attempt_count, int) and not isinstance(attempt_count, bool) and attempt_count in (1, 2, 3)
+            if isinstance(attempt_count, int) and not isinstance(attempt_count, bool) and attempt_count in (1, 2, 3, 4)
             else None
         )
         super().__init__("MCP tool failed")
@@ -186,7 +186,7 @@ def _mcp_error_fields(
         else None
     )
     attempt_count = error.get("attempt_count")
-    safe_attempt_count = attempt_count if isinstance(attempt_count, int) and not isinstance(attempt_count, bool) and attempt_count in (1, 2, 3) else None
+    safe_attempt_count = attempt_count if isinstance(attempt_count, int) and not isinstance(attempt_count, bool) and attempt_count in (1, 2, 3, 4) else None
     return safe_code, safe_stage, safe_reason, safe_attempt_count, safe_detail
 
 
@@ -1250,6 +1250,52 @@ def _resolve_command(config: Mapping[str, Any]) -> Optional[str]:
     )
 
 
+def _native_execution_projection(name: str, payload: Any) -> tuple[Any, str, bool]:
+    """Project documented host execution envelopes, never arbitrary JSON data.
+
+    Native Hermes terminal/code tools wrap the observed text in ``output``.
+    Keeping that envelope as escaped JSON hides its record boundaries and
+    makes exact source quotation unnecessarily fragile. Execution and host
+    truncation fields remain separate from the observed text. A successful
+    transport says nothing about completeness of an underlying document.
+    """
+    error = isinstance(payload, Mapping) and payload.get("isError") is True
+    partial = False
+    if name not in {"terminal", "execute_code"}:
+        return payload, "error" if error else "success", partial
+    # Some host transports JSON-encode their envelope more than once. Decode
+    # only bounded native envelope layers, not the observed output itself.
+    for _ in range(3):
+        if not isinstance(payload, str):
+            break
+        try:
+            decoded = json.loads(payload)
+        except (TypeError, ValueError):
+            break
+        if not isinstance(decoded, (str, Mapping)) or decoded == payload:
+            break
+        payload = decoded
+    if not isinstance(payload, Mapping):
+        return payload, "success", partial
+    error = payload.get("isError") is True
+    exit_code = payload.get("exit_code")
+    status = payload.get("status")
+    failed_states = {"error", "failed", "cancelled", "canceled", "timeout", "timed_out"}
+    native_envelope = (type(exit_code) is int or isinstance(status, str))
+    if not native_envelope:
+        return payload, "error" if error else "unknown", partial
+    error = error or (type(exit_code) is int and exit_code != 0) or (isinstance(status, str) and status in failed_states)
+    error = error or bool(payload.get("error"))
+    partial = payload.get("stdout_truncated") is True or payload.get("truncated") is True
+    omitted = payload.get("stdout_bytes_omitted")
+    partial = partial or (type(omitted) is int and omitted > 0)
+    observed = payload.get("output")
+    has_output = isinstance(observed, str) and bool(observed.strip())
+    success = (type(exit_code) is int and exit_code == 0 and status in (None, "success")) or status == "success"
+    state = "error" if error else "success" if success and has_output else "unknown"
+    return observed if has_output else payload, state, partial
+
+
 def _bounded_current_tool_evidence(messages: Optional[List[Dict[str, Any]]], *, vault_root: Optional[Path] = None) -> list[dict[str, str]]:
     """Match current-turn results strictly by call ID, not tool name/order.
 
@@ -1287,7 +1333,8 @@ def _bounded_current_tool_evidence(messages: Optional[List[Dict[str, Any]]], *, 
                 pass
         kind = "retrieved_memory" if (re.search(r"(?:^|[_.:/-])memleaf(?:$|[_.:/-])", name, re.I)
             or _path_is_within(vault_root, _path_from_tool_arguments(call.get("arguments"))) is True) else "external_observation"
-        execution_error = isinstance(payload, Mapping) and payload.get("isError") is True
+        payload, execution_state, execution_partial = _native_execution_projection(name, payload)
+        execution_error = execution_state == "error"
 
         def record(value: Any, record_id: Optional[str] = None) -> Optional[dict[str, str]]:
             try:
@@ -1297,9 +1344,9 @@ def _bounded_current_tool_evidence(messages: Optional[List[Dict[str, Any]]], *, 
             if not text or "\x00" in text:
                 return None
             item = {"tool_name": name[:320], "call_id": cid[:320], "kind": kind,
-                    "execution_status": "error" if execution_error else "success",
-                    "completeness": "complete", "schema_version": "2",
-                    "result_status": "error" if execution_error else "success",
+                    "execution_status": execution_state,
+                    "completeness": "partial" if execution_partial else "complete", "schema_version": "2",
+                    "result_status": "error" if execution_error else "truncated" if execution_partial else execution_state,
                     "content": text,
                     "source_type": (
                         "attachment" if _has_attachment_arguments(call.get("arguments"))
@@ -1365,6 +1412,7 @@ class MemleafMemoryProvider(MemoryProvider):
         # state only; it never becomes memory content.
         self._last_auto_process_failure: Optional[dict[str, str]] = None
         self._last_auto_process_deferred: Optional[dict[str, int]] = None
+        self._last_auto_process_external_evidence: Optional[dict[str, Any]] = None
         # Hermes exposes no final-answer blocking hook.  Keep this adapter's
         # retrieval state only when it was initialized from an explicit local
         # provider config; tests and disabled/manual instances must not request
@@ -1499,7 +1547,11 @@ class MemleafMemoryProvider(MemoryProvider):
         if new_session_id in self._active_retrieval_ids:
             self._active_retrieval_ids.move_to_end(new_session_id)
 
-        for attribute in ("_last_auto_process_failure", "_last_auto_process_deferred"):
+        for attribute in (
+            "_last_auto_process_failure",
+            "_last_auto_process_deferred",
+            "_last_auto_process_external_evidence",
+        ):
             value = getattr(self, attribute)
             if isinstance(value, Mapping) and value.get("session_id") == old_session_id:
                 updated = dict(value)
@@ -1569,6 +1621,51 @@ class MemleafMemoryProvider(MemoryProvider):
                 "error_stage": str(error.get("error_stage") or "process"),
             }
             self._last_auto_process_deferred = None
+            self._last_auto_process_external_evidence = None
+
+    @staticmethod
+    def _safe_external_evidence_status(value: Any) -> Optional[dict[str, Any]]:
+        """Project Core's bounded capture status into provider control state."""
+
+        if not isinstance(value, Mapping):
+            return None
+        detail = value.get("external_evidence")
+        detail = dict(detail) if isinstance(detail, Mapping) else {}
+        status = detail.get("status") or value.get("external_evidence_status")
+        if not isinstance(status, str) or status not in {
+            "available",
+            "partial",
+            "metadata_only",
+            "disabled",
+            "unavailable",
+            "not_provided",
+        }:
+            return None
+        projected: dict[str, Any] = {"status": status}
+        for field in (
+            "external_record_count",
+            "retained_body_count",
+            "retained_body_bytes",
+            "metadata_only_record_count",
+            "incomplete_record_count",
+            "unusable_record_count",
+        ):
+            count = detail.get(field)
+            if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+                projected[field] = count
+        policy = detail.get("capture_policy")
+        if isinstance(policy, Mapping):
+            mode = policy.get("tool_evidence_mode")
+            if isinstance(mode, str) and mode in {"bounded", "metadata", "off"}:
+                projected["tool_evidence_mode"] = mode
+        return projected
+
+    def _record_auto_process_external_evidence(self, session_id: str, value: Any) -> None:
+        projected = self._safe_external_evidence_status(value)
+        if projected is not None:
+            projected["session_id"] = session_id
+        with self._sync_lock:
+            self._last_auto_process_external_evidence = projected
 
     def _process_session(self, session_id: str, *, turn_id: str = "") -> Any:
         """Process one physical session and keep failed work retryable."""
@@ -1591,6 +1688,7 @@ class MemleafMemoryProvider(MemoryProvider):
             return _CALL_FAILED
         with self._sync_lock:
             self._deferred_process_sessions.pop(session_id, None)
+        self._record_auto_process_external_evidence(session_id, processed)
         return processed
 
     def _process_deferred_sessions(self, current_session: str, turn_id: str) -> None:
@@ -1784,7 +1882,7 @@ class MemleafMemoryProvider(MemoryProvider):
         validation_detail: str = "",
         attempt_count: Optional[int] = None,
     ) -> None:
-        if isinstance(attempt_count, bool) or not isinstance(attempt_count, int) or attempt_count not in (1, 2, 3):
+        if isinstance(attempt_count, bool) or not isinstance(attempt_count, int) or attempt_count not in (1, 2, 3, 4):
             attempt_count = None
         logger.info(
             "memleaf stage=%s duration_ms=%d status=%s error_type=%s error_code=%s error_stage=%s validation_reason=%s validation_detail=%s attempt_count=%s source=hermes session=%s turn=%s",
@@ -2078,6 +2176,7 @@ class MemleafMemoryProvider(MemoryProvider):
             self._last_call_error = None
             self._last_auto_process_failure = None
             self._last_auto_process_deferred = None
+            self._last_auto_process_external_evidence = None
         self._write_enabled = _memory_session_enabled(
             kwargs.get("platform", ""), kwargs.get("agent_context", "")
         )
@@ -2224,6 +2323,44 @@ class MemleafMemoryProvider(MemoryProvider):
             f"There are {unresolved} unresolved evidence unit(s), including incomplete tool observations. "
             "Memory extraction is not fully complete; do not claim "
             "that every captured turn was processed.\n"
+            "</memleaf-process-status>"
+        )
+
+    def _auto_process_external_evidence_notice(self, session_id: str) -> str:
+        """Explain successful processing when no external body was retained."""
+
+        with self._sync_lock:
+            status = self._last_auto_process_external_evidence
+            if not isinstance(status, Mapping) or status.get("session_id") != session_id:
+                return ""
+            status = dict(status)
+        kind = status.get("status")
+        if kind not in {"metadata_only", "disabled", "unavailable", "partial"}:
+            return ""
+        external_records = status.get("external_record_count", 0)
+        retained_bodies = status.get("retained_body_count", 0)
+        metadata_only = status.get("metadata_only_record_count", 0)
+        incomplete = status.get("incomplete_record_count", 0)
+        unusable = status.get("unusable_record_count", 0)
+        mode = status.get("tool_evidence_mode", "unknown")
+        if kind == "disabled":
+            reason = f"the capture policy is disabled (mode={mode})"
+        elif kind == "metadata_only":
+            reason = "external records were retained as metadata without source bodies"
+        elif kind == "partial":
+            reason = (
+                "some external records had no retained or complete source body "
+                f"(metadata-only={metadata_only}, incomplete={incomplete}, unusable={unusable})"
+            )
+        else:
+            reason = "external records were present without usable complete source bodies"
+        return (
+            "<memleaf-process-status>\n"
+            "Automatic memleaf processing completed successfully, but "
+            f"{reason}. Current batch: external records={external_records}, "
+            f"retained external bodies={retained_bodies}. This status does not "
+            "confirm that external content was extracted into memory; it is an "
+            "informational capture status, not a processing failure.\n"
             "</memleaf-process-status>"
         )
 
@@ -2505,6 +2642,7 @@ class MemleafMemoryProvider(MemoryProvider):
         safe_session = self._canonical_session_id(session_id or self._session_id)
         failure_notice = self._auto_process_failure_notice(safe_session)
         deferred_notice = self._auto_process_deferred_notice(safe_session)
+        external_evidence_notice = self._auto_process_external_evidence_notice(safe_session)
         turn_number = self._current_turn_number(safe_session)
         scope_args: dict[str, Any] = {"limit": _MAX_SCOPE_ITEMS}
         if self._gate_enabled and isinstance(turn_number, int) and turn_number > 0:
@@ -2529,11 +2667,19 @@ class MemleafMemoryProvider(MemoryProvider):
             session_id=safe_session,
         )
         if catalog is _CALL_FAILED:
-            notices = [notice for notice in (failure_notice, deferred_notice) if notice]
+            notices = [
+                notice
+                for notice in (failure_notice, deferred_notice, external_evidence_notice)
+                if notice
+            ]
             notices.append(_SCOPE_MAP_INVALID_NOTICE)
             return "\n\n".join(notices)
         if not _scope_catalog_is_valid(catalog):
-            notices = [notice for notice in (failure_notice, deferred_notice) if notice]
+            notices = [
+                notice
+                for notice in (failure_notice, deferred_notice, external_evidence_notice)
+                if notice
+            ]
             notices.append(_SCOPE_MAP_INVALID_NOTICE)
             return "\n\n".join(notices)
         retrieval_id = self._catalog_retrieval_id(catalog)
@@ -2551,12 +2697,20 @@ class MemleafMemoryProvider(MemoryProvider):
             scope_hint=_unique_query_scope(query, catalog),
         )
         if not context:
-            notices = [notice for notice in (failure_notice, deferred_notice) if notice]
+            notices = [
+                notice
+                for notice in (failure_notice, deferred_notice, external_evidence_notice)
+                if notice
+            ]
             return "\n\n".join(notices)
         # This provider injects a map, not recalled memory entries.  Do not
         # report it as N memories in Hermes' indicator.
         self._last_recall = None
-        notices = [notice for notice in (failure_notice, deferred_notice) if notice]
+        notices = [
+            notice
+            for notice in (failure_notice, deferred_notice, external_evidence_notice)
+            if notice
+        ]
         return "\n\n".join([*notices, context]) if notices else context
 
     def recall_status(self) -> Optional[RecallStatus]:

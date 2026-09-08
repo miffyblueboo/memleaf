@@ -33,6 +33,14 @@ _QUERY_START = re.compile(
     r"recap|check|find|what|which|who|when|where|why|how)\b)", re.I)
 _QUERY_WORD = re.compile(r"有没有|有什么|有哪些|是什么|是谁|多少|哪个|哪些|什么时候|何时|"
                          r"如何|怎么|为什么|是否|能否|可否|\b(?:what|which|who|when|where|why|how)\b", re.I)
+# A complete, standalone control sentence that only tells memleaf not to
+# mutate memory is still a query.  Keep this deliberately narrow: project
+# constraints such as "不要修改数据库配置" remain user assertions.
+_READ_ONLY_CONTROL = re.compile(
+    r"^(?:(?:不要|不|请勿|勿)\s*(?:修改|更新|写入|保存|删除)\s*记忆|"
+    r"(?:please\s+)?(?:do\s+not|don['’]t)\s+(?:modify|update|write|save|delete)\s+memor(?:y|ies))$",
+    re.IGNORECASE,
+)
 _EXAMPLE = re.compile(r"(?:仅供.{0,8}(?:参考示例|示例|测试)|举(?:一个|个).{0,16}(?:例子|示例)|"
                       r"(?:只是|以下是|这是|作为).{0,12}(?:示例|样例|模板|测试数据)|"
                       r"假设|例如|测试数据|不要.{0,16}(?:记住|记录|当成真实))|"
@@ -140,6 +148,38 @@ def _external_blocks(text: str) -> Iterable[tuple[int, int, str, str, tuple[str,
             pass
         else:
             is_json = True
+
+    # Explicit record dividers delimit complete observations in a batched
+    # text result. Keep each record's header and paragraphs together so they
+    # cannot drift into unrelated model batches. This recognizes layout only;
+    # it assigns no business meaning, owner, scope or source authority.
+    dividers = list(re.finditer(r"(?m)^[ \t]*(?:={8,}|-{8,}|\*{8,})[ \t]*\r?$", text)) if not is_json else []
+    if dividers:
+        boundaries = sorted({0, *(match.start() for match in dividers), len(text)})
+        for left, right in zip(boundaries, boundaries[1:]):
+            block = text[left:right]
+            if not block.strip():
+                continue
+            if re.fullmatch(r"[ \t]*(?:={8,}|-{8,}|\*{8,})[ \t\r\n]*", block):
+                continue
+            # A divider is structural context, not an independent assertion.
+            if len(block.encode("utf-8")) <= MAX_EXTERNAL_UNIT_BYTES:
+                yield left, right, block, "external_record", ()
+            else:
+                # Avoid recursively recognizing the same leading divider.
+                cursor = left
+                while cursor < right:
+                    end = cursor
+                    size = 0
+                    while end < right:
+                        width = len(text[end].encode("utf-8"))
+                        if end > cursor and size + width > MAX_EXTERNAL_UNIT_BYTES:
+                            break
+                        size += width
+                        end += 1
+                    yield cursor, end, text[cursor:end], "external_block", ()
+                    cursor = end
+        return
 
     if len(text.encode("utf-8")) <= MAX_EXTERNAL_UNIT_BYTES and (
         is_json or not _has_external_structure(text)
@@ -328,6 +368,9 @@ def gate_evidence_batches(
 
 def _query(text: str) -> bool:
     text = _POLITE.sub("", text.strip())
+    control = text.rstrip("。！？!?；;.! ")
+    if _READ_ONLY_CONTROL.fullmatch(control):
+        return True
     return bool(_QUERY_START.search(text) or _QUERY_WORD.search(text)
                 or re.search(r"[?？]|(?:吗|么|呢)[。！!\s]*$", text))
 
@@ -486,7 +529,8 @@ def validate_bindings(value: Any, units: Iterable[EvidenceUnit],
         checked = []
         for claim_index, claim in enumerate(claims):
             if not isinstance(claim, dict) or set(claim) not in (
-                    {"unit_id", "start", "end", "quote", "role"}, {"unit_id", "quote", "role"}):
+                    {"unit_id", "start", "end", "quote", "role"}, {"unit_id", "quote", "role"},
+                    {"unit_id", "whole_unit", "role"}):
                 raise ModelOutputError("invalid evidence claim", validation_detail="invalid_evidence",
                                        evidence_check="binding_shape")
             claim = dict(claim)
@@ -500,6 +544,15 @@ def validate_bindings(value: Any, units: Iterable[EvidenceUnit],
                     expected_ids=tuple(by_unit),
                 )
             unit = by_unit[uid]
+            if "whole_unit" in claim:
+                if claim["whole_unit"] is not True:
+                    raise ModelOutputError("whole_unit must be true", validation_detail="invalid_evidence",
+                                           evidence_check="binding_shape")
+                # Explicitly selecting one supplied immutable source unit is
+                # equivalent to quoting that whole unit. Never repair a bad
+                # quote or resolve an ID outside this invocation's inventory.
+                claim = {"unit_id": uid, "role": claim["role"], "quote": unit.text,
+                         "start": 0, "end": len(unit.text)}
             quote = claim["quote"]
             if "start" not in claim:
                 # Let models quote exactly instead of counting Unicode characters.
@@ -876,6 +929,10 @@ def evidence_prompt(
         'unit, and role. Omit start/end by default so Core can locate the unique exact quote and compute offsets. If a quote '
         'is repeated, expand it until unique; never count or guess offsets. Supplied legacy start/end values must be exact '
         'Python Unicode offsets whose slice equals quote, or validation rejects the binding. '
+        'Alternatively, explicitly select an entire supplied unit with {"unit_id":"<listed id>",'
+        '"whole_unit":true,"role":"source_excerpt"} (use assertion for a user assertion). '
+        'This form must omit quote/start/end; Core retrieves the exact whole unit without re-copying. '
+        'It does not relax entailment, ownership or future-value requirements. '
         'When a candidate has these bindings, omit evidence_event_ids; Core derives the exact event_key from the '
         'validated bound unit. Never copy the surrounding user or assistant event key for an external unit.'
     )
@@ -919,7 +976,14 @@ locates the unique exact quote and computes Python Unicode offsets. If the
 quote occurs more than once, expand it until unique instead of counting
 characters. start/end are optional legacy fields only when known exactly; any
 supplied values must satisfy unit.text[start:end] == quote or validation rejects
-the binding. Roles: assertion (a current
+the binding. Alternatively, explicitly select an entire supplied unit with
+{"unit_id":"<listed id>","whole_unit":true,"role":"source_excerpt"}.
+This form must omit quote/start/end; Core resolves the exact original whole
+unit, including all whitespace. Prefer this form when a complete supplied
+unit supports the candidate and copying its multiline text would be fragile.
+It is a source selection, not permission to invent a fact or ignore unrelated
+background. Semantic entailment and future value still require judgment.
+Roles: assertion (a current
 statement of fact or change), source_excerpt (actual quoted material, not a
 demonstration), user_confirmation (explicit adoption of a uniquely identified
 proposal). Source_role is immutable. User origin labels are syntax HINTS only:

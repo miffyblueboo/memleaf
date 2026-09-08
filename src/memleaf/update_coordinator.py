@@ -14,8 +14,9 @@ from typing import Any, Callable, Mapping
 from .admission import summary_evidence
 from .llm import ModelError
 from .prompts import UPDATE_GROUP_SYSTEM, summarize_prompt
-from .process_common import _grounded_due_dates, _normalize_summary_dates
+from .process_common import ProcessingError, _grounded_due_dates, _normalize_summary_dates, _summary_date_grounding_violations
 from .turn_plan import revision_digest
+from .update_review import review_update
 from .validation import ModelOutputError, parse_strict_json, parse_summarize_output
 
 # Exceptional prompt safety guards, not a truncation policy. Over-budget groups
@@ -48,8 +49,293 @@ class UpdateCoordinator:
             replacements[id(group[0])] = resolved
             for request in group[1:]:
                 replacements[id(request)] = None
-        return [replacements.get(id(request), request) for request in requests
-                if replacements.get(id(request), request) is not None]
+        resolved_requests = [replacements.get(id(request), request) for request in requests
+                             if replacements.get(id(request), request) is not None]
+        return self._review_final_updates(
+            resolved_requests,
+            candidates=candidates,
+            evidence_units=evidence_units,
+            events=events,
+            backend=backend,
+            scope_registry=scope_registry,
+            validation_scope_registry=validation_scope_registry,
+        )
+
+    @staticmethod
+    def _request_candidate_ids(
+        request: Mapping[str, Any],
+    ) -> tuple[str, ...]:
+        """Return original candidate IDs contributing to one frozen request."""
+
+        values: list[str] = []
+        contributors = request.get("contributing_candidates")
+        if isinstance(contributors, list):
+            for contributor in contributors:
+                if isinstance(contributor, Mapping):
+                    value = contributor.get("candidate_id")
+                    if isinstance(value, str) and value and value not in values:
+                        values.append(value)
+        if not values:
+            value = request.get("candidate_id")
+            if isinstance(value, str) and value:
+                values.append(value)
+        return tuple(values)
+
+    @staticmethod
+    def _projected_request_evidence(
+        request: Mapping[str, Any],
+        *,
+        candidates: Mapping[str, Any],
+        evidence_units: Any,
+        events: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Project only admitted evidence for a final single or merged request."""
+
+        member_candidates = [
+            candidates[candidate_id]
+            for candidate_id in UpdateCoordinator._request_candidate_ids(request)
+            if candidate_id in candidates and isinstance(candidates[candidate_id], Mapping)
+        ]
+        projected: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for candidate in member_candidates:
+            for event in summary_evidence(candidate, evidence_units, events=events):
+                identity = (
+                    str(event.get("event_key", "")),
+                    str(event.get("unit_id", "")),
+                    str(event.get("content", "")),
+                )
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                projected.append(deepcopy(event))
+        unit_order = {
+            getattr(unit, "unit_id", ""): (index, getattr(unit, "text", ""))
+            for index, unit in enumerate(evidence_units)
+        }
+        projected.sort(key=lambda event: (
+            unit_order.get(event.get("unit_id"), (len(unit_order), ""))[0],
+            unit_order.get(event.get("unit_id"), (len(unit_order), ""))[1].find(
+                event.get("content", "")
+            ),
+        ))
+        return projected
+
+    @staticmethod
+    def _is_reviewable_update(request: Mapping[str, Any]) -> bool:
+        """Limit the extra semantic stage to ordinary automatic updates."""
+
+        summary = request.get("summary")
+        if not isinstance(summary, Mapping):
+            return False
+        target_id = summary.get("update_memory_id")
+        if not isinstance(target_id, str) or not target_id:
+            return False
+        if request.get("explicit_remember") is True:
+            return False
+        if request.get("scope_correction") or request.get("duplicate_memory_id"):
+            return False
+        if summary.get("scope_operations") or summary.get("shadow_native_ids"):
+            return False
+        return True
+
+    def _defer_request(
+        self,
+        request: Mapping[str, Any],
+        *,
+        candidates: Mapping[str, Any],
+        reason: str,
+    ) -> None:
+        turn = request.get("turn")
+        if turn is None:
+            return
+        turn_ref = (turn.source, turn.session_id, turn.turn_key)
+        for candidate_id in self._request_candidate_ids(request):
+            candidate = candidates.get(candidate_id)
+            if isinstance(candidate, Mapping):
+                self.audit._defer_candidate(turn_ref, candidate, reason)
+
+    def _review_final_updates(
+        self,
+        requests: list[dict[str, Any]],
+        *,
+        candidates: Mapping[str, Any],
+        evidence_units: Any,
+        events: list[dict[str, Any]],
+        backend: Any,
+        scope_registry: Any,
+        validation_scope_registry: Any,
+    ) -> list[dict[str, Any]]:
+        """Review every final automatic UPDATE after same-target resolution."""
+
+        reviewed: list[dict[str, Any]] = []
+        for request in requests:
+            if not self._is_reviewable_update(request):
+                reviewed.append(request)
+                continue
+
+            summary = request.get("summary")
+            target_id = summary.get("update_memory_id") if isinstance(summary, Mapping) else None
+            target = self.read_target(target_id) if isinstance(target_id, str) else None
+            expected = request.get("expected_revision")
+            if target is None:
+                raise ProcessingError("update target disappeared before commit")
+            if not isinstance(expected, str) or revision_digest(target) != expected:
+                raise ProcessingError("update target changed before commit; no stale overwrite")
+
+            projected = self._projected_request_evidence(
+                request,
+                candidates=candidates,
+                evidence_units=evidence_units,
+                events=events,
+            )
+            if not projected:
+                self._defer_request(
+                    request,
+                    candidates=candidates,
+                    reason="semantic_review_failed",
+                )
+                continue
+
+            candidate_ids = self._request_candidate_ids(request)
+            candidate = next(
+                (
+                    candidates[candidate_id]
+                    for candidate_id in candidate_ids
+                    if candidate_id in candidates and isinstance(candidates[candidate_id], Mapping)
+                ),
+                {},
+            )
+            turn = request.get("turn")
+            if turn is None:
+                self._defer_request(
+                    request,
+                    candidates=candidates,
+                    reason="semantic_review_failed",
+                )
+                continue
+            keys = tuple(dict.fromkeys(event["event_key"] for event in projected))
+            target_type = target.get("type") if isinstance(target, Mapping) else getattr(target, "type", None)
+            target_scopes = summary.get("scopes") if isinstance(summary, Mapping) else None
+            if target_scopes is None:
+                target_scopes = candidate.get("scopes")
+            target_scope_source = summary.get("scope_source") if isinstance(summary, Mapping) else None
+            if target_scope_source is None:
+                target_scope_source = candidate.get("scope_source")
+            if target_scope_source is None:
+                target_scope_source = (
+                    target.get("scope_source")
+                    if isinstance(target, Mapping)
+                    else getattr(target, "scope_source", None)
+                )
+            grounded_dates = _grounded_due_dates(turn, evidence_events=projected)
+
+            def parse_review_summary(value: Mapping[str, Any]) -> Mapping[str, Any]:
+                raw_summary = json.dumps(value, ensure_ascii=False)
+                parsed = parse_summarize_output(
+                    _normalize_summary_dates(raw_summary, turn, candidate),
+                    current_event_keys=keys,
+                    related_native_ids=[],
+                    related_memory_ids=[target_id],
+                    scope_registry=validation_scope_registry,
+                    expected_scopes=target_scopes,
+                    expected_scope_source=target_scope_source,
+                    expected_type=target_type,
+                    expected_target_type=target_type,
+                    expected_update_memory_id=target_id,
+                    allowed_due_dates=grounded_dates,
+                    allow_no_change=False,
+                )
+                parsed_target = parsed.get("update_memory_id")
+                if (
+                    not isinstance(parsed_target, str)
+                    or parsed_target.casefold() != target_id.casefold()
+                ):
+                    raise ModelOutputError(
+                        "review summary must retain its update target",
+                        validation_detail="invalid_update_target",
+                    )
+                parsed["update_memory_id"] = target_id
+                if parsed.get("scope_operations") or parsed.get("shadow_native_ids"):
+                    raise ModelOutputError(
+                        "review summary cannot extend authorization",
+                        validation_detail="invalid_evidence",
+                    )
+                if _summary_date_grounding_violations(
+                    parsed,
+                    grounded_dates=grounded_dates,
+                    source_texts=[
+                        event.get("content", "")
+                        for event in projected
+                        if event.get("role") in {"user", "tool"}
+                    ],
+                    preserved_texts=(
+                        target.get("title"),
+                        target.get("body"),
+                        target.get("due_date"),
+                    ) if isinstance(target, Mapping) else (
+                        target.title,
+                        target.body,
+                        target.due_date,
+                    ),
+                ):
+                    raise ModelOutputError(
+                        "review summary contains an ungrounded date",
+                        validation_detail="relative_time",
+                    )
+                cited = set(parsed.get("evidence_event_ids", []))
+                for source in parsed.get("sources", []):
+                    if source.get("event_key"):
+                        cited.add(source["event_key"])
+                    cited.update(source.get("evidence_event_ids", []))
+                if not set(keys).issubset(cited):
+                    raise ModelOutputError(
+                        "review summary omitted source evidence",
+                        validation_detail="invalid_evidence",
+                    )
+                return parsed
+
+            outcome = review_update(
+                self.model,
+                backend,
+                target=target,
+                admitted_source=projected,
+                proposed_summary=summary,
+                parse_summary=parse_review_summary,
+                diagnostic_context={
+                    "source": turn.source,
+                    "session_id": turn.session_id,
+                    "turn_index": turn.turn_index,
+                },
+            )
+            decision = outcome.get("decision")
+            target_memory_id = target_id if isinstance(target_id, str) else None
+            if decision == "ACCEPT":
+                reviewed.append(request)
+                continue
+            if decision == "REVISE" and isinstance(outcome.get("summary"), Mapping):
+                revised = dict(request)
+                revised["summary"] = dict(outcome["summary"])
+                reviewed.append(revised)
+                continue
+            if decision == "NO_CHANGE":
+                self.audit._record_request_disposition(
+                    request,
+                    "NO_CHANGE",
+                    reason="update_semantic_review_no_change",
+                    memory_id=target_memory_id,
+                )
+                continue
+            self._defer_request(
+                request,
+                candidates=candidates,
+                reason=(
+                    outcome.get("reason")
+                    if isinstance(outcome.get("reason"), str) and outcome.get("reason")
+                    else "semantic_review_failed"
+                ),
+            )
+        return reviewed
 
     def _defer(self, group: list[dict[str, Any]], candidates: Mapping[str, Any], reason: str) -> None:
         for request in group:
@@ -160,6 +446,13 @@ class UpdateCoordinator:
                     turn,
                     evidence_events=projected,
                 ), allow_no_change=False)
+            if _summary_date_grounding_violations(
+                summary,
+                grounded_dates=_grounded_due_dates(turn, evidence_events=projected),
+                source_texts=[event.get('content', '') for event in projected if event.get('role') in {'user', 'tool'}],
+                preserved_texts=(target.title, target.body, target.due_date),
+            ):
+                raise ModelOutputError('group summary contains an ungrounded date', validation_detail='relative_time')
             if summary.get('update_memory_id') != target_id:
                 raise ModelOutputError('group must retain its target', validation_detail='invalid_update_target')
             if summary.get('scope_operations') or summary.get('shadow_native_ids'):

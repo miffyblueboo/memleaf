@@ -28,6 +28,14 @@ read-only MCP `stats` result. It distinguishes the general tool-evidence mode
 from the `include_attachments` opt-in; if MCP is unavailable, the policy is
 shown as unknown rather than inferred from `config.yaml`.
 
+After automatic processing, the provider also reports when external evidence
+was retained only as metadata, disabled, incomplete, or unusable. A successful
+processing call does not establish that source bodies were captured or that
+all business actions were extracted. The native terminal/code transport
+projection preserves observed output text separately from execution failures
+and host truncation. A complete tool output is not proof that a script read
+the full original document.
+
 The optional provider config is `~/.hermes/memleaf.json`:
 
 ```json

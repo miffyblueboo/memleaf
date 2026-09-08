@@ -373,6 +373,9 @@ class EvidenceRetentionPolicyTests(unittest.TestCase):
         self.assertNotIn('RAW_SENTINEL', '\n'.join(prompts))
         self.assertEqual(result['memories_written'], 0)
         self.assertEqual(result['unresolved_evidence_count'], 0)
+        self.assertEqual(result['external_evidence_status'], 'metadata_only')
+        self.assertEqual(result['external_evidence']['external_record_count'], 1)
+        self.assertEqual(result['external_evidence']['retained_body_count'], 0)
         # Tightening is not a surprise rewrite of preexisting inbox data.
         self.assertEqual(self.core.vault.session_path('hermes', 's').read_bytes(), original)
 
@@ -390,3 +393,73 @@ class EvidenceRetentionPolicyTests(unittest.TestCase):
                 result = self.core.process(source='hermes', session_id=mode, model=Backend())
                 self.assertEqual(result['memories_written'], 0)
                 self.assertEqual(result['unresolved_evidence_count'], 0)
+                expected_status = 'metadata_only' if mode == 'metadata' else 'disabled'
+                self.assertEqual(result['external_evidence_status'], expected_status)
+                self.assertEqual(result['external_evidence']['retained_body_count'], 0)
+
+    def test_process_reports_no_external_body_without_marking_work_deferred(self):
+        from tests.test_phase2_model_decisions import gate_result
+        self.mode('metadata')
+        self.core.capture('hermes', 'no-source', 't', 'user', 'A visible question.', event_id='u')
+        self.core.capture('hermes', 'no-source', 't', 'assistant', 'A visible answer.', event_id='a')
+        class Backend:
+            def complete(backend, prompt, **kwargs):
+                return json.dumps(gate_result(prompt, []))
+        result = self.core.process(source='hermes', session_id='no-source', model=Backend())
+        self.assertEqual(result['external_evidence_status'], 'not_provided')
+        self.assertEqual(result['external_evidence']['external_record_count'], 0)
+        self.assertEqual(result['external_evidence']['retained_body_count'], 0)
+        self.assertEqual(result['deferred_candidates'], 0)
+        self.assertEqual(result['deferred_inbox_turns'], 0)
+
+    def test_process_reports_retained_external_body_count_under_bounded_policy(self):
+        from tests.test_phase2_model_decisions import gate_result
+        self.mode('bounded')
+        self.core.capture('hermes', 'bounded-source', 't', 'user', 'A visible question.', event_id='u')
+        self.core.capture(
+            'hermes',
+            'bounded-source',
+            't',
+            'assistant',
+            'A visible answer.',
+            event_id='a',
+            tool_evidence=[observation_record('external.inspect', 'c', 'retained body')],
+        )
+        class Backend:
+            def complete(backend, prompt, **kwargs):
+                return json.dumps(gate_result(prompt, []))
+        result = self.core.process(source='hermes', session_id='bounded-source', model=Backend())
+        self.assertEqual(result['external_evidence_status'], 'available')
+        self.assertEqual(result['external_evidence']['external_record_count'], 1)
+        self.assertEqual(result['external_evidence']['retained_body_count'], 1)
+
+    def test_process_does_not_report_non_supporting_external_body_as_available(self):
+        from tests.test_phase2_model_decisions import gate_result
+
+        self.mode('bounded')
+        for label, changes in (
+            ('error', {'result_status': 'error', 'execution_status': 'error'}),
+            ('unknown', {'kind': 'unknown', 'result_status': 'unknown'}),
+            ('partial', {'result_status': 'truncated', 'completeness': 'partial'}),
+        ):
+            with self.subTest(label=label):
+                session_id = f'non-supporting-{label}'
+                record = observation_record('external.inspect', label, 'retained diagnostic body')
+                record.update(changes)
+                self.core.capture('hermes', session_id, 't', 'user', 'A visible question.', event_id=f'{label}-u')
+                self.core.capture(
+                    'hermes', session_id, 't', 'assistant', 'A visible answer.', event_id=f'{label}-a',
+                    tool_evidence=[record],
+                )
+
+                class Backend:
+                    def complete(backend, prompt, **kwargs):
+                        return json.dumps(gate_result(prompt, []))
+
+                result = self.core.process(source='hermes', session_id=session_id, model=Backend())
+                self.assertEqual(result['external_evidence_status'], 'unavailable')
+                self.assertEqual(result['external_evidence']['retained_body_count'], 0)
+                self.assertGreaterEqual(result['external_evidence']['incomplete_record_count'], 1)
+                self.assertGreaterEqual(result['external_evidence']['unusable_record_count'], 1)
+                self.assertEqual(result['deferred_candidates'], 0)
+                self.assertEqual(result['deferred_inbox_turns'], 0)

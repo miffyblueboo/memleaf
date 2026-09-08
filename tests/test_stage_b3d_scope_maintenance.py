@@ -315,7 +315,11 @@ class StageB3DScopeMaintenanceTest(unittest.TestCase):
                 "aliases": ["old-project"],
             },
         ]
-        backend = QueueBackend([self.gate(key), self.summary(key, scope_operations=operations)])
+        backend = QueueBackend([
+            self.gate(key),
+            json.dumps({"decision": "CREATE"}),
+            self.summary(key, scope_operations=operations),
+        ])
 
         result = self.service.process(model=backend)
 

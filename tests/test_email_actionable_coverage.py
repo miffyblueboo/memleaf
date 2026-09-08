@@ -49,6 +49,10 @@ class QueueBackend:
         temperature: float = 0.0,
     ) -> str:
         del system, temperature
+        # Preserve the fixture's authored summary queue and call accounting;
+        # the semantic-review response is a separate compatibility decision.
+        if purpose == "summarize" and prompt.startswith("UPDATE_SEMANTIC_REVIEW\n"):
+            return '{"decision":"ACCEPT"}'
         self.calls.append({"prompt": prompt, "purpose": purpose})
         if purpose == "gate":
             self.gate_calls += 1

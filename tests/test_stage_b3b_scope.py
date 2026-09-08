@@ -90,10 +90,10 @@ class StageB3BScopeTest(unittest.TestCase):
             }
         )
 
-    def capture_turn(self, *, session="s", turn="t1", source="codex", prefix="e"):
+    def capture_turn(self, *, session="s", turn="t1", source="codex", prefix="e", user="visible user"):
         user_event = f"{prefix}-user"
         assistant_event = f"{prefix}-assistant"
-        self.service.capture(source, session, turn, "user", "visible user", event_id=user_event)
+        self.service.capture(source, session, turn, "user", user, event_id=user_event)
         self.service.capture(source, session, turn, "assistant", "visible assistant", event_id=assistant_event)
         return event_key(user_event), event_key(assistant_event)
 
@@ -129,7 +129,7 @@ class StageB3BScopeTest(unittest.TestCase):
         )
 
     def test_success_observes_scopes_and_registers_nodes(self):
-        user_key, _ = self.capture_turn()
+        user_key, _ = self.capture_turn(user="alpha scope observation")
         backend = QueueBackend(
             [
                 self.gate([self.candidate("c1", ["project:alpha"], worth=True, evidence=[user_key])]),
@@ -145,7 +145,7 @@ class StageB3BScopeTest(unittest.TestCase):
         self.assertEqual(self.service.vault.config()["scopes"]["project:alpha"], {})
 
     def test_gate_empty_preserves_scope_and_failed_registration_does_not_update(self):
-        user_key, _ = self.capture_turn(prefix="first")
+        user_key, _ = self.capture_turn(prefix="first", user="old scope observation")
         backend = QueueBackend(
             [
                 self.gate([self.candidate("c1", ["project:old"], worth=True, evidence=[user_key])]),
@@ -161,7 +161,7 @@ class StageB3BScopeTest(unittest.TestCase):
         self.assertEqual(self.processed()["sessions"]["codex/s"]["scopes"], ["project:old"])
         self.assertNotIn("project:new", self.service.vault.config()["scopes"])
 
-        third_user, _ = self.capture_turn(turn="t3", prefix="third")
+        third_user, _ = self.capture_turn(turn="t3", prefix="third", user="new scope observation")
         backend.responses.extend(
             [
                 self.gate([self.candidate("c3", ["project:new"], worth=True, evidence=[third_user])]),
@@ -178,8 +178,8 @@ class StageB3BScopeTest(unittest.TestCase):
         self.assertNotIn("project:new", self.service.vault.config()["scopes"])
 
     def test_multiple_turns_use_last_turn_with_observed_scopes(self):
-        first_user, _ = self.capture_turn(turn="t1", prefix="one")
-        second_user, _ = self.capture_turn(turn="t2", prefix="two")
+        first_user, _ = self.capture_turn(turn="t1", prefix="one", user="one scope observation")
+        second_user, _ = self.capture_turn(turn="t2", prefix="two", user="two scope observation")
         backend = QueueBackend(
             [
                 self.gate([self.candidate("one", ["project:one"], worth=True, evidence=[first_user])]),
@@ -196,7 +196,7 @@ class StageB3BScopeTest(unittest.TestCase):
         self.assertEqual(set(self.service.vault.config()["scopes"]), {"project:one", "project:two"})
 
     def test_summary_scopes_are_observed_and_remember_prefers_user_scope(self):
-        user_key, _ = self.capture_turn(prefix="summary")
+        user_key, _ = self.capture_turn(prefix="summary", user="from-summary scope observation")
         backend = QueueBackend(
             [
                 self.gate([self.candidate("c1", ["project:from-summary"], worth=True, evidence=[user_key])]),

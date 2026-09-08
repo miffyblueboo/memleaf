@@ -25,6 +25,10 @@ class Backend:
         self.semantic = semantic
 
     def complete(self, prompt, *, purpose='', **kwargs):
+        # The fixture supplies the authored update summary; keep its legacy
+        # stage sequence while explicitly accepting the new review call.
+        if purpose == 'summarize' and prompt.startswith('UPDATE_SEMANTIC_REVIEW\n'):
+            return '{"decision":"ACCEPT"}'
         self.calls.append(purpose)
         self.prompts.append(prompt)
         if purpose == 'gate':

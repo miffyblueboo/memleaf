@@ -665,6 +665,7 @@ class StageB2ATest(unittest.TestCase):
         self.assertEqual(len(self.knowledge(service)), 2)
 
     def test_mixed_project_digest_retries_to_atomic_project_outputs(self):
+        self.enterContext(patch("memleaf.capture._timestamp", return_value="2026-09-01T02:01:41Z"))
         service = self.service(name="mixed-project-digest")
         history_memory = service.create_memory(
             memory_id="mem-zhongyin-history",
@@ -1824,6 +1825,7 @@ class StageB2ATest(unittest.TestCase):
             turn="mixed-summary",
             user_event="mixed-summary-user",
             assistant_event="mixed-summary-assistant",
+            user="zhongyin project topic",
         )
         candidate = self.candidate(
             "mixed-summary-candidate",
@@ -1864,6 +1866,7 @@ class StageB2ATest(unittest.TestCase):
             turn="mixed-summary-failure",
             user_event="mixed-summary-failure-user",
             assistant_event="mixed-summary-failure-assistant",
+            user="zhongyin project topic",
         )
         candidate = self.candidate(
             "mixed-summary-failure-candidate",
@@ -1905,6 +1908,7 @@ class StageB2ATest(unittest.TestCase):
                 turn="chinese-relative",
                 user_event="chinese-relative-user",
                 assistant_event="chinese-relative-assistant",
+                user="昨日完成。",
             )
             candidate = self.candidate(
                 "chinese-relative-candidate",

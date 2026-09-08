@@ -59,6 +59,21 @@ _DIAGNOSTIC_CANDIDATE_REQUIRED = frozenset(
 )
 
 
+_ISO_CALENDAR_DATE_RE = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)")
+
+
+_CHINESE_CALENDAR_DATE_RE = re.compile(
+    r"(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?"
+)
+
+
+_SUMMARY_CHINESE_CALENDAR_DATE_RE = re.compile(
+    r"(?<![A-Za-z\d])"
+    r"(?P<raw>(?:(?P<year>\d{4})\s*年\s*)?(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*日?)"
+    r"(?![A-Za-z\d])"
+)
+
+
 
 
 _SCOPE_CORRECTION_MARKER_RE = re.compile(
@@ -286,7 +301,7 @@ def _failure_metadata(
     if not isinstance(validation_detail, str) or validation_detail not in MODEL_VALIDATION_DETAILS:
         validation_detail = "other_schema_violation" if isinstance(error, ModelOutputError) else None
     attempt_count = getattr(error, "attempt_count", None)
-    if isinstance(attempt_count, bool) or not isinstance(attempt_count, int) or attempt_count not in (1, 2, 3):
+    if isinstance(attempt_count, bool) or not isinstance(attempt_count, int) or attempt_count not in (1, 2, 3, 4):
         attempt_count = None
     return code, stage, validation_reason, validation_detail, attempt_count
 
@@ -521,6 +536,21 @@ def _summary_date_anchor(
         return None
     timestamps: list[datetime] = []
     for evidence_key in evidence_keys:
+        event = next(
+            (
+                item
+                for item in turn.events
+                if isinstance(item.event_key, str)
+                and item.event_key.casefold() == evidence_key
+            ),
+            None,
+        )
+        # A tool unit inherits its enclosing assistant event key and capture
+        # timestamp in the summary projection.  That timestamp says when the
+        # observation was retrieved, not when the source asserted its date.
+        # Only a user event is a safe anchor for resolving relative wording.
+        if event is None or event.role != "user" or event.tool_evidence:
+            return None
         timestamp = event_timestamps.get(evidence_key)
         if timestamp is None:
             # An omitted, malformed, or foreign evidence timestamp is not a
@@ -571,6 +601,171 @@ def _normalize_summary_dates(
     return json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
 
 
+def _add_explicit_iso_dates(result: set[str], content: Any) -> None:
+    """Add only valid full calendar dates present in source text."""
+
+    if not isinstance(content, str):
+        return
+    for value in _ISO_CALENDAR_DATE_RE.findall(content):
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        result.add(parsed.isoformat())
+
+
+def _add_user_due_dates(result: set[str], timestamp_value: Any, content: Any) -> None:
+    """Ground user dates using the current user event timestamp when present."""
+
+    if not isinstance(content, str):
+        return
+    timestamp = _parse_time(timestamp_value)
+    normalized = content
+    if timestamp is not None:
+        normalized = normalize_relative_calendar_text(content, timestamp) or content
+    _add_explicit_iso_dates(result, normalized)
+    if timestamp is None:
+        return
+    for year, month, day in _CHINESE_CALENDAR_DATE_RE.findall(content):
+        try:
+            parsed = datetime(
+                int(year) if year else timestamp.year,
+                int(month),
+                int(day),
+                tzinfo=timezone.utc,
+            ).date()
+        except ValueError:
+            continue
+        result.add(parsed.isoformat())
+
+
+def _add_external_due_dates(result: set[str], content: Any) -> None:
+    """Ground external observations only from dates explicit in the source."""
+
+    # The observation's enclosing event timestamp is a retrieval timestamp.
+    # Never pass it to the relative-date normalizer or use it as a year for a
+    # yearless date in external content.
+    _add_explicit_iso_dates(result, content)
+    if not isinstance(content, str):
+        return
+    for year, month, day in _CHINESE_CALENDAR_DATE_RE.findall(content):
+        if not year:
+            continue
+        try:
+            parsed = datetime(int(year), int(month), int(day), tzinfo=timezone.utc).date()
+        except ValueError:
+            continue
+        result.add(parsed.isoformat())
+
+
+def _summary_calendar_tokens(content: Any) -> tuple[tuple[str, str | None], ...]:
+    """Return source-neutral calendar literals and canonical full dates.
+
+    A ``None`` canonical value is intentional for yearless or invalid text;
+    callers must not fill its year from a retrieval timestamp.
+    """
+
+    if not isinstance(content, str):
+        return ()
+    tokens: list[tuple[str, str | None]] = []
+    seen: set[str] = set()
+    for raw in _ISO_CALENDAR_DATE_RE.findall(content):
+        if raw in seen:
+            continue
+        seen.add(raw)
+        try:
+            canonical = datetime.strptime(raw, "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            canonical = None
+        tokens.append((raw, canonical))
+    for match in _SUMMARY_CHINESE_CALENDAR_DATE_RE.finditer(content):
+        raw = match.group("raw")
+        if raw in seen:
+            continue
+        seen.add(raw)
+        year = match.group("year")
+        try:
+            canonical = (
+                datetime(
+                    int(year),
+                    int(match.group("month")),
+                    int(match.group("day")),
+                    tzinfo=timezone.utc,
+                ).date().isoformat()
+                if year
+                else None
+            )
+        except ValueError:
+            canonical = None
+        tokens.append((raw, canonical))
+    return tuple(tokens)
+
+
+def _summary_date_grounding_violations(
+    summary: Mapping[str, Any],
+    *,
+    grounded_dates: Iterable[str] = (),
+    source_texts: Iterable[str] = (),
+    preserved_texts: Iterable[str] = (),
+) -> tuple[str, ...]:
+    """Return ungrounded one-off date literals in a summary title or body.
+
+    ``grounded_dates`` is the canonical date set from the current admitted
+    evidence. ``source_texts`` must contain only the current candidate's
+    admitted evidence projection text.  A source date without a year may be
+    retained verbatim, but it never authorizes a year to be inferred.
+    ``preserved_texts`` must contain only the selected update target's existing
+    title/body/due-date text.  Existing target literals may be retained
+    verbatim; dates from unrelated memories are never accepted.
+    Relative expressions are intentionally left to strict summary validation,
+    which already rejects unresolved relative calendar wording.
+    """
+
+    if not isinstance(summary, Mapping):
+        return ()
+    allowed_dates: set[str] = set()
+    grounded_values = (grounded_dates,) if isinstance(grounded_dates, str) else grounded_dates
+    for value in grounded_values:
+        if not isinstance(value, str):
+            continue
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if parsed.isoformat() == value:
+            allowed_dates.add(value)
+
+    source_tokens: set[str] = set()
+    source_values = (source_texts,) if isinstance(source_texts, str) else source_texts
+    for text in source_values:
+        for raw, canonical in _summary_calendar_tokens(text):
+            source_tokens.add(raw)
+            if canonical is not None:
+                allowed_dates.add(canonical)
+
+    preserved_tokens: set[str] = set()
+    preserved_values = (preserved_texts,) if isinstance(preserved_texts, str) else preserved_texts
+    for text in preserved_values:
+        for raw, canonical in _summary_calendar_tokens(text):
+            preserved_tokens.add(raw)
+            if canonical is not None:
+                allowed_dates.add(canonical)
+
+    violations: list[str] = []
+    seen: set[str] = set()
+    for field in ("title", "body"):
+        for raw, canonical in _summary_calendar_tokens(summary.get(field)):
+            if raw in source_tokens or raw in preserved_tokens:
+                continue
+            value = canonical or raw
+            if value in seen:
+                continue
+            if canonical is None or canonical not in allowed_dates:
+                seen.add(value)
+                violations.append(value)
+    return tuple(violations)
+
+
 def _grounded_due_dates(
     turn: InboxTurn,
     *,
@@ -582,32 +777,32 @@ def _grounded_due_dates(
     ``summary_evidence`` projection.  Only user assertions and external tool
     observations in that projection can ground a date; omitted content (for
     example metadata-only records) and assistant prose are ignored.  Omitting
-    the argument retains the legacy visible-turn behavior.
+    the argument retains the legacy visible user/assistant behavior; external
+    bodies require the admitted projection.
     """
 
     result: set[str] = set()
-    if evidence_events is None:
-        records: list[tuple[Any, Any]] = [
-            (event.timestamp, event.content) for event in turn.events
-        ]
-    else:
-        records = [
-            (event.get("timestamp"), event.get("content"))
-            for event in evidence_events
-            if isinstance(event, Mapping) and event.get("role") in {"user", "tool"}
-        ]
-    for timestamp_value, content in records:
-        timestamp = _parse_time(timestamp_value)
-        if timestamp is None or not isinstance(content, str):
-            continue
-        normalized = normalize_relative_calendar_text(content, timestamp) or content
-        for value in re.findall(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)", normalized):
-            try:
-                parsed = datetime.strptime(value, "%Y-%m-%d").date()
-            except ValueError:
+    if evidence_events is not None:
+        for event in evidence_events:
+            if not isinstance(event, Mapping):
                 continue
-            result.add(parsed.isoformat())
-        for year, month, day in re.findall(r"(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?", content):
+            role = event.get("role")
+            if role == "user":
+                _add_user_due_dates(result, event.get("timestamp"), event.get("content"))
+            elif role == "tool":
+                _add_external_due_dates(result, event.get("content"))
+        return result
+
+    # The explicit-remember path does not have the admitted projection. Keep
+    # the legacy visible user/assistant behavior; external tool bodies are
+    # intentionally not admitted without the caller's evidence projection.
+    for event in turn.events:
+        timestamp = _parse_time(event.timestamp)
+        if timestamp is None or not isinstance(event.content, str):
+            continue
+        normalized = normalize_relative_calendar_text(event.content, timestamp) or event.content
+        _add_explicit_iso_dates(result, normalized)
+        for year, month, day in _CHINESE_CALENDAR_DATE_RE.findall(event.content):
             try:
                 parsed = datetime(
                     int(year) if year else timestamp.year,

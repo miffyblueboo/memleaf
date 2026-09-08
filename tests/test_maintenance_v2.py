@@ -136,7 +136,7 @@ class MaintenanceV2Tests(unittest.TestCase):
         first_user, first_assistant = self.capture(
             "project-lineage",
             "turn-1",
-            "alpha 项目采用达梦数据库，Tomcat 改造为东方通，负责人是吴江波，38 个工作日完成。",
+            "alpha 项目采用达梦数据库，Tomcat 改造为东方通，负责人是吴江波，计划 2026-10-27 完成。",
             "已确认 alpha 项目的技术路线、负责人和期限。",
         )
         backend = QueueBackend(

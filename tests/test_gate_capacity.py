@@ -33,6 +33,10 @@ class GateCapacityBackend:
         return json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])[0]
 
     def complete(self, prompt: str, *, purpose: str = "", **_: object) -> str:
+        # Existing summaries are deterministic fixture outputs.  Accept the
+        # newly inserted review stage without changing legacy call accounting.
+        if purpose == "summarize" and prompt.startswith("UPDATE_SEMANTIC_REVIEW\n"):
+            return '{"decision":"ACCEPT"}'
         self.calls.append((purpose, prompt))
         if purpose == "gate":
             units = self._units(prompt)

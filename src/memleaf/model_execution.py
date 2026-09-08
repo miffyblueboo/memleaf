@@ -109,6 +109,16 @@ class ModelExecutor:
             return UPDATE_TARGET_TYPE_CORRECTION
         if stage == "gate" and hint == "invalid_type":
             return GATE_TYPE_CORRECTION
+        if stage == "gate" and hint == "unknown_fields":
+            return (
+                "Previous output violated: unknown_fields. Repair the Gate JSON schema. "
+                "Each candidate allows only candidate_id, memory, duplicate, worth, type, scopes, "
+                "scope_source, evidence_event_ids, reason, duplicate_memory_id, and update_memory_id. "
+                "evidence_bindings is a TOP-LEVEL sibling of candidates and coverage; it is never "
+                "a candidate field. Keep the exact source quotes and IDs in top-level bindings. "
+                "Do not turn supported candidate proposals into blanket NO_CHANGE/DEFERRED merely "
+                "to avoid a schema error. Recheck each proposal against its supplied source evidence."
+            )
         if stage == "gate" and hint == "scope_not_grounded":
             return SCOPE_GROUNDING_CORRECTION
         if stage == "gate" and hint == "target_not_relevant":
@@ -128,7 +138,7 @@ class ModelExecutor:
             return COVERAGE_CORRECTION if context is None else COVERAGE_CORRECTION + "\n" + context
         if stage == "summarize" and hint == "scope_drift":
             return SUMMARY_SCOPE_CORRECTION
-        if hint == "relative_time":
+        if hint in {"relative_time", "due_date_not_grounded"}:
             return RELATIVE_TIME_CORRECTION
         if stage == "summarize" and hint == "invalid_update_target":
             return SUMMARY_TARGET_CORRECTION
@@ -206,7 +216,7 @@ class ModelExecutor:
             session_id = ""
         if isinstance(turn_index, bool) or not isinstance(turn_index, int):
             turn_index = None
-        if isinstance(attempt_count, bool) or not isinstance(attempt_count, int) or attempt_count not in (1, 2, 3):
+        if isinstance(attempt_count, bool) or not isinstance(attempt_count, int) or attempt_count not in (1, 2, 3, 4):
             attempt_count = None
         failure_code = ""
         validation_reason = ""
@@ -313,7 +323,9 @@ class ModelExecutor:
         diagnostic_context: Mapping[str, Any] | None = None,
     ) -> Any:
         correction_prompt = prompt + "\n\n" + JSON_CORRECTION
-        for attempt_count in (1, 2, 3):
+        correction_instructions: list[str] = []
+        saw_invalid_span = False
+        for attempt_count in (1, 2, 3, 4):
             raw: Any = None
             try:
                 raw = self._complete(
@@ -335,11 +347,37 @@ class ModelExecutor:
                     )
                 except Exception:
                     pass
-                if self._allows_next_json_attempt(error, attempt_count):
+                invalid_span = (
+                    isinstance(error, ModelOutputError)
+                    and purpose == "gate"
+                    and getattr(error, "validation_detail", None) == "invalid_evidence"
+                    and getattr(error, "evidence_check", None) == "invalid_span"
+                )
+                # A span error first exposed on Gate's third attempt gets one
+                # bounded chance to copy an exact quote from the original
+                # evidence. Earlier span errors already had that opportunity;
+                # every other failure keeps the ordinary three-attempt limit.
+                extra_span_recovery = (
+                    invalid_span
+                    and attempt_count == 3
+                    and not saw_invalid_span
+                )
+                saw_invalid_span = saw_invalid_span or invalid_span
+                if self._allows_next_json_attempt(error, attempt_count) or extra_span_recovery:
                     correction_prompt = prompt + "\n\n" + JSON_CORRECTION
                     instruction = self._correction_instruction(error)
-                    if instruction is not None:
-                        correction_prompt += f"\n{instruction}"
+                    if instruction is not None and instruction not in correction_instructions:
+                        correction_instructions.append(instruction)
+                    if correction_instructions:
+                        correction_prompt += "\n" + "\n".join(correction_instructions)
+                    if (purpose == "gate" and getattr(error, "validation_detail", None) == "unknown_fields"
+                        and isinstance(raw, str) and len(raw.encode("utf-8")) <= 64 * 1024):
+                        correction_prompt += (
+                            "\nPrevious invalid response (untrusted proposals for schema repair only; "
+                            "not new evidence or committed memories):\n" + raw
+                            + "\nReturn the repaired strict Gate object using only the original supplied "
+                            "evidence units. Previous proposal text cannot authorize a new fact."
+                        )
                     continue
                 raise
             try:

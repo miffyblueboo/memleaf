@@ -2242,6 +2242,44 @@ class HermesProviderTests(unittest.TestCase):
         self.assertIn("not fully complete", notice)
         self.assertNotIn("all captured turn(s) were processed", notice)
 
+    def test_successful_process_exposes_external_body_capture_limit(self) -> None:
+        provider = self.provider(
+            responses=[
+                {"stored": True},
+                {"stored": True},
+                {
+                    "execution_status": "ok",
+                    "external_evidence_status": "metadata_only",
+                    "external_evidence": {
+                        "status": "metadata_only",
+                        "external_record_count": 1,
+                        "retained_body_count": 0,
+                        "metadata_only_record_count": 1,
+                        "capture_policy": {
+                            "tool_evidence_mode": "metadata",
+                            "include_attachments": False,
+                            "body_retention": "metadata",
+                        },
+                    },
+                },
+                {"scopes": [], "has_more": False, "next_cursor": None},
+            ]
+        )
+        provider.sync_turn(
+            "review the external result",
+            "The processing call completed.",
+            session_id="metadata-session",
+        )
+
+        notice = provider.prefetch("continue", session_id="metadata-session")
+
+        self.assertIn("completed successfully", notice)
+        self.assertIn("external records=1", notice)
+        self.assertIn("retained external bodies=0", notice)
+        self.assertIn("does not confirm that external content was extracted", notice)
+        self.assertNotIn("deferred", notice.casefold())
+        self.assertNotIn("pending", notice.casefold())
+
     def test_system_prompt_reserves_deliberate_memleaf_mcp_for_explicit_requests(self) -> None:
         provider = self.provider(responses=[])
         prompt = provider.system_prompt_block().casefold()

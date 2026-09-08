@@ -12,11 +12,146 @@ from .memory_writer import MemoryWriter
 from .turn_plan import dedup_digest, revision_digest
 from .create_coordinator import CreateCoordinator
 from .update_coordinator import UpdateCoordinator
+from .target_reconciliation import reconcile_candidate_target
 from .evidence_policy import retain_tool_evidence
 from .prompts import COVERAGE_ALREADY_COMPLETED_CORRECTION, COVERAGE_CORRECTION, GATE_SYSTEM, SUMMARIZE_SYSTEM, gate_prompt, summarize_prompt
 from .retrieval import normalize_term
+from .scope_state import ScopeError, normalize_scopes
 from .validation import ModelOutputError, NO_CHANGE_DECISION, _model_scope_grounding_evidence, parse_gate_output, parse_strict_json, parse_summarize_output
-from .process_common import ProcessingError, _TARGET_NOT_RELATED, _TARGET_SAME_USE, _TARGET_UNKNOWN, _automatic_create_conflicts, _candidate_lookup_queries, _event_payload, _grounded_due_dates, _normalize_summary_dates
+from .process_common import ProcessingError, _TARGET_NOT_RELATED, _TARGET_SAME_USE, _TARGET_UNKNOWN, _automatic_create_conflicts, _candidate_lookup_queries, _event_payload, _grounded_due_dates, _normalize_summary_dates, _summary_date_grounding_violations
+
+
+def _explicit_project_scope_authorizations(scope: Any) -> tuple[str, ...]:
+    """Normalize only the caller's explicit process scope authorization."""
+
+    if scope is None:
+        return ()
+    try:
+        values = normalize_scopes(scope, field="process scope")
+    except (ScopeError, TypeError, ValueError):
+        return ()
+    return tuple(
+        value for value in values
+        if isinstance(value, str) and value.partition(":")[0] == "project"
+    )
+
+
+def _unregistered_model_project_scopes(
+    candidate: Mapping[str, Any],
+    scope_registry: Mapping[str, Any] | None,
+    authorized_scopes: Iterable[str] = (),
+) -> tuple[str, ...]:
+    """Return model-selected project scopes absent from the local registry.
+
+    The existing Gate validator deliberately accepts a new project scope when
+    the candidate memory names it.  This second check needs to distinguish
+    that case from a registered canonical name or alias, whose behavior is
+    already covered by the normal scope rules.
+    """
+
+    if candidate.get("scope_source") != "model" or not candidate.get("worth"):
+        return ()
+    scopes = tuple(
+        scope
+        for scope in candidate.get("scopes", ())
+        if isinstance(scope, str) and scope.partition(":")[0] == "project"
+    )
+    if not scopes:
+        return ()
+    selected_owners, _ = _model_scope_grounding_evidence(
+        "", scopes, scope_registry
+    )
+    registered = {
+        key.casefold()
+        for key in (scope_registry or {})
+        if isinstance(key, str) and key.partition(":")[0] == "project"
+    }
+    authorized = {
+        value.casefold()
+        for value in authorized_scopes
+        if isinstance(value, str) and value.partition(":")[0] == "project"
+    }
+    return tuple(
+        scope
+        for scope in scopes
+        if selected_owners.get(scope.casefold(), scope.casefold()) not in registered
+        and scope.casefold() not in authorized
+    )
+
+
+def _candidate_bound_source_text(
+    candidate: Mapping[str, Any],
+    batch_units: Iterable[Any],
+) -> str:
+    """Project only original source text from this candidate's batch claims.
+
+    Explicit bindings identify the source units directly.  The compatibility
+    path uses the exact-whole unit IDs frozen by ``supporting_units``.  In both
+    cases the model's quote or memory text is excluded from this projection.
+    """
+
+    by_id = {unit.unit_id: unit for unit in batch_units}
+    bindings = candidate.get("_evidence_bindings")
+    if isinstance(bindings, list):
+        unit_ids = [
+            claim.get("unit_id")
+            for claim in bindings
+            if isinstance(claim, Mapping) and isinstance(claim.get("unit_id"), str)
+        ]
+    else:
+        raw_ids = candidate.get("_evidence_unit_ids", ())
+        unit_ids = (
+            [value for value in raw_ids if isinstance(value, str)]
+            if isinstance(raw_ids, Iterable) and not isinstance(raw_ids, (str, bytes))
+            else []
+        )
+    texts: list[str] = []
+    seen: set[str] = set()
+    for unit_id in unit_ids:
+        if unit_id in seen:
+            continue
+        unit = by_id.get(unit_id)
+        if unit is None or not getattr(unit, "can_support", False):
+            continue
+        seen.add(unit_id)
+        text = getattr(unit, "text", "")
+        if isinstance(text, str) and text:
+            texts.append(text)
+    return "\n".join(texts)
+
+
+def _model_project_scope_is_source_grounded(
+    candidate: Mapping[str, Any],
+    batch_units: Iterable[Any],
+    scope_registry: Mapping[str, Any] | None,
+    authorized_scopes: Iterable[str] = (),
+) -> bool:
+    """Require each new model project scope to occur in its bound source.
+
+    Matching is delegated to the same registry-aware helper used by Gate
+    validation.  The input is restricted to immutable original ``EvidenceUnit``
+    text from this candidate's current batch, so candidate prose, other units,
+    related memories, domain-to-project expansion, and semantic inference
+    cannot lend a project name to this candidate.  A literal project name that
+    appears in the original source remains matchable.
+    """
+
+    new_scopes = _unregistered_model_project_scopes(
+        candidate, scope_registry, authorized_scopes
+    )
+    if not new_scopes:
+        return True
+    source_text = _candidate_bound_source_text(candidate, batch_units)
+    if not source_text:
+        return False
+    for scope in new_scopes:
+        owners, matches = _model_scope_grounding_evidence(
+            source_text, (scope,), scope_registry
+        )
+        owner = owners.get(scope.casefold(), scope.casefold())
+        if owner not in matches:
+            return False
+    return True
 
 
 class MemoryPlanner:
@@ -25,6 +160,169 @@ class MemoryPlanner:
         self.audit = audit
         self.inputs = inputs
         self.model = model
+
+    @staticmethod
+    def _evidence_source_identity(
+        unit: Any,
+        *,
+        source: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> str:
+        """Return a stable identity for one exact source fragment.
+
+        ``EvidenceUnit.unit_id`` deliberately includes the enclosing event key,
+        which changes when the same external observation is captured again in a
+        later visible turn.  Retry accounting needs the source identity as well
+        as the per-turn unit identity, so use immutable provenance, exact span,
+        source/session scope, and an exact body digest.  This is an identity
+        comparison, never a business-text similarity check, and avoids putting
+        source text in the durable ledger.  Conversation fragments retain their
+        event key so this helper cannot turn identical user text from another
+        turn into the same source.
+        """
+
+        origin = str(getattr(unit, "origin", ""))
+        external = origin == "external_observation"
+        value = {
+            "kind": "external" if external else "conversation",
+            "source": source,
+            "session_id": session_id,
+            "source_role": str(getattr(unit, "source_role", "")),
+            "tool_name": getattr(unit, "tool_name", None) if external else None,
+            "call_id": getattr(unit, "call_id", None) if external else None,
+            "record_id": getattr(unit, "record_id", None) if external else None,
+            "domain": getattr(unit, "domain", None),
+            "event_key": getattr(unit, "event_key", None) if not external else None,
+            "start": getattr(unit, "start", 0),
+            "end": getattr(unit, "end", 0),
+            "text_digest": hashlib.sha256(
+                str(getattr(unit, "text", "")).encode("utf-8")
+            ).hexdigest(),
+        }
+        return "source-" + hashlib.sha256(
+            json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:24]
+
+    @classmethod
+    def _retry_ledger(cls, state: Mapping[str, Any], turn: InboxTurn) -> dict[str, Any]:
+        """Read settled source identities from prior journal entries.
+
+        A processed turn can remain in the inbox while unresolved evidence is
+        retried.  The ledger is therefore the authority for which units may be
+        sent through the model again; a turn watermark would hide its pending
+        siblings.  The helper also returns the exact current-turn audit rows so
+        a partial retry can preserve prior CREATE/UPDATE/NO_CHANGE outcomes.
+        """
+
+        entries = state.get("processed_turns") if isinstance(state, Mapping) else None
+        if not isinstance(entries, list):
+            entries = []
+        current_entry: Optional[Mapping[str, Any]] = None
+        for raw_entry in entries:
+            if (
+                isinstance(raw_entry, Mapping)
+                and raw_entry.get("turn_key") == turn.turn_key
+            ):
+                current_entry = raw_entry
+                break
+
+        settled_unit_ids: set[str] = set()
+        settled_source_ids: set[str] = set()
+        settled_rows_by_unit: dict[str, dict[str, Any]] = {}
+        settled_rows_by_source: dict[str, dict[str, Any]] = {}
+        settled_memory_by_source: dict[str, str] = {}
+
+        for raw_entry in entries:
+            if not isinstance(raw_entry, Mapping):
+                continue
+            raw_candidates = raw_entry.get("candidate_dispositions", [])
+            candidates = {
+                row.get("candidate_id").casefold(): row
+                for row in raw_candidates
+                if isinstance(row, Mapping) and isinstance(row.get("candidate_id"), str)
+            } if isinstance(raw_candidates, list) else {}
+            raw_evidence = raw_entry.get("evidence_dispositions", [])
+            if not isinstance(raw_evidence, list):
+                continue
+            for raw_row in raw_evidence:
+                if not isinstance(raw_row, Mapping):
+                    continue
+                unit_id = raw_row.get("unit_id")
+                source_id = raw_row.get("source_identity")
+                decision = raw_row.get("decision")
+                candidate_ids = raw_row.get("candidate_ids", [])
+                if not isinstance(candidate_ids, list):
+                    candidate_ids = []
+                candidate_dispositions = []
+                missing_candidate_disposition = False
+                for candidate_id in candidate_ids:
+                    if not isinstance(candidate_id, str):
+                        missing_candidate_disposition = True
+                        continue
+                    candidate = candidates.get(candidate_id.casefold())
+                    if not isinstance(candidate, Mapping):
+                        missing_candidate_disposition = True
+                        continue
+                    candidate_dispositions.append(candidate.get("disposition"))
+                candidate_terminal = bool(candidate_ids) and not missing_candidate_disposition and all(
+                    disposition in {"CREATE", "UPDATE", "NO_CHANGE"}
+                    for disposition in candidate_dispositions
+                )
+                settled = (
+                    decision == "NO_CHANGE"
+                    and raw_row.get("reason") not in {
+                        "coverage_unresolved",
+                        "incomplete_tool_evidence",
+                    }
+                ) or (
+                    decision == "CANDIDATE" and candidate_terminal
+                )
+                if not settled:
+                    continue
+                row = dict(raw_row)
+                if isinstance(unit_id, str) and unit_id:
+                    settled_unit_ids.add(unit_id)
+                    settled_rows_by_unit.setdefault(unit_id, row)
+                # Conversation rows can only be replayed by their exact
+                # unit_id.  Their text/span digest is retained for audit, but
+                # must never suppress the same wording in a later turn.
+                source_kind = raw_row.get("source_kind")
+                if source_kind == "external" and isinstance(source_id, str) and source_id:
+                    settled_source_ids.add(source_id)
+                    settled_rows_by_source.setdefault(source_id, row)
+                    memory_id = row.get("memory_id")
+                    if isinstance(memory_id, str) and memory_id:
+                        settled_memory_by_source.setdefault(source_id, memory_id)
+                    for candidate_id in candidate_ids:
+                        candidate = (
+                            candidates.get(candidate_id.casefold())
+                            if isinstance(candidate_id, str)
+                            else None
+                        )
+                        if isinstance(candidate, Mapping) and isinstance(candidate.get("memory_id"), str):
+                            settled_memory_by_source.setdefault(source_id, candidate["memory_id"])
+
+        current_candidates = []
+        current_deferred = []
+        if isinstance(current_entry, Mapping):
+            raw_candidates = current_entry.get("candidate_dispositions", [])
+            if isinstance(raw_candidates, list):
+                current_candidates = [dict(row) for row in raw_candidates if isinstance(row, Mapping)]
+            raw_deferred = current_entry.get("deferred_candidates", [])
+            if isinstance(raw_deferred, list):
+                current_deferred = [dict(row) for row in raw_deferred if isinstance(row, Mapping)]
+
+        return {
+            "current_entry": current_entry,
+            "same_turn": isinstance(current_entry, Mapping),
+            "settled_unit_ids": settled_unit_ids,
+            "settled_source_ids": settled_source_ids,
+            "settled_rows_by_unit": settled_rows_by_unit,
+            "settled_rows_by_source": settled_rows_by_source,
+            "settled_memory_by_source": settled_memory_by_source,
+            "current_candidates": current_candidates,
+            "current_deferred": current_deferred,
+        }
 
     @staticmethod
     def _planned_memory(request: Mapping[str, Any]) -> Optional[dict[str, Any]]:
@@ -161,6 +459,7 @@ class MemoryPlanner:
         explicit_candidate: Optional[Mapping[str, Any]] = None,
         scope: Any = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
+        authorized_project_scopes = _explicit_project_scope_authorizations(scope)
         events = _event_payload(turn)
         # Capture policy also applies to unprocessed legacy inbox evidence.
         # Keep the immutable turn untouched for input-digest/replay validation.
@@ -171,6 +470,52 @@ class MemoryPlanner:
             event["tool_evidence"] = retain_tool_evidence(event["tool_evidence"], policy_config)
         evidence_units = analyze_turn_evidence(events)
         evidence_partition = partition_evidence_units(evidence_units)
+        retry_ledger = (
+            self._retry_ledger(state, turn)
+            if not explicit
+            else {
+                "same_turn": False,
+                "settled_unit_ids": set(),
+                "settled_source_ids": set(),
+                "settled_rows_by_unit": {},
+                "settled_rows_by_source": {},
+                "settled_memory_by_source": {},
+                "current_candidates": [],
+                "current_deferred": [],
+            }
+        )
+        settled_unit_ids = set(retry_ledger["settled_unit_ids"])
+        settled_source_ids = set(retry_ledger["settled_source_ids"])
+        # Multiple snapshots from one process call are planned before the
+        # shared commit boundary.  ``Processor.process`` clears this set at
+        # the start of each process call; source/session are also part of each
+        # key so a cache entry cannot cross session boundaries.
+        planned_settled_sources = getattr(self.audit, "_planned_settled_sources", None)
+        if not isinstance(planned_settled_sources, set):
+            planned_settled_sources = set()
+            self.audit._planned_settled_sources = planned_settled_sources
+        planned_source_ids = {
+            value[2]
+            for value in planned_settled_sources
+            if isinstance(value, tuple)
+            and len(value) == 3
+            and value[0] == turn.source
+            and value[1] == turn.session_id
+            and isinstance(value[2], str)
+        }
+        settled_source_ids.update(planned_source_ids)
+        source_identity_by_unit = {
+            unit.unit_id: self._evidence_source_identity(
+                unit, source=turn.source, session_id=turn.session_id
+            )
+            for unit in evidence_partition.physical
+        }
+        planning_evidence_units = tuple(
+            unit
+            for unit in evidence_partition.physical
+            if unit.unit_id not in settled_unit_ids
+            and source_identity_by_unit[unit.unit_id] not in settled_source_ids
+        )
         # Keep the complete retained event inventory for replay/audit and for
         # exact turn digests.  Gate receives conversation text for context, but
         # tool record identities are deliberately projected out because the
@@ -180,10 +525,18 @@ class MemoryPlanner:
             projected = dict(event)
             projected.pop("tool_evidence", None)
             gate_events.append(projected)
-        model_evidence_units = evidence_partition.physical
+        model_evidence_units = planning_evidence_units
         coverage_rows: dict[str, dict[str, Any]] = {}
         turn_ref = (turn.source, turn.session_id, turn.turn_key)
-        self.audit._deferred_by_turn.setdefault(turn_ref, [])
+        if retry_ledger.get("same_turn"):
+            self.audit._dispositions_by_turn[turn_ref] = deepcopy(
+                retry_ledger.get("current_candidates", [])
+            )
+            self.audit._deferred_by_turn[turn_ref] = deepcopy(
+                retry_ledger.get("current_deferred", [])
+            )
+        else:
+            self.audit._deferred_by_turn.setdefault(turn_ref, [])
         related, scope_background, native_refs, scope_fallback = self.inputs._related(
             turn,
             state,
@@ -368,9 +721,27 @@ class MemoryPlanner:
             # already validated against this batch; recording their unit IDs
             # keeps the same source boundary for audit and summary projection.
             for item in parsed["candidates"]:
-                item["_evidence_unit_ids"] = [
-                    unit.unit_id for unit in supporting_units(item, batch_units)
-                ]
+                supporting = supporting_units(item, batch_units)
+                item["_evidence_unit_ids"] = [unit.unit_id for unit in supporting]
+                if (
+                    supporting
+                    and
+                    item.get("_defer_reason") is None
+                    and not _model_project_scope_is_source_grounded(
+                        item,
+                        batch_units,
+                        validation_scope_registry,
+                        authorized_project_scopes,
+                    )
+                ):
+                    if gate_attempt_count < 3:
+                        raise ModelOutputError(
+                            "model project scope is not grounded by this candidate's bound source",
+                            validation_detail="scope_not_grounded",
+                        )
+                    # Keep the candidate auditable and let unrelated siblings
+                    # continue through admission after the bounded retries.
+                    item["_defer_reason"] = "scope_conflict"
 
             prepared_candidates: list[dict[str, Any]] = []
             for candidate in parsed["candidates"]:
@@ -465,7 +836,8 @@ class MemoryPlanner:
         ) -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, str], set[str], set[str], dict[str, dict[str, Any]]]:
             """Keep candidate/audit identities unique across independent Gate calls."""
 
-            prefix = f"b{batch_index}-" if batch_count > 1 else ""
+            batch_prefix = f"b{batch_index}-" if batch_count > 1 else ""
+            prefix = retry_candidate_prefix + batch_prefix
             id_map = {
                 str(item["candidate_id"]): prefix + str(item["candidate_id"])
                 for item in parsed_gate["candidates"]
@@ -473,6 +845,7 @@ class MemoryPlanner:
             candidates = []
             for item in parsed_gate["candidates"]:
                 value = dict(item)
+                value["_model_candidate_id"] = str(item["candidate_id"])
                 value["candidate_id"] = id_map[str(item["candidate_id"])]
                 value["_gate_batch_index"] = batch_index
                 candidates.append(value)
@@ -502,8 +875,21 @@ class MemoryPlanner:
             }
             return ({"candidates": candidates}, coverage, relations, unknown, candidate_level, corrections)
 
-        gate_batches = gate_evidence_batches(model_evidence_units)
+        # A repeated turn can have no unresolved physical units left.  There
+        # is no semantic work for the model in that case; the ledger rows below
+        # still record the no-change reuse for this turn.
+        gate_batches = gate_evidence_batches(model_evidence_units) if model_evidence_units else ()
         batch_count = len(gate_batches)
+        retry_candidate_prefix = ""
+        if retry_ledger.get("same_turn") and model_evidence_units:
+            pending_digest = hashlib.sha256(
+                json.dumps(
+                    [unit.unit_id for unit in model_evidence_units],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()[:12]
+            retry_candidate_prefix = f"retry-{pending_digest}-"
         all_candidates: list[dict[str, Any]] = []
         for batch_index, batch_units in enumerate(gate_batches):
             batch_state: dict[str, Any] = {
@@ -641,7 +1027,7 @@ class MemoryPlanner:
                         if candidate.get("candidate_id") in row.get("candidate_ids", [])]
             if unit_ids and "_evidence_unit_ids" not in candidate:
                 candidate["_evidence_unit_ids"] = unit_ids
-            reason, support = admission_reason(candidate, evidence_units)
+            reason, support = admission_reason(candidate, planning_evidence_units)
             candidate["evidence_unit_ids"] = [u.unit_id for u in support]
             covered_unit_ids.update(candidate["evidence_unit_ids"])
             for uid in candidate["evidence_unit_ids"]:
@@ -792,6 +1178,31 @@ class MemoryPlanner:
                         candidate_related.insert(0, memory.to_dict())
             if correction_plan is None:
                 candidate = self.inputs._infer_update_target(candidate, candidate_related)
+                # Candidate-specific retrieval can discover targets absent from
+                # the initial Gate. Reopen that decision with current local
+                # records before a targetless proposal reaches summarize.
+                initial_ids = {value.casefold() for value in gate_related_memory_ids}
+                active_related = []
+                for item in candidate_related:
+                    if not isinstance(item, Mapping) or item.get("native") is True:
+                        continue
+                    active = self.inputs._active_memory_by_id(item.get("memory_id"))
+                    if active is not None:
+                        active_related.append(active.to_dict())
+                if any(item["memory_id"].casefold() not in initial_ids for item in active_related):
+                    candidate = reconcile_candidate_target(
+                        self.model,
+                        backend,
+                        candidate,
+                        related_memories=active_related,
+                        validated_bindings=candidate.get("_evidence_bindings"),
+                        summary_evidence=summary_evidence(candidate, planning_evidence_units, events=events),
+                        diagnostic_context={
+                            "source": turn.source,
+                            "session_id": turn.session_id,
+                            "turn_index": turn.turn_index,
+                        },
+                    )
             defer_reason = candidate.pop("_defer_reason", None)
             if defer_reason:
                 self.audit._defer_candidate(turn_ref, candidate, defer_reason)
@@ -906,16 +1317,12 @@ class MemoryPlanner:
             if candidate["duplicate"] or not candidate["worth"]:
                 duplicate_memory_id = candidate.get("duplicate_memory_id")
                 if duplicate_memory_id is not None:
-                    requests.append(
-                        self._duplicate_request(
-                            candidate,
-                            turn,
-                            conversation_title=title,
-                            native_refs=candidate_native_refs,
-                        )
-                    )
                     # Automatic duplicate observations are metadata no-ops;
-                    # only the already-active target's scopes are trustworthy
+                    # keep them out of the mutation batch entirely.  This is
+                    # also required when another candidate updates the same
+                    # active target in this turn: a no-op duplicate request
+                    # would collide with that update during writer preflight.
+                    # Only the already-active target's scopes are trustworthy
                     # session context, never a transient model-provided scope.
                     duplicate_scopes = next(
                         (
@@ -967,8 +1374,10 @@ class MemoryPlanner:
                     None,
                 )
 
-            admitted_summary_events = summary_evidence(candidate, evidence_units, events=events)
+            admitted_summary_events = summary_evidence(candidate, planning_evidence_units, events=events)
             admitted_summary_keys = tuple(dict.fromkeys(event["event_key"] for event in admitted_summary_events))
+            grounded_summary_dates = _grounded_due_dates(turn, evidence_events=admitted_summary_events)
+            summary_target = self.inputs._active_memory_by_id(gate_update_target) if gate_update_target else None
             try:
                 def parse_summary(raw: str) -> dict[str, Any]:
                     parsed = parse_summarize_output(
@@ -979,10 +1388,7 @@ class MemoryPlanner:
                         scope_registry=validation_scope_registry,
                         expected_scopes=candidate["scopes"],
                         expected_scope_source=candidate["scope_source"],
-                        allowed_due_dates=_grounded_due_dates(
-                            turn,
-                            evidence_events=admitted_summary_events,
-                        ),
+                        allowed_due_dates=grounded_summary_dates,
                         allow_no_change=True,
                         # The summarize stage may not reinterpret a gate
                         # candidate, including CREATE candidates. Updates
@@ -993,6 +1399,13 @@ class MemoryPlanner:
                         expected_update_memory_id=gate_update_target,
                         expected_target_type=gate_target_type,
                     )
+                    if _summary_date_grounding_violations(
+                        parsed,
+                        grounded_dates=grounded_summary_dates,
+                        source_texts=[event.get("content", "") for event in admitted_summary_events if event.get("role") in {"user", "tool"}],
+                        preserved_texts=(summary_target.title, summary_target.body, summary_target.due_date) if summary_target else (),
+                    ):
+                        raise ModelOutputError("summary contains a date absent from its admitted evidence", validation_detail="relative_time")
                     return parsed
 
                 target_revisions = {}
@@ -1001,10 +1414,14 @@ class MemoryPlanner:
                         target_memory = self.inputs._active_memory_by_id(related_item["memory_id"])
                         if target_memory is not None:
                             target_revisions[target_memory.memory_id] = revision_digest(target_memory)
+                summary_candidate = dict(candidate)
+                model_candidate_id = summary_candidate.pop("_model_candidate_id", None)
+                if isinstance(model_candidate_id, str) and model_candidate_id:
+                    summary_candidate["candidate_id"] = model_candidate_id
                 summary = self.model._complete_json_stage(
                     backend,
                     summarize_prompt(
-                        candidate,
+                        summary_candidate,
                         admitted_summary_events,
                         related_memories=candidate_related,
                         scope_background=candidate_scope_background,
@@ -1020,11 +1437,16 @@ class MemoryPlanner:
                     },
                 )
             except ModelOutputError as error:
-                if getattr(error, "validation_detail", None) != "relative_time":
+                if getattr(error, "validation_detail", None) not in {
+                    "relative_time",
+                    "due_date_not_grounded",
+                }:
                     raise
                 # The candidate's source turn remains in inbox for an
                 # explicit retry.  Other candidates from this same turn may
-                # still commit safely in the same transaction.
+                # still commit safely in the same transaction.  The existing
+                # relative_time audit reason covers both unresolved relative
+                # text and an ungrounded explicit due_date.
                 self.audit._defer_candidate(
                     turn_ref,
                     candidate,
@@ -1133,13 +1555,50 @@ class MemoryPlanner:
                 ):
                     observed_scopes.append(observed_scope)
         requests = CreateCoordinator(self.model, self.audit).resolve(
-            requests, candidates=admitted_candidates, evidence_units=evidence_units, events=events,
+            requests, candidates=admitted_candidates, evidence_units=planning_evidence_units, events=events,
             backend=backend, scope_registry=scope_registry, validation_scope_registry=validation_scope_registry)
         requests = UpdateCoordinator(self.model, self.audit, self.inputs._active_memory_by_id).resolve(
-            requests, candidates=admitted_candidates, evidence_units=evidence_units, events=events,
+            requests, candidates=admitted_candidates, evidence_units=planning_evidence_units, events=events,
             backend=backend, scope_registry=scope_registry, validation_scope_registry=validation_scope_registry)
         evidence_dispositions = []
         for unit in evidence_units:
+            source_identity = self._evidence_source_identity(
+                unit, source=turn.source, session_id=turn.session_id
+            )
+            settled = (
+                unit.unit_id in settled_unit_ids
+                or source_identity in settled_source_ids
+            )
+            if settled:
+                previous = retry_ledger["settled_rows_by_unit"].get(unit.unit_id)
+                if previous is None:
+                    previous = retry_ledger["settled_rows_by_source"].get(source_identity)
+                if retry_ledger.get("same_turn") and isinstance(previous, Mapping):
+                    evidence_disposition = dict(previous)
+                    evidence_disposition["unit_id"] = unit.unit_id
+                    evidence_disposition["event_key"] = unit.event_key
+                    evidence_disposition["source_identity"] = source_identity
+                else:
+                    memory_id = retry_ledger["settled_memory_by_source"].get(source_identity)
+                    if memory_id is None and isinstance(previous, Mapping):
+                        value = previous.get("memory_id")
+                        if isinstance(value, str) and value:
+                            memory_id = value
+                    evidence_disposition = {
+                        "unit_id": unit.unit_id,
+                        "event_key": unit.event_key,
+                        "decision": "NO_CHANGE",
+                        "reason": "already_processed",
+                        "candidate_ids": [],
+                        "source_identity": source_identity,
+                    }
+                    if memory_id is not None:
+                        evidence_disposition["memory_id"] = memory_id
+                evidence_disposition["source_kind"] = (
+                    "external" if unit.origin == "external_observation" else "conversation"
+                )
+                evidence_dispositions.append(evidence_disposition)
+                continue
             row = coverage_rows.get(unit.unit_id)
             if unit.origin == "unknown":
                 # Completeness is a host fact, not a model semantic verdict.
@@ -1164,6 +1623,10 @@ class MemoryPlanner:
                 "reason": reason,
                 "candidate_ids": list(dict.fromkeys(covered_by_unit.get(unit.unit_id, [])
                     or (row.get("candidate_ids", []) if row else []))),
+                "source_identity": source_identity,
+                "source_kind": (
+                    "external" if unit.origin == "external_observation" else "conversation"
+                ),
             }
             if (
                 row is not None
@@ -1172,5 +1635,75 @@ class MemoryPlanner:
             ):
                 evidence_disposition["memory_id"] = row["memory_id"]
             evidence_dispositions.append(evidence_disposition)
+        # A retry may resolve a previously deferred candidate.  Keep the
+        # unresolved rows observable, but remove stale duplicate entries from
+        # the same turn's deferred ledger after a successful disposition.
+        deferred_rows = self.audit._deferred_by_turn.get(turn_ref, [])
+        disposition_by_candidate = {
+            row.get("candidate_id").casefold(): row.get("disposition")
+            for row in self.audit._dispositions_by_turn.get(turn_ref, [])
+            if isinstance(row, Mapping) and isinstance(row.get("candidate_id"), str)
+        }
+        resolved_unit_ids: set[str] = set()
+        for evidence_row in evidence_dispositions:
+            if not isinstance(evidence_row, Mapping):
+                continue
+            source_identity = evidence_row.get("source_identity")
+            if not isinstance(source_identity, str) or not source_identity:
+                continue
+            decision = evidence_row.get("decision")
+            reason = evidence_row.get("reason")
+            candidate_ids = evidence_row.get("candidate_ids", [])
+            if not isinstance(candidate_ids, list):
+                candidate_ids = []
+            candidate_statuses = [
+                disposition_by_candidate.get(candidate_id.casefold())
+                for candidate_id in candidate_ids
+                if isinstance(candidate_id, str)
+            ]
+            candidate_is_settled = bool(candidate_ids) and len(candidate_statuses) == len(candidate_ids) and all(
+                status in {"CREATE", "UPDATE", "NO_CHANGE"}
+                for status in candidate_statuses
+            )
+            if (
+                decision == "CANDIDATE" and candidate_is_settled
+            ) or (
+                decision == "NO_CHANGE"
+                and reason not in {"coverage_unresolved", "incomplete_tool_evidence"}
+            ):
+                unit_id = evidence_row.get("unit_id")
+                if isinstance(unit_id, str) and unit_id:
+                    resolved_unit_ids.add(unit_id)
+                if evidence_row.get("source_kind") == "external":
+                    planned_settled_sources.add((turn.source, turn.session_id, source_identity))
+        retry_resolved_deferred: set[str] = set()
+        if retry_ledger.get("same_turn"):
+            for previous in retry_ledger.get("current_candidates", []):
+                if not isinstance(previous, Mapping) or previous.get("disposition") != "DEFERRED":
+                    continue
+                candidate_id = previous.get("candidate_id")
+                evidence_ids = previous.get("evidence_unit_ids", [])
+                if (
+                    isinstance(candidate_id, str)
+                    and candidate_id
+                    and isinstance(evidence_ids, list)
+                    and evidence_ids
+                    and all(
+                        isinstance(unit_id, str) and unit_id in resolved_unit_ids
+                        for unit_id in evidence_ids
+                    )
+                ):
+                    retry_resolved_deferred.add(candidate_id.casefold())
+        unique_deferred: dict[str, dict[str, Any]] = {}
+        for raw_row in deferred_rows:
+            if not isinstance(raw_row, Mapping) or not isinstance(raw_row.get("candidate_id"), str):
+                continue
+            candidate_id = raw_row["candidate_id"]
+            if candidate_id.casefold() in retry_resolved_deferred:
+                continue
+            if disposition_by_candidate.get(candidate_id.casefold()) not in {None, "DEFERRED"}:
+                continue
+            unique_deferred.setdefault(candidate_id.casefold(), dict(raw_row))
+        self.audit._deferred_by_turn[turn_ref] = list(unique_deferred.values())
         self.audit._evidence_by_turn[turn_ref] = evidence_dispositions
         return requests, observed_scopes

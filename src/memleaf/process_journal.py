@@ -8,14 +8,16 @@ import uuid
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping, Optional
+from .admission import analyze_turn_evidence, read_only_turn
 from .capture import _safe_turn_id
+from .evidence_policy import capture_policy_status, retain_tool_evidence
 from .index import EVENT_V2_BLOCK, extract_event_keys, turn_key
 from .inbox import InboxEvent, InboxTurn, parse_inbox
 from .locking import atomic_write_json, atomic_write_text
 from .turn_plan import turn_identity_key
 from .redaction import redact_text
 from .vault import safe_component
-from .process_common import ProcessingError, _FAILED_STATUS, _LEGACY_PROCESSING_GRACE_SECONDS, _MAX_SESSION_LINEAGE_DEPTH, _PROCESSING_LEASE_SECONDS, _PROCESSING_STATUS, _Snapshot, _as_int, _failure_metadata, _now_value, _parse_time, _read_processed, _safe_evidence_check, _safe_evidence_diagnostics, _safe_scope_background, _session_key
+from .process_common import ProcessingError, _FAILED_STATUS, _LEGACY_PROCESSING_GRACE_SECONDS, _MAX_SESSION_LINEAGE_DEPTH, _PROCESSING_LEASE_SECONDS, _PROCESSING_STATUS, _Snapshot, _as_int, _event_payload, _failure_metadata, _now_value, _parse_time, _read_processed, _safe_evidence_check, _safe_evidence_diagnostics, _safe_scope_background, _session_key
 
 
 class ProcessJournal:
@@ -240,6 +242,24 @@ class ProcessJournal:
             values.sort(key=lambda turn: (turn.turn_index or 0, turn.turn_key or ""))
         return grouped
 
+    def _turn_is_read_only(self, turn: InboxTurn) -> bool:
+        """Classify a pending turn at the same physical boundary as planning."""
+
+        try:
+            events = _event_payload(turn)
+            policy_config = self.service.vault.config()
+            for event in events:
+                event["tool_evidence"] = retain_tool_evidence(
+                    event["tool_evidence"], policy_config
+                )
+            return read_only_turn(analyze_turn_evidence(events))
+        except (TypeError, ValueError):
+            # Do not spend an older turn's automatic retry when the new turn
+            # cannot be classified at this scheduling boundary.  The new
+            # turn still reaches planning, where its evidence is reported as
+            # invalid/deferred instead of being treated as NO_CHANGE.
+            return True
+
 
     def _snapshot(
         self,
@@ -297,6 +317,20 @@ class ProcessJournal:
                 # Missing original evidence and ambiguous ownership wait for
                 # new input or an explicit scope; no timer or busy retry loop.
                 explicit_retry = scope is not None and scope not in ("", [])
+                new_turns: list[InboxTurn] = []
+                while next_index in by_index:
+                    turn = by_index[next_index]
+                    if not turn.complete:
+                        break
+                    if turn.turn_key in processed_keys or next_index in processed_indices:
+                        next_index += 1
+                        continue
+                    new_turns.append(turn)
+                    next_index += 1
+                new_queries_only = bool(new_turns) and all(
+                    self._turn_is_read_only(turn)
+                    for turn in new_turns
+                )
                 deferred = [entry for entry in processed_entries
                     if isinstance(entry, dict)
                     and (entry.get("deferred_candidates") or entry.get("deferred_evidence"))]
@@ -304,7 +338,7 @@ class ProcessJournal:
                 automatic_retries = 0
                 for entry in deferred:
                     can_retry = self.retryable_deferred(entry)
-                    if not explicit_retry and (not can_retry or automatic_retries >= 4):
+                    if not explicit_retry and (new_queries_only or not can_retry or automatic_retries >= 4):
                         continue
                     turn = next((item for item in turns
                         if item.turn_key == entry.get("turn_key") and item.complete), None)
@@ -313,15 +347,7 @@ class ProcessJournal:
                         if not explicit_retry:
                             entry["automatic_retry_count"] = _as_int(entry.get("automatic_retry_count"), 0) + 1
                             automatic_retries += 1
-                while next_index in by_index:
-                    turn = by_index[next_index]
-                    if not turn.complete:
-                        break
-                    if turn.turn_key in processed_keys or next_index in processed_indices:
-                        next_index += 1
-                        continue
-                    selected.append(turn)
-                    next_index += 1
+                selected.extend(new_turns)
                 if not selected:
                     continue
                 token = uuid.uuid4().hex
@@ -493,7 +519,153 @@ class ProcessJournal:
                    for row in entry.get(field, []) if isinstance(row, Mapping)}
         return "coverage_unresolved" in reasons
 
-    def _coverage_result(self, source: str | None, session_id: str | None) -> dict[str, Any]:
+    @staticmethod
+    def _external_evidence_status(turns: Any, policy: Mapping[str, Any]) -> dict[str, Any]:
+        """Describe the external bodies that the planner can actually use.
+
+        The processing result must distinguish a successful processing pass
+        from a pass that had no external body available to the planner.  A
+        metadata-only record is still useful as a bounded inventory item, but
+        it is not source text and therefore cannot be counted as retained
+        external evidence here.  Keep this projection on the same effective
+        capture policy and ``can_support`` boundary as ``MemoryPlanner``.
+        """
+
+        raw_external_records = 0
+        retained_bodies = 0
+        body_bytes = 0
+        metadata_only_records = 0
+        incomplete_records = 0
+        unusable_records = 0
+        effective_records: list[tuple[str, Mapping[str, Any]]] = []
+        effective_events: list[dict[str, Any]] = []
+        for turn in turns if isinstance(turns, (list, tuple)) else ():
+            events = getattr(turn, "events", ())
+            for event in events if isinstance(events, (list, tuple)) else ():
+                records = getattr(event, "tool_evidence", ())
+                external = []
+                for record in records if isinstance(records, (list, tuple)) else ():
+                    if not isinstance(record, Mapping):
+                        continue
+                    # Retrieved memleaf memory is not an external source body
+                    # for this status projection.
+                    if record.get("kind") == "retrieved_memory":
+                        continue
+                    raw_external_records += 1
+                    external.append(record)
+                try:
+                    effective = retain_tool_evidence(external, {"capture": dict(policy)})
+                except (TypeError, ValueError):
+                    # A malformed/unknown policy cannot authorize a body to
+                    # be reported as retained.
+                    effective = []
+                event_key = getattr(event, "event_key", "")
+                for item in effective:
+                    if isinstance(item, Mapping):
+                        effective_records.append((str(event_key), item))
+                effective_events.append(
+                    {
+                        "event_key": event_key,
+                        "role": getattr(event, "role", ""),
+                        "content": getattr(event, "content", ""),
+                        "tool_evidence": effective,
+                    }
+                )
+
+        # This is intentionally the same physical boundary used by the
+        # planner.  A body-shaped string in an error/unknown/partial record is
+        # retained for diagnostics, but its unit is not planner-supporting
+        # evidence and must not make the result look available.
+        try:
+            units = analyze_turn_evidence(effective_events)
+        except (TypeError, ValueError):
+            units = ()
+        supported_units = tuple(
+            unit for unit in units
+            if unit.origin == "external_observation" and unit.can_support
+        )
+
+        def supports_record(event_key: str, record: Mapping[str, Any]) -> bool:
+            tool_name = record.get("tool_name")
+            call_id = record.get("call_id")
+            record_id = record.get("record_id")
+            body = record.get("content")
+            return any(
+                unit.event_key == event_key
+                and unit.tool_name == tool_name
+                and unit.call_id == call_id
+                and (record_id is None or unit.record_id == record_id)
+                and (
+                    record_id is not None
+                    or not isinstance(body, str)
+                    or unit.text in body
+                )
+                for unit in supported_units
+            )
+
+        for event_key, record in effective_records:
+            body = record.get("content")
+            has_body = (
+                isinstance(body, str)
+                and bool(body.strip())
+                and record.get("retention") != "metadata"
+            )
+            if record.get("retention") == "metadata":
+                metadata_only_records += 1
+                continue
+            incomplete = (
+                record.get("completeness", "complete") != "complete"
+                or record.get("result_status", "success") != "success"
+                or record.get("execution_status", "success") != "success"
+            )
+            if incomplete:
+                incomplete_records += 1
+            if has_body and not incomplete and supports_record(event_key, record):
+                # Public body counters refer to records, even when a record
+                # yields several independently reviewable physical units.
+                retained_bodies += 1
+                body_bytes += len(body.encode("utf-8"))
+                continue
+            if not has_body and policy.get("tool_evidence_mode") == "metadata":
+                # ``retain_tool_evidence`` normally marks this explicitly;
+                # keep the fallback factual if a legacy record is malformed.
+                metadata_only_records += 1
+            else:
+                unusable_records += 1
+
+        mode = policy.get("tool_evidence_mode")
+        if mode == "off":
+            status = "disabled"
+        elif mode not in {"bounded", "metadata"}:
+            status = "unavailable"
+        elif retained_bodies and (metadata_only_records or incomplete_records or unusable_records):
+            status = "partial"
+        elif retained_bodies:
+            status = "available"
+        elif raw_external_records and effective_records and metadata_only_records == len(effective_records):
+            status = "metadata_only"
+        elif raw_external_records:
+            status = "unavailable"
+        else:
+            status = "not_provided"
+        return {
+            "status": status,
+            "external_record_count": raw_external_records,
+            "retained_body_count": retained_bodies,
+            "retained_body_bytes": body_bytes,
+            "metadata_only_record_count": metadata_only_records,
+            "incomplete_record_count": incomplete_records,
+            "unusable_record_count": unusable_records,
+            "capture_policy": dict(policy),
+        }
+
+    def _coverage_result(
+        self,
+        source: str | None,
+        session_id: str | None,
+        *,
+        turns: Any = None,
+    ) -> dict[str, Any]:
         with self.service.vault.lock():
             processed = _read_processed(self.service.vault.processed_state_path)
         unresolved = 0
@@ -509,8 +681,27 @@ class ProcessJournal:
                     retryable += 1
                 unresolved += len(entry.get("deferred_evidence", []))
                 partial = partial or bool(entry.get("deferred_candidates") or entry.get("deferred_evidence"))
-        return {"execution_status": "ok", "coverage_status": "partial" if partial else "complete",
-                "unresolved_evidence_count": unresolved, "retryable_deferred_turns": retryable}
+        try:
+            policy = capture_policy_status(self.service.vault.config())
+        except (OSError, UnicodeError, TypeError, ValueError):
+            # Status projection must not turn a completed process into a
+            # process failure when configuration is unreadable or malformed.
+            policy = {
+                "tool_evidence_mode": "unknown",
+                "include_attachments": "unknown",
+                "body_retention": "unknown",
+            }
+        external = self._external_evidence_status(turns or (), policy)
+        return {
+            "execution_status": "ok",
+            "coverage_status": "partial" if partial else "complete",
+            "unresolved_evidence_count": unresolved,
+            "retryable_deferred_turns": retryable,
+            # Keep a scalar for callers that only need the decision, and a
+            # bounded detail object for clients that need to explain it.
+            "external_evidence_status": external["status"],
+            "external_evidence": external,
+        }
 
 
     def _remember_turn(
