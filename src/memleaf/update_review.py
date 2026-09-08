@@ -15,6 +15,7 @@ parser for a possible revised summary.
 
 from __future__ import annotations
 
+import inspect
 import json
 import math
 from typing import Any, Callable, Iterable, Mapping
@@ -382,7 +383,9 @@ def build_create_review_prompt(
     encoded = json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     prompt = "CREATE_SEMANTIC_REVIEW\n" + encoded + (
         "\n\nThe two top-level values are separate inputs. Return only the strict "
-        "review object described by the system contract."
+        "review object described by the system contract. A topic or activity name by itself "
+        "does not establish that the activity occurred or was completed; an organization name "
+        "next to an activity title does not establish that the organization performed or owned it."
     )
     if len(prompt.encode("utf-8")) > _MAX_PROMPT_BYTES:
         raise ModelOutputError(
@@ -457,6 +460,42 @@ def parse_update_review_output(
     return {"decision": decision, "summary": dict(revised)}
 
 
+def _complete_json_stage_compat(
+    model_executor: Any,
+    backend: Any,
+    prompt: str,
+    *,
+    system: str,
+    purpose: str,
+    parser: Callable[[str], Any],
+    diagnostic_context: Mapping[str, Any] | None,
+    metric_stage: str,
+) -> Any:
+    """Use new stage telemetry when supported without breaking legacy executors."""
+
+    complete = model_executor._complete_json_stage
+    kwargs: dict[str, Any] = {
+        "system": system,
+        "purpose": purpose,
+        "parser": parser,
+        "diagnostic_context": diagnostic_context,
+    }
+    try:
+        signature = inspect.signature(complete)
+    except (TypeError, ValueError):
+        # A legacy or opaque executor remains valid. Do not execute once and
+        # retry after a TypeError because that could duplicate a model call.
+        pass
+    else:
+        parameters = signature.parameters
+        if "metric_stage" in parameters or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        ):
+            kwargs["metric_stage"] = metric_stage
+    return complete(backend, prompt, **kwargs)
+
+
 def _run_review(
     model_executor: Any,
     backend: Any,
@@ -472,7 +511,8 @@ def _run_review(
         def parse(raw: Any) -> dict[str, Any]:
             return parse_update_review_output(raw, parse_summary=parse_summary)
 
-        result = model_executor._complete_json_stage(
+        result = _complete_json_stage_compat(
+            model_executor,
             backend,
             prompt,
             system=system,
