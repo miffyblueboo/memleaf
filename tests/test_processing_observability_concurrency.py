@@ -194,12 +194,13 @@ class ProcessingObservabilityConcurrencyTests(unittest.TestCase):
     def test_semantic_review_contract_requires_completeness_not_only_non_invention(self):
         for system in (CREATE_SEMANTIC_REVIEW_SYSTEM, UPDATE_SEMANTIC_REVIEW_SYSTEM):
             with self.subTest(system=system[:32]):
-                self.assertIn("Semantic completeness is as important as non-invention", system)
-                self.assertIn("meaning-defining", system)
-                self.assertIn("business/workstream/background context", system)
-                self.assertIn("Scope metadata alone does not substitute", system)
-                self.assertIn("implementation context", system)
-                self.assertIn("Never add an owner", system)
+                flattened = " ".join(system.split())
+                self.assertIn("Semantic completeness is as important as non-invention", flattened)
+                self.assertIn("meaning-defining", flattened)
+                self.assertIn("business/workstream/background context", flattened)
+                self.assertIn("Scope metadata alone does not substitute", flattened)
+                self.assertIn("implementation context", flattened)
+                self.assertIn("Never add an owner", flattened)
 
 
 if __name__ == "__main__":  # pragma: no cover
