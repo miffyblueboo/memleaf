@@ -1025,6 +1025,12 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def _mcp_creationflags() -> int:
+    """Hide the provider-owned MCP child console on Windows only."""
+
+    return subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+
 class _MCPClient:
     """Small synchronous JSON-RPC client for memleaf's stdio MCP server."""
 
@@ -1105,6 +1111,7 @@ class _MCPClient:
             encoding="utf-8",
             errors="strict",
             bufsize=1,
+            creationflags=_mcp_creationflags(),
         )
         self._start_stdout_reader_locked(self._process)
         initialize_result = self._request_locked(
