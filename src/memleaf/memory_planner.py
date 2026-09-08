@@ -14,6 +14,7 @@ from .create_coordinator import CreateCoordinator
 from .update_coordinator import UpdateCoordinator
 from .target_reconciliation import reconcile_candidate_target
 from .evidence_policy import retain_tool_evidence
+from .parallel_model import run_ordered_keyed_jobs
 from .prompts import COVERAGE_ALREADY_COMPLETED_CORRECTION, COVERAGE_CORRECTION, GATE_SYSTEM, SUMMARIZE_SYSTEM, gate_prompt, summarize_prompt
 from .retrieval import normalize_term
 from .scope_state import ScopeError, normalize_scopes
@@ -1008,6 +1009,18 @@ class MemoryPlanner:
         seen_candidates: set[tuple[Any, ...]] = set()
         seen_duplicate_targets: set[str] = set()
         admitted_candidates: dict[str, dict[str, Any]] = {}
+        summary_jobs: list[dict[str, Any]] = []
+        request_slots: list[dict[str, Any]] = []
+
+        def observe_scopes(values: Iterable[Any]) -> None:
+            for observed_scope in values:
+                if (
+                    isinstance(observed_scope, str)
+                    and observed_scope != "unscoped"
+                    and observed_scope not in observed_scopes
+                ):
+                    observed_scopes.append(observed_scope)
+
         for candidate in gate["candidates"]:
             candidate = dict(candidate)
             duplicate_target = candidate.get("duplicate_memory_id")
@@ -1266,18 +1279,17 @@ class MemoryPlanner:
                         )
                         continue
             if correction_plan is not None and correction_plan.get("survivor_memory_id"):
-                requests.append(
-                    self.inputs._scope_correction_request(
+                request_slots.append({
+                    "kind": "request",
+                    "request": self.inputs._scope_correction_request(
                         candidate,
                         turn,
                         correction_plan,
                         conversation_title=title,
                         native_refs=candidate_native_refs,
-                    )
-                )
-                for observed_scope in candidate.get("scopes", []):
-                    if isinstance(observed_scope, str) and observed_scope != "unscoped" and observed_scope not in observed_scopes:
-                        observed_scopes.append(observed_scope)
+                    ),
+                    "scopes": list(candidate.get("scopes", [])),
+                })
                 continue
             candidate_native_ids = [item["native_id"] for item in candidate_native_refs]
             all_candidate_memory_ids: list[str] = []
@@ -1335,13 +1347,7 @@ class MemoryPlanner:
                         ),
                         [],
                     )
-                    for observed_scope in duplicate_scopes:
-                        if (
-                            isinstance(observed_scope, str)
-                            and observed_scope != "unscoped"
-                            and observed_scope not in observed_scopes
-                        ):
-                            observed_scopes.append(observed_scope)
+                    request_slots.append({"kind": "observe", "scopes": list(duplicate_scopes)})
                     self.audit._record_disposition(
                         turn_ref,
                         candidate,
@@ -1378,75 +1384,160 @@ class MemoryPlanner:
             admitted_summary_keys = tuple(dict.fromkeys(event["event_key"] for event in admitted_summary_events))
             grounded_summary_dates = _grounded_due_dates(turn, evidence_events=admitted_summary_events)
             summary_target = self.inputs._active_memory_by_id(gate_update_target) if gate_update_target else None
-            try:
-                def parse_summary(raw: str) -> dict[str, Any]:
-                    parsed = parse_summarize_output(
-                        _normalize_summary_dates(raw, turn, candidate),
-                        current_event_keys=admitted_summary_keys,
-                        related_native_ids=candidate_native_ids,
-                        related_memory_ids=same_type_update_memory_ids,
-                        scope_registry=validation_scope_registry,
-                        expected_scopes=candidate["scopes"],
-                        expected_scope_source=candidate["scope_source"],
-                        allowed_due_dates=grounded_summary_dates,
-                        allow_no_change=True,
-                        # The summarize stage may not reinterpret a gate
-                        # candidate, including CREATE candidates. Updates
-                        # additionally retain the active target's immutable
-                        # type below.
-                        expected_type=candidate.get("type"),
-                        allow_update_target=gate_update_target is not None,
-                        expected_update_memory_id=gate_update_target,
-                        expected_target_type=gate_target_type,
-                    )
-                    if _summary_date_grounding_violations(
-                        parsed,
-                        grounded_dates=grounded_summary_dates,
-                        source_texts=[event.get("content", "") for event in admitted_summary_events if event.get("role") in {"user", "assistant"}],
-                        preserved_texts=(summary_target.title, summary_target.body, summary_target.due_date) if summary_target else (),
-                    ):
-                        raise ModelOutputError("summary contains a date absent from its admitted evidence", validation_detail="relative_time")
-                    return parsed
 
-                target_revisions = {}
-                for related_item in candidate_related:
-                    if isinstance(related_item.get("memory_id"), str):
-                        target_memory = self.inputs._active_memory_by_id(related_item["memory_id"])
-                        if target_memory is not None:
-                            target_revisions[target_memory.memory_id] = revision_digest(target_memory)
-                summary_candidate = dict(candidate)
-                model_candidate_id = summary_candidate.pop("_model_candidate_id", None)
-                if isinstance(model_candidate_id, str) and model_candidate_id:
-                    summary_candidate["candidate_id"] = model_candidate_id
-                summary = self.model._complete_json_stage(
-                    backend,
-                    summarize_prompt(
-                        summary_candidate,
-                        admitted_summary_events,
-                        related_memories=candidate_related,
-                        scope_background=candidate_scope_background,
-                        scope_registry=scope_registry,
-                    ),
-                    system=SUMMARIZE_SYSTEM,
-                    purpose="summarize",
-                    parser=parse_summary,
-                    diagnostic_context={
-                        "source": turn.source,
-                        "session_id": turn.session_id,
-                        "turn_index": turn.turn_index,
-                    },
+            def parse_summary(
+                raw: str,
+                *,
+                candidate_value: Mapping[str, Any] = candidate,
+                admitted_keys_value: tuple[str, ...] = admitted_summary_keys,
+                native_ids_value: list[str] = candidate_native_ids,
+                update_ids_value: list[str] = same_type_update_memory_ids,
+                grounded_dates_value: set[str] = grounded_summary_dates,
+                admitted_events_value: list[dict[str, Any]] = admitted_summary_events,
+                summary_target_value: Any = summary_target,
+                gate_update_target_value: Any = gate_update_target,
+                gate_target_type_value: Any = gate_target_type,
+            ) -> dict[str, Any]:
+                parsed = parse_summarize_output(
+                    _normalize_summary_dates(raw, turn, candidate_value),
+                    current_event_keys=admitted_keys_value,
+                    related_native_ids=native_ids_value,
+                    related_memory_ids=update_ids_value,
+                    scope_registry=validation_scope_registry,
+                    expected_scopes=candidate_value["scopes"],
+                    expected_scope_source=candidate_value["scope_source"],
+                    allowed_due_dates=grounded_dates_value,
+                    allow_no_change=True,
+                    # The summarize stage may not reinterpret a gate
+                    # candidate, including CREATE candidates. Updates
+                    # additionally retain the active target's immutable
+                    # type below.
+                    expected_type=candidate_value.get("type"),
+                    allow_update_target=gate_update_target_value is not None,
+                    expected_update_memory_id=gate_update_target_value,
+                    expected_target_type=gate_target_type_value,
                 )
-            except ModelOutputError as error:
-                if getattr(error, "validation_detail", None) not in {
-                    "relative_time",
-                    "due_date_not_grounded",
-                }:
-                    raise
+                if _summary_date_grounding_violations(
+                    parsed,
+                    grounded_dates=grounded_dates_value,
+                    source_texts=[
+                        event.get("content", "")
+                        for event in admitted_events_value
+                        if event.get("role") in {"user", "assistant"}
+                    ],
+                    preserved_texts=(
+                        summary_target_value.title,
+                        summary_target_value.body,
+                        summary_target_value.due_date,
+                    ) if summary_target_value else (),
+                ):
+                    raise ModelOutputError(
+                        "summary contains a date absent from its admitted evidence",
+                        validation_detail="relative_time",
+                    )
+                return parsed
+
+            target_revisions = {}
+            for related_item in candidate_related:
+                if isinstance(related_item.get("memory_id"), str):
+                    target_memory = self.inputs._active_memory_by_id(related_item["memory_id"])
+                    if target_memory is not None:
+                        target_revisions[target_memory.memory_id] = revision_digest(target_memory)
+            summary_candidate = dict(candidate)
+            model_candidate_id = summary_candidate.pop("_model_candidate_id", None)
+            if isinstance(model_candidate_id, str) and model_candidate_id:
+                summary_candidate["candidate_id"] = model_candidate_id
+            summary_prompt_value = summarize_prompt(
+                summary_candidate,
+                admitted_summary_events,
+                related_memories=candidate_related,
+                scope_background=candidate_scope_background,
+                scope_registry=scope_registry,
+            )
+            diagnostic_context = {
+                "source": turn.source,
+                "session_id": turn.session_id,
+                "turn_index": turn.turn_index,
+            }
+
+            def run_summary(
+                *,
+                prompt_value: str = summary_prompt_value,
+                parser_value: Any = parse_summary,
+                diagnostic_value: Mapping[str, Any] = diagnostic_context,
+            ) -> dict[str, Any]:
+                try:
+                    return {
+                        "status": "ok",
+                        "summary": self.model._complete_json_stage(
+                            backend,
+                            prompt_value,
+                            system=SUMMARIZE_SYSTEM,
+                            purpose="summarize",
+                            parser=parser_value,
+                            diagnostic_context=diagnostic_value,
+                        ),
+                    }
+                except ModelOutputError as error:
+                    if getattr(error, "validation_detail", None) not in {
+                        "relative_time",
+                        "due_date_not_grounded",
+                    }:
+                        raise
+                    return {"status": "relative_time"}
+
+            target_key = (
+                f"update:{gate_update_target.casefold()}"
+                if isinstance(gate_update_target, str) and gate_update_target
+                else f"create:{str(candidate['candidate_id']).casefold()}"
+            )
+            job_index = len(summary_jobs)
+            summary_jobs.append({
+                "key": target_key,
+                "call": run_summary,
+                "candidate": dict(candidate),
+                "candidate_related": candidate_related,
+                "candidate_native_refs": candidate_native_refs,
+                "correction_plan": correction_plan,
+                "gate_update_target": gate_update_target,
+                "target_revisions": target_revisions,
+            })
+            request_slots.append({"kind": "summary", "job_index": job_index})
+
+        summary_outcomes = run_ordered_keyed_jobs(
+            self.model,
+            backend,
+            [(job["key"], job["call"]) for job in summary_jobs],
+        )
+
+        for slot in request_slots:
+            kind = slot.get("kind")
+            if kind == "observe":
+                observe_scopes(slot.get("scopes", []))
+                continue
+            if kind == "request":
+                request = slot.get("request")
+                if isinstance(request, dict):
+                    requests.append(request)
+                observe_scopes(slot.get("scopes", []))
+                continue
+            if kind != "summary":
+                continue
+            job_index = slot.get("job_index")
+            if not isinstance(job_index, int) or isinstance(job_index, bool):
+                raise ProcessingError("invalid prepared summary job")
+            job = summary_jobs[job_index]
+            outcome = summary_outcomes[job_index]
+            candidate = job["candidate"]
+            candidate_related = job["candidate_related"]
+            candidate_native_refs = job["candidate_native_refs"]
+            correction_plan = job["correction_plan"]
+            gate_update_target = job["gate_update_target"]
+            target_revisions = job["target_revisions"]
+            if outcome.get("status") == "relative_time":
                 # The candidate's source turn remains in inbox for an
-                # explicit retry.  Other candidates from this same turn may
-                # still commit safely in the same transaction.  The existing
-                # relative_time audit reason covers both unresolved relative
-                # text and an ungrounded explicit due_date.
+                # explicit retry. Other candidates from this same turn may
+                # still commit safely in the same transaction.
                 self.audit._defer_candidate(
                     turn_ref,
                     candidate,
@@ -1454,6 +1545,10 @@ class MemoryPlanner:
                     scopes=candidate["scopes"],
                 )
                 continue
+            summary = outcome.get("summary")
+            if not isinstance(summary, Mapping):
+                raise ProcessingError("invalid prepared summary result")
+            summary = dict(summary)
             if summary.get("decision") == NO_CHANGE_DECISION:
                 self.audit._record_disposition(
                     turn_ref,
@@ -1470,7 +1565,6 @@ class MemoryPlanner:
             if gate_update_target is not None:
                 summary_update_target = summary.get("update_memory_id")
                 if summary_update_target is None:
-                    summary = dict(summary)
                     summary["update_memory_id"] = gate_update_target
                 elif (
                     not isinstance(summary_update_target, str)
@@ -1481,12 +1575,10 @@ class MemoryPlanner:
                         validation_detail="invalid_update_target",
                     )
                 else:
-                    summary = dict(summary)
                     summary["update_memory_id"] = gate_update_target
-                target = self.service.read(gate_update_target, include_history=False)
+                self.service.read(gate_update_target, include_history=False)
                 # The summary is the complete model-proposed current value.
                 # Do not concatenate old/new bodies using business keywords.
-                pass
             if summary["scopes"] == ["unscoped"] or summary.get("scope_source") == "insufficient_context":
                 self.audit._defer_candidate(
                     turn_ref,
@@ -1547,13 +1639,8 @@ class MemoryPlanner:
                     else pending_request["memory_id"]
                 ),
             )
-            for observed_scope in summary["scopes"]:
-                if (
-                    isinstance(observed_scope, str)
-                    and observed_scope != "unscoped"
-                    and observed_scope not in observed_scopes
-                ):
-                    observed_scopes.append(observed_scope)
+            observe_scopes(summary["scopes"])
+
         requests = CreateCoordinator(self.model, self.audit).resolve(
             requests, candidates=admitted_candidates, evidence_units=planning_evidence_units, events=events,
             backend=backend, scope_registry=scope_registry, validation_scope_registry=validation_scope_registry)
