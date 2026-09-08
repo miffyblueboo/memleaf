@@ -56,9 +56,12 @@ def dedup_digest(summary: Mapping[str, Any]) -> str:
 
 def revision_digest(memory: Any) -> str:
     value = memory.to_dict() if hasattr(memory, "to_dict") else dict(memory)
-    # Retrieval hit counters are not an authored revision and may change while
-    # a model call is in progress. All other persisted fields are protected.
-    return _digest({k: v for k, v in value.items() if k not in {"hit_count", "last_hit_at"}})
+    # Generated lifecycle timestamps and retrieval counters are not authored
+    # memory state. They may legitimately differ while a not-yet-committed
+    # planned memory is rehydrated or while retrieval runs in parallel. Every
+    # semantic/provenance field remains protected by the revision check.
+    generated = {"created", "updated", "hit_count", "last_hit_at"}
+    return _digest({k: v for k, v in value.items() if k not in generated})
 
 
 def turn_identity_key(source: str, session_id: str, turn_key: str) -> str:
