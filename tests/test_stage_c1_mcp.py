@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 from memleaf import Memleaf, __version__
@@ -179,6 +180,7 @@ class StageC1MCPTest(unittest.TestCase):
                 "list_todos",
                 "read",
                 "process",
+                "process_status",
                 "remember",
                 "forget_memory",
                 "forget_about",
@@ -283,7 +285,7 @@ class StageC1MCPTest(unittest.TestCase):
         listed = process.send(
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": list_params}
         )
-        self.assertEqual(len(self.assert_modern_result(self, listed)["tools"]), 12)
+        self.assertEqual(len(self.assert_modern_result(self, listed)["tools"]), 13)
         called = process.send(
             {
                 "jsonrpc": "2.0",
@@ -314,6 +316,7 @@ class StageC1MCPTest(unittest.TestCase):
             "list_todos": {"retrieval_id"},
             "read": {"memory_id", "retrieval_id"},
             "process": set(),
+            "process_status": {"job_id"},
             "remember": set(),
             "forget_memory": {"memory_id"},
             "forget_about": {"query"},
@@ -332,6 +335,48 @@ class StageC1MCPTest(unittest.TestCase):
             {tuple(item["required"]) for item in remember_schema["anyOf"]},
             {("content",), ("text",)},
         )
+
+    def test_stdio_background_process_status_keeps_terminal_result(self):
+        process = self.start()
+        accepted = self.assert_tool_success(
+            self,
+            process.send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "process",
+                        "arguments": {
+                            "source": "hermes",
+                            "session_id": "stdio-status",
+                            "background": True,
+                        },
+                    },
+                }
+            ),
+        )
+        job_id = accepted["job_id"]
+        terminal = None
+        for request_id in range(2, 102):
+            observed = self.assert_tool_success(
+                self,
+                process.send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": "tools/call",
+                        "params": {"name": "process_status", "arguments": {"job_id": job_id}},
+                    }
+                ),
+            )
+            if observed["status"] in {"succeeded", "deferred", "failed"}:
+                terminal = observed
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(terminal)
+        self.assertTrue(terminal["completed"])
+        self.assertEqual(terminal["job_id"], job_id)
 
     def test_malformed_unknown_bad_params_and_notifications(self):
         process = self.start()

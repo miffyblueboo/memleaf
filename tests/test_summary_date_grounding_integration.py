@@ -9,12 +9,12 @@ from tests.test_general_evidence_admission import Backend, candidate, summary
 
 
 class SummaryDateGroundingIntegrationTests(unittest.TestCase):
-    def test_external_body_dates_require_source_grounding(self):
+    def test_external_body_dates_are_excluded_from_conversation_grounding(self):
         for tool in ('document.read', 'arbitrary_observer'):
             for source, body, writes in (
                 ('Finish the review this Wednesday.', 'Finish the review on 2026-09-09.', 0),
-                ('Finish the review on 2026-09-09.', 'Finish the review on 2026-09-09.', 1),
-                ('Finish the review by 9月3日.', 'Finish the review by 9月3日.', 1),
+                ('Finish the review on 2026-09-09.', 'Finish the review on 2026-09-09.', 0),
+                ('Finish the review by 9月3日.', 'Finish the review by 9月3日.', 0),
                 ('Finish the review by 9月3日.', 'Finish the review by 2026-09-03.', 0),
             ):
                 with self.subTest(tool=tool, source=source, body=body), tempfile.TemporaryDirectory() as root:

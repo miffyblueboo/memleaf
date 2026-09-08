@@ -3,6 +3,7 @@ import json
 import unittest
 
 from memleaf.admission import MAX_EXTERNAL_UNIT_BYTES, analyze_turn_evidence
+from memleaf.provenance import normalize_tool_evidence
 from tests.test_hermes_provider import load_provider_module
 
 
@@ -30,14 +31,8 @@ class HermesTransportEvidenceTests(unittest.TestCase):
         evidence = records("execute_code", {"status": "success", "exit_code": 0,
                                              "output": body, "stdout_truncated": False})
         self.assertEqual(evidence[0]["content"], body.strip())
-        physical = units(evidence)
-        self.assertEqual(len(physical), 2)
-        self.assertTrue(all(unit.can_support for unit in physical))
-        self.assertIn("Project Alpha", physical[0].text)
-        self.assertIn("rollback owner", physical[0].text)
-        self.assertNotIn("Project Beta", physical[0].text)
-        for unit in physical:
-            self.assertEqual(body[unit.start:unit.end], unit.text)
+        self.assertEqual(evidence[0]["execution_status"], "success")
+        self.assertEqual(units(evidence), ())
 
     def test_failures_never_authorize_observed_output(self):
         for name, payload in (
@@ -48,7 +43,7 @@ class HermesTransportEvidenceTests(unittest.TestCase):
             with self.subTest(name=name, payload=payload):
                 evidence = records(name, payload)
                 self.assertEqual(evidence[0]["execution_status"], "error")
-                self.assertTrue(all(not unit.can_support for unit in units(evidence)))
+                self.assertEqual(units(evidence), ())
 
     def test_pending_empty_and_nested_envelopes_do_not_gain_source_authority(self):
         for payload in ({"status": "running", "output": "waiting"},
@@ -57,13 +52,12 @@ class HermesTransportEvidenceTests(unittest.TestCase):
                         {"status": "timeout", "output": "prefix"},
                         json.dumps({"exit_code": 1, "output": "prefix"})):
             with self.subTest(payload=payload):
-                self.assertTrue(all(not unit.can_support for unit in units(records("terminal", payload))))
+                self.assertEqual(units(records("terminal", payload)), ())
 
     def test_divider_only_regions_are_not_source_assertions(self):
         evidence = records("terminal", {"exit_code": 0, "output": "========\n========\nA real record\n========"})
-        physical = units(evidence)
-        self.assertEqual(len(physical), 1)
-        self.assertIn("A real record", physical[0].text)
+        self.assertIn("A real record", evidence[0]["content"])
+        self.assertEqual(units(evidence), ())
 
     def test_host_truncation_is_not_complete_even_when_execution_succeeds(self):
         for metadata in ({"stdout_truncated": True}, {"stdout_bytes_omitted": 2}, {"truncated": True}):
@@ -71,7 +65,7 @@ class HermesTransportEvidenceTests(unittest.TestCase):
                                                  "output": "prefix", **metadata})
             self.assertEqual(evidence[0]["execution_status"], "success")
             self.assertEqual(evidence[0]["completeness"], "partial")
-            self.assertTrue(all(not unit.can_support for unit in units(evidence)))
+            self.assertEqual(units(evidence), ())
 
     def test_arbitrary_application_json_is_not_mistaken_for_execution_envelope(self):
         payload = {"status": "error", "exit_code": 2, "output": "application data"}
@@ -81,13 +75,17 @@ class HermesTransportEvidenceTests(unittest.TestCase):
         evidence = records("terminal", {"status": {"value": "error"}, "output": "data"})
         self.assertEqual(json.loads(evidence[0]["content"])["output"], "data")
 
-    def test_divided_oversized_legacy_text_remains_bounded_without_span_loss(self):
+    def test_oversized_legacy_text_is_bounded_and_marked_partial(self):
         body = "========\n" + "漢" * MAX_EXTERNAL_UNIT_BYTES + "\n========\nTail record"
         evidence = [{"tool_name": "external.read", "call_id": "c", "kind": "external_observation",
                      "result_status": "success", "content": body}]
-        physical = units(evidence)
-        self.assertEqual("".join(unit.text for unit in physical), body)
-        self.assertTrue(all(len(unit.text.encode("utf-8")) <= MAX_EXTERNAL_UNIT_BYTES for unit in physical))
+        normalized = normalize_tool_evidence(evidence)
+        self.assertGreaterEqual(len(normalized), 1)
+        self.assertTrue(all(len(row["content"].encode("utf-8")) <= MAX_EXTERNAL_UNIT_BYTES for row in normalized))
+        self.assertTrue(all(row["result_status"] == "truncated" for row in normalized))
+        self.assertTrue(all(row["completeness"] == "partial" for row in normalized))
+        self.assertTrue(any(row.get("record_id") == "overflow" for row in normalized))
+        self.assertEqual(units(normalized), ())
 
 
 if __name__ == "__main__":

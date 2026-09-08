@@ -1,139 +1,33 @@
-# General processing reliability contract — 0.2.33
+# Conversation-only memory processing
 
-This is source-neutral processing, not a mail extractor. Dialogue, documents,
-calendars, issue trackers and terminal/tool observations use the same admission
-and commit boundaries. No tool/topic keyword grants write permission.
+## Input boundary
 
-## Evidence and semantic decisions
+Only visible user and assistant messages are memory sources. The assistant's
+reported findings, project updates and explicit actions can be extracted as
+stated. Tool results, mail bodies, attachments, terminal output, hidden reasoning
+and system/developer instructions are excluded. This applies to direct capture,
+host hooks, Hermes and new processing of legacy inbox records. Old capture
+configuration cannot opt tool extraction back in.
 
-The host supplies physical user events or actual matched current-turn tool
-call/results. Assistant synthesis, a caller-supplied digest, and read-back of
-memleaf knowledge cannot independently authorize new writes. Standard memleaf
-resource names and explicit paths into the current Vault are treated as
-read-back, including aliased filesystem tools. Undeclared/relative resources
-cannot always be identified; adapters must supply meaningful resource identity.
+Keep uncertainty, attribution, conditions, suggestions and questions intact.
+An assistant recommendation is not a user decision; an offer to act is not a
+completed action. Existing memory can be read for comparison and deduplication,
+but a restatement alone is NO_CHANGE. Extraction does not independently verify
+the assistant's report against raw external sources.
 
-Evidence inventory IDs depend on captured event/source locations, not candidate
-numbering or unrelated inventory order. User origin/syntax labels are hints,
-not the final semantic classification. One example request does not mark an
-independent real assertion as hypothetical. Actual pasted documents/code may
-be evidence; examples, suggestions and hypothetical content are not new facts.
+## Admission and coverage
 
-The Gate still decides future value, entailment, semantic role, ownership and
-CREATE/UPDATE/NO_CHANGE. Each writable candidate quotes actual evidence units.
-Core validates the unit/event identity, physical source, exact text and bounds.
-Summary title/body dates are also checked against the admitted source spans.
-Current user timestamps can anchor supported relative dates; external retrieval
-timestamps cannot. An explicit yearless source date can remain yearless, and
-an update may preserve dates already present in its selected target. Neither
-case authorizes inventing a new year or borrowing dates from another memory.
-Start/end are relative to unit.text; they may both be omitted for a unique exact
-quotation, in which case Core locates it without model character counting.
-The model may instead explicitly select a complete supplied unit with
-`unit_id`, `whole_unit: true`, and `role`, omitting quote/start/end. Core resolves
-the original text and canonical offsets from that same batch's inventory.
-This avoids copying multiline text back through the model; it does not repair
-an inaccurate quote, grant authority to metadata or assistant text, or prove
-semantic entailment. Both forms use the same downstream source checks.
-An unregistered model-generated project name must also be supported by that
-candidate's own bound source unit. A name introduced only in the model's
-proposal cannot establish a new Scope. Registered names/aliases and explicit
-user/session scope attribution keep their existing rules.
-Malformed/ambiguous references fail the contract. Matching a quote proves
-provenance, not semantic truth. This mechanism is not a universal NLP proof.
+User clauses retain stable event/quote references. Each complete assistant reply
+is one source unit, preserving headings and topic context instead of expanding
+one summary into dozens of sequential Gate batches. A unit can support several
+candidates using distinct exact quotes. Gate still classifies future reuse and
+CREATE/UPDATE/NO_CHANGE, while Core checks source references, Scope, target type,
+dates and revisions. Reference validation is not proof of semantic correctness.
 
-Core keeps the complete evidence inventory for audit, replay and input digests.
-The Gate receives a bounded physical-source projection: all user-origin units
-and complete current-turn external observations are included, while assistant
-prose, retrieved memory and incomplete observations remain host-side context or
-unresolved ledger entries. This is a provenance boundary, not a semantic
-classification; query, example and quoted-document hints remain visible to the
-Gate so it can judge them in context.
-
-Legacy candidate-only output has no n-gram or short-text authorization bypass.
-It must repeat a complete non-query source statement, or produce an explicit
-validated quotation via the bounded correction path. Automatic summarization
-sees only admitted spans, candidate semantics and the bounded existing-target
-context. Its source references must stay within admitted event keys. Final
-scope/type/target/date checks remain active.
-
-## Coverage, limits and no-op behavior
-
-A Gate response always has the top-level fields `candidates`, `coverage` and
-`evidence_bindings`. When physical evidence units are supplied, `coverage` must
-contain exactly one row for each supplied unit, including units the model marks
-`NO_CHANGE` or `DEFERRED`; an omitted or empty coverage list is incomplete in
-that case. With zero physical units, the complete no-admission object is
-`{"candidates":[],"coverage":[],"evidence_bindings":[]}`. A Gate may map
-multiple facts in one evidence unit to several candidates, or one candidate to
-several units. Coverage is checked against real supplied IDs. One source-neutral
-correction can classify missing units; its candidates pass the same
-validator/deduplication path, never a post-Gate business-pattern writer.
-Legacy candidate-only output remains compatible when a candidate already has
-validated exact or bound physical support. Any remaining physical unit without
-coverage or validated candidate support is sent through bounded correction and
-remains unresolved; it cannot silently authorize inbox cleanup.
-Evidence failures retain the public `invalid_evidence` category and may expose
-an allowlisted `evidence_check` such as an unknown unit, duplicate row, invalid
-span or incomplete coverage. Diagnostic state never stores raw model output or
-error text.
-Tool records retained as `metadata` may remain visible in the event envelope for
-diagnostics, but they are not evidence units and cannot be bound by call ID,
-digest, tool name or other metadata. They therefore require no coverage row and
-cannot authorize CREATE/UPDATE. Coverage reasons are normalized at the boundary:
-`query_only`, `assistant_restatement`, `retrieved_memory_only`, `no_future_value`,
-duplicate/example and completed/negated reasons resolve to `NO_CHANGE`; unresolved
-coverage, ownership, target or Scope reasons remain `DEFERRED`.
-Already valid siblings survive a malformed correction. Work that remains
-ambiguous is retained and explicitly reported, not guessed into a global scope.
-
-Evidence decisions, candidate dispositions and filesystem operations are
-separate ledgers. `execution_status=ok` is not complete extraction:
-`coverage_status=partial` plus `unresolved_evidence_count` describes remaining
-work. Known incomplete/missing observations remain unresolved even when a model
-labels them NO_CHANGE. Incomplete turns retain their source instead of being
-cleaned after the usual grace period. Scope-filtered retries may revisit them;
-no endless automatic model retry or extra external tool call is introduced.
-
-`external_evidence_status` reports the effective capture-policy and physical
-source boundary separately from model coverage. Its detail object counts raw
-external records, usable retained body records/bytes, and metadata-only,
-incomplete or unusable records. `available` means complete source text is
-available to the planner; it is not a semantic extraction verdict or proof
-that the host read an entire underlying document. Error and partial native
-execution outputs do not gain authority merely because they contain text.
-
-Native Hermes terminal/code `output` envelopes are projected as observed text,
-with execution and host truncation kept as metadata. Explicit text record
-dividers retain each record's header and paragraphs in one exact source span;
-arbitrary application JSON remains JSON. Historical document dates must not
-be shifted to the time at which a tool retrieved the document.
-
-Tool evidence uses one shared budget: 64 source records, at most 32 KiB of UTF-8
-body text per record and 128 KiB of total body text, plus 320-character metadata
-fields, with redaction at Core capture. Cache and inbox normalization are
-idempotent under this budget. Large unambiguous top-level record collections
-retain complete records and enclosing context within that budget. Per-record provenance takes
-precedence over common source metadata. Separate loss markers report omitted
-records, with at most 64 call identities plus one aggregate marker. These markers
-have fixed diagnostic bodies and cannot supply external facts.
-Arbitrary large prose is not split into falsely complete facts;
-unsupported/incomplete content needs a supported complete source excerpt or a
-later source input. Switching from `metadata` to `bounded` does not reconstruct
-body content that was never captured; bounded retention can still produce an
-unknown or overflow record when the adapter/result exceeds its capture limits.
-Execution outcome and completeness are distinct.
-
-Codex pending tool data retains sixteen turns; bounded tombstones make evicted
-uncaptured evidence visible as incomplete. Older loss beyond 256 tombstones
-leaves a session diagnostic only; it does not mark unrelated future turns as
-incomplete. Successfully captured observations are consumed from the host cache.
-No old observation is attached as a new fact to a different turn.
-
-Automatic NO_CHANGE does not modify permanent Markdown, sources or history.
-Processing watermarks/diagnostics may still advance: these are not permanent
-memory ownership. Existing native-memory coexistence, global shared Vault
-visibility and Scope Map/search/read contracts remain unchanged.
+Only the visible conversation requires coverage. Ignored tool errors, truncated
+outputs and old tool bodies do not create unresolved evidence. The compatibility
+status `external_evidence_status` is `disabled`. Ambiguous conversation content
+can still be deferred; no missing date, owner or project is invented.
 
 ## Commit and recovery
 
@@ -156,15 +50,20 @@ from the initial Gate context, a bounded target reconciliation stage compares
 the validated proposal and its evidence against the current records. The model
 chooses CREATE, UPDATE, NO_CHANGE or DEFERRED; an UPDATE must explicitly retain
 the target's type. Insufficient or oversized context defers the proposal.
-This contract is shared by conversation, document and arbitrary tool evidence.
+This contract applies only to evidence admitted from the visible conversation.
 
-Final automatic UPDATE proposals receive a separate semantic review after
-same-target consolidation. The reviewer compares the selected current target,
+Final automatic CREATE and UPDATE proposals receive a separate semantic review
+after consolidation. For updates, the reviewer compares the selected current target,
 admitted source spans and proposed replacement, retaining still-valid old
 information unless current evidence supersedes it. It can accept, revise,
 return NO_CHANGE or defer. Revisions must pass the same source, date, type,
 Scope and target checks; review failure preserves the original memory. This
 adds a bounded model stage, not a local text-concatenation or keyword rule.
+The reviewer may use the bound span's full current visible message to resolve
+negation and references without treating unbound text as new fact authority.
+Validated scope operations and native shadow metadata do not bypass review of
+the memory content; review cannot add or change those operations. Explicit
+remember and deterministic scope correction retain their separate paths.
 Automatic duplicate observations remain NO_CHANGE ledger entries and do not
 enter the mutation batch as empty metadata operations.
 
@@ -186,6 +85,21 @@ cross-project target selection does not inherit this special authorization.
 Conflicting same-turn writes to one target are deferred/rejected rather than
 silently applied in sequence. This remains forward recovery, not a database
 transaction across the whole Vault filesystem.
+
+## Background processing
+
+Automatic host capture submits `process` with `background: true`. The MCP call
+persists a bounded local job and returns an opaque `job_id` with
+`completed: false`; it does not claim that a memory write has completed. A
+detached local worker later invokes the same processor and records
+`succeeded`, `deferred`, or `failed` plus bounded counts and memory IDs. A
+read-only `process_status` call reports that record. Repeated submissions for
+one source/session share the active job and request one follow-up run, so a
+new visible turn is not processed concurrently. Jobs remain in Vault runtime
+state and a dead worker is requeued on the next enqueue or status read.
+
+The explicit synchronous `process` request remains available by omitting
+`background` or setting it to `false`.
 
 ## Read-only inspection
 
@@ -243,10 +157,11 @@ secret `MEMLEAF_LIVE_MODEL_TOKEN` and variables `MEMLEAF_LIVE_BASE_URL` and
 `MEMLEAF_LIVE_MODEL`. Missing configuration is a blocked acceptance result,
 not a passing semantic test. Never publish based only on deterministic mocks.
 
-## Capture policy (shared-core refactor)
+## Capture policy
 
-Tool evidence is controlled by `capture.tool_evidence_mode`; only explicitly
-identified attachment evidence also requires the attachment opt-in. The same policy runs before cache/inbox writes
-and new model-planning calls. Intentional exclusion is not missing evidence.
-See [retention contract](evidence-retention.md) for legacy settings, plaintext
-metadata, opaque-resource limitations and the distinction from explicit forget.
+New vaults use `tool_evidence_mode: off` and `include_attachments: false`.
+Legacy values are accepted on read, but effective capture always drops tool
+payloads. Status reports the effective policy. Existing committed memories are
+not deleted. New frozen plans carry `conversation_only_v1`; older plans without
+that marker fail closed instead of replaying source decisions from the former
+external-evidence policy. The journal remains available for explicit recovery.

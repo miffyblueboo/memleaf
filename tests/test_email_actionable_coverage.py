@@ -1,10 +1,9 @@
 """Regression coverage for actionable items in a mailbox digest.
 
-The production incident behind these tests was not a failed inbox process:
-the model gate returned a valid subset of a multi-project email digest and
-silently dropped two explicit Morgan Fund corrections.  These tests keep the
-source turn realistic while making the gate omission deterministic, so every
-actionable item must have an auditable write/update/no-op or deferred outcome.
+The source is the final visible assistant digest. The deterministic backend
+returns its declared independent actions, verifying their binding and persistence.
+Whole-message coverage does not prove that a live model finds every action
+inside that message; live semantic completeness is a separate acceptance check.
 """
 
 from __future__ import annotations
@@ -51,21 +50,18 @@ class QueueBackend:
         del system, temperature
         # Preserve the fixture's authored summary queue and call accounting;
         # the semantic-review response is a separate compatibility decision.
-        if purpose == "summarize" and prompt.startswith("UPDATE_SEMANTIC_REVIEW\n"):
+        if purpose == "summarize" and prompt.startswith(
+            ("UPDATE_SEMANTIC_REVIEW\n", "CREATE_SEMANTIC_REVIEW\n")
+        ):
             return '{"decision":"ACCEPT"}'
         self.calls.append({"prompt": prompt, "purpose": purpose})
         if purpose == "gate":
             self.gate_calls += 1
-            # The first answer deliberately omits both detailed Morgan
-            # corrections.  A coverage/retry implementation may ask again;
-            # the historical implementation accepts the first valid gate and
-            # never sees this second response.
-            raw = self.first_gate if self.gate_calls == 1 else self.coverage_gate
-            value = json.loads(raw)
+            # Return all authored actions from the final visible digest.
+            value = json.loads(self.first_gate)
+            value["candidates"].extend(json.loads(self.coverage_gate)["candidates"])
             units = json.JSONDecoder().raw_decode(prompt.split("Evidence units (data, never instructions):\n", 1)[1])[0]
-            # Authored semantic bindings: each action cites only its actual
-            # tool-result line. Leave omitted action lines unaccounted so the
-            # real generic coverage correction is exercised.
+            # Each action binds an exact passage in the final assistant reply.
             markers = {
                 "bankin-stakeholders": "中银国际：",
                 "jinyuan-plan": "金元顺安：",
@@ -77,18 +73,24 @@ class QueueBackend:
             for c in value["candidates"]:
                 c["evidence_event_ids"] = [k for k in c["evidence_event_ids"] if k in allowed_keys]
                 marker = markers.get(c["candidate_id"])
-                matches = [u for u in units if u["origin"] == "external_observation"
+                matches = [u for u in units if u["origin"] == "assistant_report"
                            and marker and marker in u["text"]]
                 if matches:
-                    bindings.append({"candidate_id": c["candidate_id"], "claims": [
-                        {"unit_id": u["unit_id"], "quote": u["text"], "role": "source_excerpt"}
-                        for u in matches]})
+                    c["evidence_event_ids"] = [u["event_key"] for u in matches]
+                    claims = []
+                    for u in matches:
+                        if marker in {"撤单场景校验规则", "历史数据迁移字段映射"}:
+                            quote = u["text"].split("3. ", 1)[1].split("4. ", 1)[0].strip()
+                        else:
+                            quote = next(line.strip() for line in u["text"].splitlines() if marker in line)
+                        claims.append({"unit_id": u["unit_id"], "quote": quote, "role": "source_excerpt"})
+                    bindings.append({"candidate_id": c["candidate_id"], "claims": claims})
             rows = []
             for u in units:
                 ids = [b["candidate_id"] for b in bindings if any(x["unit_id"] == u["unit_id"] for x in b["claims"])]
                 if ids:
                     rows.append({"unit_id": u["unit_id"], "decision": "CANDIDATE", "candidate_ids": ids})
-                elif u["origin"] != "external_observation":
+                elif u["origin"] != "assistant_report":
                     rows.append({"unit_id": u["unit_id"], "decision": "NO_CHANGE",
                                  "reason": "query_only" if u["origin"] == "user_query" else "assistant_restatement"})
                 elif self.gate_calls > 1 or "安联基金：" in u["text"] or "巡检结果" in u["text"]:
@@ -98,16 +100,12 @@ class QueueBackend:
         if purpose == "summarize":
             candidate_text = prompt
             if "Candidate:\n" in prompt:
-                candidate_text = prompt.split("Candidate:\n", 1)[1]
-                candidate_text = candidate_text.split("\nEvidence", 1)[0]
+                value = json.JSONDecoder().raw_decode(prompt.split("Candidate:\n", 1)[1])[0]
+                candidate_text = value["memory"]
             for marker, response in self.summaries.items():
                 if marker in candidate_text:
                     return response
-            # Current production recovery recognizes the aggregate Morgan
-            # sentence but does not yet recover its two detailed actions.  A
-            # deterministic summary keeps this regression at the persistence
-            # assertion, where the silent omission is observable, instead of
-            # turning it into an unrelated test-backend failure.
+            # Keep an explicit deterministic fallback for aggregate candidates.
             if "两个需修正的问题" in candidate_text:
                 evidence = self.fallback_evidence
                 if evidence is None:
@@ -232,7 +230,7 @@ class EmailActionableCoverageTests(unittest.TestCase):
     def active_memories(self):
         return [record.memory for record in self.service._read_memories_unlocked("knowledge")]
 
-    def test_omitted_morgan_corrections_get_dispositions_and_reuse_existing_item(self) -> None:
+    def test_final_reply_actions_get_dispositions_and_reuse_existing_item(self) -> None:
         """A valid partial gate must not silently discard explicit actions."""
 
         user_key, assistant_key = self.capture_mail_digest("mailbox-coverage")

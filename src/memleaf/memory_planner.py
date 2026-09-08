@@ -1402,7 +1402,7 @@ class MemoryPlanner:
                     if _summary_date_grounding_violations(
                         parsed,
                         grounded_dates=grounded_summary_dates,
-                        source_texts=[event.get("content", "") for event in admitted_summary_events if event.get("role") in {"user", "tool"}],
+                        source_texts=[event.get("content", "") for event in admitted_summary_events if event.get("role") in {"user", "assistant"}],
                         preserved_texts=(summary_target.title, summary_target.body, summary_target.due_date) if summary_target else (),
                     ):
                         raise ModelOutputError("summary contains a date absent from its admitted evidence", validation_detail="relative_time")

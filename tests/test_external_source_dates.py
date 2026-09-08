@@ -80,7 +80,7 @@ class ExternalSourceDateTests(unittest.TestCase):
         dates = _grounded_due_dates(turn, evidence_events=projection)
 
         self.assertIn("2026-09-09", dates)  # user 本周三, anchored to Sep 7
-        self.assertIn("2026-08-31", dates)  # explicit external source date
+        self.assertNotIn("2026-08-31", dates)  # tool bodies are never admitted
         self.assertNotIn("2026-09-02", dates)  # external yearless date
         self.assertNotIn("2026-09-08", dates)  # external relative date
         self.assertNotIn("2026-09-07", dates)  # retrieval timestamp
@@ -100,7 +100,7 @@ class ExternalSourceDateTests(unittest.TestCase):
 
         dates = _grounded_due_dates(turn, evidence_events=projection)
 
-        self.assertEqual(dates, {"2026-09-02"})
+        self.assertEqual(dates, set())
 
     def test_external_relative_due_date_is_rejected_by_final_summary_validation(self) -> None:
         turn = self.turn("原文日期为 2026-09-02，截止明天。")
@@ -135,7 +135,7 @@ class ExternalSourceDateTests(unittest.TestCase):
             )
         self.assertEqual(raised.exception.validation_detail, "due_date_not_grounded")
 
-    def test_external_summary_relative_dates_are_not_rewritten(self) -> None:
+    def test_final_reply_summary_dates_use_message_timestamp_not_tool_body(self) -> None:
         turn = self.turn("原文日期为 2026-09-02。")
         summary = {
             "title": "外部事项",
@@ -154,7 +154,8 @@ class ExternalSourceDateTests(unittest.TestCase):
             {"evidence_event_ids": [self.ASSISTANT_KEY]},
         )
 
-        self.assertEqual(parse_strict_json(normalized), summary)
+        self.assertEqual(parse_strict_json(normalized)["due_date"], "2026-09-09")
+        self.assertNotIn("2026-09-02", normalized)
 
     def test_user_summary_relative_dates_use_user_event_timestamp(self) -> None:
         turn = self.turn("原文日期为 2026-09-02。")

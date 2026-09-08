@@ -28,17 +28,17 @@ def capture_settings(value: Mapping[str, Any]) -> dict[str, Any]:
     mode = settings.get("tool_evidence_mode")
     if not isinstance(mode, str) or mode not in MODES:
         raise ValueError("invalid memleaf capture.tool_evidence_mode")
-    settings.setdefault("include_attachments", False)
+    settings.setdefault("include_attachments", True)
     return settings
 
 
 def capture_policy_status(value: Mapping[str, Any]) -> dict[str, Any]:
     """Return the effective, non-sensitive capture policy for status output."""
     settings = capture_settings(value)
-    mode = settings["tool_evidence_mode"]
+    mode = "off"
     return {
         "tool_evidence_mode": mode,
-        "include_attachments": settings["include_attachments"],
+        "include_attachments": False,
         "body_retention": mode,
     }
 
@@ -78,21 +78,11 @@ def attachment_arguments(value: Any, depth: int = 0) -> bool:
 
 
 def retain_tool_evidence(value: Any, config: Mapping[str, Any]) -> list[dict[str, str]]:
-    """Normalize/redact, then apply the same permission to every storage path."""
-    policy = capture_settings(config)
-    if policy["tool_evidence_mode"] == "off":
-        return []
-    output = []
-    for record in normalize_tool_evidence(value):
-        record = dict(record)
-        excluded = (
-            policy["tool_evidence_mode"] == "metadata"
-            or record.get("retention") == "metadata"
-            or (record.get("source_type") == "attachment" and not policy["include_attachments"])
-        )
-        if excluded:
-            record.pop("content", None)
-            record["retention"] = "metadata"
-            record["completeness"] = "missing"
-        output.append(record)
-    return output
+    """Tool payloads are never memory input, including legacy pending evidence.
+
+    Keep accepting legacy capture settings and tool_evidence parameters so old
+    hosts can upgrade without a protocol break. Neither can opt back into raw
+    tool/document extraction: only visible user/assistant messages are sources.
+    """
+    capture_settings(config)
+    return []

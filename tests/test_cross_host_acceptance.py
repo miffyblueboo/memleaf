@@ -8,8 +8,10 @@ import unittest
 from memleaf import Memleaf
 from memleaf.host_runtime import HostRuntime
 from memleaf.index import event_key
+from tests.semantic_fixtures import semantic_fixture
 
 
+@semantic_fixture
 class _QueueBackend:
     provider = "fake"
     model = "cross-host-acceptance"

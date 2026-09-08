@@ -77,11 +77,12 @@ INSTRUCTIONS = (
     "duplicating native memory that the target host already loads. "
     "Capture only user-visible and assistant-visible text. Never capture system or developer "
     "messages or hidden reasoning. Do not place raw tool output or attachment bodies in "
-    "visible-message content. Matched current-turn tool_evidence is governed by the Vault's "
-    "capture.tool_evidence_mode (bounded, metadata, off); only evidence explicitly labeled "
-    "source_type=attachment is additionally gated by "
-    "include_attachments; ordinary structural file/document results follow the mode. "
+    "visible-message content. Memory is extracted only from visible user and assistant "
+    "conversation, including findings already reported in the assistant reply. Legacy "
+    "tool_evidence parameters are ignored and cannot enable raw-source extraction. "
     "Process only complete user+assistant turns; do not process incomplete turns. "
+    "Automatic hosts may pass background=true to enqueue processing and then use "
+    "process_status; accepted does not mean completed. "
     "Use remember only when the user explicitly asks to remember something. If the user has "
     "previously or currently explicitly said not to record corresponding text, skip capture for it. "
     "For text already persisted, use forget_memory or forget_about only when its target is "
@@ -144,6 +145,7 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                 "record": {"type": "boolean"},
                 "visible": {"type": "boolean"},
                 "tool_evidence": {
+                    "description": "Deprecated compatibility field; ignored. Only visible conversation is memory input.",
                     "type": "array",
                     "items": _object_schema(
                         {
@@ -278,8 +280,14 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                 "source": {"type": "string"},
                 "session_id": {"type": "string"},
                 "scope": _text_or_texts_schema(),
+                "background": {"type": "boolean"},
             }
         ),
+    },
+    {
+        "name": "process_status",
+        "description": "Read the status of an accepted background process job.",
+        "inputSchema": _object_schema({"job_id": {"type": "string"}}, required=["job_id"]),
     },
     {
         "name": "remember",
@@ -905,11 +913,26 @@ def _invoke_tool(
                 current_source=current_source,
             )
         elif name == "process":
-            source = args.get("source")
-            if isinstance(source, str) and source:
-                value = HostRuntime(service, source).process(**args)
+            background = args.pop("background", False)
+            if background is True:
+                from .process_jobs import enqueue
+
+                value = enqueue(
+                    service.vault.root,
+                    source=args.get("source", ""),
+                    session_id=args.get("session_id", ""),
+                    scope=args.get("scope"),
+                )
             else:
-                value = service.process(**args)
+                source = args.get("source")
+                if isinstance(source, str) and source:
+                    value = HostRuntime(service, source).process(**args)
+                else:
+                    value = service.process(**args)
+        elif name == "process_status":
+            from .process_jobs import status
+
+            value = status(service.vault.root, job_id=args.get("job_id", ""))
         elif name == "remember":
             value = service.remember(**args)
         elif name == "forget_memory":

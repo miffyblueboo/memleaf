@@ -75,7 +75,7 @@ class DueDateGroundingTests(unittest.TestCase):
             allowed_due_dates=allowed_due_dates,
         )
 
-    def test_bound_tool_absolute_date_is_legal(self) -> None:
+    def test_tool_projection_cannot_ground_a_date(self) -> None:
         projection = [
             {
                 "event_key": "a" * 64,
@@ -87,8 +87,9 @@ class DueDateGroundingTests(unittest.TestCase):
         ]
         dates = _grounded_due_dates(self.turn, evidence_events=projection)
 
-        self.assertEqual(dates, {"2026-09-14"})
-        self.assertEqual(self.parse_todo("2026-09-14", dates)["due_date"], "2026-09-14")
+        self.assertEqual(dates, set())
+        with self.assertRaises(ValueError):
+            self.parse_todo("2026-09-14", dates)
 
     def test_unbound_tool_date_is_not_grounding(self) -> None:
         dates = _grounded_due_dates(self.turn, evidence_events=[])

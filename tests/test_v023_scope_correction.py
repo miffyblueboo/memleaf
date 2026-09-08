@@ -61,19 +61,20 @@ class V023ScopeCorrectionTests(unittest.TestCase):
         projection = scope_registry_projection(config)
         self.assertTrue(all("identifiers" not in item for item in projection))
 
-    def test_bounded_tool_evidence_round_trips_without_becoming_content(self) -> None:
+    def test_tool_evidence_is_excluded_from_conversation_source(self) -> None:
         self.service.capture("hermes", "mail", "t1", "user", "看一下邮件", event_id="u1")
+        visible_assistant = "邮件已检查；可见对话没有给出项目归属。"
         self.service.capture(
-            "hermes", "mail", "t1", "assistant", "邮件已检查", event_id="a1",
+            "hermes", "mail", "t1", "assistant", visible_assistant, event_id="a1",
             tool_evidence=[{"message_id": "42", "subject": "流程", "sender": "x <a@xyamc.com>", "domain": "xyamc.com"}],
         )
         path = self.service.vault.session_path("hermes", "mail")
         text = path.read_text(encoding="utf-8")
-        self.assertNotIn("a@xyamc.com", "邮件已检查")
+        self.assertNotIn("a@xyamc.com", text)
         turn = next(turn for turn in parse_inbox_text(text, source="hermes", session_id="mail") if turn.complete)
         assistant = next(event for event in turn.events if event.role == "assistant")
-        self.assertEqual("xyamc.com", assistant.tool_evidence[0]["domain"])
-        self.assertEqual("邮件已检查", assistant.content)
+        self.assertEqual((), assistant.tool_evidence)
+        self.assertEqual(visible_assistant, assistant.content)
 
     def test_explicit_scope_correction_authorizes_old_target_only(self) -> None:
         old = self._memory("mem-wrong", "project:兴银理财", "流程要求使用双人复核")
@@ -160,7 +161,7 @@ class V023ScopeCorrectionTests(unittest.TestCase):
         self.assertEqual(parsed["candidates"][0]["memory"], memory)
         self.assertEqual(parsed["candidates"][0]["type"], "project")
 
-    def test_unique_mail_domain_conflict_is_detected_without_scope_map_exposure(self) -> None:
+    def test_mail_tool_domain_does_not_resolve_project_scope(self) -> None:
         self.service.capture("hermes", "evidence", "t2", "user", "处理这封邮件", event_id="eu")
         self.service.capture(
             "hermes", "evidence", "t2", "assistant", "已查看", event_id="ea",
@@ -176,8 +177,8 @@ class V023ScopeCorrectionTests(unittest.TestCase):
             "duplicate": False, "type": "project", "scopes": ["project:兴银理财"], "scope_source": "model",
         }
         processor = Processor(self.service)
-        self.assertEqual("project:鑫元基金", processor.inputs._turn_evidence_project_scope(turn, self.service.vault.config()))
-        self.assertTrue(processor.inputs._scope_evidence_conflict(candidate, turn, self.service.vault.config()))
+        self.assertIsNone(processor.inputs._turn_evidence_project_scope(turn, self.service.vault.config()))
+        self.assertFalse(processor.inputs._scope_evidence_conflict(candidate, turn, self.service.vault.config()))
 
 
 if __name__ == "__main__":

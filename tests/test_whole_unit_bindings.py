@@ -45,27 +45,18 @@ class WholeUnitBindingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.document = "Document: rollout checklist\nStatus: approved\nOwner: Team Delta"
 
-    def external_units(self, content: str | None = None):
+    def assistant_units(self, content: str | None = None):
         return analyze_turn_evidence([
             {
                 "role": "assistant",
                 "event_key": "assistant-event",
-                "content": "The document was read.",
-                "tool_evidence": [{
-                    "tool_name": "document.read",
-                    "call_id": "document-call",
-                    "kind": "external_observation",
-                    "result_status": "success",
-                    "execution_status": "success",
-                    "completeness": "complete",
-                    "content": content or self.document,
-                }],
+                "content": content or self.document,
             },
         ])
 
-    def test_multiline_external_whole_unit_canonicalizes_to_exact_full_span(self) -> None:
-        units = self.external_units()
-        unit = next(item for item in units if item.origin == "external_observation")
+    def test_multiline_assistant_whole_unit_canonicalizes_to_exact_full_span(self) -> None:
+        units = self.assistant_units()
+        unit = units[0]
         candidate = _candidate("c", unit.event_key)
 
         checked = validate_bindings(
@@ -114,8 +105,8 @@ class WholeUnitBindingTests(unittest.TestCase):
         self.assertEqual(checked["c"][0]["quote"], unit.text)
 
     def test_whole_unit_shape_is_strict_and_old_quote_path_stays_exact(self) -> None:
-        units = self.external_units()
-        unit = next(item for item in units if item.origin == "external_observation")
+        units = self.assistant_units()
+        unit = units[0]
         candidate = _candidate("c", unit.event_key)
         invalid_claims = (
             {"unit_id": unit.unit_id, "whole_unit": False, "role": "source_excerpt"},
@@ -139,15 +130,19 @@ class WholeUnitBindingTests(unittest.TestCase):
             )
 
     def test_whole_unit_preserves_source_authority_and_batch_scope(self) -> None:
-        units = self.external_units()
-        unit = next(item for item in units if item.origin == "external_observation")
+        units = self.assistant_units()
+        unit = units[0]
         candidate = _candidate("c", unit.event_key)
 
         assistant_unit = analyze_turn_evidence([
             {"role": "assistant", "event_key": "assistant-only", "content": self.document},
         ])[0]
-        with self.assertRaises(ModelOutputError):
-            validate_bindings(_whole_binding("c", assistant_unit.unit_id), (assistant_unit,), [candidate])
+        assistant_candidate = _candidate("assistant", assistant_unit.event_key)
+        validate_bindings(
+            _whole_binding("assistant", assistant_unit.unit_id),
+            (assistant_unit,),
+            [assistant_candidate],
+        )
 
         retrieved = analyze_turn_evidence([
             {
@@ -163,10 +158,11 @@ class WholeUnitBindingTests(unittest.TestCase):
                 }],
             },
         ])
-        retrieved_unit = next(item for item in retrieved if item.origin == "retrieved_memory")
-        retrieved_candidate = _candidate("retrieved", retrieved_unit.event_key)
+        self.assertEqual(len(retrieved), 1)
+        self.assertNotIn(self.document, retrieved[0].text)
+        retrieved_candidate = _candidate("retrieved", retrieved[0].event_key)
         with self.assertRaises(ModelOutputError):
-            validate_bindings(_whole_binding("retrieved", retrieved_unit.unit_id), retrieved, [retrieved_candidate])
+            validate_bindings(_whole_binding("retrieved", "memory-call"), retrieved, [retrieved_candidate])
 
         unknown = replace(unit, origin="unknown", source_role="tool")
         unknown_candidate = _candidate("unknown", unknown.event_key)
@@ -177,8 +173,8 @@ class WholeUnitBindingTests(unittest.TestCase):
         with self.assertRaises(ModelOutputError):
             validate_bindings(_whole_binding("wrong-scope", unit.unit_id), units, [wrong_scope])
 
-        other_units = self.external_units("Other document\nStatus: pending")
-        other_unit = next(item for item in other_units if item.origin == "external_observation")
+        other_units = self.assistant_units("Other document\nStatus: pending")
+        other_unit = other_units[0]
         with self.assertRaises(ModelOutputError):
             validate_bindings(_whole_binding("c", other_unit.unit_id), units, [candidate])
 
@@ -187,13 +183,6 @@ class WholeUnitBindingTests(unittest.TestCase):
                 "role": "assistant",
                 "event_key": "metadata-event",
                 "content": "Metadata only.",
-                "tool_evidence": [{
-                    "tool_name": "document.read",
-                    "call_id": "metadata-call",
-                    "kind": "external_observation",
-                    "result_status": "success",
-                    "retention": "metadata",
-                }],
             },
         ])
         metadata_candidate = _candidate("metadata", "metadata-event")
@@ -205,8 +194,8 @@ class WholeUnitBindingTests(unittest.TestCase):
             )
 
     def test_confirmation_role_still_requires_user_source(self) -> None:
-        units = self.external_units()
-        unit = next(item for item in units if item.origin == "external_observation")
+        units = self.assistant_units()
+        unit = units[0]
         candidate = _candidate("c", unit.event_key)
 
         with self.assertRaises(ModelOutputError):
@@ -252,21 +241,25 @@ class WholeUnitProcessIntegrationTests(unittest.TestCase):
             self.seen_multiline_summary_evidence = False
 
         def complete(self, prompt: str, *, purpose: str = "", **_: object) -> str:
+            if purpose == "summarize" and prompt.startswith(
+                ("UPDATE_SEMANTIC_REVIEW\n", "CREATE_SEMANTIC_REVIEW\n")
+            ):
+                return '{"decision":"ACCEPT"}'
             if purpose == "gate":
                 self.gate_calls += 1
                 units = self.owner._units(prompt)
-                external = next(unit for unit in units if unit["origin"] == "external_observation")
+                assistant = next(unit for unit in units if unit["source_role"] == "assistant")
                 self.seen_whole_claim = True
                 candidate = self.owner._candidate(
                     "document-candidate",
-                    external,
+                    assistant,
                     duplicate=self.target_memory_id is not None,
                     worth=self.target_memory_id is None,
                     duplicate_memory_id=self.target_memory_id,
                 )
                 coverage = []
                 for unit in units:
-                    if unit["unit_id"] == external["unit_id"]:
+                    if unit["unit_id"] == assistant["unit_id"]:
                         coverage.append({
                             "unit_id": unit["unit_id"],
                             "decision": "CANDIDATE",
@@ -284,7 +277,7 @@ class WholeUnitProcessIntegrationTests(unittest.TestCase):
                     "evidence_bindings": [{
                         "candidate_id": candidate["candidate_id"],
                         "claims": [{
-                            "unit_id": external["unit_id"],
+                            "unit_id": assistant["unit_id"],
                             "whole_unit": True,
                             "role": "source_excerpt",
                         }],
@@ -329,7 +322,7 @@ class WholeUnitProcessIntegrationTests(unittest.TestCase):
             "whole-unit-session",
             f"turn-{suffix}",
             "assistant",
-            "The document was read.",
+            self.document,
             event_id=f"assistant-{suffix}",
             tool_evidence=[{
                 "tool_name": "document.read",
@@ -338,7 +331,7 @@ class WholeUnitProcessIntegrationTests(unittest.TestCase):
                 "result_status": "success",
                 "execution_status": "success",
                 "completeness": "complete",
-                "content": self.document,
+                "content": "RAW_TOOL_SOURCE",
             }],
         )
 

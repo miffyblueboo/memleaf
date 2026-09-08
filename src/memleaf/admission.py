@@ -74,11 +74,11 @@ class EvidenceUnit:
     @property
     def can_support(self) -> bool:
         """Physical authority, deliberately independent of a syntax hint."""
-        return self.source_role == "user" or self.origin == "external_observation"
+        return self.source_role in {"user", "assistant"}
 
     @property
     def eligible(self) -> bool:
-        return self.origin in {"user_assertion", "external_observation"}
+        return self.origin in {"user_assertion", "assistant_report"}
 
     def to_dict(self) -> dict[str, Any]:
         value = {"unit_id": self.unit_id, "event_key": self.event_key,
@@ -413,7 +413,11 @@ def analyze_turn_evidence(events: Iterable[Mapping[str, Any]]) -> tuple[Evidence
 
     def inventory(key: str, role: str, text: str, meta: Mapping[str, Any] | None = None) -> None:
         meta = meta or {}
-        if role == "external":
+        if role == "assistant":
+            # Preserve the complete visible reply so headings, qualifications,
+            # project names and findings stay together in one model input.
+            fragments = [(0, len(text), text, "plain", ())] if text.strip() else []
+        elif role == "external":
             # A tool result is one physical source record.  Splitting it on
             # punctuation made JSON/document bodies look like thousands of
             # independent claims and forced the Gate to account for each comma.
@@ -446,7 +450,7 @@ def analyze_turn_evidence(events: Iterable[Mapping[str, Any]]) -> tuple[Evidence
             elif role == "external":
                 origin = str(meta.get("origin", "unknown"))
             else:
-                origin = "assistant_synthesis"
+                origin = "assistant_report"
             identity = [key, role, start, end, clause, meta.get("call_id"), meta.get("record_id")]
             uid = "u-" + hashlib.sha256(json.dumps(identity, ensure_ascii=False,
                 separators=(",", ":")).encode()).hexdigest()[:24]
@@ -460,37 +464,25 @@ def analyze_turn_evidence(events: Iterable[Mapping[str, Any]]) -> tuple[Evidence
     for event in events:
         key = str(event.get("event_key", ""))
         role = str(event.get("role", ""))
-        inventory(key, role, str(event.get("content", "")))
-        for record in event.get("tool_evidence", ()) or ():
-            if not isinstance(record, Mapping):
-                continue
-            if record.get("retention") == "metadata":
-                # Intentional capture policy is not an unresolved observation.
-                continue
-            body = record.get("content")
-            if not isinstance(body, str) or not body.strip():
-                # Keep absence visible without pretending this diagnostic is
-                # original source content or allowing it to authorize a write.
-                inventory(key, "external", "Tool observation has no retained source content.",
-                    {**record, "record_id": record.get("record_id") or record.get("message_id"), "origin": "unknown"})
-                continue
-            kind = record.get("kind")
-            if kind == "retrieved_memory":
-                origin = "retrieved_memory"
-            elif (record.get("tool_name") and record.get("call_id")
-                  and kind == "external_observation"
-                  and record.get("result_status") == "success"
-                  and record.get("execution_status", "success") == "success"
-                  and record.get("completeness", "complete") == "complete"):
-                origin = "external_observation"
-            else:
-                origin = "unknown"
-            inventory(key, "external", body, {**record, "origin": origin})
+        if role in {"user", "assistant"}:
+            inventory(key, role, str(event.get("content", "")))
+        # Raw tools, attachments, retrieved snippets and legacy tool_evidence
+        # are outside the conversation-only extraction boundary.
     return tuple(output)
 
 
+def memory_writes_disabled(units: Iterable[EvidenceUnit]) -> bool:
+    """An explicit user instruction not to change memory wins over a reply."""
+    return any(
+        unit.source_role == "user"
+        and _READ_ONLY_CONTROL.fullmatch(unit.text.strip().rstrip("。.!！?？"))
+        for unit in units
+    )
+
+
 def read_only_turn(units: Iterable[EvidenceUnit]) -> bool:
-    return not any(unit.eligible for unit in units)
+    units = tuple(units)
+    return memory_writes_disabled(units) or not any(unit.eligible for unit in units)
 
 
 def _canonical_text(text: str) -> str:
@@ -646,7 +638,7 @@ def supporting_units(candidate: Mapping[str, Any], units: Iterable[EvidenceUnit]
     if bindings is not None:
         by_id = {u.unit_id: u for u in units}
         return tuple(replace(by_id[b["unit_id"]], text=b["quote"],
-                     origin="user_assertion" if by_id[b["unit_id"]].source_role == "user" else "external_observation")
+                     origin="user_assertion" if by_id[b["unit_id"]].source_role == "user" else "assistant_report")
                      for b in bindings if b["unit_id"] in by_id and by_id[b["unit_id"]].can_support)
     # Compatibility path: no n-gram overlap or short-text bypass. A legacy
     # candidate must repeat a WHOLE non-query statement. Other paraphrases
@@ -663,6 +655,8 @@ def supporting_units(candidate: Mapping[str, Any], units: Iterable[EvidenceUnit]
 
 def admission_reason(candidate: Mapping[str, Any], units: Iterable[EvidenceUnit]) -> tuple[str | None, tuple[EvidenceUnit, ...]]:
     units = tuple(units)
+    if memory_writes_disabled(units):
+        return "read_only_query", ()
     if not candidate.get("_evidence_bindings") and not any(u.eligible for u in units):
         return ("quoted_or_example" if any(u.origin == "quoted_or_example" for u in units)
                 else "read_only_query"), ()
@@ -672,7 +666,14 @@ def admission_reason(candidate: Mapping[str, Any], units: Iterable[EvidenceUnit]
     if candidate.get("type") == "todo":
         # Negative or third-party facts may still be retained as facts or used
         # for a verified state update. They must not become a new active task.
-        if not candidate.get("update_memory_id"):
+        # A validated model binding can intentionally select a complete
+        # assistant reply containing several independent statements.  The
+        # source-neutral semantic review owns polarity, completion and
+        # ownership for that path; scanning the full binding here would let a
+        # sibling clause suppress an otherwise actionable candidate.  Keep
+        # the historical regex guard for legacy whole-statement candidates
+        # that have no explicit binding.
+        if not candidate.get("update_memory_id") and not candidate.get("_evidence_bindings"):
             text = "\n".join(u.text for u in support)
             if _NEGATIVE_TASK.search(text):
                 return "negated_action", support
@@ -1011,6 +1012,6 @@ def summary_evidence(candidate: Mapping[str, Any], units: Iterable[EvidenceUnit]
     """
     support = supporting_units(candidate, units)
     timestamps = {event.get("event_key"): event.get("timestamp") for event in events}
-    return [{"event_key": unit.event_key, "timestamp": timestamps.get(unit.event_key), "role": "user" if unit.source_role == "user" else "tool",
+    return [{"event_key": unit.event_key, "timestamp": timestamps.get(unit.event_key), "role": unit.source_role,
              "content": unit.text, "evidence_origin": unit.origin, "unit_id": unit.unit_id,
              "section_path": list(unit.section_path)} for unit in support]

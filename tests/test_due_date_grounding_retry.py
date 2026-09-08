@@ -11,7 +11,7 @@ from memleaf import Memleaf
 from memleaf.index import event_key
 from memleaf.llm import ModelOutputError
 from memleaf.prompts import RELATIVE_TIME_CORRECTION
-from tests.semantic_fixtures import bind_response
+from tests.semantic_fixtures import bind_response, semantic_fixture
 
 
 def _candidate(candidate_id: str, source_key: str, *, type: str, memory: str) -> dict[str, object]:
@@ -41,6 +41,7 @@ def _summary(source_key: str, *, type: str, title: str, body: str, **extra: obje
     return json.dumps(value, ensure_ascii=False)
 
 
+@semantic_fixture
 class _Backend:
     def __init__(self, responses: list[str], source_key: str):
         self.responses = list(responses)

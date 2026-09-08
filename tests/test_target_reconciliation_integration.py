@@ -26,7 +26,7 @@ class Backend:
         raise AssertionError('Duplicate must not reach summarize')
 
 class TargetReconciliationIntegrationTests(unittest.TestCase):
-    def test_late_duplicate_is_no_write_for_conversation_document_and_generic_tool(self):
+    def test_late_duplicate_from_final_reply_is_no_write_regardless_of_tools(self):
         for tool in (None, 'document.read', 'arbitrary_observer'):
             with self.subTest(tool=tool), tempfile.TemporaryDirectory() as root:
                 core = Memleaf(Path(root)/'vault')
@@ -37,7 +37,7 @@ class TargetReconciliationIntegrationTests(unittest.TestCase):
                 text = 'alpha stores records in PostgreSQL.'
                 core.capture('hermes','s','t','user',text if tool is None else 'Review the retrieved information.', event_id='u')
                 evidence = None if tool is None else [dict(tool_name=tool, call_id='observed', kind='external_observation', result_status='success', execution_status='success', completeness='complete', source_type='tool_result', content=text)]
-                core.capture('hermes','s','t','assistant','Reviewed.',event_id='a',tool_evidence=evidence)
+                core.capture('hermes','s','t','assistant','Reviewed.' if tool is None else text,event_id='a',tool_evidence=evidence)
                 backend = Backend(event_key('u' if tool is None else 'a'))
                 before = {str(p):p.read_bytes() for p in core.vault.list_markdown('knowledge')}
                 # Reproduce a turn-wide bounded lookup missing the target.

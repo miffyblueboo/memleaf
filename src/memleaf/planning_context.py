@@ -448,9 +448,9 @@ class PlanningContext:
         physical_units = tuple(physical_units or ())
         physical_queries = self._physical_query_texts(physical_units)
         scope = _safe_scope_background(state, explicit_scope)
-        scoped_external_context = self._has_specific_scope(scope) and any(
+        scoped_reply_context = self._has_specific_scope(scope) and any(
             getattr(unit, "can_support", False) is True
-            and getattr(unit, "origin", None) == "external_observation"
+            and getattr(unit, "origin", None) == "assistant_report"
             for unit in physical_units
         )
         query: str | list[str] = (
@@ -462,7 +462,7 @@ class PlanningContext:
         # admission provenance.  It is a local retrieval hint only.  Its
         # complete source text may contain dates/IDs that intentionally fail
         # the ordinary lexical strictness check, so allow the scoped local
-        # search to return bounded existing bodies when external evidence is
+        # search to return bounded existing bodies when a final assistant report is
         # present.  The native reader/index continue to receive visible text.
         return self._related_query(
             turn,
@@ -470,7 +470,7 @@ class PlanningContext:
             query,
             explicit_scope,
             overlay=overlay,
-            strict_relevance=not scoped_external_context,
+            strict_relevance=not scoped_reply_context,
             native_query=visible,
         )
 
@@ -551,7 +551,7 @@ class PlanningContext:
                     if isinstance(value, str) and value.startswith("project:")}
         registry = config.get("scopes", config)
         for unit in units:
-            if unit.origin != "external_observation" and not unit.section_path:
+            if unit.origin != "assistant_report" and not unit.section_path:
                 continue
             grounded = _project_scope_occurrences("\n".join((*unit.section_path, unit.text)), registry)
             if grounded is None:

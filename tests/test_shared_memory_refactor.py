@@ -114,22 +114,24 @@ class SharedChangeContracts(unittest.TestCase):
             self.core.remember('Orion database now uses PostgreSQL.',scopes=['project:Orion'],model=model)
         self.assertEqual(self.core.read(old.memory_id).body,newer.body)
 
-    def test_successfully_captured_tool_evidence_is_consumed(self):
+    def test_tool_evidence_is_excluded_from_visible_capture(self):
         runtime=HostRuntime(self.core,'codex')
         runtime.capture_visible(session_id='s',turn_id='t',role='user',content='Review the project.')
         runtime.observe_external_tool(session_id='s',turn_id='t',tool_name='github.issue',call_id='call',payload='Orion requires JDK 17.')
-        self.assertEqual(len(runtime._tool_evidence('s','t')),1)
+        self.assertEqual(runtime._tool_evidence('s','t'),[])
         runtime.capture_visible(session_id='s',turn_id='t',role='assistant',content='Reviewed.')
         self.assertEqual(runtime._tool_evidence('s','t'),[])
-        self.assertIn('Orion requires JDK 17.', self.core.vault.session_path('codex','s').read_text(encoding="utf-8"))
+        text=self.core.vault.session_path('codex','s').read_text(encoding="utf-8")
+        self.assertIn('Reviewed.', text)
+        self.assertNotIn('Orion requires JDK 17.', text)
 
-    def test_failed_capture_keeps_tool_evidence(self):
+    def test_failed_visible_capture_keeps_tool_evidence_excluded(self):
         runtime=HostRuntime(self.core,'codex')
         runtime.observe_external_tool(session_id='s',turn_id='t',tool_name='github.issue',call_id='call',payload='Orion requires JDK 17.')
         with patch.object(self.core,'capture',side_effect=OSError('disk full')):
             with self.assertRaises(OSError):
                 runtime.capture_visible(session_id='s',turn_id='t',role='assistant',content='Reviewed.')
-        self.assertEqual(len(runtime._tool_evidence('s','t')),1)
+        self.assertEqual(runtime._tool_evidence('s','t'),[])
 
     def test_old_loss_diagnostic_does_not_taint_a_new_turn(self):
         runtime=HostRuntime(self.core,'codex')

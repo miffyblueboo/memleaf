@@ -1,4 +1,4 @@
-"""Independent semantic review of automatic UPDATE summaries.
+"""Independent semantic review of automatic memory summaries.
 
 The normal summarize call is allowed to propose a complete replacement value
 for an active memory.  This module adds a second, deliberately narrow model
@@ -51,6 +51,19 @@ status/completed_at/due_date fields. For todos keep the proposed status and
 deadline unless the admitted source explicitly authorizes a change.
 
 The active target is the current memory being updated. The admitted source is
+limited to the current turn's visible user input and Agent's final assistant
+reply. Historical conversation turns, intermediate assistant messages and the
+active target or related memories are comparison context, never new source. An
+assistant report may support a stated conclusion, confirmed fact or explicit pending action; questions,
+suggestions, plans, generic acknowledgements, pure restatements and unconfirmed
+claims do not independently establish a new fact or transition. Tool calls, raw
+tool results, attachments and other external payloads are outside the source
+boundary, even when a visible message refers to them. A bounded source_context
+string, when supplied beside an admitted span, is context from that same
+visible user or assistant message only and applies to admitted spans with the
+same event_key and role; use it to resolve negation, reference, ownership,
+scope, or status of each bound span, but never add an unbound fact from it. The
+admitted source is
 the only authority for NEW facts, states, owners, dates, obligations and
 supersessions. The proposed summary is untrusted model output, not source
 evidence. Compare the target and proposal semantically: ACCEPT only when every
@@ -63,9 +76,99 @@ summary must keep the proposal's target ID, type, scopes, scope source and
 admitted source references; it may not switch targets or broaden
 authorization. Use
 NO_CHANGE when the admitted source makes no confirmed change to this target.
+This review is for one candidate topic. Separate deliverables or state
+transitions that can be completed, tracked, or updated independently must not be
+merged into this target merely because they share a source message, project,
+owner, deadline, or coordination step. Keep generic coordination with the
+deliverable it governs. If the proposed summary aggregates independent topics,
+use REVISE only when the proposal remains one topic after removing unsupported
+expansion; if splitting the aggregate would omit an independent sibling, use
+DEFERRED rather than selecting one sibling or approving the aggregate. When the admitted
+source contains sibling claims, keep each claim's polarity, completion state,
+uncertainty, ownership, and scope local to its exact source span; a negative or
+completed clause for one sibling does not suppress or alter another.
+Treat a title or body that lists multiple independently closable deliverables
+under one shared coordination action as an aggregate proposal, even if every
+listed detail is source-supported. Two separately named changes followed by one
+sentence to coordinate them remain separate topics; this is an illustrative
+example, not a fixed-count rule. A single review cannot create the missing
+sibling candidates, so use DEFERRED rather than selecting one sibling, replacing
+them with only the coordination action, or retaining the aggregate.
 Use DEFERRED when preservation, supersession, or contradiction cannot be
 resolved. Never use business keywords, string matching, or unrelated context
 to make the decision. Do not add fields to the response contract.
+"""
+
+
+CREATE_SEMANTIC_REVIEW_SYSTEM = """\
+You are memleaf's independent semantic reviewer for one automatic CREATE.
+Return exactly one strict JSON object and no prose:
+{"decision":"ACCEPT"}
+{"decision":"NO_CHANGE"}
+{"decision":"REVISE","summary":{...complete normal summary...}}
+{"decision":"DEFERRED","reason":"target_preservation_uncertain|conflicting_changes|semantic_review_failed"}
+
+For REVISE, return one complete normal CREATE summary with title, body, tags,
+type, scopes, scope_source and sources. Preserve the proposal's type, scopes,
+scope source and admitted source references. For todos preserve the proposed
+status and grounded deadline fields; for non-todos omit todo-only fields. A
+revised CREATE must not carry memory_id, update_memory_id, scope_operations or
+shadow_native_ids.
+
+The admitted source contains only the current turn's visible user input and
+Agent's final assistant reply. Historical conversation turns, intermediate
+assistant messages and existing memory context are comparison context, never new
+source. An assistant report may support a stated conclusion, confirmed fact or explicit
+pending action; questions, suggestions, plans, generic acknowledgements, pure
+restatements and unconfirmed claims do not independently establish a new fact.
+Tool calls, raw tool results, attachments and other external payloads are outside
+the source boundary, even when a visible message refers to them. A bounded
+source_context string, when supplied beside an admitted span, is context from
+that same visible user or assistant message only and applies to admitted spans
+with the same event_key and role; use it to resolve negation, reference,
+ownership, scope, or status of each bound span, but never add an unbound fact
+from it. The admitted source is the only authority for every new fact, relationship, identifier and its
+role, state, owner, obligation or date. The proposed summary is untrusted model
+output, not source evidence. ACCEPT only when every
+assertion and relationship in the proposal is supported by the admitted source
+and no identifier, date, status or ownership meaning was invented. This review
+is for one candidate topic. Separate deliverables or state transitions that can
+be completed, tracked, or updated independently must not be merged merely
+because they share a source message, project, owner, deadline, or coordination
+step. Keep generic coordination with the deliverable it governs. If the
+proposal aggregates independent topics, use REVISE only when it remains one
+topic after removing unsupported expansion; if splitting it would omit an
+independent sibling, use DEFERRED rather than selecting one sibling or
+approving the aggregate. When the admitted source contains sibling claims,
+keep each claim's polarity, completion state, uncertainty, ownership, and scope
+local to its exact source span; a negative or completed clause for one sibling
+does not suppress or alter another. Treat a title or body that lists multiple
+independently closable deliverables under one shared coordination action as an
+aggregate proposal, even if every listed detail is source-supported. Two
+separately named changes followed by one sentence to coordinate them remain
+separate topics; this is an illustrative example, not a fixed-count rule. A
+single review cannot create the missing sibling candidates, so use DEFERRED
+rather than selecting one sibling, replacing them with only the coordination
+action, or retaining the aggregate. Use REVISE
+only to remove unsupported expansion while retaining all supported facts and
+future-use content. A topic or activity name by itself establishes only that
+the source mentions that topic or activity; it does not establish that the
+activity occurred or was completed. An organization name next to an activity title
+does not establish that the organization performed or owned it. Without
+an explicit subject-action relationship, keep the wording as a neutral source
+mention or remove the actor, completion or ownership assertion. Use
+NO_CHANGE when no supported future-use fact or action remains. When a source is
+only a short unlabeled title or list, treat every number or code as an opaque
+literal; do not assign it a date, identifier, amount, sequence, status or
+other field role. Never inherit a field role or relationship from
+proposed_summary, because its labels cannot explain an otherwise unlabelled
+source value. For REVISE, inspect every assertion and field across the entire summary,
+remove every unsupported expansion rather than only the first one found, and
+return DEFERRED when a complete source-supported revision cannot be formed with
+confidence. Use DEFERRED when the source cannot establish the
+proposed meaning or the correction would require guessing. Never use business
+keywords, domain rules, string matching, or unrelated context. Do not add
+fields to the response contract.
 """
 
 
@@ -133,7 +236,14 @@ def _target_projection(target: Any) -> dict[str, Any]:
 
 
 def _source_projection(source: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Copy the admitted source projection while keeping its provenance fields."""
+    """Copy only admitted visible conversation source with provenance fields.
+
+    ``summary_evidence`` is expected to provide this bounded shape already, but
+    the review boundary is enforced again here.  In particular, a stale caller
+    or a legacy request must not reintroduce a tool result, attachment, or other
+    external payload into the semantic reviewer simply by placing it in the
+    iterable.
+    """
 
     result: list[dict[str, Any]] = []
     for item in source:
@@ -142,9 +252,19 @@ def _source_projection(source: Iterable[Mapping[str, Any]]) -> list[dict[str, An
                 "update semantic review source must contain objects",
                 validation_detail="other_schema_violation",
             )
+        role = item.get("role")
+        origin = item.get("evidence_origin")
+        expected_origin = {
+            "user": "user_assertion",
+            "assistant": "assistant_report",
+        }.get(role)
+        if expected_origin is None or origin != expected_origin:
+            continue
         # ``summary_evidence`` already returns this bounded shape.  Copy it
-        # explicitly so arbitrary request metadata cannot become source.
-        result.append({
+        # explicitly so arbitrary request metadata cannot become source.  The
+        # optional source_context is context only and is accepted as a string;
+        # callers cannot smuggle arbitrary metadata or nested payloads through it.
+        projected = {
             key: item[key]
             for key in (
                 "event_key",
@@ -156,7 +276,11 @@ def _source_projection(source: Iterable[Mapping[str, Any]]) -> list[dict[str, An
                 "section_path",
             )
             if key in item
-        })
+        }
+        source_context = item.get("source_context")
+        if isinstance(source_context, str):
+            projected["source_context"] = source_context
+        result.append(projected)
     return result
 
 
@@ -185,6 +309,34 @@ def build_update_review_prompt(
     if len(prompt.encode("utf-8")) > _MAX_PROMPT_BYTES:
         raise ModelOutputError(
             "update semantic review input exceeds prompt budget",
+            validation_detail="other_schema_violation",
+        )
+    return prompt
+
+
+def build_create_review_prompt(
+    admitted_source: Iterable[Mapping[str, Any]],
+    proposed_summary: Mapping[str, Any],
+) -> str:
+    """Build a bounded CREATE review prompt with no active-target channel."""
+
+    if not isinstance(proposed_summary, Mapping):
+        raise ModelOutputError(
+            "create semantic review summary must be an object",
+            validation_detail="root_shape",
+        )
+    payload = {
+        "admitted_source": _source_projection(admitted_source),
+        "proposed_summary": _json_safe(dict(proposed_summary)),
+    }
+    encoded = json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    prompt = "CREATE_SEMANTIC_REVIEW\n" + encoded + (
+        "\n\nThe two top-level values are separate inputs. Return only the strict "
+        "review object described by the system contract."
+    )
+    if len(prompt.encode("utf-8")) > _MAX_PROMPT_BYTES:
+        raise ModelOutputError(
+            "create semantic review input exceeds prompt budget",
             validation_detail="other_schema_violation",
         )
     return prompt
@@ -255,28 +407,25 @@ def parse_update_review_output(
     return {"decision": decision, "summary": dict(revised)}
 
 
-def review_update(
+def _run_review(
     model_executor: Any,
     backend: Any,
     *,
-    target: Any,
-    admitted_source: Iterable[Mapping[str, Any]],
-    proposed_summary: Mapping[str, Any],
+    prompt: str,
+    system: str,
     parse_summary: Callable[[Mapping[str, Any]], Mapping[str, Any]],
     diagnostic_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run the independent review; model/parser failures fail closed."""
 
     try:
-        prompt = build_update_review_prompt(target, admitted_source, proposed_summary)
-
         def parse(raw: Any) -> dict[str, Any]:
             return parse_update_review_output(raw, parse_summary=parse_summary)
 
         result = model_executor._complete_json_stage(
             backend,
             prompt,
-            system=UPDATE_SEMANTIC_REVIEW_SYSTEM,
+            system=system,
             purpose="summarize",
             parser=parse,
             diagnostic_context=diagnostic_context,
@@ -288,10 +437,64 @@ def review_update(
     return dict(result)
 
 
+def review_update(
+    model_executor: Any,
+    backend: Any,
+    *,
+    target: Any,
+    admitted_source: Iterable[Mapping[str, Any]],
+    proposed_summary: Mapping[str, Any],
+    parse_summary: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+    diagnostic_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run the independent automatic UPDATE review."""
+
+    try:
+        prompt = build_update_review_prompt(target, admitted_source, proposed_summary)
+    except (ModelError, ModelOutputError, TypeError, ValueError):
+        return {"decision": "DEFERRED", "reason": "semantic_review_failed"}
+    return _run_review(
+        model_executor,
+        backend,
+        prompt=prompt,
+        system=UPDATE_SEMANTIC_REVIEW_SYSTEM,
+        parse_summary=parse_summary,
+        diagnostic_context=diagnostic_context,
+    )
+
+
+def review_create(
+    model_executor: Any,
+    backend: Any,
+    *,
+    admitted_source: Iterable[Mapping[str, Any]],
+    proposed_summary: Mapping[str, Any],
+    parse_summary: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+    diagnostic_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run the independent automatic CREATE evidence review."""
+
+    try:
+        prompt = build_create_review_prompt(admitted_source, proposed_summary)
+    except (ModelError, ModelOutputError, TypeError, ValueError):
+        return {"decision": "DEFERRED", "reason": "semantic_review_failed"}
+    return _run_review(
+        model_executor,
+        backend,
+        prompt=prompt,
+        system=CREATE_SEMANTIC_REVIEW_SYSTEM,
+        parse_summary=parse_summary,
+        diagnostic_context=diagnostic_context,
+    )
+
+
 __all__ = [
     "UPDATE_REVIEW_DECISIONS",
+    "CREATE_SEMANTIC_REVIEW_SYSTEM",
     "UPDATE_SEMANTIC_REVIEW_SYSTEM",
+    "build_create_review_prompt",
     "build_update_review_prompt",
     "parse_update_review_output",
+    "review_create",
     "review_update",
 ]

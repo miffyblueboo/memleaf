@@ -16,7 +16,7 @@ from .llm import ModelError
 from .prompts import UPDATE_GROUP_SYSTEM, summarize_prompt
 from .process_common import ProcessingError, _grounded_due_dates, _normalize_summary_dates, _summary_date_grounding_violations
 from .turn_plan import revision_digest
-from .update_review import review_update
+from .update_review import review_create, review_update
 from .validation import ModelOutputError, parse_strict_json, parse_summarize_output
 
 # Exceptional prompt safety guards, not a truncation policy. Over-budget groups
@@ -51,8 +51,17 @@ class UpdateCoordinator:
                 replacements[id(request)] = None
         resolved_requests = [replacements.get(id(request), request) for request in requests
                              if replacements.get(id(request), request) is not None]
-        return self._review_final_updates(
+        reviewed_updates = self._review_final_updates(
             resolved_requests,
+            candidates=candidates,
+            evidence_units=evidence_units,
+            events=events,
+            backend=backend,
+            scope_registry=scope_registry,
+            validation_scope_registry=validation_scope_registry,
+        )
+        return self._review_final_creates(
+            reviewed_updates,
             candidates=candidates,
             evidence_units=evidence_units,
             events=events,
@@ -98,6 +107,17 @@ class UpdateCoordinator:
         ]
         projected: list[dict[str, Any]] = []
         seen: set[tuple[str, str, str]] = set()
+        # Bound quotes are the authority for new content. Keep their own
+        # current visible message as interpretation context so a quote cannot
+        # hide a negation, qualification or reference in a neighboring clause.
+        # Never take context from tool payloads or related stored memories.
+        visible_context = {
+            (event.get("event_key"), event.get("role")): event["content"]
+            for event in events
+            if event.get("role") in {"user", "assistant"}
+            and isinstance(event.get("content"), str)
+        }
+        contextualized: set[tuple[str, str]] = set()
         for candidate in member_candidates:
             for event in summary_evidence(candidate, evidence_units, events=events):
                 identity = (
@@ -108,7 +128,14 @@ class UpdateCoordinator:
                 if identity in seen:
                     continue
                 seen.add(identity)
-                projected.append(deepcopy(event))
+                item = deepcopy(event)
+                context_key = (item.get("event_key"), item.get("role"))
+                context = visible_context.get(context_key)
+                if context is not None and context_key not in contextualized:
+                    if context != item.get("content"):
+                        item["source_context"] = context
+                    contextualized.add(context_key)
+                projected.append(item)
         unit_order = {
             getattr(unit, "unit_id", ""): (index, getattr(unit, "text", ""))
             for index, unit in enumerate(evidence_units)
@@ -135,9 +162,36 @@ class UpdateCoordinator:
             return False
         if request.get("scope_correction") or request.get("duplicate_memory_id"):
             return False
-        if summary.get("scope_operations") or summary.get("shadow_native_ids"):
+        return True
+
+    @staticmethod
+    def _is_reviewable_create(request: Mapping[str, Any]) -> bool:
+        """Limit CREATE review to ordinary automatic memory proposals."""
+
+        summary = request.get("summary")
+        if not isinstance(summary, Mapping):
+            return False
+        if summary.get("update_memory_id") or request.get("duplicate_memory_id"):
+            return False
+        if request.get("explicit_remember") is True:
+            return False
+        if request.get("scope_correction"):
             return False
         return True
+
+    @staticmethod
+    def _review_content(summary: Mapping[str, Any]) -> dict[str, Any]:
+        """Separate already validated side effects from semantic body review."""
+        return {key: value for key, value in summary.items()
+                if key not in {"scope_operations", "shadow_native_ids"}}
+
+    @staticmethod
+    def _reviewed_summary(original: Mapping[str, Any], revised: Mapping[str, Any]) -> dict[str, Any]:
+        result = dict(revised)
+        for key in ("scope_operations", "shadow_native_ids"):
+            if key in original:
+                result[key] = deepcopy(original[key])
+        return result
 
     def _defer_request(
         self,
@@ -267,7 +321,7 @@ class UpdateCoordinator:
                     source_texts=[
                         event.get("content", "")
                         for event in projected
-                        if event.get("role") in {"user", "tool"}
+                        if event.get("role") in {"user", "assistant"}
                     ],
                     preserved_texts=(
                         target.get("title"),
@@ -300,7 +354,7 @@ class UpdateCoordinator:
                 backend,
                 target=target,
                 admitted_source=projected,
-                proposed_summary=summary,
+                proposed_summary=self._review_content(summary),
                 parse_summary=parse_review_summary,
                 diagnostic_context={
                     "source": turn.source,
@@ -315,7 +369,7 @@ class UpdateCoordinator:
                 continue
             if decision == "REVISE" and isinstance(outcome.get("summary"), Mapping):
                 revised = dict(request)
-                revised["summary"] = dict(outcome["summary"])
+                revised["summary"] = self._reviewed_summary(summary, outcome["summary"])
                 reviewed.append(revised)
                 continue
             if decision == "NO_CHANGE":
@@ -324,6 +378,164 @@ class UpdateCoordinator:
                     "NO_CHANGE",
                     reason="update_semantic_review_no_change",
                     memory_id=target_memory_id,
+                )
+                continue
+            self._defer_request(
+                request,
+                candidates=candidates,
+                reason=(
+                    outcome.get("reason")
+                    if isinstance(outcome.get("reason"), str) and outcome.get("reason")
+                    else "semantic_review_failed"
+                ),
+            )
+        return reviewed
+
+    def _review_final_creates(
+        self,
+        requests: list[dict[str, Any]],
+        *,
+        candidates: Mapping[str, Any],
+        evidence_units: Any,
+        events: list[dict[str, Any]],
+        backend: Any,
+        scope_registry: Any,
+        validation_scope_registry: Any,
+    ) -> list[dict[str, Any]]:
+        """Review every final ordinary automatic CREATE before plan freeze."""
+
+        reviewed: list[dict[str, Any]] = []
+        for request in requests:
+            if not self._is_reviewable_create(request):
+                reviewed.append(request)
+                continue
+
+            summary = request.get("summary")
+            projected = self._projected_request_evidence(
+                request,
+                candidates=candidates,
+                evidence_units=evidence_units,
+                events=events,
+            )
+            if not projected:
+                self._defer_request(
+                    request,
+                    candidates=candidates,
+                    reason="semantic_review_failed",
+                )
+                continue
+            candidate_ids = self._request_candidate_ids(request)
+            candidate = next(
+                (
+                    candidates[candidate_id]
+                    for candidate_id in candidate_ids
+                    if candidate_id in candidates and isinstance(candidates[candidate_id], Mapping)
+                ),
+                {},
+            )
+            turn = request.get("turn")
+            if turn is None or not isinstance(summary, Mapping):
+                self._defer_request(
+                    request,
+                    candidates=candidates,
+                    reason="semantic_review_failed",
+                )
+                continue
+            keys = tuple(dict.fromkeys(event["event_key"] for event in projected))
+            summary_type = summary.get("type")
+            if not isinstance(summary_type, str):
+                summary_type = candidate.get("type")
+            summary_scopes = summary.get("scopes")
+            if summary_scopes is None:
+                summary_scopes = candidate.get("scopes")
+            summary_scope_source = summary.get("scope_source")
+            if summary_scope_source is None:
+                summary_scope_source = candidate.get("scope_source")
+            grounded_dates = _grounded_due_dates(turn, evidence_events=projected)
+
+            def parse_create_summary(value: Mapping[str, Any]) -> Mapping[str, Any]:
+                raw_summary = json.dumps(value, ensure_ascii=False)
+                parsed = parse_summarize_output(
+                    _normalize_summary_dates(raw_summary, turn, candidate),
+                    current_event_keys=keys,
+                    related_native_ids=[],
+                    related_memory_ids=[],
+                    scope_registry=validation_scope_registry,
+                    expected_scopes=summary_scopes,
+                    expected_scope_source=summary_scope_source,
+                    expected_type=summary_type,
+                    expected_update_memory_id=None,
+                    allowed_due_dates=grounded_dates,
+                    allow_no_change=False,
+                    allow_update_target=False,
+                )
+                if parsed.get("memory_id") or parsed.get("update_memory_id"):
+                    raise ModelOutputError(
+                        "CREATE review summary cannot carry a target",
+                        validation_detail="invalid_update_target",
+                    )
+                if parsed.get("scope_operations") or parsed.get("shadow_native_ids"):
+                    raise ModelOutputError(
+                        "CREATE review summary cannot extend authorization",
+                        validation_detail="invalid_evidence",
+                    )
+                if _summary_date_grounding_violations(
+                    parsed,
+                    grounded_dates=grounded_dates,
+                    source_texts=[
+                        event.get("content", "")
+                        for event in projected
+                        if event.get("role") in {"user", "assistant"}
+                    ],
+                    preserved_texts=(),
+                ):
+                    raise ModelOutputError(
+                        "CREATE review summary contains an ungrounded date",
+                        validation_detail="relative_time",
+                    )
+                cited = set(parsed.get("evidence_event_ids", []))
+                for source in parsed.get("sources", []):
+                    if source.get("event_key"):
+                        cited.add(source["event_key"])
+                    cited.update(source.get("evidence_event_ids", []))
+                if not set(keys).issubset(cited):
+                    raise ModelOutputError(
+                        "CREATE review summary omitted source evidence",
+                        validation_detail="invalid_evidence",
+                    )
+                return parsed
+
+            outcome = review_create(
+                self.model,
+                backend,
+                admitted_source=projected,
+                proposed_summary=self._review_content(summary),
+                parse_summary=parse_create_summary,
+                diagnostic_context={
+                    "source": turn.source,
+                    "session_id": turn.session_id,
+                    "turn_index": turn.turn_index,
+                },
+            )
+            decision = outcome.get("decision")
+            if decision == "ACCEPT":
+                reviewed.append(request)
+                continue
+            if decision == "REVISE" and isinstance(outcome.get("summary"), Mapping):
+                revised = dict(request)
+                revised["summary"] = self._reviewed_summary(summary, outcome["summary"])
+                reviewed.append(revised)
+                continue
+            if decision == "NO_CHANGE":
+                self.audit._record_request_disposition(
+                    request,
+                    "NO_CHANGE",
+                    reason="create_semantic_review_no_change",
+                    memory_id=(
+                        request.get("memory_id")
+                        if isinstance(request.get("memory_id"), str)
+                        else None
+                    ),
                 )
                 continue
             self._defer_request(

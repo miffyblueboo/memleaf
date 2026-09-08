@@ -76,16 +76,22 @@ class BindingContractTests(unittest.TestCase):
             with self.subTest(overrides=overrides), self.assertRaises(ModelOutputError):
                 validate_bindings(bind(c,u,**overrides),units,[c])
 
-    def test_assistant_cannot_promote_itself_by_binding(self):
+    def test_assistant_report_is_a_valid_source_binding(self):
         units = units_for("What changed?",assistant="Orion uses PostgreSQL.")
         u = units[-1]; c = candidate("c", "a", u.text)
-        with self.assertRaises(ModelOutputError): validate_bindings(bind(c,u),units,[c])
+        checked = validate_bindings(bind(c,u),units,[c])
+        self.assertEqual(checked["c"][0]["quote"], "Orion uses PostgreSQL.")
 
     def test_retrieved_memory_cannot_be_relabelled_external(self):
+        tool_text = "Orion uses PostgreSQL."
         units = units_for("What changed?",tool=[dict(tool_name="memleaf.read",call_id="c",
-            kind="retrieved_memory",result_status="success",content="Orion uses PostgreSQL.")])
-        u = units[-1]; c = candidate("c","a",u.text)
-        with self.assertRaises(ModelOutputError):validate_bindings(bind(c,u,role="source_excerpt"),units,[c])
+            kind="retrieved_memory",result_status="success",content=tool_text)])
+        self.assertFalse(any(tool_text in unit.text for unit in units))
+        c = candidate("c", "a", tool_text)
+        with self.assertRaises(ModelOutputError):
+            validate_bindings([{"candidate_id": "c", "claims": [{
+                "unit_id": "c", "quote": tool_text, "role": "source_excerpt",
+            }]}], units, [c])
 
     def test_confirmation_requires_user_not_tool(self):
         units = units_for("What changed?",tool=[dict(tool_name="files.read",call_id="c",

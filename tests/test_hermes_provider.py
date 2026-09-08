@@ -285,6 +285,61 @@ class HermesProviderTests(unittest.TestCase):
             },
         )
 
+    def test_background_jobs_poll_completed_notice_and_keep_sessions_independent(self) -> None:
+        client = FakeClient(
+            responses=[
+                # session one, first turn
+                {"stored": True}, {"stored": True},
+                {"accepted": True, "completed": False, "status": "pending", "job_id": "job-one"},
+                # session two, first turn while session one is active
+                {"stored": True}, {"stored": True},
+                {"status": "running", "completed": False, "job_id": "job-one"},
+                {"accepted": True, "completed": False, "status": "pending", "job_id": "job-two"},
+                # session one, second turn requests a rerun on job-one
+                {"stored": True}, {"stored": True},
+                {"status": "running", "completed": False, "job_id": "job-two"},
+                {"status": "running", "completed": False, "job_id": "job-one"},
+                {"accepted": True, "completed": False, "status": "running", "job_id": "job-one", "rerun_requested": True},
+                # session one, next turn observes completion then queues a fresh job
+                {"stored": True}, {"stored": True},
+                {"status": "running", "completed": False, "job_id": "job-two"},
+                {
+                    "accepted": True,
+                    "completed": True,
+                    "status": "succeeded",
+                    "job_id": "job-one",
+                    "result": {
+                        "processed_turns": 1,
+                        "memories_written": 1,
+                        "external_evidence_status": "metadata_only",
+                        "external_evidence": {
+                            "status": "metadata_only",
+                            "external_record_count": 1,
+                            "retained_body_count": 0,
+                        },
+                    },
+                },
+                {"accepted": True, "completed": False, "status": "pending", "job_id": "job-three"},
+                {"scopes": [], "has_more": False, "next_cursor": None},
+            ]
+        )
+        provider = self.provider(responses=[])
+        provider._client = client
+        provider.sync_turn("one first", "one answer", session_id="one")
+        provider.sync_turn("two first", "two answer", session_id="two")
+        provider.sync_turn("one second", "one answer two", session_id="one")
+        provider.sync_turn("one third", "one answer three", session_id="one")
+
+        self.assertEqual(provider._process_jobs_by_session["one"], "job-three")
+        self.assertEqual(provider._process_jobs_by_session["two"], "job-two")
+        notice = provider.prefetch("continue", session_id="one")
+        self.assertIn("completed successfully", notice)
+        self.assertIn("external records=1", notice)
+        self.assertEqual(
+            [name for name, _ in client.calls if name == "process_status"],
+            ["process_status", "process_status", "process_status", "process_status", "process_status"],
+        )
+
     def test_provider_warns_with_one_line_update_when_core_versions_differ(self) -> None:
         client = FakeClient(responses=[{"stats": True}])
         client.server_version = "0.2.15"
@@ -619,7 +674,7 @@ class HermesProviderTests(unittest.TestCase):
         process_calls = [
             arguments for name, arguments in client.calls if name == "process"
         ]
-        self.assertEqual(process_calls, [{"source": "hermes", "session_id": "new-compression-session"}])
+        self.assertEqual(process_calls, [{"source": "hermes", "session_id": "new-compression-session", "background": True}])
         self.assertEqual(provider._active_retrieval_ids["new-compression-session"], token)
         self.assertNotIn(("old-compression-session", 4), provider._retrieval_ids_by_turn)
         self.assertEqual(provider._retrieval_ids_by_turn[("new-compression-session", 4)], token)
@@ -982,8 +1037,8 @@ class HermesProviderTests(unittest.TestCase):
         self.assertEqual(
             [arguments for name, arguments in client.calls if name == "process"],
             [
-                {"source": "hermes", "session_id": "child-session"},
-                {"source": "hermes", "session_id": "grandchild-session"},
+                {"source": "hermes", "session_id": "child-session", "background": True},
+                {"source": "hermes", "session_id": "grandchild-session", "background": True},
             ],
         )
         self.assertEqual(provider._deferred_process_sessions, {})
@@ -1035,7 +1090,10 @@ class HermesProviderTests(unittest.TestCase):
         )
         self.assertEqual(
             [arguments for name, arguments in client.calls if name == "process"],
-            [{"source": "hermes", "session_id": "child-session"}],
+            [
+                {"source": "hermes", "session_id": "child-session", "background": True},
+                {"source": "hermes", "session_id": "grandchild-session", "background": True},
+            ],
         )
         self.assertEqual(
             provider._last_auto_process_failure["session_id"],
@@ -1050,12 +1108,11 @@ class HermesProviderTests(unittest.TestCase):
         self.assertEqual(
             [arguments for name, arguments in client.calls if name == "process"],
             [
-                {"source": "hermes", "session_id": "child-session"},
-                {"source": "hermes", "session_id": "child-session"},
-                {"source": "hermes", "session_id": "grandchild-session"},
+                {"source": "hermes", "session_id": "child-session", "background": True},
+                {"source": "hermes", "session_id": "grandchild-session", "background": True},
             ],
         )
-        self.assertEqual(provider._deferred_process_sessions, {})
+        self.assertEqual(provider._deferred_process_sessions, {"child-session": None})
 
     def test_multi_level_reset_or_rewind_clears_the_entire_alias_component(self) -> None:
         for switch_kwargs in ({"reset": True}, {"rewound": True}):
@@ -1216,7 +1273,7 @@ class HermesProviderTests(unittest.TestCase):
         self.assertFalse(provider._pending_lineage)
         self.assertEqual(
             [arguments for name, arguments in client.calls if name == "process"],
-            [{"source": "hermes", "session_id": "fresh-session"}],
+            [{"source": "hermes", "session_id": "fresh-session", "background": True}],
         )
 
     def test_soft_observer_ignores_previous_turn_and_requires_current_token(self) -> None:
@@ -1840,6 +1897,24 @@ class HermesProviderTests(unittest.TestCase):
         self.assertEqual(request.call_args_list[0].kwargs["timeout"], 5)
         self.assertEqual(request.call_args_list[1].kwargs["timeout"], 300)
 
+    def test_mcp_client_preserves_process_status_audit_wrapper(self) -> None:
+        client = provider_module._MCPClient("memleaf-mcp", str(self.root / "vault"), 5, 300)
+        with patch.object(client, "_start_locked"), patch.object(
+            client,
+            "_request_locked",
+            return_value={
+                "structuredContent": {
+                    "job_id": "job-1",
+                    "status": "succeeded",
+                    "completed": True,
+                    "result": {"memories_written": 2},
+                }
+            },
+        ):
+            value = client.call_tool("process_status", {"job_id": "job-1"})
+        self.assertEqual(value["status"], "succeeded")
+        self.assertEqual(value["result"]["memories_written"], 2)
+
     def test_mcp_timeout_closes_connection_and_next_call_can_rebuild(self) -> None:
         client = provider_module._MCPClient("memleaf-mcp", str(self.root / "vault"), 5, 300)
         with patch.object(client, "_start_locked") as start, patch.object(
@@ -1862,7 +1937,10 @@ class HermesProviderTests(unittest.TestCase):
             session_id="session-1",
             messages=[
                 {"role": "system", "content": "SYSTEM_SECRET"},
-                {"role": "tool", "content": "TOOL_SECRET"},
+                {"role": "assistant", "tool_calls": [
+                    {"id": "external-call", "function": {"name": "mail.read", "arguments": "{}"}},
+                ]},
+                {"role": "tool", "tool_call_id": "external-call", "content": "TOOL_SECRET"},
                 {"role": "assistant", "content": [{"type": "image", "data": "BINARY_SECRET"}]},
             ],
         )
@@ -1875,7 +1953,8 @@ class HermesProviderTests(unittest.TestCase):
         self.assertEqual(calls[0][1]["content"], "visible user")
         self.assertEqual(calls[1][1]["role"], "assistant")
         self.assertEqual(calls[1][1]["content"], "visible assistant")
-        self.assertEqual(calls[2][1], {"source": "hermes", "session_id": "session-1"})
+        self.assertNotIn("tool_evidence", calls[1][1])
+        self.assertEqual(calls[2][1], {"source": "hermes", "session_id": "session-1", "background": True})
         self.assertNotIn("SYSTEM_SECRET", json.dumps(calls))
         self.assertNotIn("TOOL_SECRET", json.dumps(calls))
         self.assertNotIn("BINARY_SECRET", json.dumps(calls))
@@ -2375,7 +2454,7 @@ class HermesProviderTests(unittest.TestCase):
         )
 
         self.assertEqual([name for name, _ in core.calls], ["capture", "capture", "process"])
-        self.assertEqual(core.calls[-1][1], {"source": "hermes", "session_id": session_id})
+        self.assertEqual(core.calls[-1][1], {"source": "hermes", "session_id": session_id, "background": True})
         memories = service._read_memories_unlocked("knowledge")
         self.assertEqual(len(memories), 1)
         memory = memories[0].memory

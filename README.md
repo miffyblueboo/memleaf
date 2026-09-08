@@ -4,8 +4,8 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **版本：0.2.33。**
-> 本版扩展有界物理证据 Gate：支持精确 unit/quote 绑定、分批覆盖、跨批候选隔离与受限协调，并在失败时保留可重试的原始轮次；统一 Core、HostRuntime 与 Hermes Provider 的文件/附件留存分类，普通结构化文件遵循所选模式，显式附件仍需单独放行；自动 UPDATE 在仅措辞、复述或来源元数据变化时保持 `NO_CHANGE`，真实状态变化才更新原目标。新增合成文档真实模型生命周期验收示例与对应回归测试。Markdown 仍是唯一事实源，运行时不引入 SQLite。验收仅覆盖合成输入和真实模型路由，不代表真实邮件或客户业务验收。
+> **版本：0.2.34。**
+> 记忆只从用户与 Agent 的可见对话提炼。Agent 已在回复中整理的事实、项目进展和明确待办可作为来源；邮件、附件、网页和终端等工具原文不进入记忆提炼。模型负责保留原话中的不确定性，现有记忆仅用于比较、去重和更新。Markdown 仍是唯一事实源。
 > **当前版本支持 Hermes 和 Codex。** Antigravity（反重力）不检测、不安装、不配置。
 
 ## 项目定位
@@ -140,12 +140,12 @@ python -m pip install -U memleaf && python -m memleaf install
 4. 激活 `memory.provider=memleaf`；
 5. 通过 Hermes 官方 CLI 配置 memleaf MCP；
 6. 配置 MCP lazy/idle 生命周期；
-7. 验证 MCP Server 能发现 12 个工具；
+7. 验证 MCP Server 能发现 13 个工具；
 8. 写入本地 Agent 状态索引。
 
 完成后重启 Hermes。
 
-如果没有检测到 Hermes、无法取得完整模型路由、Provider 激活失败或 MCP 的 12 工具验证失败，安装会明确返回失败，不会把未完成的接入报告为成功。
+如果没有检测到 Hermes、无法取得完整模型路由、Provider 激活失败或 MCP 的 13 工具验证失败，安装会明确返回失败，不会把未完成的接入报告为成功。
 
 仓库中的 `install.sh` 保留给源码开发、离线源码安装和故障排查；普通 PyPI 用户不需要执行它。
 
@@ -215,7 +215,7 @@ Hermes 的原生 Provider 和 MCP Server 是两个不同入口，但共用同一
 - Agent 需要通过 MCP `search` 找到候选，再用当前 `retrieval_id` 调用 `read`；
 - MCP 仍用于主动 `search`、`remember`、`forget` 和维护操作；
 - MCP 连接失败时会关闭坏连接，后续请求可重建连接；
-- `process` 使用已发现或用户配置的模型路由执行准入判断和记忆整理；失败数据保留在 inbox 中；
+- Provider 自动处理通过 `process(background=true)` 持久化本地 job 后立即返回；用只读 `process_status` 查看最终的 `succeeded`、`deferred` 或 `failed` 结果。显式同步 `process` 仍可用；失败数据保留在 inbox 中；
 - cron、flush、subagent 等非主用户会话不会自动召回、捕获或处理。
 
 安装完成后可检查：
@@ -242,7 +242,7 @@ python -m memleaf.mcp_server --vault "$HOME/.memleaf"
 
 不传 `--vault` 时默认使用 `~/.memleaf`；也可以设置 `MEMLEAF_VAULT`。正常情况下不需要手工常驻，Hermes 或 Codex 会按需启动它。stdout 只输出 JSON-RPC，日志不会污染协议通道。
 
-当前提供 11 个工具：
+当前提供 13 个工具：
 
 | 工具 | 用途 |
 | --- | --- |
@@ -251,7 +251,8 @@ python -m memleaf.mcp_server --vault "$HOME/.memleaf"
 | `scope_catalog` | 返回 Scope、父级和别名，不返回具体记忆正文 |
 | `search` | 返回有界候选目录和 `found`/`no_match` 状态 |
 | `read` | 使用当前 `retrieval_id` 分页读取选中的记忆正文 |
-| `process` | 处理完整 inbox 轮次并按准入规则提炼 |
+| `process` | 处理完整 inbox 轮次并按准入规则提炼；`background=true` 时异步入队 |
+| `process_status` | 只读查询异步处理 job 状态 |
 | `remember` | 用户明确要求时创建或更新记忆 |
 | `forget_memory` | 按精确 ID 删除一条记忆 |
 | `forget_about` | 忘记明确主题；有歧义时只返回候选 |
@@ -424,7 +425,7 @@ history:
 
 ## 隐私与安全边界
 
-- 对话捕获只接收 user/assistant 可见文本，不捕获 system/developer 指令或隐藏推理。匹配到当前轮工具调用的证据另由 `capture.tool_evidence_mode` 控制；新建 Vault 默认 `bounded`（脱敏、有界正文），显式标记为附件的正文默认不留存，普通结构化文件正文按该模式保留。旧配置显式关闭工具输出时不自动升级为保留正文；
+- 对话捕获只接收 user/assistant 可见文本，不捕获 system/developer 指令、隐藏推理或工具输出。工具原文不保存，也不会从旧 inbox 重新送入提炼；
 - 捕获落盘前尽力脱敏常见 API key、Bearer token、Cookie、JWT 和私钥，但脱敏不是加密，也不能保证识别所有敏感信息；
 - 路径校验、符号链接检查、Vault 锁、同目录临时文件、fsync 和原子替换用于保护本地写入；
 - memleaf 不主动上传整个 Vault，也没有托管后台、遥测或账号系统；
@@ -471,11 +472,12 @@ MIT，见 [LICENSE](LICENSE)。
 *Your memories, in files you own.*
 
 
-## 通用处理与只读验收（0.2.33）
+## 通用处理与只读验收（0.2.34）
 
-邮件、日历、工单、文件、浏览器与普通对话共用证据准入、覆盖检查和写入路径。
-自动摘要只能使用获准引用的原文；助手复述和旧记忆回读不能单独授权新增写入。
-模型负责语义判断，代码验证来源和原文引用。通过引用校验并不保证模型的语义判断一定正确。
+所有自动记忆只从用户与 Agent 的可见对话中提炼。Agent 已经在回复里总结的
+事实、进展和明确待办可以保留；不重新读取或分析邮件、附件、网页、文件、终端输出。
+建议、猜测、提问和条件必须保留其性质，不能升级为用户决定、已完成动作或已核实事实。
+已有记忆的纯复述不新建；新结论与旧记忆比较后才新增或更新。
 
 ```bash
 memleaf audit --vault /path/to/existing/vault --json
@@ -486,35 +488,17 @@ memleaf process --vault /path/to/existing/vault --source hermes --session-id SES
 `--dry-run` 在私有临时副本运行正常处理，可能调用配置的独立 Model Route；不会改写原 Vault。
 检测到原 Vault 并发变化时会拒绝输出可用预览。没有一键应用预览的功能。
 
-工具执行状态与证据完整性分别记录；超限、丢失或不完整内容不会被模型的 NO_CHANGE 升级为完整。
-执行成功但尚有未解决项时，结果显示 `coverage_status=partial`，并保留来源以供有界重试或补充证据。
-`external_evidence_status` 另外说明本批工具正文是否实际可供提炼：`metadata_only` 是仅留元数据，
-`disabled` 是关闭采集，`unavailable` 是没有可用完整正文，`partial` 是只有部分可用，
-`available` 是有可用正文，`not_provided` 是本批没有外部记录。可用正文不等于业务事项已提炼完整，
-也不证明工具读取了原始邮件或文档的全文。
-行为、限制、测试协议变更见 [通用处理说明](docs/general-processing.md)。
+处理结果只反映可见对话的记忆提炼。若对话中的项目归属或含义仍不确定，
+`coverage_status` 可以为 `partial`；工具执行错误或原文截断本身不再造成提炼漏项。
+`external_evidence_status=disabled` 表示工具证据不属于提炼输入。
+行为、限制、测试协议见 [通用处理说明](docs/general-processing.md)。
 
-### 工具证据留存配置
+### 对话来源边界
 
-```yaml
-capture:
-  tool_evidence_mode: bounded  # bounded | metadata | off
-  include_attachments: false
-```
+新建配置使用 `capture.tool_evidence_mode: off` 与 `include_attachments: false`。
+旧配置中的 `bounded`、`metadata` 等值仅为兼容而接受，不能重新开启工具原文提炼。
+状态接口展示实际生效的 `off`。用户自己粘贴到可见消息中的内容属于对话来源。
 
-`bounded` 允许当前轮真实工具观察保留有界、脱敏的正文；小结果可能完整保留，
-不是承诺只保存模型总结。`metadata` 仅留工具调用标识等元数据（仍可能包含标题），
-不保留证据正文，也不把主动排除误报成提炼漏项。`off` 不保存工具证据记录。
-三种模式均不允许把助手复述或旧记忆回读变成独立的新事实。
-
-现有配置未提供新字段时，旧 `include_tool_output: false` 或未设置该开关均按
-`metadata` 处理，旧 `true` 按 `bounded` 处理。显式新字段优先；新建 Vault 只写
-新字段，不再同时写含义冲突的旧开关。`include_attachments: true` 只放行显式标记的
-attachment，且仍受上述总模式限制；普通结构化文件结果不需要该开关。宿主把路径、file、
-file_id 或 file URI 归为 document，只有明确的 `attachment_id` 才归为 attachment；无法仅凭
-路径判断某个文件是否为附件，也不承诺识别任意 Shell 命令或不透明工具隐藏读取的文件。用户
-粘贴的可见文档和显式 `remember` 内容不属于自动附件抓取。
-
-策略在待捕获缓存、inbox 写入和新模型提炼输入处共同执行。配置收紧不会自动删除已提交
-记忆或改写已捕获 inbox；失败前已经冻结的提交计划也不作为新的模型调用重新提炼。
-已捕获工具原文的清理仍遵守原有安全期，明确忘记使用 `forget_memory/forget_about`。
+边界在宿主采集、Core capture 和历史 inbox 的新处理处执行。
+已提交记忆不会自动删除。旧版本已冻结但未完成的计划不会被静默丢弃或重新规划，
+不含新来源边界标记的计划会停止恢复并保留现场，避免越过新的输入约定。

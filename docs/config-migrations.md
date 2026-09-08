@@ -6,7 +6,7 @@ This document describes the configuration and Vault-layout compatibility boundar
 
 The current persisted top-level sections are `vault`, `agents`, `scopes`, `native_sources`, `process`, `history`, `capture`, and `llm`. Retrieval remains Scope Map -> search -> read; there is no configurable legacy injection mode.
 
-`capture.tool_evidence_mode` is the current tool-evidence retention setting and accepts `bounded`, `metadata`, or `off`. `capture.include_attachments` is independent, defaults to `false`, and gates only evidence explicitly identified as an attachment. Ordinary structural file/document results follow the selected mode.
+Automatic extraction uses only the current turn’s visible user input and final assistant reply. `capture.tool_evidence_mode` defaults to `off` and `capture.include_attachments` to `false`. Legacy `bounded` and `metadata` values remain readable for configuration compatibility, but all modes exclude raw tool and attachment payloads.
 
 ## Deprecated fields
 
@@ -22,7 +22,7 @@ memleaf's own current installers no longer pass the two deprecated no-op flags; 
 ## Automatic migration
 
 When reading an older configuration, `capture.include_tool_output: true` becomes `tool_evidence_mode: bounded`; `false` becomes `metadata`. Saving the normalized configuration writes only the current field. If both legacy and current fields are present but disagree, loading fails closed instead of guessing.
-A persisted older config with no `capture` section, or with a partial capture section that has neither evidence field, normalizes to `tool_evidence_mode: metadata`, preserving the previous safe metadata-only behavior. New Vaults still write an explicit `bounded` mode.
+A missing capture mode normalizes to `off`. New Vaults write `off` and `include_attachments: false`. Explicit legacy values remain parseable, but effective capture status always reports `off` and attachment inclusion `false`; compatibility never restores raw evidence as a memory source.
 
 The obsolete `inject` section is removed during normalization. No current runtime component consumes it.
 

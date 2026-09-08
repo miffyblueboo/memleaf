@@ -15,13 +15,16 @@ class ToolProvenanceTests(unittest.TestCase):
             core=Memleaf(Path(tmp)/'vault')
             record=observation_record('files.read','c1','Orion uses PostgreSQL. api_key=secret-value-test')
             core.capture('codex','s','t','user','What changed?',event_id='u')
-            core.capture('codex','s','t','assistant','Noted.',event_id='a',tool_evidence=[record])
+            visible_assistant = 'The visible assistant report is Orion uses PostgreSQL.'
+            core.capture('codex','s','t','assistant',visible_assistant,event_id='a',tool_evidence=[record])
             text=(core.vault.inbox_path/'codex'/'s.md').read_text()
             self.assertNotIn('secret-value-test',text)
             events=parse_inbox_text(text,source='codex',session_id='s')
-            self.assertEqual(events[0].events[-1].tool_evidence[0]['call_id'], 'c1')
+            assistant = events[0].events[-1]
+            self.assertEqual(assistant.content, visible_assistant)
+            self.assertEqual(assistant.tool_evidence, ())
             self.assertTrue(record['result_digest'])
-            self.assertIn('external_observation',text)
+            self.assertNotIn('external_observation',text)
 
     def test_truncation_cannot_look_complete(self):
         value=normalize_tool_evidence([dict(tool_name='terminal.exec',call_id='c',kind='external_observation',content='x'*40000,result_status='success')])[0]
@@ -32,7 +35,7 @@ class ToolProvenanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             runtime=HostRuntime(Memleaf(Path(tmp)/'vault'),'codex')
             runtime.observe_external_tool(session_id='s',turn_id='t1',tool_name='calendar.read',call_id='c1',payload='Orion deadline 2026-09-30')
-            self.assertEqual(len(runtime._tool_evidence('s','t1')),1)
+            self.assertEqual(runtime._tool_evidence('s','t1'),[])
             self.assertEqual(runtime._tool_evidence('s','t2'),[])
             self.assertEqual(runtime._tool_evidence('another','t1'),[])
 

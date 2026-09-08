@@ -622,19 +622,16 @@ class RouterAndAdapterTest(unittest.TestCase):
         router.complete("prompt", purpose=purpose)
         return json.loads(opener.requests[0][0].data.decode("utf-8"))
 
-    def test_supported_openai_json_mode_adds_response_format_and_token_limit(self):
+    def test_supported_openai_json_mode_adds_response_format_without_forcing_reasoning_or_budget(self):
         for provider in ("openai", "deepseek"):
             for purpose in ("gate", "summarize"):
                 with self.subTest(provider=provider, purpose=purpose):
                     payload = self._request_payload(provider, purpose)
                     self.assertEqual(payload["response_format"], {"type": "json_object"})
-                    self.assertEqual(payload["max_tokens"], 4096)
-                    if provider == "deepseek":
-                        self.assertEqual(payload["thinking"], {"type": "disabled"})
-                    else:
-                        self.assertNotIn("thinking", payload)
+                    self.assertNotIn("max_tokens", payload)
+                    self.assertNotIn("thinking", payload)
 
-    def test_deepseek_thinking_is_disabled_only_for_json_extraction_stages(self):
+    def test_deepseek_reasoning_is_not_overridden_for_any_stage(self):
         compact = self._request_payload("deepseek", "compact")
         self.assertNotIn("thinking", compact)
         regular = self._request_payload("deepseek", "chat")
@@ -852,16 +849,16 @@ class RouterAndAdapterTest(unittest.TestCase):
         normalized_gate_text = " ".join(GATE_SYSTEM.lower().split())
         for phrase in (
             "concrete future reuse",
-            "later answer/action wrong",
-            "forget a commitment",
+            "could support a later answer or action",
+            "preserve a commitment",
             "repeated investigation",
             "source type, tool name, application, document kind, message kind, and business domain never decide worth",
-            "temporary execution details",
-            "transient observations",
+            "temporary execution/status noise",
+            "the final assistant report may support new memory",
             "one-off chatter",
             "candidate count follows the independent future uses",
             "do not impose a zero-or-one default",
-            "explicit remember mode only",
+            "automatic processing evaluates retained authoritative source evidence",
         ):
             self.assertIn(phrase, normalized_gate_text)
         for forbidden in ("email", "mailbox", "attachment", "daily report", "ppt"):

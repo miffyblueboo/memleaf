@@ -545,11 +545,9 @@ def _summary_date_anchor(
             ),
             None,
         )
-        # A tool unit inherits its enclosing assistant event key and capture
-        # timestamp in the summary projection.  That timestamp says when the
-        # observation was retrieved, not when the source asserted its date.
-        # Only a user event is a safe anchor for resolving relative wording.
-        if event is None or event.role != "user" or event.tool_evidence:
+        # Only the visible conversation is admitted. A reply can ground its
+        # own relative wording; tool payloads never reach this projection.
+        if event is None or event.role not in {"user", "assistant"}:
             return None
         timestamp = event_timestamps.get(evidence_key)
         if timestamp is None:
@@ -773,12 +771,8 @@ def _grounded_due_dates(
 ) -> set[str]:
     """Return absolute dates supported by current visible/admitted evidence.
 
-    When ``evidence_events`` is supplied it is the already admitted
-    ``summary_evidence`` projection.  Only user assertions and external tool
-    observations in that projection can ground a date; omitted content (for
-    example metadata-only records) and assistant prose are ignored.  Omitting
-    the argument retains the legacy visible user/assistant behavior; external
-    bodies require the admitted projection.
+    Admitted user and assistant text can ground a date. Tool payloads are
+    never consulted, including bodies retained in legacy inbox records.
     """
 
     result: set[str] = set()
@@ -787,10 +781,8 @@ def _grounded_due_dates(
             if not isinstance(event, Mapping):
                 continue
             role = event.get("role")
-            if role == "user":
+            if role in {"user", "assistant"}:
                 _add_user_due_dates(result, event.get("timestamp"), event.get("content"))
-            elif role == "tool":
-                _add_external_due_dates(result, event.get("content"))
         return result
 
     # The explicit-remember path does not have the admitted projection. Keep

@@ -92,15 +92,20 @@ class AdmissionPromptTests(unittest.TestCase):
             "matched current-turn external observations",
             "do not independently authorize a write",
             "concrete future reuse",
+            "stable fact, configuration, policy, identity, preference, or constraint",
+            "does not need to be a todo, a state transition, a user-assigned action, or an explicit remember request",
             "source type, tool name, application, document kind, message kind, and business domain never decide worth",
+            "tool calls, raw tool results, other non-conversation payloads are excluded",
             "one independently retrievable and updateable future-use topic",
-            "pure read-only query adds no memory",
+            "a query and a mere restatement of existing memory add no new memory",
             "explicit remember mode",
         ):
             self.assertIn(phrase, text)
+        self.assertIn("a single project name stated in the candidate's bound source text is sufficient", text)
         prompt = gate_prompt([{"event_key": "event-1", "role": "assistant", "content": "temporary result"}])
         self.assertIn("Mode: automatic capture/process", prompt)
-        self.assertIn("A pure query answered by restating a related active memory is read-only", prompt)
+        self.assertIn("no explicit remember request is required", prompt)
+        self.assertIn("A pure query answered only by restating a related active memory is read-only", prompt)
         self.assertIn("no admissible future-use information", gate_prompt([]))
 
     def test_summary_contract_is_source_neutral(self):
@@ -364,13 +369,39 @@ class AdmissionFlowTests(unittest.TestCase):
                 ]
             )
         )
+        backend.semantic_review_decision = "NO_CHANGE"
+        backend.responses.extend(
+            [
+                summary(
+                    assistant_key,
+                    title="浦银安盛任务状态",
+                    body="浦银安盛需要提供一版可靠测试数据，逾期5天。",
+                    type="todo",
+                ),
+                summary(
+                    assistant_key,
+                    title="泰信基金任务状态",
+                    body="泰信基金任务逾期33天，状态已驳回、无负责人。",
+                    type="todo",
+                ),
+                summary(
+                    assistant_key,
+                    title="中银国际历史数据迁移",
+                    body="中银国际历史数据和附件需要全部迁移。",
+                    type="project",
+                ),
+            ]
+        )
 
         result = service.process(source="hermes", session_id="pure-operational-query", model=backend)
 
         self.assertEqual(result["memory_ids"], [])
         self.assertEqual(result["memories_written"], 0)
         self.assertEqual(service.read(existing.memory_id).body, existing.body)
-        self.assertEqual([call["purpose"] for call in backend.calls], ["gate"])
+        self.assertEqual(
+            [call["purpose"] for call in backend.calls],
+            ["gate", "summarize", "summarize", "summarize"],
+        )
 
     def test_query_with_user_confirmed_durable_fact_remains_admissible(self):
         service = self.make_service("query-with-confirmation")
@@ -438,12 +469,25 @@ class AdmissionFlowTests(unittest.TestCase):
                 ]
             )
         )
+        backend.semantic_review_decision = "NO_CHANGE"
+        update_summary = json.loads(
+            summary(
+                assistant_key,
+                title="泰信基金申请日期展示问题",
+                body="泰信基金申请日期展示问题现在逾期33天。",
+                type="todo",
+                update_memory_id=old.memory_id,
+            )
+        )
+        update_summary["status"] = "active"
+        backend.responses.append(json.dumps(update_summary, ensure_ascii=False))
 
         result = service.process(source="hermes", session_id="dynamic-overdue-update", model=backend)
 
         self.assertEqual(result["memory_ids"], [])
         self.assertEqual(result["memories_written"], 0)
         self.assertEqual(service.read(old.memory_id).body, old.body)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
 
     def test_one_time_execution_receipt_is_not_persisted(self):
         service = self.make_service("execution-receipt")
@@ -474,10 +518,10 @@ class AdmissionFlowTests(unittest.TestCase):
         self.assertEqual(result["memory_ids"], [])
         self.assertEqual(result["memories_written"], 0)
 
-    def test_read_only_orion_digest_does_not_reingest_atomic_assistant_action(self):
+    def test_visible_orion_digest_can_extract_atomic_assistant_action(self):
         service = self.make_service("orion-digest")
         backend = QueueBackend()
-        user_key, _ = self.capture_turn(
+        user_key, assistant_key = self.capture_turn(
             service,
             session="orion-digest",
             turn="turn-1",
@@ -486,28 +530,57 @@ class AdmissionFlowTests(unittest.TestCase):
         )
         aggregate = candidate(
             "orion-aggregate",
-            [user_key],
-            memory="Orion汇总（2026-09-02）：子任务完成4条；现场增补待受理2条——另派发子任务提供旧版本生产取数脚本。",
+            [assistant_key],
+            memory="Orion汇总：子任务完成4条；现场增补待受理2条——另派发子任务提供旧版本生产取数脚本。",
             type="fact",
         )
         aggregate["scopes"] = ["project:orion"]
         atomic = candidate(
             "orion-script-task",
-            [user_key],
+            [assistant_key],
             memory="Orion需要提供旧版本生产取数脚本。",
             type="todo",
         )
         atomic["scopes"] = ["project:orion"]
-        backend.responses.append(gate([aggregate, atomic]))
+        aggregate_summary = json.loads(
+            summary(
+                assistant_key,
+                title="Orion邮件汇总",
+                body=aggregate["memory"],
+                type="fact",
+            )
+        )
+        aggregate_summary["scopes"] = ["project:orion"]
+        atomic_summary = json.loads(
+            summary(
+                assistant_key,
+                title="Orion旧版本生产取数脚本",
+                body=atomic["memory"],
+                type="todo",
+            )
+        )
+        atomic_summary.update({"scopes": ["project:orion"], "status": "active"})
+        backend.responses.extend(
+            [
+                gate([aggregate, atomic]),
+                json.dumps(aggregate_summary, ensure_ascii=False),
+                json.dumps(atomic_summary, ensure_ascii=False),
+            ]
+        )
 
         result = service.process(source="hermes", session_id="orion-digest", model=backend)
 
-        self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(result["memories_written"], 2)
         self.assertEqual(result["deferred_candidates"], 0)
-        self.assertEqual(service._read_memories_unlocked("knowledge"), [])
-        self.assertEqual([call["purpose"] for call in backend.calls], ["gate"])
+        memories = service._read_memories_unlocked("knowledge")
+        self.assertEqual(len(memories), 2)
+        self.assertTrue(any("旧版本生产取数脚本" in record.memory.body for record in memories))
+        self.assertEqual(
+            [call["purpose"] for call in backend.calls],
+            ["gate", "summarize", "summarize"],
+        )
 
-    def test_attachment_only_followup_is_dropped_before_summary(self):
+    def test_attachment_followup_final_report_is_admissible_without_raw_attachment(self):
         service = self.make_service("attachment-followup")
         backend = QueueBackend()
         user_key, assistant_key = self.capture_turn(
@@ -515,21 +588,33 @@ class AdmissionFlowTests(unittest.TestCase):
             session="attachment-followup",
             turn="turn-1",
             user="查看鑫元基金最近的邮件。",
-            assistant="评审PPT和SIT问题清单需要跟进处理。",
+            assistant="鑫元基金评审PPT和SIT问题清单需要跟进处理。",
         )
         item = candidate(
             "xinyuan-materials",
             [user_key, assistant_key],
-            memory="鑫元基金评审PPT和SIT问题清单待跟进处理。",
+            memory="鑫元基金评审PPT和SIT问题清单需要跟进处理。",
         )
+        item["type"] = "todo"
         item["scopes"] = ["project:鑫元基金"]
-        backend.responses.append(gate([item]))
+        followup_summary = json.loads(
+            summary(
+                assistant_key,
+                title="鑫元基金评审PPT和SIT问题清单跟进",
+                body="鑫元基金评审PPT和SIT问题清单需要跟进处理。",
+                type="todo",
+            )
+        )
+        followup_summary.update({"scopes": ["project:鑫元基金"], "status": "active"})
+        backend.responses.extend([gate([item]), json.dumps(followup_summary, ensure_ascii=False)])
 
         result = service.process(source="hermes", session_id="attachment-followup", model=backend)
 
-        self.assertEqual(result["memories_written"], 0)
-        self.assertEqual(service._read_memories_unlocked("knowledge"), [])
-        self.assertEqual([call["purpose"] for call in backend.calls], ["gate"])
+        self.assertEqual(result["memories_written"], 1)
+        memories = service._read_memories_unlocked("knowledge")
+        self.assertEqual(len(memories), 1)
+        self.assertIn("问题清单需要跟进", memories[0].memory.body)
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
 
     def test_attachment_summary_with_only_transport_details_is_dropped(self):
         service = self.make_service("attachment-summary")
@@ -539,7 +624,7 @@ class AdmissionFlowTests(unittest.TestCase):
             session="attachment-summary",
             turn="turn-1",
             user="查看鑫元基金当前推进材料。",
-            assistant="有评审材料和问题清单。",
+            assistant="鑫元基金有评审材料和问题清单。",
         )
         item = candidate(
             "xinyuan-materials",
@@ -555,13 +640,15 @@ class AdmissionFlowTests(unittest.TestCase):
             )
         )
         summary_value["scopes"] = ["project:鑫元基金"]
+        backend.semantic_review_decision = "NO_CHANGE"
+        summary_value["sources"] = [{"event_key": assistant_key}]
         backend.responses.extend([gate([item]), json.dumps(summary_value, ensure_ascii=False)])
 
         result = service.process(source="hermes", session_id="attachment-summary", model=backend)
 
         self.assertEqual(result["memories_written"], 0)
         self.assertEqual(service._read_memories_unlocked("knowledge"), [])
-        self.assertEqual([call["purpose"] for call in backend.calls], ["gate"])
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
 
     def test_attachment_with_owner_deadline_and_remediation_remains_admissible(self):
         service = self.make_service("attachment-action")
@@ -713,7 +800,7 @@ class AdmissionFlowTests(unittest.TestCase):
         )
         query_summary = json.loads(
             summary(
-                user_key,
+                assistant_key,
                 title=active_before.title,
                 body=active_before.body,
                 type=active_before.type,

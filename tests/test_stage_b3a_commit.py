@@ -26,6 +26,10 @@ class FakeClock:
         self.value += timedelta(hours=hours)
 
 
+from tests.semantic_fixtures import semantic_fixture
+
+
+@semantic_fixture
 class QueueBackend:
     provider = "fake"
     model = "b3a-commit"
@@ -35,6 +39,10 @@ class QueueBackend:
         self.calls = []
 
     def complete(self, prompt, *, system="", purpose="", temperature=0.0):
+        if purpose == "summarize" and prompt.startswith(
+            ("UPDATE_SEMANTIC_REVIEW\n", "CREATE_SEMANTIC_REVIEW\n")
+        ):
+            return '{"decision":"ACCEPT"}'
         self.calls.append({"prompt": prompt, "purpose": purpose})
         if not self.responses:
             raise ModelError("queue exhausted")

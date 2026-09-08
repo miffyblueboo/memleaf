@@ -48,7 +48,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "capture": {
         "visible_messages_only": True,
-        "tool_evidence_mode": "bounded",
+        "tool_evidence_mode": "off",
         "include_attachments": False,
         "redact_secrets": True,
     },
@@ -89,10 +89,10 @@ def _normalize_legacy_config(value: Mapping[str, Any]) -> dict[str, Any]:
     if capture is not None and not isinstance(capture, Mapping):
         raise ValueError("invalid memleaf capture settings")
     if not capture_present:
-        # A persisted pre-policy config with no capture section behaved as
-        # metadata-only. A genuinely new Vault never reaches this branch:
-        # default_config() writes an explicit current bounded mode.
-        normalized["capture"] = {"tool_evidence_mode": "metadata"}
+        # A persisted config without a capture section has no explicit
+        # evidence opt-out. Use the current bounded default; explicit legacy
+        # false and current metadata/off settings are preserved below.
+        normalized["capture"] = {"tool_evidence_mode": "off"}
     elif isinstance(capture, Mapping):
         current = dict(capture)
         legacy_present = "include_tool_output" in current
@@ -107,9 +107,11 @@ def _normalize_legacy_config(value: Mapping[str, Any]) -> dict[str, Any]:
                 raise ValueError("conflicting legacy and current tool evidence settings")
             current["tool_evidence_mode"] = migrated_mode
         elif not explicit_present:
-            # Old partial capture sections also inherited metadata-only tool
-            # evidence behavior before tool_evidence_mode existed.
-            current["tool_evidence_mode"] = "metadata"
+            # A partial capture section was written by older installers before
+            # the body-retention mode existed. Keep an explicitly supplied
+            # mode (or the legacy boolean above) authoritative, while letting
+            # the current default restore normal bounded evidence capture.
+            current["tool_evidence_mode"] = "off"
         normalized["capture"] = current
     return normalized
 

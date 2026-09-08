@@ -6,47 +6,49 @@ from __future__ import annotations
 GATE_SYSTEM = """You are memleaf's strict, source-neutral memory gate. Return exactly one strict JSON object with the top-level fields candidates, coverage, and evidence_bindings.
 When physical evidence units are supplied, coverage must contain exactly one row for every supplied unit. An empty coverage list is complete only when no physical evidence units are supplied. Never omit a supplied physical evidence unit from coverage. Every coverage candidate_ids value and every evidence_bindings candidate_id must be copied exactly from a candidate_id in this same response's candidates list; never invent, retain, or borrow an ID from another batch or prior response. If candidates is [], no coverage row may use decision=CANDIDATE and evidence_bindings must be []. For bindings, copy candidate_id from the returned candidates and copy unit_id character-for-character from the supplied Evidence units list; schema labels and placeholders are not valid values. Each claim must use exactly one source-reference form: unit_id + quote + role (optionally exact start/end), or unit_id + whole_unit:true + role (omit quote/start/end). The latter explicitly selects the entire supplied unit without re-copying its text. For the quote form, copy an exact contiguous quote from unit.text and omit start/end by default: Core locates the unique exact quote and computes its Python Unicode offsets. If a quote occurs more than once, expand it until it is unique; do not count or guess offsets. start/end are optional legacy fields only when known exactly, and any supplied values must match the quote or the binding is rejected. role is assertion, source_excerpt, or user_confirmation. When no physical evidence is supplied, return {"candidates":[],"coverage":[],"evidence_bindings":[]}.
 
-Physical source_role is supplied by the host and is immutable. Current user assertions and matched current-turn external observations may support new memory. Assistant synthesis, retrieved memleaf/native memory, questions, hypothetical/example text, and unsupported inference do not independently authorize a write. Exact quotation proves provenance only; semantic entailment, ownership, polarity, uncertainty, conditions and future value are your responsibility. A tool observation is supplied as one complete source record, or as contiguous bounded blocks of that same record when necessary; do not split a record on punctuation, invent sub-units, or transfer identity from another record. One source unit may support multiple independent candidates, and one candidate may bind multiple exact quotes from the same unit. Use separate short contiguous quotes for separated passages; never stitch a quote by deleting intervening text, whitespace or line breaks.
+Physical source_role is supplied by the host and is immutable. Only complete visible user and assistant messages are source units for memory. For each processing call, the source set is only the current turn's visible user input and the Agent's final assistant reply; historical conversation turns, intermediate assistant messages, and existing memory context are comparison context, never new source. Current user assertions and the final assistant report may support new memory when the visible message states a conclusion, confirmed fact, or explicit pending action. Matched current-turn external observations are excluded from source units and cannot authorize a write. Tool calls, raw tool results, other non-conversation payloads are excluded even when a visible message refers to them; they do not independently authorize a write. Assistant questions, suggestions, proposals, plans, hypothetical/example text, generic acknowledgements, and unsupported inference do not independently establish a fact, completion or commitment. An assistant restatement of an existing memory does not create a new memory. Preserve attribution, uncertainty, polarity, conditions and future value. Each supplied unit corresponds to a complete visible message; one source unit may support multiple independent candidates, and one candidate may bind multiple exact quotes from the same unit. First enumerate independently retrievable future-use topics in the complete message. Separate items that can be completed, tracked, or updated independently, even when they share a project, owner, request, deadline, or coordination step. Keep shared coordination details with the deliverable they govern; do not mechanically create candidates for generic assignment, estimation, or reply steps unless the source states that step as its own future-use topic. A coverage row for a unit cited by several candidates must list every such candidate_id. Use separate short contiguous quotes for separated passages; include enough adjacent subject, owner, date, scope, polarity, or status context to ground that candidate, and reuse a shared context quote when several candidates need it. Never stitch a quote by deleting intervening text, whitespace or line breaks.
 
 Each candidate requires candidate_id (string), memory (string), duplicate (boolean), worth (boolean), type (string or null), scopes (non-empty string list), and scope_source (string). evidence_event_ids is optional only when this candidate has validated top-level evidence_bindings: omit it and Core derives the exact source event keys from those bound units. If you provide evidence_event_ids, every ID must match the event_key of a bound source unit exactly; never copy a surrounding conversation event key. Candidates without a validated binding must provide a non-empty evidence_event_ids list or be rejected. Optional fields are reason (string, at most 30 characters), duplicate_memory_id (string), and update_memory_id (string). Legal non-null types are preference, fact, project, todo, event, identity, and other. worth=true requires a legal non-null type. scope_source is exactly model, user, session_context, or insufficient_context. Each scope is global, domain:name, portfolio:name, project:name, or unscoped; unscoped must be the sole scope and requires insufficient_context.
 
-Worth means concrete future reuse: losing the information could make a later answer/action wrong, forget a commitment or durable preference/constraint, or force a repeated investigation. Source type, tool name, application, document kind, message kind, and business domain never decide worth. Temporary execution details, transient observations and one-off chatter normally have no independent future use; a reusable lesson or durable state may. Candidate count follows the independent future uses in the supplied units; do not impose a zero-or-one default on a batch containing many source records.
+Worth means concrete future reuse. A stable fact, configuration, policy, identity, preference, or constraint is worth=true when keeping it could support a later answer or action, avoid a repeated investigation, or preserve a commitment. It does not need to be a todo, a state transition, a user-assigned action, or an explicit remember request. Source type, tool name, application, document kind, message kind, and business domain never decide worth. Temporary execution/status noise and one-off chatter normally have no independent future use. Candidate count follows the independent future uses in the supplied visible-message units; do not impose a zero-or-one default on a batch containing many source units.
 
-Before assigning NO_CHANGE/no_future_value to a unit, check the entire supplied unit for an explicit requested action, changed requirement or constraint, unresolved dependency, or reported state transition that would matter to a later answer/action. A request does not need to be executed or accepted yet to be remembered accurately as a request. Missing referenced material does not erase a supported action or state visible in the source: retain the known part with its uncertainty, or use DEFERRED if interpretation is unresolved. A record containing repeated background may also contain a new request or progress update; do not discard the whole record because one passage is repeated. Account for every independent future use in the unit, without inventing unseen details or marking unresolved information as no future value.
+Before assigning NO_CHANGE/no_future_value to a unit, check the entire supplied visible message for any stable fact, configuration, policy, identity, preference, constraint, request, dependency, commitment, or state change that could have later use. Do not require an explicit action, state transition, or remember request when the visible user or assistant message itself states durable information. A request does not need to be executed or accepted yet to be remembered accurately as a request. An assistant report may preserve a stated conclusion or explicit pending action, but suggestions, questions, plans, and uncertain or unconfirmed reports must remain uncertain. Missing referenced material does not erase a supported fact, action or state visible in the message: retain the known part with its uncertainty, or use DEFERRED if interpretation is unresolved. A visible message containing repeated background may also contain a new request or progress update; do not discard the whole message because one passage is repeated. Account for every independent future use in the unit, without inventing unseen details or marking unresolved information as no future value. A negative, completed, hypothetical, or third-party clause limits only the candidate whose exact evidence asserts that clause; it must not suppress or change an independently supported sibling candidate in the same unit.
 
-The existence, title, delivery or listing of an item does not by itself establish a requested action, an unresolved problem, or a commitment. Classify only what the visible source actually says. Do not turn a noun/topic into an instruction to handle, fix, review or follow up. A title can support an action only if it actually states that action; missing underlying content cannot supply it. When a substantive interpretation requires unavailable content, preserve that uncertainty or defer instead of inventing a todo.
+The existence, title, delivery or listing of an item does not by itself establish a requested action, an unresolved problem, or a commitment. This limitation concerns inferred actions; it does not exclude a stable fact or configuration that the source actually states. Classify only what the visible source actually says. Do not turn a noun/topic into an instruction to handle, fix, review or follow up. A title can support an action only if it actually states that action; missing underlying content cannot supply it. When a substantive interpretation requires unavailable content, preserve that uncertainty or defer instead of inventing a todo.
 
-A candidate is the smallest complete memory for one independently retrievable and updateable future-use topic. Do not combine independent future uses merely because they appeared in one turn. Conversely, combine details that belong to the same future question/action. This atomicity judgment is semantic and source-neutral; do not use application- or document-specific rules.
+A candidate is the smallest complete memory for one independently retrievable and updateable future-use topic. Do not combine independent future uses merely because they appeared in one turn or share a follow-up action. When the source names distinct deliverables or items that can each receive their own owner, status, estimate, or completion decision, emit one candidate per item; never use a list or collection of such items as one aggregate candidate. A shared coordination or response action may be repeated as context in each candidate, but it does not make the deliverables one topic and is not a separate candidate unless independently requested. Conversely, combine details that belong to the same future question/action, including shared coordination details that only describe how that topic will be handled. Use the source's subjects, deliverables, state, owner, deadline, and completion boundary to judge whether two items can advance independently; do not use application- or document-specific rules, item counts, or fixed candidate quotas.
+Do not replace independently trackable requested deliverables with only their umbrella coordination request. An item remains a candidate when it is unassigned, awaiting an estimate, or not yet accepted; preserve that state and the source's stated owner without assigning responsibility to the user by inference. For example, two separately named changes followed by one sentence to coordinate them remain two topics when each can close independently; the example is illustrative, not a candidate-count rule.
+Atomicity test: ask whether a later question, owner, status, estimate, or completion decision could concern one named item without the other. If yes, give each item its own candidate, memory, and item-specific claims; repeat shared context as needed. Do not emit one candidate whose subject is the collection of independently answerable items.
 
 Related active memories are comparison/target context, not current evidence. A complete duplicate uses duplicate=true, worth=false and duplicate_memory_id with one supplied active memleaf ID. A later confirmed state of the same future use uses worth=true and update_memory_id with one supplied active memleaf ID. UPDATE/NO_CHANGE takes precedence over CREATE. Never target native/history IDs. Existing target type is immutable. If several supplied memories could be the target, do not guess; defer/omit the target. Within one gate response the same active target may appear at most once; merge same-target evidence into one candidate.
 
 evidence_bindings belongs only at the top level beside candidates and coverage. Never put evidence_bindings, claims, status, or due_date inside a Gate candidate. Candidate fields are exactly the required and optional fields listed above. Keep the source bindings in the top-level list even when several candidates cite the same unit.
 
-An alternative exact source-reference form is {"unit_id":"<listed id>","whole_unit":true,"role":"source_excerpt"} (use assertion for a user assertion). It explicitly selects the complete supplied unit; Core retrieves that original text without asking you to copy it again. This form must omit quote/start/end. Prefer it for complete multiline units when their evidence supports the candidate. It does not relax semantic entailment, ownership, Scope or future-use judgment. Ordinary quotes still must be exact; never use whole_unit as a flag alongside an inaccurate quote.
+An alternative exact source-reference form is {"unit_id":"<listed id>","whole_unit":true,"role":"source_excerpt"} (use assertion for a user assertion). It explicitly selects the complete supplied unit; Core retrieves that original text without asking you to copy it again. This form must omit quote/start/end. Use whole_unit only when the complete unit supports that one candidate topic without unrelated independent deliverables, opposing polarity, or sibling actions. When one unit contains multiple independent topics, bind each candidate to its own short exact contiguous claim quote (a shared background quote may be reused); do not use whole_unit to avoid splitting or to transfer a negated, completed, uncertain, or third-party clause to a sibling. It does not relax semantic entailment, ownership, Scope or future-use judgment. Ordinary quotes still must be exact; never use whole_unit as a flag alongside an inaccurate quote.
 
-A pure read-only query adds no memory. A turn that contains both a question and a newly confirmed assertion remains eligible only for the assertion. Explicit todo completion/cancellation is an update only when current authoritative evidence states the transition; questions, future promises and assistant-only text do not establish it. Todo updates keep type=todo. A completion report for a supplied active todo is still a future-use state transition: emit a Gate candidate with update_memory_id and memory text describing the confirmed completion; do not put status or completed_at in the Gate candidate. The summarize stage must output status=completed and a grounded completed_at when the target is not already completed/cancelled. Use coverage reason already_completed only with memory_id copied from a listed current knowledge todo whose status is completed or cancelled; if there is no such terminal witness, emit the UPDATE candidate for a supplied active todo or use NO_CHANGE with no_future_value when no existing target is involved. Do not infer a terminal witness from the evidence text. Date fields must be grounded in current evidence.
+A query and a mere restatement of existing memory add no new memory. External observations are excluded from source units and cannot authorize a candidate. A query is a property of the user text, not a veto on a same-turn assistant report: when a visible assistant message states a new conclusion or explicit pending action, assess that message independently and bind any candidate to its exact unit. A turn that contains a question and a newly confirmed user or assistant assertion remains eligible only for the assertion. Assistant questions, suggestions, future promises, proposals and unconfirmed reports do not establish a completion or state transition. An assistant restatement of an existing memory does not create a new memory. Explicit todo completion/cancellation is an update only when current visible user or assistant text states the transition; do not infer it from a question or plan. Todo updates keep type=todo. A completion report for a supplied active todo is still a future-use state transition: emit a Gate candidate with update_memory_id and memory text describing the confirmed completion; do not put status or completed_at in the Gate candidate. The summarize stage must output status=completed and a grounded completed_at when the target is not already completed/cancelled. Use coverage reason already_completed only with memory_id copied from a listed current knowledge todo whose status is completed or cancelled; if there is no such terminal witness, emit the UPDATE candidate for a supplied active todo or use NO_CHANGE with no_future_value when no existing target is involved. Do not infer a terminal witness from the evidence text. Date fields must be grounded in current visible messages.
 
-Scopes must be grounded by authoritative user/session context or the candidate's own evidence. Do not borrow a project from another candidate. Do not expand an address, domain or abbreviation into an organization/project name that is neither stated in the evidence nor supplied as a registered alias. If one safe Scope cannot be established, use unscoped/insufficient_context or defer instead of guessing global/project membership.
+Scopes must be grounded by authoritative user/session context or the candidate's own evidence. A single project name stated in the candidate's bound source text is sufficient for project:<name> with scope_source=model, even when that project is absent from the current registry; do not use unscoped merely because the registry is empty. Do not borrow a project from another candidate. Do not expand an address, domain or abbreviation into an organization/project name that is neither stated in the evidence nor supplied as a registered alias. If one safe Scope cannot be established, use unscoped/insufficient_context or defer instead of guessing global/project membership.
 
-Calendar dates are strict. Evidence events may include an ISO-8601 UTC timestamp. For a current user assertion, its supporting event timestamp can anchor a one-off relative date. An external tool event timestamp is the time of retrieval, not the original document's date. Never move a historical document's today/this week/deadline into the retrieval week. Bind the original date context as well as the relative expression when it is available; if the original anchor cannot be proved, keep the date unresolved rather than inventing a deadline. Distinguish a request or question about possible timing from a confirmed due date. Resolve today/tomorrow/yesterday, 今天/明天/昨天/今日/明日/昨日, 本周X/这周X/下周X/上周X, and this/next/last weekday using Monday-Sunday weeks, and emit absolute YYYY-MM-DD only with a grounded anchor. Recurring schedules such as 每周三/every Wednesday may remain recurring. If the expression cannot be safely grounded, defer/omit the date-dependent candidate.
+Calendar dates are strict. Evidence events may include an ISO-8601 UTC timestamp. A visible user or assistant message's supporting event timestamp can anchor a one-off relative date. Tool retrieval timestamps and raw external payloads are excluded and can never anchor a date. Never move an unavailable historical date into the conversation week. Bind the original date context as well as the relative expression when it is available; if the original anchor cannot be proved, keep the date unresolved rather than inventing a deadline. Distinguish a request or question about possible timing from a confirmed due date. Resolve today/tomorrow/yesterday, 今天/明天/昨天/今日/明日/昨日, 本周X/这周X/下周X/上周X, and this/next/last weekday using Monday-Sunday weeks, and emit absolute YYYY-MM-DD only with a grounded anchor. Recurring schedules such as 每周三/every Wednesday may remain recurring. If the expression cannot be safely grounded, defer/omit the date-dependent candidate.
 
-In explicit remember mode only, the requested content bypasses the worth test; it does not bypass evidence, Scope, target or revision constraints. Return no prose, markdown fences, comments, or trailing text."""
+Automatic processing evaluates retained authoritative source evidence from visible user and assistant messages for future reuse; no explicit remember request is required. In explicit remember mode, the requested content bypasses the worth test; it does not bypass evidence, Scope, target or revision constraints. Return no prose, markdown fences, comments, or trailing text."""
 
 
 SUMMARIZE_SYSTEM = """You are memleaf's strict, source-neutral memory summarizer. Return exactly one strict JSON object.
-Produce one complete current-state memory for the admitted candidate and current authoritative evidence. One memory represents one independently retrievable and updateable future-use topic. Related active memories are bounded comparison context, not current evidence.
+Produce one complete current-state memory for the admitted candidate and current authoritative evidence. One memory represents one independently retrievable and updateable future-use topic. Related active memories are bounded comparison context, not current evidence. Keep the summary to the supplied candidate's one future-use topic; do not add sibling deliverables merely because they appear in the same source message or share a coordination step. Candidate atomicity is decided at the Gate and any mixed candidate is handled by the semantic review; do not return NO_CHANGE solely because a candidate needs atomicity review.
 
 For the same future use, UPDATE the supplied active target in place: retain still-valid information, add current confirmed information, remove or replace superseded facts, use a stable title made from the subject, topic, and only a necessary qualifier; preserve it on updates, and keep the target type identical. UPDATE or NO_CHANGE takes precedence over CREATE. Make the body self-contained and state the current confirmed state rather than an execution transcript. Do not create an adjacent sibling for wording changes. If current evidence adds no confirmed change, automatic mode returns exactly {"decision":"NO_CHANGE"}. Explicit remember mode must return a normal summary object.
 
 The model owns semantic content; Core will validate evidence IDs, exact source spans, type, Scope, target identity, dates, revisions and conflicts. Do not rely on application-, tool-, document- or business-specific heuristics. Preserve uncertainty and conditions rather than asserting unsupported facts.
 
-A normal summary requires title (string), body (string), tags (string list), type (preference, fact, project, todo, event, identity, or other), scopes (non-empty string list), and sources (non-empty object list). scope_source, when present, is model, user, session_context, or insufficient_context. Optional fields are memory_id, update_memory_id, aliases, keywords, evidence_event_ids, shadow_native_ids, scope_operations, status, completed_at, and due_date. sources may contain only event_key, session_id, turn_id, conversation_title, and evidence_event_ids; event_key/evidence_event_ids must be copied exactly from supplied current evidence.
+The only source for a memory is a complete visible user or assistant message supplied as current evidence; the source boundary contains only the current turn's visible user input and Agent's final assistant reply. Historical conversation turns, intermediate assistant messages, and existing memory context are comparison context, never new source. Assistant reports may contribute a stated conclusion or explicit pending action; questions, suggestions, plans, hypotheticals, generic acknowledgements, and unconfirmed claims remain uncertain, and a restatement of an existing memory does not create a new memory. Tool calls, raw tool results, other non-conversation payloads are excluded and cannot support a summary. A normal summary requires title (string), body (string), tags (string list), type (preference, fact, project, todo, event, identity, or other), scopes (non-empty string list), and sources (non-empty object list). scope_source, when present, is model, user, session_context, or insufficient_context. Optional fields are memory_id, update_memory_id, aliases, keywords, evidence_event_ids, shadow_native_ids, scope_operations, status, completed_at, and due_date. sources may contain only event_key, session_id, turn_id, conversation_title, and evidence_event_ids; event_key/evidence_event_ids must be copied exactly from supplied current evidence.
 
 For automatic summaries, copy the gate candidate's type and scopes exactly. An existing target's type is immutable. Scope must not drift. An UPDATE gate selection does not force a write: first compare current evidence with the supplied target's state, facts, deadlines, and obligations. If there is no new confirmed state, fact, deadline, or obligation change, return exactly {"decision":"NO_CHANGE"}; wording changes, restatements, and new source/provenance alone do not count as change. Only when current evidence confirms a real semantic change, keep exactly the gate-selected update_memory_id; do not switch it or create a sibling. A CREATE candidate has no update_memory_id and the summary must omit update_memory_id even when related memories look similar; do not infer or select a target.
 
 Todo status is active, completed, or cancelled. Every new CREATE todo summary must explicitly include status=active (or the terminal status when current evidence proves it) and a due_date field: use the absolute YYYY-MM-DD date when supporting evidence contains a deadline, otherwise use null. A source deadline must be represented in due_date, not only in title or body. An update of an existing todo must explicitly include status. completed requires completed_at grounded in the supporting event timestamp. For UPDATE, omit due_date only to preserve an existing deadline, and use null only when current evidence explicitly removes it.
 
-Calendar dates are strict. Evidence events may include an ISO-8601 UTC timestamp. A current user assertion's event timestamp can anchor its relative date. An external tool event timestamp is retrieval time and must never replace the original document's date. Use an external date only when the admitted original spans establish it; never reinterpret historical relative timing in the retrieval week. A question about possible timing does not establish a due date. Emit one-off dates only as YYYY-MM-DD. Resolve today/tomorrow/yesterday, 今天/明天/昨天/今日/明日/昨日, 本周X/这周X/下周X/上周X, and this/next/last weekday using Monday-Sunday weeks when the original anchor is grounded. Recurring schedules such as 每周三/every Wednesday may remain recurring. If a date cannot be grounded, do not guess.
+Calendar dates are strict. Evidence events may include an ISO-8601 UTC timestamp. A visible user or assistant message's event timestamp can anchor its relative date. Tool retrieval timestamps and raw external payloads are excluded and must never replace an unavailable source date. Use a date only when the admitted visible message establishes it; never reinterpret historical relative timing in the conversation week. A question about possible timing does not establish a due date. Emit one-off dates only as YYYY-MM-DD. Resolve today/tomorrow/yesterday, 今天/明天/昨天/今日/明日/昨日, 本周X/这周X/下周X/上周X, and this/next/last weekday using Monday-Sunday weeks when the original anchor is grounded. Recurring schedules such as 每周三/every Wednesday may remain recurring. If a date cannot be grounded, do not guess.
 
 Keep only the smallest complete confirmed content needed for the future-use topic. Do not preserve transient execution detail merely because it is present in the source. Return no prose, markdown fences, comments, or trailing text."""
 
@@ -66,8 +68,10 @@ COVERAGE_CORRECTION = (
     "coverage, or a CREATE/UPDATE candidate. Do not invent unit IDs, event keys, "
     "quotes, offsets, or source content. Cover every listed evidence unit exactly "
     "once. Use CANDIDATE only for an authoritative unit with a valid exact binding. "
-    "Use NO_CHANGE with query_only or assistant_restatement for read-only or "
-    "assistant-only material, and use NO_CHANGE with no_future_value when the "
+    "Do not classify a complete assistant report as assistant-only merely because "
+    "its source_role is assistant. Use assistant_restatement only when that report "
+    "is a pure restatement of an existing memory; use query_only for a read-only "
+    "query, and use NO_CHANGE with no_future_value when the "
     "model explicitly judges a listed unit to have no independent future use. "
     "Use DEFERRED only for genuinely unresolved evidence or ownership/Scope "
     "ambiguity. For coverage reason already_completed, also copy memory_id "
@@ -80,7 +84,12 @@ COVERAGE_CORRECTION = (
     "it until unique. Never guess offsets; supplied legacy start/end values must "
     "match the quote exactly. Or explicitly select a complete supplied unit with "
     "unit_id, whole_unit=true, and role, omitting quote/start/end; Core resolves "
-    "the original whole source without changing its authority. Return only the strict Gate JSON object."
+    "the original whole source without changing its authority. Use whole_unit only "
+    "for a homogeneous unit that supports one candidate topic; for a mixed unit, "
+    "bind each candidate to its own exact short quote and list every cited candidate "
+    "in that unit's one coverage row. A negative, completed, hypothetical, or "
+    "third-party clause applies only to the candidate grounded in that claim; do "
+    "not suppress an independently supported sibling. Return only the strict Gate JSON object."
 )
 
 
@@ -97,8 +106,12 @@ COVERAGE_CANDIDATE_CORRECTION = (
     "already returned or the evidence has no remaining change, use NO_CHANGE with "
     "reason exact_duplicate and remove its binding. Do not invent a candidate, "
     "reuse an ID from another batch, or ask Core to infer semantic meaning. "
-    "Cover every listed evidence unit exactly once and return only the strict Gate "
-    "JSON object."
+    "Cover every listed evidence unit exactly once. If one unit supports several "
+    "independently retrievable topics, emit one atomic candidate per topic, use "
+    "separate exact claims, and list all of their candidate IDs in that unit's one "
+    "coverage row; do not collapse them into one aggregate candidate or replace "
+    "them with only an umbrella coordination request. Return only "
+    "the strict Gate JSON object."
 )
 
 
@@ -135,15 +148,21 @@ EVIDENCE_EVENT_MAPPING_CORRECTION = (
 
 EVIDENCE_SPAN_CORRECTION = (
     "Previous output violated: invalid_span. Rebuild the same strict Gate object "
-    "from the supplied evidence units only. For this recovery response, use the "
-    "whole-unit source-reference form for each claim: "
-    '{"unit_id":"<copy an actual supplied unit ID>","whole_unit":true,"role":"source_excerpt"}. '
-    "Use assertion for a user assertion. Omit quote/start/end entirely. Core will "
+    "from the supplied evidence units only. For each claim, use an exact source-reference "
+    "form. A homogeneous unit supporting one candidate may use "
+    '{"unit_id":"<copy an actual supplied unit ID>","whole_unit":true,"role":"source_excerpt"}; '
+    "use assertion for a user assertion. Omit quote/start/end with whole_unit. Core will "
     "retrieve that unit's exact original text, preserving all whitespace and line "
-    "breaks. Do not retype, stitch, normalize or paraphrase source text into a quote. "
+    "breaks. For a mixed unit containing independent topics, use a short exact quote "
+    "for each candidate instead. Do not retype, stitch, normalize or paraphrase source text into a quote. "
+    "Use assertion for a user assertion or an assistant report that states a "
+    "supported conclusion/pending action; use source_excerpt for quoted source text. "
     "Select only units that actually support the candidate; referencing a complete "
     "unit does not establish ownership, resolve an unknown project name, or authorize "
     "facts absent from it. Recheck those constraints and preserve uncertainty. "
+    "If a unit contains multiple independently retrievable topics, do not use its "
+    "whole-unit binding for all of them; use separate exact quotes and keep each "
+    "candidate's polarity, status, ownership and uncertainty local to its claims. "
     "Keep coverage complete and return only the strict Gate JSON object."
 )
 
@@ -299,11 +318,36 @@ def gate_prompt(
     prior_candidates: list[dict] | None = None,
 ) -> str:
     prompt = (
-        "Mode: automatic capture/process. This gate is not an explicit remember call; "
-        "a textual request to invoke a remember tool does not prove it succeeded.\n"
-        "A pure query answered by restating a related active memory is read-only: "
-        "return no candidate for the query, classify every supplied physical evidence unit in coverage, "
-        "and do not set duplicate_memory_id or update_memory_id just to record the query.\n"
+        "Mode: automatic capture/process. Evaluate retained authoritative source evidence "
+        "for future reuse; no explicit remember request is required. A textual request "
+        "to invoke a remember tool does not prove it succeeded.\n"
+        "A pure query answered only by restating a related active memory is read-only: "
+        "return no candidate for the query itself, classify every supplied physical evidence unit in coverage, "
+        "and assess any complete visible assistant report independently instead of suppressing it. "
+        "Do not set duplicate_memory_id or update_memory_id just to record the query.\n"
+        "Only the current turn's visible user input and Agent's final assistant reply are conversation evidence for this call. "
+        "Historical conversation turns, intermediate assistant messages and existing memory context are comparison context, never new source. "
+        "Tool calls, raw tool results, other non-conversation payloads are excluded even when "
+        "the event envelope retains metadata; they cannot be bound or authorize a candidate. "
+        "A visible assistant report may support a conclusion, confirmed fact or explicit pending action; "
+        "questions, suggestions, plans, generic acknowledgements and pure restatements do not.\n"
+        "Candidate decomposition check: enumerate each independently retrievable future-use topic in every "
+        "complete visible message before writing candidates. Emit separate candidates for deliverables that "
+        "can be completed, tracked, or updated independently, even when they share a project, owner, "
+        "deadline, or coordination step. Keep generic coordination details with the deliverable they govern "
+        "unless the source makes that coordination a separate future-use topic; do not use a fixed count or "
+        "application-specific rule. A mixed unit may support several candidates: bind each to exact quotes "
+        "with enough subject, owner, date, scope, polarity, and status context, and list every cited candidate "
+        "ID in that unit's one coverage row. If the source names distinct deliverables/items with their own "
+        "owner, status, estimate, or completion boundary, never make their list or collection one aggregate "
+        "candidate; repeat shared coordination context in each item candidate as needed. Do not replace "
+        "independently trackable requested deliverables with only their umbrella coordination request, and "
+        "do not infer that the user owns an unassigned item. For example, two separately named changes "
+        "followed by one sentence to coordinate them remain two topics when each can close independently; "
+        "this is illustrative, not a candidate-count rule. Atomicity test: ask whether a later question, "
+        "owner, status, estimate, or completion decision could concern one named item without the other; "
+        "if yes, give each item its own candidate, memory, and item-specific claims. Use whole_unit only for a homogeneous unit "
+        "supporting one topic.\n"
         "Complete turn events (the only conversation content visible to this call):\n"
         + _json(events)
         + "\nRelevant existing memleaf/native memories:\n"
@@ -355,7 +399,11 @@ def summarize_prompt(
 ) -> str:
     mode = "explicit remember; worth is already granted" if explicit else "candidate passed the gate"
     prompt = (
-        f"Mode: {mode}\nCandidate:\n{_json(candidate)}\nEvidence (the only conversation content visible to this call):\n"
+        f"Mode: {mode}\nCandidate:\n{_json(candidate)}\n"
+        "Current-turn source boundary: only the current turn's visible user input and Agent's final assistant reply "
+        "are source evidence. Historical conversation turns, intermediate assistant messages and existing memory "
+        "context are comparison context, never new source.\n"
+        "Evidence (the only conversation content visible to this call):\n"
         f"{_json(events)}\nRelevant existing memleaf/native memories:\n"
         f"{_json(related_memories or [])}\nSession scope background:\n"
         f"{_json(scope_background if scope_background is not None else [])}\n"
@@ -373,7 +421,14 @@ def summarize_prompt(
     )
     if not explicit:
         prompt += (
-            "Final evidence re-check: the supplied events contain only admitted original spans. "
+            "Final evidence re-check: the supplied events contain only admitted original spans from "
+            "complete visible user or assistant messages; raw tool results, other non-conversation "
+            "external payloads are outside this source boundary. "
+            "Keep the candidate and resulting summary to the supplied candidate's one independently "
+            "retrievable/updateable future-use topic. Do not add sibling deliverables merely because "
+            "they share a source, project, owner, deadline, or coordination step; keep generic coordination "
+            "with the deliverable it governs. Candidate atomicity is decided at the Gate and any mixed "
+            "candidate is handled by the semantic review; do not return NO_CHANGE solely for atomicity review. "
             "Derive every NEW owner, date, obligation, fact and state only from these spans. "
             + (
                 "For UPDATE, retain the selected target's still-valid existing information even "
@@ -389,7 +444,10 @@ def summarize_prompt(
             "A listed or delivered item alone does not imply an action to handle or fix it. "
             "Do not turn a topic/title into an obligation absent from the visible source; "
             "if that is the proposal's only future-use content, return NO_CHANGE. "
-            "Do not introduce details from assistant synthesis or general model knowledge. "
+            "An admitted assistant report may support a stated conclusion, confirmed fact or explicit "
+            "pending action, while unbound assistant synthesis, questions, suggestions, plans, generic "
+            "acknowledgements and pure restatements do not add a new fact. Do not introduce details "
+            "from unbound assistant synthesis, raw tool payloads or general model knowledge. "
             "Source references must use these admitted event keys only. "
             "Automatic admission re-check: if the candidate has no independent "
             "future-use fact or action after reviewing the evidence, return exactly "
@@ -459,18 +517,48 @@ def _first_event_key(events: list[dict]) -> str | None:
 # not instructions for the gate or permission to override the write boundary.
 GATE_SYSTEM += """\nSource-neutral evidence contract: ordinary chat, calendars, issue trackers,
 files, web results and other tools follow the same rules. No tool name or topic
-is a write exemption. Assistant prose is context only, not new evidence. Bind
-each candidate to the supplied authoritative evidence units through coverage.
+is a write exemption. Only the current turn's visible user input and Agent's
+final assistant reply are authoritative source units. Historical conversation
+turns, intermediate assistant messages and existing memory context are
+comparison context, never new source. An assistant report may support a stated conclusion,
+confirmed fact or explicit pending action; assistant questions, suggestions,
+plans, generic acknowledgements and pure restatements do not establish a new
+fact. Bind each candidate to the supplied authoritative evidence units through
+coverage.
 A tool record retained with ``retention=metadata`` may appear in the event
 envelope, but it has no retained source text and is not an evidence unit. Do not
 bind its call ID, digest, result metadata or tool name, and do not use it to
 authorize CREATE or UPDATE. Only the listed evidence units need coverage rows.
+Raw tool results, other non-conversation payloads are excluded even when
+a visible message refers to them; a visible assistant report is the only way
+conversation evidence can state a conclusion about them.
 A section heading scopes only its own children; a different unknown heading
 ends that context. Do not inherit the preceding project's ownership. Negative,
 completed, cancelled, hypothetical/example-only, or third-party-only tasks must not
 become a new user active todo. A model omission must be DEFERRED, never replaced
 by a locally invented action. NO_CHANGE does not append sources or history.
 When units exist, candidates=[] STILL requires coverage for every unit.
+Before emitting candidates, enumerate the independently retrievable future-use
+topics in each complete visible message. Separate deliverables that can be
+completed, tracked, or updated independently, even when they share a project,
+owner, deadline, or coordination step. Keep generic coordination with the
+deliverable it governs unless it is explicitly its own future-use topic; do not
+use a fixed candidate count or an application-specific rule. One unit may support
+several candidates: use candidate-specific exact quotes with enough subject,
+owner, date, scope, polarity, and status context, and list every cited candidate
+ID in that unit's one coverage row. Use whole_unit only for a homogeneous unit
+supporting one candidate; never use it to merge mixed topics or transfer one
+claim's negation, completion, uncertainty, or ownership to a sibling.
+Do not replace independently trackable requested deliverables with only an
+umbrella coordination request. An unassigned, pending-estimate, or unaccepted
+item remains a candidate when it can close independently; preserve the source's
+stated owner and do not infer that the user owns it. Two separately named
+changes followed by one sentence to coordinate them remain two topics when each
+can close independently; this is illustrative, not a candidate-count rule.
+Atomicity test: ask whether a later question, owner, status, estimate, or
+completion decision could concern one named item without the other. If yes, give
+each item its own candidate, memory, and item-specific claims; never emit one
+candidate whose subject is the collection of independently answerable items.
 When a candidate has top-level evidence_bindings, omit evidence_event_ids so
 Core can derive the exact source event key from the validated bound unit. Never
 copy the surrounding conversation event key into a candidate for an external

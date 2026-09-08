@@ -4,8 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.33.**
-> This release extends bounded physical-evidence Gate processing with exact unit/quote bindings, batch coverage, isolated cross-batch candidates and bounded model reconciliation, while failed batches remain retryable and fail closed. Core, HostRuntime and the Hermes provider now share document/attachment classification: ordinary structural files follow the selected retention mode, while explicitly marked attachments still require separate opt-in. Automatic UPDATEs return `NO_CHANGE` for wording, restatement or provenance-only changes and retain the selected target only for real semantic state changes. It adds a synthetic-document real-model lifecycle acceptance example and regression coverage. Markdown remains the sole source of truth with no SQLite runtime dependency. Acceptance covers synthetic inputs and the configured real-model route; it does not claim real-mail or customer-business acceptance.
+> **Version: 0.2.34.**
+> Automatic extraction now uses only the current turn's visible user input and final assistant reply. Raw tool output, attachments, web/file/terminal payloads and legacy tool-evidence bodies are not new source evidence; existing or retrieved memory remains comparison context rather than source authority. Background processing is persisted as a local job and can be checked through the read-only `process_status` MCP tool; failed work remains retryable and fail closed. The release also tightens source/date grounding, target reconciliation, duplicate/no-op handling and semantic review before writes. Markdown remains the sole source of truth with no SQLite runtime dependency. Acceptance covers deterministic regression suites and synthetic inputs; it does not claim real-mail or customer-business acceptance.
 > **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.
 
 ## Project scope
@@ -141,12 +141,12 @@ Both installation paths automatically:
 4. Activate `memory.provider=memleaf`.
 5. Configure the memleaf MCP entry through Hermes' official CLI.
 6. Configure MCP lazy/idle lifecycle settings.
-7. Verify that the MCP server exposes all 12 tools.
+7. Verify that the MCP server exposes all 13 tools.
 8. Record the local Agent integration status.
 
 Restart Hermes after installation.
 
-If Hermes cannot be detected, no complete model route can be configured, Provider activation fails, or the 12-tool MCP verification fails, the installer returns an explicit failure rather than reporting an incomplete integration as successful.
+If Hermes cannot be detected, no complete model route can be configured, Provider activation fails, or the 13-tool MCP verification fails, the installer returns an explicit failure rather than reporting an incomplete integration as successful.
 
 The repository `install.sh` remains for source development, offline source installation, and troubleshooting. Normal PyPI users do not need to run it.
 
@@ -216,7 +216,7 @@ Hermes' native Provider and the MCP server are separate entry points, but they s
 - The Agent uses MCP `search` to find candidates and `read` with the current `retrieval_id` to load selected bodies.
 - MCP remains the deliberate interface for `search`, `remember`, `forget`, and maintenance.
 - A failed MCP request closes the broken connection so a later request can create a fresh one.
-- `process` uses a discovered or user-configured model route for admission and memory summarization; failed data remains in the inbox.
+- Provider automatic processing enqueues a durable local job with `process(background=true)` and returns immediately; use the read-only `process_status` tool to inspect its final `succeeded`, `deferred`, or `failed` result. Explicit synchronous `process` remains available, and failed data remains in the inbox.
 - cron, flush, and subagent contexts do not automatically recall, capture, or process memory.
 
 Check the native provider after installation with:
@@ -243,7 +243,7 @@ python -m memleaf.mcp_server --vault "$HOME/.memleaf"
 
 Without `--vault`, the server uses `~/.memleaf`; `MEMLEAF_VAULT` can also specify the Vault. In normal use the server does not need to be kept running manually: Hermes or Codex starts it on demand. stdout contains only JSON-RPC messages so logs do not corrupt the protocol stream.
 
-The server currently exposes 12 tools:
+The server currently exposes 13 tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -253,7 +253,8 @@ The server currently exposes 12 tools:
 | `search` | Return a bounded candidate directory and `found`/`no_match` status |
 | `list_todos` | Enumerate current todo memories across scopes with status/date filters and pagination |
 | `read` | Read a selected memory body in pages using the current `retrieval_id` |
-| `process` | Process complete inbox turns under the admission rules |
+| `process` | Process complete inbox turns under the admission rules; `background=true` enqueues a job |
+| `process_status` | Read the status of a background processing job |
 | `remember` | Create or update memory after an explicit request |
 | `forget_memory` | Delete one memory by exact ID |
 | `forget_about` | Forget an unambiguous topic; return candidates when ambiguous |
@@ -426,7 +427,7 @@ Directories are normally created with mode `0700`, and files are stored as plain
 
 ## Privacy and security boundaries
 
-- Conversation capture accepts visible user/assistant text, never system/developer instructions or hidden reasoning. Matched current-turn tool evidence is controlled separately by `capture.tool_evidence_mode`: new Vaults use bounded/redacted observations; explicitly marked attachment bodies are excluded by default, while ordinary structural file/document bodies follow the selected mode. Legacy configurations disabling tool output are not silently opted into body retention.
+- Conversation capture accepts only visible user/assistant text, never system/developer instructions, hidden reasoning, or tool output. Tool bodies are not saved or reprocessed from older inbox records; legacy tool-evidence settings cannot re-enable raw-source extraction.
 - Common API keys, Bearer tokens, cookies, JWTs, and private keys are redacted on a best-effort basis before capture is written. Redaction is not encryption and cannot detect every secret.
 - Path validation, symlink checks, Vault locks, same-directory temporary files, fsync, and atomic replacement protect local writes.
 - memleaf does not upload the entire Vault and has no hosted backend, telemetry, or account system.
@@ -474,11 +475,9 @@ MIT; see [LICENSE](LICENSE).
 *Your memories, in files you own.*
 
 
-## General processing and read-only inspection (0.2.33)
+## General processing and read-only inspection (0.2.34)
 
-Dialogue, calendars, tickets, files, web results and other tools share the evidence, coverage and write path.
-Models interpret semantics; Core validates physical provenance and exact original quotations.
-A valid quotation establishes provenance, not the truth or entailment of a generated claim.
+Automatic memory extraction uses only visible user and assistant conversation text. Findings already summarized in the final assistant reply can be retained; mail, attachments, web pages, files and terminal output are not re-read or analyzed. Suggestions, guesses, questions and conditions retain their original status and cannot be promoted to decisions, completed actions or verified facts. Existing-memory restatements do not create new memories; new conclusions are compared with existing memories before creation or update.
 
 ```bash
 memleaf audit --vault /path/to/existing/vault --json
@@ -488,34 +487,24 @@ memleaf process --vault /path/to/existing/vault --source hermes --session-id SES
 Audit is local/read-only, never calls a model, never infers producing versions and never repairs automatically.
 Dry-run executes the normal processor on a private temporary copy and may call the configured Model Route.
 It does not modify the source Vault; concurrent source changes invalidate the preview. There is no apply-preview mode.
-Execution success is separate from evidence completeness: `coverage_status=partial` reports unresolved work.
+Processing results describe visible-conversation extraction. If project ownership or meaning remains uncertain, `coverage_status=partial` may report unresolved work. Tool execution errors or truncated raw payloads do not create extraction gaps because those payloads are outside the input.
+`external_evidence_status=disabled` means tool evidence is not part of the extraction input.
 See [general processing](docs/general-processing.md) for the protocol, limits and verification boundaries.
 
-### Tool-evidence retention
+### Conversation source boundary
 
 ```yaml
 capture:
-  tool_evidence_mode: bounded  # bounded | metadata | off
+  tool_evidence_mode: off
   include_attachments: false
 ```
 
-`bounded` keeps bounded, redacted current-turn observations; small tool results may be
-retained in full, not just as model summaries. `metadata` keeps identifiers and permitted
-metadata (which may include titles), not bodies; intentional exclusions are not reported
-as unresolved extraction. `off` retains no tool-evidence records. None of these modes makes
-assistant synthesis or retrieved old memory independent evidence of new facts.
+New configurations use `capture.tool_evidence_mode: off` and `include_attachments: false`.
+Legacy `bounded` and `metadata` values remain accepted for compatibility but cannot
+re-enable raw tool extraction. Status output reports the effective `off` behavior.
+Content a user pastes into a visible message is conversation input.
 
-For an existing file without the new mode, legacy `include_tool_output: false` or an
-absent boolean means `metadata`; true means `bounded`. An explicit new mode takes
-precedence. New Vaults write only the new mode. Attachment opt-in remains subject to the
-mode and applies only to explicitly marked attachments. Adapters classify structural file
-paths, file IDs and file URIs as documents, and an explicit `attachment_id` as an attachment;
-a path alone cannot identify every file that happens to be an attachment. They do not
-classify arbitrary opaque shell commands. Pasted visible documents and explicit remember text
-are not automatic attachment capture.
-
-The policy applies to pending cache, inbox writes, and new model-planning inputs.
-Tightening it is not a retroactive rewrite of committed memories or captured inbox files.
-Previously frozen operations are recovered as existing plans, not new model calls.
-Captured evidence retains its existing cleanup grace period; use explicit forget for
-memory deletion. See `docs/evidence-retention.md` for limits and scope.
+The boundary is enforced by host capture, Core capture and new processing of historical
+inbox records. Committed memories are not deleted automatically. Frozen operations without
+the conversation-only policy marker are not silently replayed or replanned; they remain
+available for inspection so the new input contract is not bypassed.

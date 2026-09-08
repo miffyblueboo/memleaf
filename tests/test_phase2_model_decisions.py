@@ -70,7 +70,9 @@ class Model:
     def complete(self, prompt, *, purpose='', **kwargs):
         # This model owns the deterministic summary; do not let the separate
         # semantic-review call consume or alter the phase-2 call assertions.
-        if purpose == 'summarize' and prompt.startswith('UPDATE_SEMANTIC_REVIEW\n'):
+        if purpose == 'summarize' and prompt.startswith(
+            ('UPDATE_SEMANTIC_REVIEW\n', 'CREATE_SEMANTIC_REVIEW\n')
+        ):
             return '{"decision":"ACCEPT"}'
         self.calls.append((purpose, 'SAME_TARGET_RECONCILIATION' in prompt))
         if purpose == 'gate':

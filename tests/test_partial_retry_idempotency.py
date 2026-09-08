@@ -25,6 +25,8 @@ class PartialRetryBackend:
         del kwargs
         if prompt.startswith("Target reconciliation input"):
             return json.dumps({"decision": "CREATE"})
+        if purpose == "summarize" and prompt.startswith("CREATE_SEMANTIC_REVIEW\n"):
+            return '{"decision":"ACCEPT"}'
         if purpose == "gate":
             units = self._units(prompt)
             self.gate_calls += 1
@@ -41,7 +43,7 @@ class PartialRetryBackend:
                 coverage = [{
                     "unit_id": unit["unit_id"],
                     "decision": "NO_CHANGE",
-                    "reason": "query_only" if unit["origin"] == "user_query" else "assistant_synthesis",
+                    "reason": "query_only" if unit["origin"] == "user_query" else "assistant_restatement",
                 } for unit in units]
                 return json.dumps({"candidates": [], "coverage": coverage}, ensure_ascii=False)
             target = next(unit for unit in units if unit["text"] == wanted)
@@ -71,13 +73,13 @@ class PartialRetryBackend:
                     })
                 else:
                     reason = (
-                        "query_only"
-                        if unit["origin"] == "user_query"
+                        "query_only" if unit["origin"] == "user_query"
+                        else "assistant_restatement" if unit["origin"] == "assistant_report"
                         else "coverage_unresolved"
                     )
                     coverage.append({
                         "unit_id": unit["unit_id"],
-                        "decision": "NO_CHANGE" if reason == "query_only" else "DEFERRED",
+                        "decision": "NO_CHANGE" if reason in {"query_only", "assistant_restatement"} else "DEFERRED",
                         "reason": reason,
                     })
             return json.dumps({
@@ -115,7 +117,7 @@ class NoopCoverageBackend:
         for unit in units:
             reason = {
                 "user_query": "query_only",
-                "assistant_synthesis": "assistant_restatement",
+                "assistant_report": "assistant_restatement",
             }.get(str(unit["origin"]), "no_future_value")
             coverage.append({
                 "unit_id": unit["unit_id"],
@@ -136,7 +138,8 @@ class PartialRetryIdempotencyTests(unittest.TestCase):
 
     def capture(self, turn_id: str, user_id: str, assistant_id: str, *, include_mail: bool = True, tool_name: str = "mail.read") -> None:
         self.core.capture(
-            "hermes", "mail-session", turn_id, "user", "What changed?", event_id=user_id
+            "hermes", "mail-session", turn_id, "user",
+            "What changed? Settled mail fact. Pending mail fact." if include_mail else "What changed?", event_id=user_id
         )
         evidence = None
         if include_mail:
@@ -172,13 +175,10 @@ class PartialRetryIdempotencyTests(unittest.TestCase):
         self.capture("turn-1", "user-1", "assistant-1", tool_name="arbitrary.document_observer")
         self.assertEqual(self.core.process(model=backend)["memories_written"], 1)
         self.assertEqual(self.core.process(model=backend)["memories_written"], 1)
-        settled = len(backend.gate_units)
-        self.capture("turn-2", "user-2", "assistant-2", tool_name="arbitrary.document_observer")
-        self.assertEqual(self.core.process(model=backend)["memories_written"], 0)
-        for units in backend.gate_units[settled:]:
+        for units in backend.gate_units:
             self.assertFalse(any(unit["origin"] == "external_observation" for unit in units))
 
-    def test_partial_retry_uses_ledger_units_and_cross_turn_source_identity(self) -> None:
+    def test_partial_retry_uses_ledger_units_without_rewriting_settled_messages(self) -> None:
         backend = PartialRetryBackend()
         self.capture("turn-1", "user-1", "assistant-1")
 
@@ -189,20 +189,13 @@ class PartialRetryIdempotencyTests(unittest.TestCase):
         self.assertIn("Settled mail fact.", first_units)
         self.assertIn("Pending mail fact.", first_units)
 
-        # Queue an identical new turn before the pending retry is committed.
-        # Both snapshots share one mutation boundary, so the retry's planned
-        # source identity must also protect the later turn in this call.
-        self.capture("turn-2", "user-2", "assistant-2")
+        # Retry the pending message without resending the settled message.
         second = self.core.process(model=backend)
         self.assertEqual(second["memories_written"], 1)
-        self.assertEqual(backend.gate_calls, 3)
+        self.assertEqual(backend.gate_calls, 2)
         retry_units = {unit["text"] for unit in backend.gate_units[1]}
         self.assertNotIn("Settled mail fact.", retry_units)
         self.assertIn("Pending mail fact.", retry_units)
-        new_turn_units = {unit["text"] for unit in backend.gate_units[2]}
-        self.assertIn("What changed?", new_turn_units)
-        self.assertNotIn("Settled mail fact.", new_turn_units)
-        self.assertNotIn("Pending mail fact.", new_turn_units)
         self.assertEqual(len(self.core._read_memories_unlocked("knowledge")), 2)
 
         ledger = json.loads(self.core.vault.processed_state_path.read_text(encoding="utf-8"))
@@ -245,7 +238,7 @@ class PartialRetryIdempotencyTests(unittest.TestCase):
         )
         third = self.core.process(model=backend)
         self.assertEqual(third["memories_written"], 1)
-        self.assertEqual(backend.gate_calls, 4)
+        self.assertEqual(backend.gate_calls, 3)
         self.assertEqual(len(self.core._read_memories_unlocked("knowledge")), 3)
 
     def test_repeated_conversation_text_in_a_new_turn_is_sent_to_gate(self) -> None:
@@ -302,10 +295,11 @@ class PartialRetryIdempotencyTests(unittest.TestCase):
             units for units in backend.gate_units
             if any(unit["origin"] == "external_observation" for unit in units)
         ]
-        self.assertEqual(len(external_batches), 2)
+        self.assertEqual(external_batches, [])
+        self.assertEqual(len(backend.gate_units), 2)
         self.assertTrue(all(
-            any(unit["text"] == "同一调用标识但属于不同会话的事实。" for unit in units)
-            for units in external_batches
+            all(unit["text"] != "同一调用标识但属于不同会话的事实。" for unit in units)
+            for units in backend.gate_units
         ))
 
     def test_missing_candidate_disposition_keeps_candidate_evidence_retryable(self) -> None:

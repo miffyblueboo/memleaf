@@ -9,13 +9,17 @@ from memleaf.admission import EvidenceUnit
 from memleaf.inbox import InboxEvent, InboxTurn
 from memleaf.llm import ModelError
 from memleaf.models import Memory
+from memleaf.prompts import GATE_SYSTEM, SUMMARIZE_SYSTEM, gate_prompt, summarize_prompt
 from memleaf.turn_audit import TurnAudit
 from memleaf.turn_plan import revision_digest
 from memleaf.update_coordinator import UpdateCoordinator
 from memleaf.update_review import (
+    CREATE_SEMANTIC_REVIEW_SYSTEM,
     UPDATE_SEMANTIC_REVIEW_SYSTEM,
+    build_create_review_prompt,
     build_update_review_prompt,
     parse_update_review_output,
+    review_create,
     review_update,
 )
 from memleaf.validation import ModelOutputError
@@ -116,6 +120,83 @@ def proposal():
 
 
 class UpdateReviewTests(unittest.TestCase):
+    def test_prompt_boundary_allows_visible_reports_and_excludes_external_payloads(self):
+        gate_text = " ".join(GATE_SYSTEM.split())
+        summarize_text = " ".join(SUMMARIZE_SYSTEM.split())
+        for text in (gate_text, summarize_text):
+            text = text.casefold()
+            self.assertIn("current turn's visible user input", text)
+            self.assertIn("final assistant reply", text)
+            self.assertIn("assistant report", text)
+            self.assertIn("raw tool results", text)
+            self.assertIn("non-conversation payloads", text)
+        gate = gate_prompt([{
+            "event_key": "assistant-event",
+            "role": "assistant",
+            "content": "The visible report confirms the configuration.",
+        }])
+        self.assertIn("visible assistant report may support a conclusion", gate)
+        self.assertIn("raw tool results, other non-conversation payloads are excluded", gate)
+        summary = summarize_prompt(
+            {"candidate_id": "c", "memory": "The configuration is confirmed."},
+            [{
+                "event_key": "assistant-event",
+                "role": "assistant",
+                "content": "The visible report confirms the configuration.",
+                "evidence_origin": "assistant_report",
+                "unit_id": "assistant-unit",
+            }],
+        )
+        self.assertIn("An admitted assistant report may support a stated conclusion", summary)
+        self.assertIn("raw tool payloads", summary)
+
+    def test_gate_contract_requires_atomic_topics_and_candidate_scoped_bindings(self):
+        gate_text = " ".join(GATE_SYSTEM.split()).casefold()
+        for phrase in (
+            "first enumerate independently retrievable future-use topics",
+            "separate items that can be completed, tracked, or updated independently",
+            "keep shared coordination details with the deliverable they govern",
+            "a coverage row for a unit cited by several candidates must list every such candidate_id",
+            "use whole_unit only when the complete unit supports that one candidate topic",
+            "do not use whole_unit to avoid splitting",
+            "a negative, completed, hypothetical, or third-party clause limits only the candidate",
+            "do not replace independently trackable requested deliverables with only their umbrella coordination request",
+            "atomicity test",
+        ):
+            self.assertIn(phrase.casefold(), gate_text)
+
+        prompt = gate_prompt([{
+            "event_key": "assistant-event",
+            "role": "assistant",
+            "content": "Deliverable A and deliverable B can be tracked independently.",
+        }])
+        self.assertIn("Candidate decomposition check", prompt)
+        self.assertIn("list every cited candidate ID in that unit's one coverage row", prompt)
+        self.assertIn("Use whole_unit only for a homogeneous unit", prompt)
+
+    def test_automatic_summary_and_semantic_review_keep_one_topic(self):
+        summary_text = " ".join(SUMMARIZE_SYSTEM.split()).casefold()
+        self.assertIn("candidate atomicity is decided at the gate", summary_text)
+        self.assertIn("return exactly {\"decision\":\"no_change\"}", summary_text)
+        self.assertIn("do not add sibling deliverables", summary_text)
+        for system in (UPDATE_SEMANTIC_REVIEW_SYSTEM, CREATE_SEMANTIC_REVIEW_SYSTEM):
+            review_text = " ".join(system.split()).casefold()
+            self.assertIn("this review is for one candidate topic", review_text)
+            self.assertIn("completed, tracked, or updated independently", review_text)
+            self.assertIn("approving the aggregate", review_text)
+            self.assertIn("a negative or completed clause for one sibling does not suppress or alter another", review_text)
+
+    def test_pure_restatement_is_no_change_but_new_report_remains_eligible(self):
+        gate_text = " ".join(GATE_SYSTEM.split()).casefold()
+        summarize_text = " ".join(SUMMARIZE_SYSTEM.split()).casefold()
+        self.assertIn("a query and a mere restatement of existing memory add no new memory", gate_text)
+        self.assertIn("a restatement of an existing memory does not create a new memory", summarize_text)
+        self.assertIn("assistant reports may contribute a stated conclusion", summarize_text)
+        for system in (UPDATE_SEMANTIC_REVIEW_SYSTEM, CREATE_SEMANTIC_REVIEW_SYSTEM):
+            review_text = " ".join(system.split()).casefold()
+            self.assertIn("pure restatements", review_text)
+            self.assertIn("no_change", review_text)
+
     def test_prompt_separates_safe_target_source_and_proposal(self):
         prompt = build_update_review_prompt(target(), source(), proposal())
         self.assertTrue(prompt.startswith("UPDATE_SEMANTIC_REVIEW\n"))
@@ -126,6 +207,95 @@ class UpdateReviewTests(unittest.TestCase):
         self.assertNotIn('"native":true', prompt)
         self.assertNotIn("should-not-be-sent", prompt)
         self.assertNotIn('"untrusted":"dropped"', prompt)
+
+    def test_semantic_review_source_projection_drops_tools_and_keeps_report(self):
+        admitted = [
+            dict(source()[0], source_context="The full visible user message adds bounded context."),
+            {
+                "event_key": "assistant-event",
+                "timestamp": "2026-09-08T00:00:00Z",
+                "role": "assistant",
+                "content": "The visible report confirms the setting.",
+                "evidence_origin": "assistant_report",
+                "unit_id": "assistant-unit",
+                "section_path": [],
+            },
+            {
+                "event_key": "tool-event",
+                "timestamp": "2026-09-08T00:00:00Z",
+                "role": "tool",
+                "content": "RAW_TOOL_SECRET",
+                "evidence_origin": "external_observation",
+                "unit_id": "tool-unit",
+                "source_context": {"should": "drop"},
+            },
+            {
+                "event_key": "assistant-tool-event",
+                "timestamp": "2026-09-08T00:00:00Z",
+                "role": "assistant",
+                "content": "RAW_ASSISTANT_TOOL_SECRET",
+                "evidence_origin": "external_observation",
+                "unit_id": "assistant-tool-unit",
+            },
+        ]
+        prompt = build_update_review_prompt(target(), admitted, proposal())
+        payload = json.loads(prompt.split("\n", 1)[1].split("\n\nThe three top-level values", 1)[0])
+        projected = payload["admitted_source"]
+        self.assertEqual([item["unit_id"] for item in projected], ["unit-new", "assistant-unit"])
+        self.assertEqual(projected[0]["source_context"], "The full visible user message adds bounded context.")
+        self.assertNotIn("source_context", projected[1])
+        self.assertNotIn("RAW_TOOL_SECRET", prompt)
+        self.assertNotIn("RAW_ASSISTANT_TOOL_SECRET", prompt)
+
+    def test_create_prompt_has_only_admitted_source_and_proposal(self):
+        proposed = dict(proposal())
+        proposed.pop("update_memory_id")
+        prompt = build_create_review_prompt(source(), proposed)
+        self.assertTrue(prompt.startswith("CREATE_SEMANTIC_REVIEW\n"))
+        self.assertIn('"admitted_source"', prompt)
+        self.assertIn('"proposed_summary"', prompt)
+        self.assertNotIn('"active_target"', prompt)
+        self.assertNotIn('"untrusted":"dropped"', prompt)
+
+    def test_source_context_is_string_only_and_bounded_to_admitted_roles(self):
+        admitted = [dict(source()[0], source_context={"not": "text"})]
+        prompt = build_update_review_prompt(target(), admitted, proposal())
+        payload = json.loads(prompt.split("\n", 1)[1].split("\n\nThe three top-level values", 1)[0])
+        self.assertNotIn("source_context", payload["admitted_source"][0])
+
+        admitted[0]["source_context"] = "Use this only to interpret the bound span."
+        prompt = build_update_review_prompt(target(), admitted, proposal())
+        payload = json.loads(prompt.split("\n", 1)[1].split("\n\nThe three top-level values", 1)[0])
+        self.assertEqual(
+            payload["admitted_source"][0]["source_context"],
+            "Use this only to interpret the bound span.",
+        )
+
+    def test_create_review_contract_preserves_schema_and_explicit_roles(self):
+        self.assertIn("title, body, tags,", CREATE_SEMANTIC_REVIEW_SYSTEM)
+        self.assertIn("topic or activity name by itself", CREATE_SEMANTIC_REVIEW_SYSTEM)
+        self.assertIn("organization name next to an activity title", CREATE_SEMANTIC_REVIEW_SYSTEM)
+        self.assertIn("explicit subject-action relationship", CREATE_SEMANTIC_REVIEW_SYSTEM)
+        self.assertIn("short unlabeled title or list", CREATE_SEMANTIC_REVIEW_SYSTEM)
+        self.assertIn("every number or code as an opaque", CREATE_SEMANTIC_REVIEW_SYSTEM)
+        self.assertIn("Never inherit a field role or relationship from", CREATE_SEMANTIC_REVIEW_SYSTEM)
+        self.assertIn("across the entire summary", CREATE_SEMANTIC_REVIEW_SYSTEM)
+        self.assertIn("complete source-supported revision", CREATE_SEMANTIC_REVIEW_SYSTEM)
+
+    def test_create_review_accept_uses_the_same_executor_contract(self):
+        proposed = dict(proposal())
+        proposed.pop("update_memory_id")
+        executor = RawExecutor(json.dumps({"decision": "ACCEPT"}))
+        result = review_create(
+            executor,
+            "backend",
+            admitted_source=source(),
+            proposed_summary=proposed,
+            parse_summary=lambda value: value,
+        )
+        self.assertEqual(result, {"decision": "ACCEPT"})
+        self.assertIs(executor.calls[0]["system"], CREATE_SEMANTIC_REVIEW_SYSTEM)
+        self.assertEqual(executor.calls[0]["purpose"], "summarize")
 
     def test_accept_is_a_strict_real_review_response(self):
         executor = RawExecutor(json.dumps({"decision": "ACCEPT"}))
@@ -333,6 +503,203 @@ class UpdateReviewTests(unittest.TestCase):
         )
         self.assertEqual(result[0]["evidence_unit_ids"], ["unit-1", "unit-2"])
         self.assertTrue(executor.calls[-1]["prompt"].startswith("UPDATE_SEMANTIC_REVIEW\n"))
+
+    def test_final_create_is_reviewed_and_revise_keeps_request_accounting(self):
+        turn = InboxTurn(
+            "src",
+            "session",
+            "create-turn",
+            1,
+            (
+                InboxEvent(
+                    "src",
+                    "session",
+                    "create-turn",
+                    1,
+                    "user",
+                    "create-event",
+                    "The invoice is due after the scan.",
+                    timestamp="2026-09-08T00:00:00Z",
+                ),
+            ),
+        )
+        unit = EvidenceUnit(
+            "create-unit",
+            "create-event",
+            "user_assertion",
+            "The invoice is due after the scan.",
+            source_role="user",
+        )
+        candidate = {
+            "candidate_id": "create-candidate",
+            "memory": "The invoice is due after the scan.",
+            "evidence_event_ids": ["create-event"],
+            "evidence_unit_ids": ["create-unit"],
+            "_evidence_bindings": [{
+                "unit_id": "create-unit",
+                "quote": "The invoice is due after the scan.",
+                "role": "assertion",
+            }],
+            "type": "fact",
+            "scopes": ["global"],
+            "scope_source": "model",
+        }
+        original_summary = {
+            "title": "Invoice fact",
+            "body": "The invoice is due after the scan, and it was issued on 2026-09-01.",
+            "tags": [],
+            "type": "fact",
+            "scopes": ["global"],
+            "scope_source": "model",
+            "sources": [{"event_key": "create-event"}],
+            "scope_operations": [{
+                "op": "upsert",
+                "scope": "project:invoice",
+                "parent": "global",
+                "aliases": [],
+            }],
+            "shadow_native_ids": ["native-invoice"],
+        }
+        revised_summary = dict(
+            original_summary,
+            body="The invoice is due after the scan.",
+        )
+        revised_summary.pop("scope_operations")
+        revised_summary.pop("shadow_native_ids")
+        request = {
+            "summary": original_summary,
+            "turn": turn,
+            "candidate_id": "create-candidate",
+            "memory_id": "mem-created",
+            "evidence_unit_ids": ["create-unit"],
+        }
+        executor = RawExecutor(json.dumps({"decision": "REVISE", "summary": revised_summary}))
+        result = UpdateCoordinator(
+            executor,
+            TurnAudit(),
+            lambda memory_id: None,
+        ).resolve(
+            [request],
+            candidates={"create-candidate": candidate},
+            evidence_units=[unit],
+            events=[{"event_key": "create-event", "timestamp": "2026-09-08T00:00:00Z"}],
+            backend="backend",
+            scope_registry={},
+            validation_scope_registry={},
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["summary"]["body"], revised_summary["body"])
+        self.assertNotIn("update_memory_id", result[0]["summary"])
+        self.assertEqual(result[0]["memory_id"], "mem-created")
+        self.assertEqual(result[0]["candidate_id"], "create-candidate")
+        self.assertEqual(result[0]["evidence_unit_ids"], ["create-unit"])
+        self.assertEqual(
+            result[0]["summary"]["scope_operations"],
+            original_summary["scope_operations"],
+        )
+        self.assertEqual(
+            result[0]["summary"]["shadow_native_ids"],
+            original_summary["shadow_native_ids"],
+        )
+        self.assertNotIn("scope_operations", executor.calls[0]["prompt"])
+        self.assertNotIn("shadow_native_ids", executor.calls[0]["prompt"])
+        self.assertTrue(executor.calls[0]["prompt"].startswith("CREATE_SEMANTIC_REVIEW\n"))
+
+    def test_create_revise_target_or_authorization_expansion_defers(self):
+        turn = InboxTurn("src", "session", "create-boundary", 1, ())
+        unit = EvidenceUnit("create-unit", "create-event", "user_assertion", "A fact.", source_role="user")
+        candidate = {
+            "candidate_id": "create-candidate",
+            "memory": "A fact.",
+            "evidence_event_ids": ["create-event"],
+            "evidence_unit_ids": ["create-unit"],
+            "_evidence_bindings": [{"unit_id": "create-unit", "quote": "A fact.", "role": "assertion"}],
+            "type": "fact",
+            "scopes": ["global"],
+            "scope_source": "model",
+        }
+        base = {
+            "title": "Fact",
+            "body": "A fact.",
+            "tags": [],
+            "type": "fact",
+            "scopes": ["global"],
+            "scope_source": "model",
+            "sources": [{"event_key": "create-event"}],
+        }
+        request = {
+            "summary": base,
+            "turn": turn,
+            "candidate_id": "create-candidate",
+            "memory_id": "mem-created",
+            "evidence_unit_ids": ["create-unit"],
+        }
+
+        def run(summary):
+            audit = TurnAudit()
+            turn_ref = (turn.source, turn.session_id, turn.turn_key)
+            audit._deferred_by_turn[turn_ref] = []
+            executor = RawExecutor(json.dumps({"decision": "REVISE", "summary": summary}))
+            result = UpdateCoordinator(executor, audit, lambda memory_id: None).resolve(
+                [request],
+                candidates={"create-candidate": candidate},
+                evidence_units=[unit],
+                events=[{"event_key": "create-event", "timestamp": "2026-09-08T00:00:00Z"}],
+                backend="backend",
+                scope_registry={},
+                validation_scope_registry={},
+            )
+            return result, audit._dispositions_by_turn[turn_ref]
+
+        cases = {
+            "target": dict(base, update_memory_id="mem-other"),
+            "native": dict(base, shadow_native_ids=["native-1"]),
+            "scope": dict(base, scope_operations=[{
+                "op": "upsert",
+                "scope": "project:new",
+                "parent": "global",
+                "aliases": [],
+            }]),
+        }
+        for name, summary in cases.items():
+            with self.subTest(name=name):
+                result, rows = run(summary)
+                self.assertEqual(result, [])
+                self.assertEqual(rows[0]["disposition"], "DEFERRED")
+                self.assertEqual(rows[0]["reason"], "semantic_review_failed")
+
+    def test_explicit_create_skips_automatic_review_call(self):
+        class UnexpectedExecutor:
+            def _complete_json_stage(self, *args, **kwargs):
+                raise AssertionError("explicit create must not use automatic review")
+
+        turn = InboxTurn("src", "session", "explicit-create", 1, ())
+        request = {
+            "summary": {
+                "title": "Explicit",
+                "body": "User supplied.",
+                "tags": [],
+                "type": "fact",
+                "scopes": ["global"],
+                "scope_source": "user",
+                "sources": [{"event_key": "event"}],
+            },
+            "turn": turn,
+            "candidate_id": "explicit-candidate",
+            "memory_id": "mem-explicit",
+            "explicit_remember": True,
+            "evidence_unit_ids": [],
+        }
+        result = UpdateCoordinator(UnexpectedExecutor(), TurnAudit(), lambda memory_id: None).resolve(
+            [request],
+            candidates={},
+            evidence_units=[],
+            events=[],
+            backend="backend",
+            scope_registry={},
+            validation_scope_registry={},
+        )
+        self.assertEqual(result, [request])
 
     def test_invalid_revision_target_or_authorization_is_deferred(self):
         target_memory = Memory.new(

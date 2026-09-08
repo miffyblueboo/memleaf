@@ -95,9 +95,6 @@ class OpenAICompatibleBackend(HTTPModelBackend):
         }
         if self.json_mode and purpose in {"gate", "summarize", "compact"}:
             payload["response_format"] = {"type": "json_object"}
-            payload["max_tokens"] = 4096
-            if self.provider_name == "deepseek" and purpose in {"gate", "summarize"}:
-                payload["thinking"] = {"type": "disabled"}
         value = self._post_json(
             self.base_url + "/chat/completions",
             payload,

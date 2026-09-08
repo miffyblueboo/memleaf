@@ -37,7 +37,9 @@ class _Backend:
         # The production UPDATE path now performs an independent semantic
         # review.  This fixture owns the authored summary and must not consume
         # its historical call accounting for that compatibility stage.
-        if purpose == "summarize" and prompt.startswith("UPDATE_SEMANTIC_REVIEW\n"):
+        if purpose == "summarize" and prompt.startswith(
+            ("UPDATE_SEMANTIC_REVIEW\n", "CREATE_SEMANTIC_REVIEW\n")
+        ):
             return '{"decision":"ACCEPT"}'
         self.calls.append((purpose, prompt))
         if prompt.startswith("Target reconciliation input"):

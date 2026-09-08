@@ -37,7 +37,7 @@ class _CoverageBackend:
                 continue
             reason = {
                 "user_query": "query_only",
-                "assistant_synthesis": "assistant_restatement",
+                "assistant_report": "assistant_restatement",
                 "external_observation": "no_future_value",
                 "unknown": "coverage_unresolved",
             }.get(origin, "quoted_or_example")
@@ -137,16 +137,16 @@ class ReadOnlyDeferredIsolationTests(unittest.TestCase):
         self.assertEqual(len(backend.calls), 2)
         self.assertEqual(self._processed_entries(self.core)[0]["automatic_retry_count"], 1)
 
-    def test_new_external_evidence_keeps_older_automatic_retry(self) -> None:
+    def test_ignored_tool_evidence_does_not_spend_older_retry(self) -> None:
         self._defer_original_turn()
         self._capture_query(external=True)
         backend = _CoverageBackend()
 
         result = self.core.process(model=backend)
 
-        self.assertEqual(result["processed_turns"], 2)
-        self.assertEqual(len(backend.calls), 2)
-        self.assertEqual(self._processed_entries(self.core)[0]["automatic_retry_count"], 1)
+        self.assertEqual(result["processed_turns"], 1)
+        self.assertEqual(len(backend.calls), 1)
+        self.assertNotIn("automatic_retry_count", self._processed_entries(self.core)[0])
 
     def test_no_new_turn_keeps_older_automatic_retry(self) -> None:
         self._defer_original_turn()
@@ -173,7 +173,7 @@ class ReadOnlyDeferredIsolationTests(unittest.TestCase):
         self._defer_original_turn()
         self._capture_query(external=True)
         session_path = self.core.vault.session_path("hermes", "session")
-        self.assertIn("Orion owner is Alice.", session_path.read_text(encoding="utf-8"))
+        self.assertNotIn("Orion owner is Alice.", session_path.read_text(encoding="utf-8"))
         config = self.core.vault.config()
         config["capture"]["tool_evidence_mode"] = "metadata"
         save_config(self.core.vault.config_path, config)

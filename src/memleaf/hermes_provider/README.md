@@ -6,6 +6,9 @@ must use a version-compatible memleaf runtime.
 
 The native provider supplies a bounded Scope Map (no memory titles or bodies),
 captures visible Hermes turns, and automatically processes complete turns.
+Automatic capture and processing use only the visible user and assistant text.
+Tool calls and results, email or attachment bodies, and other hidden payloads are
+not automatic memory input.
 Hermes uses MCP `search` and `read` with the current `retrieval_id` for recall.
 MCP also supports explicit `remember`, `forget`, and maintenance operations.
 This is a Soft Gate, not a guarantee that every answer has performed retrieval.
@@ -24,17 +27,11 @@ hermes memory status
 ```
 
 The status output includes the effective Vault capture policy from the
-read-only MCP `stats` result. It distinguishes the general tool-evidence mode
-from the `include_attachments` opt-in; if MCP is unavailable, the policy is
-shown as unknown rather than inferred from `config.yaml`.
-
-After automatic processing, the provider also reports when external evidence
-was retained only as metadata, disabled, incomplete, or unusable. A successful
-processing call does not establish that source bodies were captured or that
-all business actions were extracted. The native terminal/code transport
-projection preserves observed output text separately from execution failures
-and host truncation. A complete tool output is not proof that a script read
-the full original document.
+read-only MCP `stats` result. If MCP is unavailable, the policy is shown as
+unknown rather than inferred from `config.yaml`. Capture policy fields for
+tool evidence apply to explicit MCP capture requests; the automatic Hermes
+turn path does not send tool output, email, attachment, or document bodies to
+capture or processing.
 
 The optional provider config is `~/.hermes/memleaf.json`:
 
@@ -64,7 +61,7 @@ mcp_servers:
 
 Use `python -m memleaf install` to configure both entries. The installer writes
 the MCP entry through `hermes config set`, reads `config.yaml` back, and tests
-that all 12 tools are discoverable before it reports success. When two memleaf
+that all 13 tools are discoverable before it reports success. When two memleaf
 virtual environments are present, use `--mcp-runtime current` to migrate to the
 runtime executing the installer or `--mcp-runtime existing` to retain an
 already configured executable after an exact version check. See the

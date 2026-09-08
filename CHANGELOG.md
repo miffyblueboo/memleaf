@@ -2,6 +2,14 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.34 — 2026-09-08
+
+- Restrict automatic memory extraction to the current turn's visible user input and final assistant reply. Raw tool output, attachments, web/file/terminal payloads and legacy tool-evidence bodies are not new source evidence; existing or retrieved memory remains comparison context rather than source authority. Explicit memory-write prohibitions still fail closed.
+- Add persisted background processing jobs and the read-only `process_status` MCP tool. Accepted background work reports its job identity before completion, while succeeded, deferred and failed outcomes remain observable; failed or unresolved work stays retryable without advancing cleanup state.
+- Tighten source-neutral Gate coverage, exact evidence bindings, assistant-report context, date grounding, target reconciliation, duplicate/no-op handling, same-target update coordination and semantic review before automatic CREATE/UPDATE writes. Preserve candidate-local deferral and idempotent partial retries so unresolved ownership, target, evidence or timing does not fabricate a write.
+- Keep the copied Hermes provider aligned with Core on the conversation-only source boundary, background job polling, session aliasing and bounded failure/deferred diagnostics. Existing Markdown Vaults, shared Hermes/Codex retrieval and explicit remember/forget paths remain local and source-of-truth preserving.
+- Validation for this release: deterministic regression suites ran 927 tests successfully with 2 skips, and isolated MCP transport checks passed. Semantic quality and processing latency remain model-dependent; no concurrency or performance improvement is claimed, and this release does not claim real-mail or customer-business acceptance.
+
 ## 0.2.33 — 2026-09-08
 
 - Extend the Gate with bounded physical-evidence batches, exact unit/quote bindings, isolated cross-batch candidate IDs, same-target update coordination, and bounded model reconciliation for compatible CREATE proposals. Failed batches remain retryable and fail closed without advancing the watermark or cleanup.

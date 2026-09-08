@@ -152,7 +152,7 @@ Vault. Once changes begin, it snapshots:
 - Hermes `memleaf.json`; and
 - the installed `plugins/memleaf` Provider directory.
 
-If MCP persistence, MCP lifecycle configuration, the 12-tool test, Provider
+If MCP persistence, MCP lifecycle configuration, the 13-tool test, Provider
 copy/version validation, Provider activation, or native-source registration
 fails, those Hermes paths are restored to their pre-install state. Each
 snapshot is restored independently: a failure on one path does not prevent the

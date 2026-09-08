@@ -612,7 +612,7 @@ class MaintenanceV2Tests(unittest.TestCase):
         self.assertNotIn(unrelated.body, gate_prompt_text)
 
 
-    def test_retained_external_units_extend_local_related_search_only(self):
+    def test_final_reply_units_extend_related_search(self):
         target = self.service.create_memory(
             memory_id="mem-cedar-source-match",
             title="Cedar project record",
@@ -641,7 +641,7 @@ class MaintenanceV2Tests(unittest.TestCase):
             "retained-source-related",
             "turn-1",
             "assistant",
-            "已完成。",
+            tool_body,
             event_id="retained-source-assistant",
             tool_evidence=[
                 {
@@ -660,7 +660,7 @@ class MaintenanceV2Tests(unittest.TestCase):
         units = partition_evidence_units(
             analyze_turn_evidence(_event_payload(turn))
         ).physical
-        external = next(unit for unit in units if unit.origin == "external_observation")
+        external = next(unit for unit in units if unit.origin == "assistant_report")
         user_event = next(event for event in turn.events if event.role == "user")
         assistant_event = next(event for event in turn.events if event.role == "assistant")
         candidate_id = "cedar-source-update"
@@ -738,8 +738,8 @@ class MaintenanceV2Tests(unittest.TestCase):
         related = self.related_payload(gate_call["prompt"])
         self.assertIn(target.body, json.dumps(related, ensure_ascii=False))
         self.assertTrue(native_queries)
-        self.assertEqual(native_queries[0][0], "已同步。 已完成。")
-        self.assertNotIn(tool_body, native_queries[0][0])
+        self.assertEqual(native_queries[0][0], "已同步。 " + tool_body)
+        self.assertIn(tool_body, native_queries[0][0])
         self.assertEqual(native_queries[0][1], ["project:cedar", "project:birch"])
 
 

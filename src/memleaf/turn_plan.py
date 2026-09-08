@@ -14,6 +14,7 @@ from typing import Any, Iterable, Mapping
 from .validation import ModelOutputError, parse_strict_json
 
 SCHEMA_VERSION = 1
+EVIDENCE_POLICY = "conversation_only_v1"
 MAX_PLAN_BYTES = 8 * 1024 * 1024
 
 
@@ -176,7 +177,7 @@ class FrozenTurn:
             if request.get("turn") != turn:
                 raise _error("write plan contains another turn")
             records.append({k: v for k, v in request.items() if k != "turn"})
-        value = {"schema_version": SCHEMA_VERSION, "turn_id": turn_plan_key(turn),
+        value = {"schema_version": SCHEMA_VERSION, "evidence_policy": EVIDENCE_POLICY, "turn_id": turn_plan_key(turn),
                  "input_digest": input_digest(turn), "requests": records, "scopes": list(scopes),
                  "candidate_dispositions": list(candidates), "evidence_dispositions": list(evidence),
                  "deferred_candidates": list(deferred)}
@@ -197,6 +198,8 @@ class FrozenTurn:
         if (not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION
             or value.get("turn_id") != turn_plan_key(turn) or value.get("input_digest") != input_digest(turn)):
             raise _error("stored write plan does not match current evidence")
+        if value.get("evidence_policy") != EVIDENCE_POLICY:
+            raise _error("stored write plan predates the conversation-only evidence policy")
         for key in ("requests", "scopes", "candidate_dispositions", "evidence_dispositions", "deferred_candidates"):
             if not isinstance(value.get(key), list):
                 raise _error("invalid stored plan field")

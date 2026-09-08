@@ -37,6 +37,24 @@ class ConfigMigrationV028Tests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "conflicting legacy and current"):
                 load_config(path)
 
+    def test_partial_capture_section_defaults_to_conversation_only(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="memleaf-config-migration-") as temporary:
+            path = Path(temporary) / "config.yaml"
+            value = default_config(Path(temporary) / "vault")
+            value["capture"].pop("tool_evidence_mode")
+            path.write_text(dump_yaml(value), encoding="utf-8")
+            capture = load_config(path)["capture"]
+            self.assertEqual(capture["tool_evidence_mode"], "off")
+            self.assertFalse(capture["include_attachments"])
+
+    def test_explicit_metadata_mode_remains_an_opt_out(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="memleaf-config-migration-") as temporary:
+            path = Path(temporary) / "config.yaml"
+            value = default_config(Path(temporary) / "vault")
+            value["capture"]["tool_evidence_mode"] = "metadata"
+            path.write_text(dump_yaml(value), encoding="utf-8")
+            self.assertEqual(load_config(path)["capture"]["tool_evidence_mode"], "metadata")
+
 
 if __name__ == "__main__":
     unittest.main()

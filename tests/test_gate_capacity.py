@@ -35,7 +35,9 @@ class GateCapacityBackend:
     def complete(self, prompt: str, *, purpose: str = "", **_: object) -> str:
         # Existing summaries are deterministic fixture outputs.  Accept the
         # newly inserted review stage without changing legacy call accounting.
-        if purpose == "summarize" and prompt.startswith("UPDATE_SEMANTIC_REVIEW\n"):
+        if purpose == "summarize" and prompt.startswith(
+            ("UPDATE_SEMANTIC_REVIEW\n", "CREATE_SEMANTIC_REVIEW\n")
+        ):
             return '{"decision":"ACCEPT"}'
         self.calls.append((purpose, prompt))
         if purpose == "gate":
@@ -114,12 +116,12 @@ class GateCapacityBackend:
             group = json.JSONDecoder().raw_decode(
                 prompt.split("SAME_TARGET_RECONCILIATION\n", 1)[1]
             )[0]
-            event_key = json.loads(
+            evidence = json.loads(
                 prompt.split(
                     "Evidence (the only conversation content visible to this call):\n",
                     1,
                 )[1].split("\nRelevant existing", 1)[0]
-            )[0]["event_key"]
+            )
             return json.dumps({
                 "decision": "UPDATE",
                 "candidate_ids": group["candidate_ids"],
@@ -130,7 +132,7 @@ class GateCapacityBackend:
                     "type": "identity",
                     "scopes": ["project:Aurora"],
                     "scope_source": "model",
-                    "sources": [{"event_key": event_key}],
+                    "sources": [{"event_key": item["event_key"]} for item in evidence],
                     "update_memory_id": "aurora-owner",
                 },
             }, ensure_ascii=False)
@@ -170,6 +172,10 @@ class LegacyGateBackend:
         return json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])[0]
 
     def complete(self, prompt: str, *, purpose: str = "", **_: object) -> str:
+        if purpose == "summarize" and prompt.startswith(
+            ("UPDATE_SEMANTIC_REVIEW\n", "CREATE_SEMANTIC_REVIEW\n")
+        ):
+            return '{"decision":"ACCEPT"}'
         if purpose == "gate":
             units = self._units(prompt)
             if not self.emitted and any(unit["text"] == self.target_text for unit in units):
@@ -231,7 +237,8 @@ class HardFailureAfterFirstBatchBackend:
         if self.gate_calls == 2:
             raise ModelError("synthetic final-batch failure")
         units = self._units(prompt)
-        target = next(unit for unit in units if unit["origin"] == "external_observation")
+        target = next(unit for unit in units if unit["source_role"] == "user"
+                      and unit["origin"] == "user_assertion")
         candidates = [{
             "candidate_id": "first-batch-create",
             "memory": target["text"],
@@ -279,6 +286,10 @@ class CreateMergeBackend:
         return json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])[0]
 
     def complete(self, prompt: str, *, purpose: str = "", **_: object) -> str:
+        if purpose == "summarize" and prompt.startswith(
+            ("UPDATE_SEMANTIC_REVIEW\n", "CREATE_SEMANTIC_REVIEW\n")
+        ):
+            return '{"decision":"ACCEPT"}'
         self.calls.append((purpose, prompt))
         if purpose == "gate":
             units = self._units(prompt)
@@ -338,7 +349,7 @@ class CreateMergeBackend:
             ids = [item["candidate_id"] for item in payload]
             source_keys = list(dict.fromkeys(
                 event["event_key"]
-                for item in payload
+                for item in payload if item["candidate_id"] in {ids[0], ids[-1]}
                 for event in item["evidence"]
             ))
             merge_ids = [ids[0], ids[-1]]
@@ -380,26 +391,28 @@ class CreateMergeBackend:
 
 
 class GateCapacityTests(unittest.TestCase):
-    def test_quote_only_external_binding_computes_nonzero_offset(self) -> None:
+    @staticmethod
+    def _capture_reports(core: Memleaf, session_id: str, reports: list[str]) -> None:
+        """Capture visible assertions followed by one final assistant reply."""
+        core.capture("hermes", session_id, "turn", "user", "请处理这些材料。", event_id="request")
+        for index, report in enumerate(reports):
+            core.capture("hermes", session_id, "turn", "user", report,
+                         event_id=f"report-{index}")
+        core.capture("hermes", session_id, "turn", "assistant", "已读取材料。",
+                     event_id="assistant")
+
+    def test_quote_only_visible_report_binding_computes_nonzero_offset(self) -> None:
         quote = "Aurora owner is Alice."
-        record = {
-            "tool_name": "mail.read",
-            "call_id": "call-quote",
-            "record_id": "record-quote",
-            "kind": "external_observation",
-            "result_status": "success",
-            "content": json.dumps(
-                {"prefix": "header before the claim", "body": quote},
-                ensure_ascii=False,
-            ),
-        }
+        report = json.dumps(
+            {"prefix": "header before the claim", "body": quote},
+            ensure_ascii=False,
+        )
         units = analyze_turn_evidence([{
             "event_key": "assistant",
             "role": "assistant",
-            "content": "已读取。",
-            "tool_evidence": [record],
+            "content": report,
         }])
-        unit = next(item for item in units if item.can_support)
+        unit = units[0]
         candidate = {
             "candidate_id": "owner",
             "evidence_event_ids": [unit.event_key],
@@ -438,23 +451,10 @@ class GateCapacityTests(unittest.TestCase):
     def test_legacy_candidate_support_stays_in_originating_batch(self) -> None:
         with tempfile.TemporaryDirectory(prefix="memleaf-gate-legacy-boundary-") as temporary:
             core = Memleaf(Path(temporary) / "vault")
-            target = json.dumps(
-                {"id": "target", "body": "Cedar report is approved."},
-                ensure_ascii=False,
-            )
-            records = [{
-                "tool_name": "mail.read",
-                "call_id": f"call-{index}",
-                "record_id": f"record-{index}",
-                "kind": "external_observation",
-                "result_status": "success",
-                "content": target if index in {0, 8} else f"filler-{index}",
-            } for index in range(9)]
-            core.capture("hermes", "legacy-boundary", "turn", "user", "请处理这些材料。", event_id="user")
-            core.capture(
-                "hermes", "legacy-boundary", "turn", "assistant", "已读取材料。",
-                event_id="assistant", tool_evidence=records,
-            )
+            target = "Cedar report is approved."
+            reports = [target if index in {0, 8} else f"filler-{index}"
+                       for index in range(9)]
+            self._capture_reports(core, "legacy-boundary", reports)
             backend = LegacyGateBackend(target)
             result = core.process(
                 source="hermes",
@@ -469,19 +469,8 @@ class GateCapacityTests(unittest.TestCase):
     def test_late_gate_hard_failure_does_not_commit_earlier_batch(self) -> None:
         with tempfile.TemporaryDirectory(prefix="memleaf-gate-hard-failure-") as temporary:
             core = Memleaf(Path(temporary) / "vault")
-            records = [{
-                "tool_name": "mail.read",
-                "call_id": f"call-{index}",
-                "record_id": f"record-{index}",
-                "kind": "external_observation",
-                "result_status": "success",
-                "content": f"Cedar report fragment {index}.",
-            } for index in range(9)]
-            core.capture("hermes", "gate-hard-failure", "turn", "user", "请处理这些材料。", event_id="user")
-            core.capture(
-                "hermes", "gate-hard-failure", "turn", "assistant", "已读取材料。",
-                event_id="assistant", tool_evidence=records,
-            )
+            reports = [f"Cedar report fragment {index}." for index in range(9)]
+            self._capture_reports(core, "gate-hard-failure", reports)
             backend = HardFailureAfterFirstBatchBackend()
             with self.assertRaises(ModelError):
                 core.process(source="hermes", session_id="gate-hard-failure", model=backend)
@@ -498,30 +487,17 @@ class GateCapacityTests(unittest.TestCase):
             config = core.vault.config()
             config["scopes"] = {"project:Aurora": {}}
             save_config(core.vault.config_path, config)
-            records = [
-                {
-                    "tool_name": "mail.read",
-                    "call_id": f"call-{index}",
-                    "record_id": f"record-{index}",
-                    "kind": "external_observation",
-                    "result_status": "success",
-                    "content": (
-                        "Aurora canonical label is AURORA."
-                        if index == 0 else
-                        "Aurora owner contact is Alice."
-                        if index == 8 else
-                        "Aurora timezone is UTC."
-                        if index == 4 else
-                        f"filler {index}"
-                    ),
-                }
+            reports = [
+                "Aurora canonical label is AURORA."
+                if index == 0 else
+                "Aurora owner contact is Alice."
+                if index == 8 else
+                "Aurora timezone is UTC."
+                if index == 4 else
+                f"filler {index}"
                 for index in range(9)
             ]
-            core.capture("hermes", "create-merge", "turn", "user", "请处理这些材料。", event_id="user")
-            core.capture(
-                "hermes", "create-merge", "turn", "assistant", "已读取材料。",
-                event_id="assistant", tool_evidence=records,
-            )
+            self._capture_reports(core, "create-merge", reports)
             backend = CreateMergeBackend()
             result = core.process(
                 source="hermes",
@@ -534,30 +510,18 @@ class GateCapacityTests(unittest.TestCase):
             self.assertTrue(any("CREATE_RECONCILIATION\n" in prompt for purpose, prompt in backend.calls
                                if purpose == "summarize"))
 
-    def test_external_records_remain_whole_and_batch_ids_are_bounded(self) -> None:
-        records = [
-            {
-                "tool_name": "mail.read",
-                "call_id": f"call-{index}",
-                "record_id": f"record-{index}",
-                "kind": "external_observation",
-                "result_status": "success",
-                "content": json.dumps(
-                    {"id": index, "body": "a,b;c:d", "owner": "Alice"},
-                    ensure_ascii=False,
-                ),
-            }
-            for index in range(23)
-        ]
-        units = analyze_turn_evidence([{
-            "event_key": "assistant",
-            "role": "assistant",
-            "content": "已读取。",
-            "tool_evidence": records,
-        }])
+    def test_visible_reports_remain_whole_and_batch_ids_are_bounded(self) -> None:
+        reports = [json.dumps(
+            {"id": index, "body": "a,b;c:d", "owner": "Alice"},
+            ensure_ascii=False,
+        ) for index in range(23)]
+        units = analyze_turn_evidence([
+            {"event_key": f"assistant-{index}", "role": "assistant", "content": report}
+            for index, report in enumerate(reports)
+        ])
         physical = [unit for unit in units if unit.can_support]
         self.assertEqual(23, len(physical))
-        self.assertTrue(all(unit.syntax == "external_record" for unit in physical))
+        self.assertTrue(all(unit.syntax == "plain" for unit in physical))
         self.assertTrue(all(unit.start == 0 for unit in physical))
         self.assertTrue(all(unit.end == len(unit.text) for unit in physical))
         batches = gate_evidence_batches(physical)
@@ -592,22 +556,10 @@ class GateCapacityTests(unittest.TestCase):
                 "Aurora owner changed to Alice.",
                 "Aurora deadline is 2026-09-30.",
                 "Aurora backup region is us-east-1.",
-                *[f"filler {index}, x; y" for index in range(14)],
+                *[f"filler {index} x y" for index in range(14)],
                 "Aurora owner is now Alice.",
             ]
-            records = [{
-                "tool_name": "mail.read",
-                "call_id": f"call-{index}",
-                "record_id": f"record-{index}",
-                "kind": "external_observation",
-                "result_status": "success",
-                "content": body,
-            } for index, body in enumerate(bodies)]
-            core.capture("hermes", "capacity", "turn", "user", "请处理这批材料。", event_id="user")
-            core.capture(
-                "hermes", "capacity", "turn", "assistant", "已读取材料。",
-                event_id="assistant", tool_evidence=records,
-            )
+            self._capture_reports(core, "capacity", bodies)
             backend = GateCapacityBackend()
             result = core.process(
                 source="hermes",

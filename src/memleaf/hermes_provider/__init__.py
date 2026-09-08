@@ -119,6 +119,7 @@ _MODEL_VALIDATION_DETAILS = frozenset(
     }
 )
 _CALL_FAILED = object()
+_PROCESS_PENDING = object()
 _MISSING_TOOL_RESULT = object()
 _MCP_PIPE_EOF = object()
 _MAX_TOOL_RESULT_CHARS = 64 * 1024
@@ -1219,7 +1220,11 @@ class _MCPClient:
                 error_fields = _mcp_error_fields(result) or ("model_failed", None, None, None, None)
                 raise _MCPToolError(*error_fields)
             structured = result.get("structuredContent")
-            if isinstance(structured, Mapping) and "result" in structured:
+            # The core wraps scalar tool results as {"result": value}. A
+            # process_status payload is itself a mapping that legitimately
+            # contains a nested result plus status/job fields; preserve that
+            # full audit record instead of unwrapping it.
+            if isinstance(structured, Mapping) and set(structured) == {"result"}:
                 return structured["result"]
             if structured is not None:
                 return structured
@@ -1441,6 +1446,10 @@ class MemleafMemoryProvider(MemoryProvider):
         # those sessions separate from aliases so their inbox is processed
         # under the original session id after the chain is restored.
         self._deferred_process_sessions: "OrderedDict[str, None]" = OrderedDict()
+        # Automatic process requests are detached from the MCP client. Keep a
+        # bounded session -> job mapping so a later turn can poll the prior
+        # result and request a rerun on the same job while it is active.
+        self._process_jobs_by_session: "OrderedDict[str, str]" = OrderedDict()
         self._last_retrieval_observation = "unknown"
         self._last_retrieval_audit = "SEARCH_UNKNOWN"
 
@@ -1558,6 +1567,14 @@ class MemleafMemoryProvider(MemoryProvider):
                 updated["session_id"] = new_session_id
                 setattr(self, attribute, updated)
 
+        job_id = self._process_jobs_by_session.pop(old_session_id, None)
+        if isinstance(job_id, str) and job_id:
+            self._process_jobs_by_session[new_session_id] = job_id
+        if new_session_id in self._process_jobs_by_session:
+            self._process_jobs_by_session.move_to_end(new_session_id)
+        while len(self._process_jobs_by_session) > _MAX_SESSION_ALIASES:
+            self._process_jobs_by_session.popitem(last=False)
+
     def _drop_session_aliases(self, *session_ids: str) -> None:
         targets = {value for value in session_ids if value}
         changed = True
@@ -1623,6 +1640,18 @@ class MemleafMemoryProvider(MemoryProvider):
             self._last_auto_process_deferred = None
             self._last_auto_process_external_evidence = None
 
+    def _record_auto_process_failure_fields(
+        self, session_id: str, *, error_code: str = "model_failed", error_stage: str = "process"
+    ) -> None:
+        with self._sync_lock:
+            self._last_auto_process_failure = {
+                "session_id": session_id,
+                "error_code": str(error_code or "model_failed")[:120],
+                "error_stage": str(error_stage or "process")[:120],
+            }
+            self._last_auto_process_deferred = None
+            self._last_auto_process_external_evidence = None
+
     @staticmethod
     def _safe_external_evidence_status(value: Any) -> Optional[dict[str, Any]]:
         """Project Core's bounded capture status into provider control state."""
@@ -1667,29 +1696,131 @@ class MemleafMemoryProvider(MemoryProvider):
         with self._sync_lock:
             self._last_auto_process_external_evidence = projected
 
-    def _process_session(self, session_id: str, *, turn_id: str = "") -> Any:
-        """Process one physical session and keep failed work retryable."""
+    def _remember_process_job(self, session_id: str, job_id: str) -> None:
+        with self._sync_lock:
+            self._process_jobs_by_session[session_id] = job_id
+            self._process_jobs_by_session.move_to_end(session_id)
+            while len(self._process_jobs_by_session) > _MAX_SESSION_ALIASES:
+                self._process_jobs_by_session.popitem(last=False)
 
+    def _consume_process_job(self, session_id: str, job: Mapping[str, Any], *, turn_id: str = "") -> Any:
+        status = job.get("status")
+        with self._sync_lock:
+            self._process_jobs_by_session.pop(session_id, None)
+        if status == "failed":
+            error = job.get("error")
+            if isinstance(error, Mapping):
+                code = str(error.get("code") or error.get("type") or "model_failed")
+                stage = str(error.get("stage") or "process")
+            else:
+                code, stage = "model_failed", "process"
+            self._defer_process_session(session_id)
+            self._record_auto_process_failure_fields(session_id, error_code=code, error_stage=stage)
+            return _CALL_FAILED
+        result = job.get("result")
+        result = dict(result) if isinstance(result, Mapping) else {}
+        result["completed"] = True
+        with self._sync_lock:
+            if isinstance(self._last_auto_process_failure, Mapping) and self._last_auto_process_failure.get("session_id") == session_id:
+                self._last_auto_process_failure = None
+        if status == "deferred":
+            self._defer_process_session(session_id)
+        else:
+            with self._sync_lock:
+                self._deferred_process_sessions.pop(session_id, None)
+        deferred = self._process_deferred_counts(result)
+        unresolved = result.get("unresolved_evidence_count", 0)
+        unresolved = unresolved if type(unresolved) is int and unresolved >= 0 else 0
+        if status == "deferred" or unresolved > 0 or (deferred is not None and any(deferred)):
+            with self._sync_lock:
+                self._last_auto_process_deferred = {
+                    "session_id": session_id,
+                    "deferred_candidates": deferred[0] if deferred else 0,
+                    "deferred_inbox_turns": deferred[1] if deferred else 0,
+                    "unresolved_evidence_count": unresolved,
+                }
+        else:
+            with self._sync_lock:
+                prior_deferred_session = (
+                    self._last_auto_process_deferred.get("session_id")
+                    if isinstance(self._last_auto_process_deferred, Mapping)
+                    else None
+                )
+                if prior_deferred_session == session_id:
+                    self._last_auto_process_deferred = None
+        self._record_auto_process_external_evidence(session_id, result)
+        return result
+
+    def _enqueue_process_job(self, session_id: str, *, turn_id: str = "") -> Any:
         processed = self._call(
             "process",
-            {"source": "hermes", "session_id": session_id},
+            {"source": "hermes", "session_id": session_id, "background": True},
             stage="process",
             session_id=session_id,
             turn_id=turn_id,
         )
         if processed is _CALL_FAILED:
-            if turn_id:
-                self._defer_process_session(session_id)
+            self._defer_process_session(session_id)
             self._record_auto_process_failure(session_id)
             logger.warning(
                 "memleaf provider auto-process failed for hermes/%s; queue retained",
                 session_id,
             )
             return _CALL_FAILED
+        if isinstance(processed, Mapping):
+            job_id = processed.get("job_id")
+            if isinstance(job_id, str) and job_id:
+                self._remember_process_job(session_id, job_id)
+                self._defer_process_session(session_id)
+                return _PROCESS_PENDING
+            if processed.get("completed") is False:
+                self._defer_process_session(session_id)
+                return _PROCESS_PENDING
         with self._sync_lock:
             self._deferred_process_sessions.pop(session_id, None)
         self._record_auto_process_external_evidence(session_id, processed)
         return processed
+
+    def _process_session(self, session_id: str, *, turn_id: str = "", request_rerun: bool = False) -> Any:
+        """Poll a detached job, then enqueue at most one non-blocking retry."""
+
+        with self._sync_lock:
+            job_id = self._process_jobs_by_session.get(session_id)
+        if isinstance(job_id, str) and job_id:
+            observed = self._call(
+                "process_status",
+                {"job_id": job_id},
+                stage="process_status",
+                session_id=session_id,
+                turn_id=turn_id,
+            )
+            if observed is _CALL_FAILED or not isinstance(observed, Mapping):
+                if request_rerun:
+                    # A status read may fail after the host has already
+                    # captured a new turn. Re-submit the idempotent enqueue
+                    # so the core records the rerun request on the same job.
+                    return self._enqueue_process_job(session_id, turn_id=turn_id)
+                self._defer_process_session(session_id)
+                return _PROCESS_PENDING
+            status = observed.get("status")
+            if status in {"succeeded", "deferred", "failed"}:
+                consumed = self._consume_process_job(session_id, observed, turn_id=turn_id)
+                if request_rerun:
+                    queued = self._enqueue_process_job(session_id, turn_id=turn_id)
+                    if queued is _CALL_FAILED:
+                        return queued
+                    if queued is _PROCESS_PENDING:
+                        return queued
+                return consumed
+            # A current visible turn should request a rerun on the same job;
+            # an older deferred session only polls and leaves it alone.
+            if request_rerun:
+                return self._enqueue_process_job(session_id, turn_id=turn_id)
+            if observed.get("recovery_pending") is True:
+                return self._enqueue_process_job(session_id, turn_id=turn_id)
+            self._defer_process_session(session_id)
+            return _PROCESS_PENDING
+        return self._enqueue_process_job(session_id, turn_id=turn_id)
 
     def _process_deferred_sessions(self, current_session: str, turn_id: str) -> None:
         """Process deferred physical sessions before the current continuation."""
@@ -1701,18 +1832,21 @@ class MemleafMemoryProvider(MemoryProvider):
                 if session_id != current_session
             ]
         for physical_session in queued_sessions:
-            if self._process_session(physical_session) is _CALL_FAILED:
-                return
+            self._process_session(physical_session)
 
-        processed = self._process_session(current_session, turn_id=turn_id)
-        if processed is _CALL_FAILED:
+        processed = self._process_session(current_session, turn_id=turn_id, request_rerun=True)
+        if processed is _CALL_FAILED or processed is _PROCESS_PENDING:
             return
         with self._sync_lock:
             deferred = self._process_deferred_counts(processed)
             unresolved = processed.get("unresolved_evidence_count", 0) if isinstance(processed, Mapping) else 0
             unresolved = unresolved if type(unresolved) is int and unresolved >= 0 else 0
-            self._last_auto_process_failure = None
-            if not unresolved and (deferred is None or (deferred[0] <= 0 and deferred[1] <= 0)):
+            if isinstance(self._last_auto_process_failure, Mapping) and self._last_auto_process_failure.get("session_id") == current_session:
+                self._last_auto_process_failure = None
+            deferred_session = self._last_auto_process_deferred.get("session_id") if isinstance(self._last_auto_process_deferred, Mapping) else None
+            if deferred_session is not None and deferred_session != current_session:
+                pass
+            elif not unresolved and (deferred is None or (deferred[0] <= 0 and deferred[1] <= 0)):
                 self._last_auto_process_deferred = None
             else:
                 self._last_auto_process_deferred = {
@@ -2275,7 +2409,10 @@ class MemleafMemoryProvider(MemoryProvider):
             "active or history files exist. Automatic recall is a directory of "
             "scope identifiers, hierarchy, and aliases only; it never contains "
             "memory IDs, titles, or bodies. Use deliberate remember/forget tools "
-            "only when the user explicitly asks for that operation."
+            "only when the user explicitly asks for that operation. Automatic "
+            "capture and processing use only visible user and assistant text; "
+            "tool calls/results, email or attachment bodies, and other hidden "
+            "payloads are not automatic memory input."
         )
 
     def _auto_process_failure_notice(self, session_id: str) -> str:
@@ -2459,7 +2596,6 @@ class MemleafMemoryProvider(MemoryProvider):
         turn_id: str,
         role: str,
         content: str,
-        tool_evidence: Optional[List[Dict[str, str]]] = None,
     ) -> bool:
         result = self._call(
             "capture",
@@ -2471,7 +2607,6 @@ class MemleafMemoryProvider(MemoryProvider):
                 "content": content,
                 "record": True,
                 "visible": True,
-                **({"tool_evidence": tool_evidence} if tool_evidence else {}),
             },
             stage=f"capture_{role}",
             session_id=session_id,
@@ -2777,14 +2912,12 @@ class MemleafMemoryProvider(MemoryProvider):
                     self._last_retrieval_observation = observation
                     self._last_retrieval_audit = str(audit_state.get("status") or "SEARCH_UNKNOWN")
                 lineage_ready = self._retry_pending_lineage(effective_session)
-                tool_evidence = _bounded_current_tool_evidence(messages, vault_root=_resolve_vault(self._config()))
                 for role, content in visible_events:
                     if not self._capture_visible(
                         session_id=effective_session,
                         turn_id=turn_id,
                         role=role,
                         content=content,
-                        tool_evidence=tool_evidence if role == "assistant" else None,
                     ):
                         return
                 if not self._auto_process:
@@ -2817,6 +2950,7 @@ class MemleafMemoryProvider(MemoryProvider):
         with self._sync_lock:
             self._pending_lineage.clear()
             self._deferred_process_sessions.clear()
+            self._process_jobs_by_session.clear()
         if self._client is not None:
             self._client.close()
         self._client = None

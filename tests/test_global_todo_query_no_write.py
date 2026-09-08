@@ -236,20 +236,23 @@ class GlobalTodoQueryNoWriteTests(unittest.TestCase):
             [
                 gate(gate_candidates),
                 summary(
-                    user_key,
+                    assistant_key,
                     title="鑫元基金架构评审文档修改",
-                    body="鑫元基金架构评审文档修改仍需在2026-09-03前完成，待反馈。",
+                    body=xinyuan.body,
                     scope="project:鑫元基金",
                     update_memory_id=xinyuan.memory_id,
+                    status="active",
                 ),
                 summary(
-                    user_key,
+                    assistant_key,
                     title="金元顺安实施计划重排",
-                    body="金元顺安实施计划重排需要尽快回复客户。",
+                    body="金元顺安实施计划重排都需要跟进。",
                     scope="project:金元顺安",
+                    status="active",
                 ),
             ]
         )
+        backend.semantic_review_decision = "NO_CHANGE"
         before_bytes = self.markdown_snapshot(service)
         before_sources = self.source_snapshot(service)
 
@@ -264,7 +267,10 @@ class GlobalTodoQueryNoWriteTests(unittest.TestCase):
             {record.memory.memory_id for record in service._read_memories_unlocked("knowledge")},
             {"todo-xinyuan", "todo-zhongyin", "todo-jinyuan"},
         )
-        self.assertEqual([call["purpose"] for call in backend.calls], ["gate"])
+        self.assertEqual(
+            [call["purpose"] for call in backend.calls],
+            ["gate", "summarize", "summarize"],
+        )
         processed = json.loads(service.vault.processed_state_path.read_text(encoding="utf-8"))
         entry = processed["sessions"]["hermes/session-b"]["processed_turns"][0]
         self.assertEqual(
@@ -273,9 +279,9 @@ class GlobalTodoQueryNoWriteTests(unittest.TestCase):
                 for item in entry["candidate_dispositions"]
             },
             {
-                "query-update": ("NO_CHANGE", "read_only_query"),
-                "query-duplicate": ("NO_CHANGE", "read_only_query"),
-                "query-create": ("NO_CHANGE", "read_only_query"),
+                "query-update": ("NO_CHANGE", "update_semantic_review_no_change"),
+                "query-duplicate": ("NO_CHANGE", "duplicate"),
+                "query-create": ("NO_CHANGE", "update_semantic_review_no_change"),
             },
         )
 
@@ -307,14 +313,16 @@ class GlobalTodoQueryNoWriteTests(unittest.TestCase):
             [
                 gate([near_duplicate]),
                 summary(
-                    user_key,
+                    assistant_key,
                     title="鑫元基金架构评审文档修改与反馈",
                     body="鑫元基金架构评审文档修改与反馈仍需在2026-09-03前完成。",
                     scope="project:鑫元基金",
                     update_memory_id=existing.memory_id,
+                    status="active",
                 ),
             ]
         )
+        backend.semantic_review_decision = "NO_CHANGE"
         before_bytes = self.markdown_snapshot(service)
         before_sources = self.source_snapshot(service)
 
@@ -329,7 +337,7 @@ class GlobalTodoQueryNoWriteTests(unittest.TestCase):
             [existing.memory_id],
         )
         self.assertEqual(service._read_memories_unlocked("history"), [])
-        self.assertEqual([call["purpose"] for call in backend.calls], ["gate"])
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
 
     def test_new_requirement_before_a_question_remains_write_eligible(self) -> None:
         """A real assertion is not suppressed by a later question clause."""
