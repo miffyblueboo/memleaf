@@ -16,6 +16,9 @@ from .scope_state import ScopeError, validate_scope_registry
 DEFAULT_REQUEST_TIMEOUT = 120
 MIN_REQUEST_TIMEOUT = 1
 MAX_REQUEST_TIMEOUT = 240
+DEFAULT_MODEL_CONCURRENCY = 3
+MIN_MODEL_CONCURRENCY = 1
+MAX_MODEL_CONCURRENCY = 8
 
 
 def _normalize_request_timeout(value: Any) -> int | float:
@@ -30,6 +33,14 @@ def _normalize_request_timeout(value: Any) -> int | float:
     return int(parsed) if parsed.is_integer() else parsed
 
 
+def _normalize_model_concurrency(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("invalid memleaf process.model_concurrency")
+    if not MIN_MODEL_CONCURRENCY <= value <= MAX_MODEL_CONCURRENCY:
+        raise ValueError("invalid memleaf process.model_concurrency")
+    return value
+
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "vault": "~/.memleaf",
     "agents": {"codex": True, "hermes": True, "antigravity": False},
@@ -40,6 +51,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "memory_compact_candidate_ratio": 0.30,
         "inbox_cleanup_hours": 24,
         "closed_todo_retention_days": 30,
+        "model_concurrency": DEFAULT_MODEL_CONCURRENCY,
     },
     "history": {
         "policy": "bounded",
@@ -157,6 +169,11 @@ def load_config(path: Path | str, *, vault: Path | str | None = None) -> dict[st
     closed_todo_days = process.get("closed_todo_retention_days") if isinstance(process, Mapping) else None
     if type(closed_todo_days) is not int or closed_todo_days < 0:
         raise ValueError("invalid memleaf process.closed_todo_retention_days")
+    _normalize_model_concurrency(
+        process.get("model_concurrency", DEFAULT_MODEL_CONCURRENCY)
+        if isinstance(process, Mapping)
+        else DEFAULT_MODEL_CONCURRENCY
+    )
     history = merged.get("history")
     if not isinstance(history, Mapping):
         raise ValueError("invalid memleaf history settings")
@@ -199,6 +216,14 @@ def save_config(path: Path | str, config: Mapping[str, Any]) -> None:
         validate_native_sources(normalized.get("native_sources", {}), base_dir=Path(path).parent)
     except NativeConfigError as error:
         raise ValueError("invalid memleaf native_sources") from error
+    process = normalized.get("process")
+    if not isinstance(process, Mapping):
+        raise ValueError("invalid memleaf process settings")
+    normalized_process = dict(process)
+    normalized_process["model_concurrency"] = _normalize_model_concurrency(
+        normalized_process.get("model_concurrency", DEFAULT_MODEL_CONCURRENCY)
+    )
+    normalized["process"] = normalized_process
     llm = normalized.get("llm")
     if not isinstance(llm, Mapping):
         raise ValueError("invalid memleaf llm settings")
