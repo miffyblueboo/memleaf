@@ -69,6 +69,7 @@ class Processor:
                 "cleaned_turns": cleaned,
                 "deferred_candidates": deferred_candidates,
                 "deferred_inbox_turns": deferred_turns,
+                "model_metrics": self.model.metrics(),
                 "compaction": self._auto_compact(model=model, router=router),
             }
         backend = None
@@ -142,6 +143,7 @@ class Processor:
                 "cleaned_turns": cleaned,
                 "deferred_candidates": deferred_candidates,
                 "deferred_inbox_turns": deferred_turns,
+                "model_metrics": self.model.metrics(),
                 "compaction": compaction,
             }
         except Exception as error:
@@ -202,6 +204,7 @@ class Processor:
                 "cleaned_turns": cleaned,
                 "deferred_candidates": 0,
                 "deferred_inbox_turns": 0,
+                "model_metrics": self.model.metrics(),
                 "compaction": self._auto_compact(model=model, router=router),
             }
         backend = None
@@ -240,6 +243,7 @@ class Processor:
                 "cleaned_turns": cleaned,
                 "deferred_candidates": 0,
                 "deferred_inbox_turns": 0,
+                "model_metrics": self.model.metrics(),
                 "compaction": self._auto_compact(model=backend),
             }
         except Exception as error:
