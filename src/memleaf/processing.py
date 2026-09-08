@@ -32,6 +32,14 @@ class Processor:
 
         return Compactor(self.service).auto(model=model, router=router)
 
+    def _attach_failure_metrics(self, error: BaseException) -> None:
+        """Attach structural-only model telemetry for outer failure reporters."""
+
+        try:
+            setattr(error, "model_metrics", self.model.metrics())
+        except Exception:
+            # Failure reporting must never mask the original processing error.
+            return
 
     def process(
         self,
@@ -69,6 +77,7 @@ class Processor:
                 "cleaned_turns": cleaned,
                 "deferred_candidates": deferred_candidates,
                 "deferred_inbox_turns": deferred_turns,
+                "model_metrics": self.model.metrics(),
                 "compaction": self._auto_compact(model=model, router=router),
             }
         backend = None
@@ -142,12 +151,13 @@ class Processor:
                 "cleaned_turns": cleaned,
                 "deferred_candidates": deferred_candidates,
                 "deferred_inbox_turns": deferred_turns,
+                "model_metrics": self.model.metrics(),
                 "compaction": compaction,
             }
         except Exception as error:
+            self._attach_failure_metrics(error)
             self.journal._mark_failed(snapshots, error)
             raise
-
 
     def remember(
         self,
@@ -202,6 +212,7 @@ class Processor:
                 "cleaned_turns": cleaned,
                 "deferred_candidates": 0,
                 "deferred_inbox_turns": 0,
+                "model_metrics": self.model.metrics(),
                 "compaction": self._auto_compact(model=model, router=router),
             }
         backend = None
@@ -240,12 +251,13 @@ class Processor:
                 "cleaned_turns": cleaned,
                 "deferred_candidates": 0,
                 "deferred_inbox_turns": 0,
+                "model_metrics": self.model.metrics(),
                 "compaction": self._auto_compact(model=backend),
             }
         except Exception as error:
+            self._attach_failure_metrics(error)
             self.journal._mark_failed([snapshot], error)
             raise
-
 
 
 __all__ = ["Processor", "ProcessingError"]

@@ -272,15 +272,16 @@ class UpdateReviewTests(unittest.TestCase):
         )
 
     def test_create_review_contract_preserves_schema_and_explicit_roles(self):
-        self.assertIn("title, body, tags,", CREATE_SEMANTIC_REVIEW_SYSTEM)
-        self.assertIn("topic or activity name by itself", CREATE_SEMANTIC_REVIEW_SYSTEM)
-        self.assertIn("organization name next to an activity title", CREATE_SEMANTIC_REVIEW_SYSTEM)
-        self.assertIn("explicit subject-action relationship", CREATE_SEMANTIC_REVIEW_SYSTEM)
-        self.assertIn("short unlabeled title or list", CREATE_SEMANTIC_REVIEW_SYSTEM)
-        self.assertIn("every number or code as an opaque", CREATE_SEMANTIC_REVIEW_SYSTEM)
-        self.assertIn("Never inherit a field role or relationship from", CREATE_SEMANTIC_REVIEW_SYSTEM)
-        self.assertIn("across the entire summary", CREATE_SEMANTIC_REVIEW_SYSTEM)
-        self.assertIn("complete source-supported revision", CREATE_SEMANTIC_REVIEW_SYSTEM)
+        review_text = " ".join(CREATE_SEMANTIC_REVIEW_SYSTEM.split())
+        self.assertIn("title, body, tags,", review_text)
+        self.assertIn("topic or activity name by itself", review_text)
+        self.assertIn("organization name next to an activity title", review_text)
+        self.assertIn("explicit subject-action relationship", review_text)
+        self.assertIn("short unlabeled title or list", review_text)
+        self.assertIn("every number or code as an opaque", review_text)
+        self.assertIn("Never inherit a field role or relationship from", review_text)
+        self.assertIn("across the entire summary", review_text)
+        self.assertIn("complete source-supported revision", review_text)
 
     def test_create_review_accept_uses_the_same_executor_contract(self):
         proposed = dict(proposal())

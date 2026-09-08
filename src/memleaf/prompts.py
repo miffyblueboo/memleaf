@@ -20,6 +20,8 @@ A candidate is the smallest complete memory for one independently retrievable an
 Do not replace independently trackable requested deliverables with only their umbrella coordination request. An item remains a candidate when it is unassigned, awaiting an estimate, or not yet accepted; preserve that state and the source's stated owner without assigning responsibility to the user by inference. For example, two separately named changes followed by one sentence to coordinate them remain two topics when each can close independently; the example is illustrative, not a candidate-count rule.
 Atomicity test: ask whether a later question, owner, status, estimate, or completion decision could concern one named item without the other. If yes, give each item its own candidate, memory, and item-specific claims; repeat shared context as needed. Do not emit one candidate whose subject is the collection of independently answerable items.
 
+Candidate semantic completeness is mandatory. The candidate memory must retain the source-supported information that defines this one topic's meaning: the explicit subject or named entity, the object/deliverable, the concrete action or state, any business/workstream/background context needed to distinguish what the item is, and every number or code together with its source-stated role when that role is necessary to interpret the value. Do not replace concrete named requirements with generic phrases such as "related matters", "handle the item", or an umbrella coordination label. If a number/code is meaningful only together with a stated role, bind and preserve both; if its role is unknown, keep it opaque or defer rather than inventing one.
+
 Related active memories are comparison/target context, not current evidence. A complete duplicate uses duplicate=true, worth=false and duplicate_memory_id with one supplied active memleaf ID. A later confirmed state of the same future use uses worth=true and update_memory_id with one supplied active memleaf ID. UPDATE/NO_CHANGE takes precedence over CREATE. Never target native/history IDs. Existing target type is immutable. If several supplied memories could be the target, do not guess; defer/omit the target. Within one gate response the same active target may appear at most once; merge same-target evidence into one candidate.
 
 evidence_bindings belongs only at the top level beside candidates and coverage. Never put evidence_bindings, claims, status, or due_date inside a Gate candidate. Candidate fields are exactly the required and optional fields listed above. Keep the source bindings in the top-level list even when several candidates cite the same unit.
@@ -28,7 +30,7 @@ An alternative exact source-reference form is {"unit_id":"<listed id>","whole_un
 
 A query and a mere restatement of existing memory add no new memory. External observations are excluded from source units and cannot authorize a candidate. A query is a property of the user text, not a veto on a same-turn assistant report: when a visible assistant message states a new conclusion or explicit pending action, assess that message independently and bind any candidate to its exact unit. A turn that contains a question and a newly confirmed user or assistant assertion remains eligible only for the assertion. Assistant questions, suggestions, future promises, proposals and unconfirmed reports do not establish a completion or state transition. An assistant restatement of an existing memory does not create a new memory. Explicit todo completion/cancellation is an update only when current visible user or assistant text states the transition; do not infer it from a question or plan. Todo updates keep type=todo. A completion report for a supplied active todo is still a future-use state transition: emit a Gate candidate with update_memory_id and memory text describing the confirmed completion; do not put status or completed_at in the Gate candidate. The summarize stage must output status=completed and a grounded completed_at when the target is not already completed/cancelled. Use coverage reason already_completed only with memory_id copied from a listed current knowledge todo whose status is completed or cancelled; if there is no such terminal witness, emit the UPDATE candidate for a supplied active todo or use NO_CHANGE with no_future_value when no existing target is involved. Do not infer a terminal witness from the evidence text. Date fields must be grounded in current visible messages.
 
-Scopes must be grounded by authoritative user/session context or the candidate's own evidence. A single project name stated in the candidate's bound source text is sufficient for project:<name> with scope_source=model, even when that project is absent from the current registry; do not use unscoped merely because the registry is empty. Do not borrow a project from another candidate. Do not expand an address, domain or abbreviation into an organization/project name that is neither stated in the evidence nor supplied as a registered alias. If one safe Scope cannot be established, use unscoped/insufficient_context or defer instead of guessing global/project membership.
+Scopes must be grounded by authoritative user/session context or the candidate's own evidence. A single project name stated in the candidate's bound source text is sufficient for project:<name> with scope_source=model, even when that project is absent from the current registry; do not use unscoped merely because the registry is empty. Do not borrow a project from another candidate. Do not expand an address, domain or abbreviation into an organization/project name that is neither stated in the evidence nor supplied as a registered alias. Treat ownership/affiliation and implementation context as separate relationships: when the source says an item belongs to one named entity/project but is implemented in, hosted by, or built on another product/platform/system, the broader implementation context does not become the item's project scope merely because it is named. Prefer the source-stated owner/affiliation when it is explicit. If the relationship is not explicit enough to choose safely, use unscoped/insufficient_context or defer instead of guessing. Existing memories may be comparison context but cannot create a new ownership or project-affiliation fact absent from current evidence. If one safe Scope cannot be established, use unscoped/insufficient_context or defer instead of guessing global/project membership.
 
 Calendar dates are strict. Evidence events may include an ISO-8601 UTC timestamp. A visible user or assistant message's supporting event timestamp can anchor a one-off relative date. Tool retrieval timestamps and raw external payloads are excluded and can never anchor a date. Never move an unavailable historical date into the conversation week. Bind the original date context as well as the relative expression when it is available; if the original anchor cannot be proved, keep the date unresolved rather than inventing a deadline. Distinguish a request or question about possible timing from a confirmed due date. Resolve today/tomorrow/yesterday, 今天/明天/昨天/今日/明日/昨日, 本周X/这周X/下周X/上周X, and this/next/last weekday using Monday-Sunday weeks, and emit absolute YYYY-MM-DD only with a grounded anchor. Recurring schedules such as 每周三/every Wednesday may remain recurring. If the expression cannot be safely grounded, defer/omit the date-dependent candidate.
 
@@ -44,7 +46,9 @@ The model owns semantic content; Core will validate evidence IDs, exact source s
 
 The only source for a memory is a complete visible user or assistant message supplied as current evidence; the source boundary contains only the current turn's visible user input and Agent's final assistant reply. Historical conversation turns, intermediate assistant messages, and existing memory context are comparison context, never new source. Assistant reports may contribute a stated conclusion or explicit pending action; questions, suggestions, plans, hypotheticals, generic acknowledgements, and unconfirmed claims remain uncertain, and a restatement of an existing memory does not create a new memory. Tool calls, raw tool results, other non-conversation payloads are excluded and cannot support a summary. A normal summary requires title (string), body (string), tags (string list), type (preference, fact, project, todo, event, identity, or other), scopes (non-empty string list), and sources (non-empty object list). scope_source, when present, is model, user, session_context, or insufficient_context. Optional fields are memory_id, update_memory_id, aliases, keywords, evidence_event_ids, shadow_native_ids, scope_operations, status, completed_at, and due_date. sources may contain only event_key, session_id, turn_id, conversation_title, and evidence_event_ids; event_key/evidence_event_ids must be copied exactly from supplied current evidence.
 
-For automatic summaries, copy the gate candidate's type and scopes exactly. An existing target's type is immutable. Scope must not drift. An UPDATE gate selection does not force a write: first compare current evidence with the supplied target's state, facts, deadlines, and obligations. If there is no new confirmed state, fact, deadline, or obligation change, return exactly {"decision":"NO_CHANGE"}; wording changes, restatements, and new source/provenance alone do not count as change. Only when current evidence confirms a real semantic change, keep exactly the gate-selected update_memory_id; do not switch it or create a sibling. A CREATE candidate has no update_memory_id and the summary must omit update_memory_id even when related memories look similar; do not infer or select a target.
+Semantic completeness is required, not optional compression. Preserve the source-supported explicit subject or named entity, object/deliverable, concrete action or state, necessary business/workstream/background context, and every number/code together with its source-stated meaning when that meaning is needed to interpret the value. The title/body must remain understandable without reopening the source. Scope metadata does not substitute for a named subject that distinguishes the item. Do not generalize concrete named requirements into "related matters", "handle related items", a generic coordination phrase, or similarly vague text. Preserve uncertainty when attribution or a value's role is not established; never invent an owner, deadline, status, numeric role or completion meaning.
+
+For automatic summaries, copy the gate candidate's type and scopes exactly. An existing target's type is immutable. Scope must not drift. An UPDATE gate selection does not force a write: first compare current evidence with the supplied target's state, facts, deadlines, and obligations. If there is no new confirmed state, fact, deadline, or obligation change, return exactly {"decision":"NO_CHANGE"}; wording changes, restatements, and new source/provenance alone do not count as change. Only when current evidence confirms a real semantic change, keep exactly the gate-selected update_memory_id; do not switch it or create a sibling. A CREATE candidate has no update_memory_id and the summary must omit update_memory_id even when related memories look similar; do not infer or select a target. Treat ownership/affiliation and implementation context as separate relationships: when current evidence explicitly says the item belongs to one entity/project and is implemented in another product/platform/system, retain the owning subject in the title/body and do not rewrite it as if the implementation context owns the item. Existing memories cannot supply a new relationship absent from current evidence.
 
 Todo status is active, completed, or cancelled. Every new CREATE todo summary must explicitly include status=active (or the terminal status when current evidence proves it) and a due_date field: use the absolute YYYY-MM-DD date when supporting evidence contains a deadline, otherwise use null. A source deadline must be represented in due_date, not only in title or body. An update of an existing todo must explicitly include status. completed requires completed_at grounded in the supporting event timestamp. For UPDATE, omit due_date only to preserve an existing deadline, and use null only when current evidence explicitly removes it.
 
@@ -286,7 +290,10 @@ SCOPE_GROUNDING_CORRECTION = (
     "name must also occur in that candidate's bound source unit, not only in your "
     "proposed memory text; do not invent or translate an organization name from an "
     "address or abbreviation. Do not borrow a name from another event, related "
-    "memory, session background, or unrelated aggregate context. If exactly one "
+    "memory, session background, or unrelated aggregate context. When source text "
+    "distinguishes an item's owner/affiliation from a broader product/platform/system "
+    "where it is implemented, do not use that implementation context as project scope "
+    "unless the source explicitly states that relationship. If exactly one "
     "project cannot be supported, choose the evidence-supported scope, use "
     "unscoped with insufficient_context or defer it. An unresolved Scope does not "
     "make supported future-use evidence worthless. Return "
@@ -348,6 +355,11 @@ def gate_prompt(
         "owner, status, estimate, or completion decision could concern one named item without the other; "
         "if yes, give each item its own candidate, memory, and item-specific claims. Use whole_unit only for a homogeneous unit "
         "supporting one topic.\n"
+        "Candidate meaning check: preserve the source-supported named subject, concrete deliverable/action/state, "
+        "necessary business/workstream/background context, and the role of any number/code needed to interpret it. "
+        "Do not replace those facts with a vague umbrella or generic coordination phrase. Distinguish explicit "
+        "ownership/affiliation from a broader implementation product/platform/system; do not assign project scope "
+        "from implementation context alone.\n"
         "Complete turn events (the only conversation content visible to this call):\n"
         + _json(events)
         + "\nRelevant existing memleaf/native memories:\n"
@@ -430,6 +442,11 @@ def summarize_prompt(
             "with the deliverable it governs. Candidate atomicity is decided at the Gate and any mixed "
             "candidate is handled by the semantic review; do not return NO_CHANGE solely for atomicity review. "
             "Derive every NEW owner, date, obligation, fact and state only from these spans. "
+            "Preserve every meaning-defining supported fact for this topic: named subject/entity, concrete "
+            "deliverable/action/state, necessary business/workstream/background context, and each number/code "
+            "together with its stated role when that role is needed to understand the value. Do not replace "
+            "concrete requirements with generic related-matters or coordination wording. Scope metadata alone "
+            "does not substitute for the named subject in title/body. "
             + (
                 "For UPDATE, retain the selected target's still-valid existing information even "
                 "when it is not repeated in today's evidence. Omission from a new source is not "
@@ -444,6 +461,9 @@ def summarize_prompt(
             "A listed or delivered item alone does not imply an action to handle or fix it. "
             "Do not turn a topic/title into an obligation absent from the visible source; "
             "if that is the proposal's only future-use content, return NO_CHANGE. "
+            "When source text distinguishes the item-owning entity/project from a broader product/platform/system "
+            "where it is implemented, retain that distinction and do not rewrite the implementation context as "
+            "the owner. Existing memories cannot supply a new ownership relationship. "
             "An admitted assistant report may support a stated conclusion, confirmed fact or explicit "
             "pending action, while unbound assistant synthesis, questions, suggestions, plans, generic "
             "acknowledgements and pure restatements do not add a new fact. Do not introduce details "
@@ -559,6 +579,11 @@ Atomicity test: ask whether a later question, owner, status, estimate, or
 completion decision could concern one named item without the other. If yes, give
 each item its own candidate, memory, and item-specific claims; never emit one
 candidate whose subject is the collection of independently answerable items.
+Each candidate must also preserve its meaning-defining subject/entity, concrete
+deliverable/action/state, necessary business/workstream/background context, and
+the stated role of any number/code needed to interpret it. Keep ownership or
+project affiliation separate from a broader implementation product/platform/system;
+do not use implementation context alone as project ownership.
 When a candidate has top-level evidence_bindings, omit evidence_event_ids so
 Core can derive the exact source event key from the validated bound unit. Never
 copy the surrounding conversation event key into a candidate for an external

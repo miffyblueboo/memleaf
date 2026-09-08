@@ -7,6 +7,7 @@ concatenates proposed bodies into a memory or writes to the Vault.
 from __future__ import annotations
 
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import json
 from typing import Any, Callable, Mapping
@@ -16,7 +17,7 @@ from .llm import ModelError
 from .prompts import UPDATE_GROUP_SYSTEM, summarize_prompt
 from .process_common import ProcessingError, _grounded_due_dates, _normalize_summary_dates, _summary_date_grounding_violations
 from .turn_plan import revision_digest
-from .update_review import review_create, review_update
+from .update_review import _complete_json_stage_compat, review_create, review_update
 from .validation import ModelOutputError, parse_strict_json, parse_summarize_output
 
 # Exceptional prompt safety guards, not a truncation policy. Over-budget groups
@@ -209,6 +210,180 @@ class UpdateCoordinator:
             if isinstance(candidate, Mapping):
                 self.audit._defer_candidate(turn_ref, candidate, reason)
 
+    def _run_review_jobs(
+        self,
+        jobs: list[Callable[[], dict[str, Any]]],
+        *,
+        backend: Any,
+    ) -> list[dict[str, Any]]:
+        """Run independent model reviews concurrently while preserving result order."""
+
+        if not jobs:
+            return []
+        max_parallel = getattr(self.model, "max_parallel_calls", None)
+        workers = min(len(jobs), max_parallel(backend)) if callable(max_parallel) else 1
+        if workers <= 1:
+            return [job() for job in jobs]
+        # No Vault or audit mutation occurs in worker threads. All request/audit
+        # effects are applied below in original request order after every model
+        # result has been collected.
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="memleaf-review") as pool:
+            futures = [pool.submit(job) for job in jobs]
+            return [future.result() for future in futures]
+
+    @staticmethod
+    def _make_update_review_parser(
+        *,
+        turn: Any,
+        candidate: Mapping[str, Any],
+        keys: tuple[str, ...],
+        target: Any,
+        target_id: str,
+        target_type: Any,
+        target_scopes: Any,
+        target_scope_source: Any,
+        grounded_dates: Any,
+        validation_scope_registry: Any,
+        projected: list[dict[str, Any]],
+    ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
+        """Freeze one UPDATE parser so concurrent reviews cannot share loop state."""
+
+        def parse_review_summary(value: Mapping[str, Any]) -> Mapping[str, Any]:
+            raw_summary = json.dumps(value, ensure_ascii=False)
+            parsed = parse_summarize_output(
+                _normalize_summary_dates(raw_summary, turn, candidate),
+                current_event_keys=keys,
+                related_native_ids=[],
+                related_memory_ids=[target_id],
+                scope_registry=validation_scope_registry,
+                expected_scopes=target_scopes,
+                expected_scope_source=target_scope_source,
+                expected_type=target_type,
+                expected_target_type=target_type,
+                expected_update_memory_id=target_id,
+                allowed_due_dates=grounded_dates,
+                allow_no_change=False,
+            )
+            parsed_target = parsed.get("update_memory_id")
+            if (
+                not isinstance(parsed_target, str)
+                or parsed_target.casefold() != target_id.casefold()
+            ):
+                raise ModelOutputError(
+                    "review summary must retain its update target",
+                    validation_detail="invalid_update_target",
+                )
+            parsed["update_memory_id"] = target_id
+            if parsed.get("scope_operations") or parsed.get("shadow_native_ids"):
+                raise ModelOutputError(
+                    "review summary cannot extend authorization",
+                    validation_detail="invalid_evidence",
+                )
+            if _summary_date_grounding_violations(
+                parsed,
+                grounded_dates=grounded_dates,
+                source_texts=[
+                    event.get("content", "")
+                    for event in projected
+                    if event.get("role") in {"user", "assistant"}
+                ],
+                preserved_texts=(
+                    target.get("title"),
+                    target.get("body"),
+                    target.get("due_date"),
+                ) if isinstance(target, Mapping) else (
+                    target.title,
+                    target.body,
+                    target.due_date,
+                ),
+            ):
+                raise ModelOutputError(
+                    "review summary contains an ungrounded date",
+                    validation_detail="relative_time",
+                )
+            cited = set(parsed.get("evidence_event_ids", []))
+            for source in parsed.get("sources", []):
+                if source.get("event_key"):
+                    cited.add(source["event_key"])
+                cited.update(source.get("evidence_event_ids", []))
+            if not set(keys).issubset(cited):
+                raise ModelOutputError(
+                    "review summary omitted source evidence",
+                    validation_detail="invalid_evidence",
+                )
+            return parsed
+
+        return parse_review_summary
+
+    @staticmethod
+    def _make_create_review_parser(
+        *,
+        turn: Any,
+        candidate: Mapping[str, Any],
+        keys: tuple[str, ...],
+        summary_type: Any,
+        summary_scopes: Any,
+        summary_scope_source: Any,
+        grounded_dates: Any,
+        validation_scope_registry: Any,
+        projected: list[dict[str, Any]],
+    ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
+        """Freeze one CREATE parser so concurrent reviews cannot share loop state."""
+
+        def parse_create_summary(value: Mapping[str, Any]) -> Mapping[str, Any]:
+            raw_summary = json.dumps(value, ensure_ascii=False)
+            parsed = parse_summarize_output(
+                _normalize_summary_dates(raw_summary, turn, candidate),
+                current_event_keys=keys,
+                related_native_ids=[],
+                related_memory_ids=[],
+                scope_registry=validation_scope_registry,
+                expected_scopes=summary_scopes,
+                expected_scope_source=summary_scope_source,
+                expected_type=summary_type,
+                expected_update_memory_id=None,
+                allowed_due_dates=grounded_dates,
+                allow_no_change=False,
+                allow_update_target=False,
+            )
+            if parsed.get("memory_id") or parsed.get("update_memory_id"):
+                raise ModelOutputError(
+                    "CREATE review summary cannot carry a target",
+                    validation_detail="invalid_update_target",
+                )
+            if parsed.get("scope_operations") or parsed.get("shadow_native_ids"):
+                raise ModelOutputError(
+                    "CREATE review summary cannot extend authorization",
+                    validation_detail="invalid_evidence",
+                )
+            if _summary_date_grounding_violations(
+                parsed,
+                grounded_dates=grounded_dates,
+                source_texts=[
+                    event.get("content", "")
+                    for event in projected
+                    if event.get("role") in {"user", "assistant"}
+                ],
+                preserved_texts=(),
+            ):
+                raise ModelOutputError(
+                    "CREATE review summary contains an ungrounded date",
+                    validation_detail="relative_time",
+                )
+            cited = set(parsed.get("evidence_event_ids", []))
+            for source in parsed.get("sources", []):
+                if source.get("event_key"):
+                    cited.add(source["event_key"])
+                cited.update(source.get("evidence_event_ids", []))
+            if not set(keys).issubset(cited):
+                raise ModelOutputError(
+                    "CREATE review summary omitted source evidence",
+                    validation_detail="invalid_evidence",
+                )
+            return parsed
+
+        return parse_create_summary
+
     def _review_final_updates(
         self,
         requests: list[dict[str, Any]],
@@ -220,12 +395,13 @@ class UpdateCoordinator:
         scope_registry: Any,
         validation_scope_registry: Any,
     ) -> list[dict[str, Any]]:
-        """Review every final automatic UPDATE after same-target resolution."""
+        """Review final automatic UPDATEs after same-target resolution."""
 
-        reviewed: list[dict[str, Any]] = []
+        slots: list[dict[str, Any]] = []
+        jobs: list[Callable[[], dict[str, Any]]] = []
         for request in requests:
             if not self._is_reviewable_update(request):
-                reviewed.append(request)
+                slots.append({"kind": "passthrough", "request": request})
                 continue
 
             summary = request.get("summary")
@@ -244,11 +420,7 @@ class UpdateCoordinator:
                 events=events,
             )
             if not projected:
-                self._defer_request(
-                    request,
-                    candidates=candidates,
-                    reason="semantic_review_failed",
-                )
+                slots.append({"kind": "defer", "request": request, "reason": "semantic_review_failed"})
                 continue
 
             candidate_ids = self._request_candidate_ids(request)
@@ -262,11 +434,7 @@ class UpdateCoordinator:
             )
             turn = request.get("turn")
             if turn is None:
-                self._defer_request(
-                    request,
-                    candidates=candidates,
-                    reason="semantic_review_failed",
-                )
+                slots.append({"kind": "defer", "request": request, "reason": "semantic_review_failed"})
                 continue
             keys = tuple(dict.fromkeys(event["event_key"] for event in projected))
             target_type = target.get("type") if isinstance(target, Mapping) else getattr(target, "type", None)
@@ -283,93 +451,77 @@ class UpdateCoordinator:
                     else getattr(target, "scope_source", None)
                 )
             grounded_dates = _grounded_due_dates(turn, evidence_events=projected)
-
-            def parse_review_summary(value: Mapping[str, Any]) -> Mapping[str, Any]:
-                raw_summary = json.dumps(value, ensure_ascii=False)
-                parsed = parse_summarize_output(
-                    _normalize_summary_dates(raw_summary, turn, candidate),
-                    current_event_keys=keys,
-                    related_native_ids=[],
-                    related_memory_ids=[target_id],
-                    scope_registry=validation_scope_registry,
-                    expected_scopes=target_scopes,
-                    expected_scope_source=target_scope_source,
-                    expected_type=target_type,
-                    expected_target_type=target_type,
-                    expected_update_memory_id=target_id,
-                    allowed_due_dates=grounded_dates,
-                    allow_no_change=False,
-                )
-                parsed_target = parsed.get("update_memory_id")
-                if (
-                    not isinstance(parsed_target, str)
-                    or parsed_target.casefold() != target_id.casefold()
-                ):
-                    raise ModelOutputError(
-                        "review summary must retain its update target",
-                        validation_detail="invalid_update_target",
-                    )
-                parsed["update_memory_id"] = target_id
-                if parsed.get("scope_operations") or parsed.get("shadow_native_ids"):
-                    raise ModelOutputError(
-                        "review summary cannot extend authorization",
-                        validation_detail="invalid_evidence",
-                    )
-                if _summary_date_grounding_violations(
-                    parsed,
-                    grounded_dates=grounded_dates,
-                    source_texts=[
-                        event.get("content", "")
-                        for event in projected
-                        if event.get("role") in {"user", "assistant"}
-                    ],
-                    preserved_texts=(
-                        target.get("title"),
-                        target.get("body"),
-                        target.get("due_date"),
-                    ) if isinstance(target, Mapping) else (
-                        target.title,
-                        target.body,
-                        target.due_date,
-                    ),
-                ):
-                    raise ModelOutputError(
-                        "review summary contains an ungrounded date",
-                        validation_detail="relative_time",
-                    )
-                cited = set(parsed.get("evidence_event_ids", []))
-                for source in parsed.get("sources", []):
-                    if source.get("event_key"):
-                        cited.add(source["event_key"])
-                    cited.update(source.get("evidence_event_ids", []))
-                if not set(keys).issubset(cited):
-                    raise ModelOutputError(
-                        "review summary omitted source evidence",
-                        validation_detail="invalid_evidence",
-                    )
-                return parsed
-
-            outcome = review_update(
-                self.model,
-                backend,
+            parser = self._make_update_review_parser(
+                turn=turn,
+                candidate=candidate,
+                keys=keys,
                 target=target,
-                admitted_source=projected,
-                proposed_summary=self._review_content(summary),
-                parse_summary=parse_review_summary,
-                diagnostic_context={
-                    "source": turn.source,
-                    "session_id": turn.session_id,
-                    "turn_index": turn.turn_index,
-                },
+                target_id=target_id,
+                target_type=target_type,
+                target_scopes=target_scopes,
+                target_scope_source=target_scope_source,
+                grounded_dates=grounded_dates,
+                validation_scope_registry=validation_scope_registry,
+                projected=projected,
             )
+            diagnostic_context = {
+                "source": turn.source,
+                "session_id": turn.session_id,
+                "turn_index": turn.turn_index,
+            }
+
+            def run_review(
+                *,
+                target_value: Any = target,
+                projected_value: list[dict[str, Any]] = projected,
+                summary_value: Mapping[str, Any] = self._review_content(summary),
+                parser_value: Callable[[Mapping[str, Any]], Mapping[str, Any]] = parser,
+                diagnostic_value: Mapping[str, Any] = diagnostic_context,
+            ) -> dict[str, Any]:
+                return review_update(
+                    self.model,
+                    backend,
+                    target=target_value,
+                    admitted_source=projected_value,
+                    proposed_summary=summary_value,
+                    parse_summary=parser_value,
+                    diagnostic_context=diagnostic_value,
+                )
+
+            job_index = len(jobs)
+            jobs.append(run_review)
+            slots.append({
+                "kind": "review",
+                "request": request,
+                "summary": summary,
+                "target_id": target_id,
+                "job_index": job_index,
+            })
+
+        outcomes = self._run_review_jobs(jobs, backend=backend)
+        reviewed: list[dict[str, Any]] = []
+        for slot in slots:
+            kind = slot["kind"]
+            request = slot["request"]
+            if kind == "passthrough":
+                reviewed.append(request)
+                continue
+            if kind == "defer":
+                self._defer_request(
+                    request,
+                    candidates=candidates,
+                    reason=slot["reason"],
+                )
+                continue
+            outcome = outcomes[slot["job_index"]]
             decision = outcome.get("decision")
-            target_memory_id = target_id if isinstance(target_id, str) else None
+            target_memory_id = slot["target_id"] if isinstance(slot["target_id"], str) else None
             if decision == "ACCEPT":
                 reviewed.append(request)
                 continue
             if decision == "REVISE" and isinstance(outcome.get("summary"), Mapping):
                 revised = dict(request)
-                revised["summary"] = self._reviewed_summary(summary, outcome["summary"])
+                revised["summary"] = self._reviewed_summary(slot["summary"], outcome["summary"])
                 reviewed.append(revised)
                 continue
             if decision == "NO_CHANGE":
@@ -402,12 +554,13 @@ class UpdateCoordinator:
         scope_registry: Any,
         validation_scope_registry: Any,
     ) -> list[dict[str, Any]]:
-        """Review every final ordinary automatic CREATE before plan freeze."""
+        """Review final ordinary automatic CREATEs before plan freeze."""
 
-        reviewed: list[dict[str, Any]] = []
+        slots: list[dict[str, Any]] = []
+        jobs: list[Callable[[], dict[str, Any]]] = []
         for request in requests:
             if not self._is_reviewable_create(request):
-                reviewed.append(request)
+                slots.append({"kind": "passthrough", "request": request})
                 continue
 
             summary = request.get("summary")
@@ -418,11 +571,7 @@ class UpdateCoordinator:
                 events=events,
             )
             if not projected:
-                self._defer_request(
-                    request,
-                    candidates=candidates,
-                    reason="semantic_review_failed",
-                )
+                slots.append({"kind": "defer", "request": request, "reason": "semantic_review_failed"})
                 continue
             candidate_ids = self._request_candidate_ids(request)
             candidate = next(
@@ -435,11 +584,7 @@ class UpdateCoordinator:
             )
             turn = request.get("turn")
             if turn is None or not isinstance(summary, Mapping):
-                self._defer_request(
-                    request,
-                    candidates=candidates,
-                    reason="semantic_review_failed",
-                )
+                slots.append({"kind": "defer", "request": request, "reason": "semantic_review_failed"})
                 continue
             keys = tuple(dict.fromkeys(event["event_key"] for event in projected))
             summary_type = summary.get("type")
@@ -452,78 +597,71 @@ class UpdateCoordinator:
             if summary_scope_source is None:
                 summary_scope_source = candidate.get("scope_source")
             grounded_dates = _grounded_due_dates(turn, evidence_events=projected)
-
-            def parse_create_summary(value: Mapping[str, Any]) -> Mapping[str, Any]:
-                raw_summary = json.dumps(value, ensure_ascii=False)
-                parsed = parse_summarize_output(
-                    _normalize_summary_dates(raw_summary, turn, candidate),
-                    current_event_keys=keys,
-                    related_native_ids=[],
-                    related_memory_ids=[],
-                    scope_registry=validation_scope_registry,
-                    expected_scopes=summary_scopes,
-                    expected_scope_source=summary_scope_source,
-                    expected_type=summary_type,
-                    expected_update_memory_id=None,
-                    allowed_due_dates=grounded_dates,
-                    allow_no_change=False,
-                    allow_update_target=False,
-                )
-                if parsed.get("memory_id") or parsed.get("update_memory_id"):
-                    raise ModelOutputError(
-                        "CREATE review summary cannot carry a target",
-                        validation_detail="invalid_update_target",
-                    )
-                if parsed.get("scope_operations") or parsed.get("shadow_native_ids"):
-                    raise ModelOutputError(
-                        "CREATE review summary cannot extend authorization",
-                        validation_detail="invalid_evidence",
-                    )
-                if _summary_date_grounding_violations(
-                    parsed,
-                    grounded_dates=grounded_dates,
-                    source_texts=[
-                        event.get("content", "")
-                        for event in projected
-                        if event.get("role") in {"user", "assistant"}
-                    ],
-                    preserved_texts=(),
-                ):
-                    raise ModelOutputError(
-                        "CREATE review summary contains an ungrounded date",
-                        validation_detail="relative_time",
-                    )
-                cited = set(parsed.get("evidence_event_ids", []))
-                for source in parsed.get("sources", []):
-                    if source.get("event_key"):
-                        cited.add(source["event_key"])
-                    cited.update(source.get("evidence_event_ids", []))
-                if not set(keys).issubset(cited):
-                    raise ModelOutputError(
-                        "CREATE review summary omitted source evidence",
-                        validation_detail="invalid_evidence",
-                    )
-                return parsed
-
-            outcome = review_create(
-                self.model,
-                backend,
-                admitted_source=projected,
-                proposed_summary=self._review_content(summary),
-                parse_summary=parse_create_summary,
-                diagnostic_context={
-                    "source": turn.source,
-                    "session_id": turn.session_id,
-                    "turn_index": turn.turn_index,
-                },
+            parser = self._make_create_review_parser(
+                turn=turn,
+                candidate=candidate,
+                keys=keys,
+                summary_type=summary_type,
+                summary_scopes=summary_scopes,
+                summary_scope_source=summary_scope_source,
+                grounded_dates=grounded_dates,
+                validation_scope_registry=validation_scope_registry,
+                projected=projected,
             )
+            diagnostic_context = {
+                "source": turn.source,
+                "session_id": turn.session_id,
+                "turn_index": turn.turn_index,
+            }
+
+            def run_review(
+                *,
+                projected_value: list[dict[str, Any]] = projected,
+                summary_value: Mapping[str, Any] = self._review_content(summary),
+                parser_value: Callable[[Mapping[str, Any]], Mapping[str, Any]] = parser,
+                diagnostic_value: Mapping[str, Any] = diagnostic_context,
+            ) -> dict[str, Any]:
+                return review_create(
+                    self.model,
+                    backend,
+                    admitted_source=projected_value,
+                    proposed_summary=summary_value,
+                    parse_summary=parser_value,
+                    diagnostic_context=diagnostic_value,
+                )
+
+            job_index = len(jobs)
+            jobs.append(run_review)
+            slots.append({
+                "kind": "review",
+                "request": request,
+                "summary": summary,
+                "job_index": job_index,
+            })
+
+        outcomes = self._run_review_jobs(jobs, backend=backend)
+        reviewed: list[dict[str, Any]] = []
+        for slot in slots:
+            kind = slot["kind"]
+            request = slot["request"]
+            if kind == "passthrough":
+                reviewed.append(request)
+                continue
+            if kind == "defer":
+                self._defer_request(
+                    request,
+                    candidates=candidates,
+                    reason=slot["reason"],
+                )
+                continue
+            outcome = outcomes[slot["job_index"]]
             decision = outcome.get("decision")
             if decision == "ACCEPT":
                 reviewed.append(request)
                 continue
             if decision == "REVISE" and isinstance(outcome.get("summary"), Mapping):
                 revised = dict(request)
-                revised["summary"] = self._reviewed_summary(summary, outcome["summary"])
+                revised["summary"] = self._reviewed_summary(slot["summary"], outcome["summary"])
                 reviewed.append(revised)
                 continue
             if decision == "NO_CHANGE":
@@ -679,10 +817,17 @@ class UpdateCoordinator:
             return {**value, 'summary': summary}
 
         try:
-            outcome = self.model._complete_json_stage(backend, prompt, system=UPDATE_GROUP_SYSTEM,
-                purpose='summarize', parser=parse,
+            outcome = _complete_json_stage_compat(
+                self.model,
+                backend,
+                prompt,
+                system=UPDATE_GROUP_SYSTEM,
+                purpose='summarize',
+                parser=parse,
                 diagnostic_context={'source': turn.source, 'session_id': turn.session_id,
-                                    'turn_index': turn.turn_index})
+                                    'turn_index': turn.turn_index},
+                metric_stage='target_reconciliation',
+            )
         except (ModelError, ModelOutputError):
             # No fragment wins after model failure, and unrelated targets remain
             # independently committable. The complete original turn is retained.

@@ -2,7 +2,10 @@
 from __future__ import annotations
 import json
 import os
+import threading
+import time
 from typing import Any, Callable, Mapping, Optional
+from .config import DEFAULT_MODEL_CONCURRENCY, MAX_MODEL_CONCURRENCY, MIN_MODEL_CONCURRENCY
 from .llm import MODEL_VALIDATION_REASONS, CallableBackend, ModelError, ModelUnavailable, ModelRouter
 from .models import utc_now
 from .prompts import COVERAGE_ALREADY_COMPLETED_CORRECTION, COVERAGE_CANDIDATE_CORRECTION, COVERAGE_CORRECTION, DUPLICATE_TARGET_CORRECTION, EVIDENCE_EVENT_MAPPING_CORRECTION, EVIDENCE_SPAN_CORRECTION, GATE_TYPE_CORRECTION, JSON_CORRECTION, MIXED_FUTURE_USE_CORRECTION, MIXED_PROJECT_SCOPES_CORRECTION, RELATIVE_TIME_CORRECTION, SCOPE_GROUNDING_CORRECTION, SUMMARY_SCOPE_CORRECTION, SUMMARY_TARGET_CORRECTION, SUMMARY_TYPE_CORRECTION, TARGET_RELEVANCE_CORRECTION, UPDATE_TARGET_TYPE_CORRECTION
@@ -10,9 +13,38 @@ from .validation import MODEL_VALIDATION_DETAILS, ModelOutputError
 from .process_common import _DIAGNOSTIC_FILENAME, _DIAGNOSTIC_MAX_BYTES, _failure_metadata, _model_output_statistics, _safe_evidence_check, _safe_evidence_diagnostics
 
 
+_METRIC_STAGE_NAMES = frozenset({
+    "gate",
+    "summarize",
+    "semantic_review",
+    "coordination",
+    "target_reconciliation",
+})
+
+
+def _metric_bucket() -> dict[str, Any]:
+    return {
+        "call_count": 0,
+        "retry_count": 0,
+        "failed_calls": 0,
+        "request_duration_ms": 0,
+        "input_chars": 0,
+        "input_bytes": 0,
+        "output_chars": 0,
+        "output_bytes": 0,
+        "max_in_flight": 0,
+        "_first_started": None,
+        "_last_finished": None,
+    }
+
+
 class ModelExecutor:
     def __init__(self, service: Any):
         self.service = service
+        self._metrics_lock = threading.Lock()
+        self._metrics = _metric_bucket()
+        self._metric_stages: dict[str, dict[str, Any]] = {}
+        self._active_calls = 0
 
     def _resolve_backend(self, model: Any = None, router: Any = None) -> Any:
         backend = router if router is not None else model
@@ -27,16 +59,141 @@ class ModelExecutor:
             raise ModelUnavailable("no model backend is configured")
         return backend
 
+    @staticmethod
+    def _safe_metric_stage(value: Any) -> str:
+        return value if isinstance(value, str) and value in _METRIC_STAGE_NAMES else "other"
 
-    def _complete(self, backend: Any, prompt: str, *, system: str, purpose: str) -> str:
+    def max_parallel_calls(self, backend: Any) -> int:
+        """Return the configured finite concurrency only for an explicitly safe backend."""
+
+        if getattr(backend, "parallel_safe", False) is not True:
+            return 1
+        try:
+            config = self.service.vault.config()
+            process = config.get("process") if isinstance(config, Mapping) else None
+            value = (
+                process.get("model_concurrency", DEFAULT_MODEL_CONCURRENCY)
+                if isinstance(process, Mapping)
+                else DEFAULT_MODEL_CONCURRENCY
+            )
+        except Exception:
+            value = DEFAULT_MODEL_CONCURRENCY
+        if isinstance(value, bool) or not isinstance(value, int):
+            return DEFAULT_MODEL_CONCURRENCY
+        return min(MAX_MODEL_CONCURRENCY, max(MIN_MODEL_CONCURRENCY, value))
+
+    def _metric_begin(self, *, stage: str, input_chars: int, input_bytes: int) -> float:
+        started = time.perf_counter()
+        with self._metrics_lock:
+            self._active_calls += 1
+            for bucket in (self._metrics, self._metric_stages.setdefault(stage, _metric_bucket())):
+                if bucket["_first_started"] is None:
+                    bucket["_first_started"] = started
+                bucket["call_count"] += 1
+                bucket["input_chars"] += input_chars
+                bucket["input_bytes"] += input_bytes
+                bucket["max_in_flight"] = max(bucket["max_in_flight"], self._active_calls)
+        return started
+
+    def _metric_finish(
+        self,
+        *,
+        stage: str,
+        started: float,
+        output: Any,
+        failed: bool,
+        retry: bool,
+    ) -> None:
+        finished = time.perf_counter()
+        elapsed_ms = max(0, round((finished - started) * 1000))
+        output_chars = len(output) if isinstance(output, str) else 0
+        output_bytes = len(output.encode("utf-8")) if isinstance(output, str) else 0
+        with self._metrics_lock:
+            for bucket in (self._metrics, self._metric_stages.setdefault(stage, _metric_bucket())):
+                bucket["_last_finished"] = finished
+                bucket["request_duration_ms"] += elapsed_ms
+                bucket["output_chars"] += output_chars
+                bucket["output_bytes"] += output_bytes
+                if failed:
+                    bucket["failed_calls"] += 1
+                if retry:
+                    bucket["retry_count"] += 1
+            self._active_calls = max(0, self._active_calls - 1)
+
+    @staticmethod
+    def _public_metric_bucket(bucket: Mapping[str, Any]) -> dict[str, int]:
+        first = bucket.get("_first_started")
+        last = bucket.get("_last_finished")
+        wall_clock_ms = (
+            max(0, round((last - first) * 1000))
+            if isinstance(first, (int, float)) and isinstance(last, (int, float)) and last >= first
+            else 0
+        )
+        return {
+            "call_count": int(bucket.get("call_count", 0)),
+            "retry_count": int(bucket.get("retry_count", 0)),
+            "failed_calls": int(bucket.get("failed_calls", 0)),
+            "request_duration_ms": int(bucket.get("request_duration_ms", 0)),
+            "wall_clock_ms": wall_clock_ms,
+            "input_chars": int(bucket.get("input_chars", 0)),
+            "input_bytes": int(bucket.get("input_bytes", 0)),
+            "output_chars": int(bucket.get("output_chars", 0)),
+            "output_bytes": int(bucket.get("output_bytes", 0)),
+            "max_in_flight": int(bucket.get("max_in_flight", 0)),
+        }
+
+    def metrics(self) -> dict[str, Any]:
+        """Return aggregate structural telemetry only; never prompts, responses or credentials."""
+
+        with self._metrics_lock:
+            total = self._public_metric_bucket(dict(self._metrics))
+            stages = {
+                key: self._public_metric_bucket(dict(value))
+                for key, value in sorted(self._metric_stages.items())
+            }
+        return {"total": total, "stages": stages}
+
+    def _complete(
+        self,
+        backend: Any,
+        prompt: str,
+        *,
+        system: str,
+        purpose: str,
+        metric_stage: str | None = None,
+        retry: bool = False,
+    ) -> str:
+        stage = self._safe_metric_stage(metric_stage or purpose)
+        input_chars = len(prompt) + len(system)
+        input_bytes = len(prompt.encode("utf-8")) + len(system.encode("utf-8"))
+        started = self._metric_begin(stage=stage, input_chars=input_chars, input_bytes=input_bytes)
+        value: Any = None
+        failed = False
         try:
             value = backend.complete(prompt, system=system, purpose=purpose, temperature=0.0)
         except ModelError as error:
+            failed = True
             error.with_stage(purpose)
             raise
         except Exception as error:
+            failed = True
             raise ModelError("model backend failed", stage=purpose) from error
+        finally:
+            # Parser failures are recorded by the next call as retries; this
+            # metric records only one bounded backend invocation and never its text.
+            self._metric_finish(
+                stage=stage,
+                started=started,
+                output=value,
+                failed=failed,
+                retry=retry,
+            )
         if not isinstance(value, str):
+            # The transport call completed, but the response shape is still a
+            # model failure. Account for it without inspecting/repr-ing the value.
+            with self._metrics_lock:
+                self._metrics["failed_calls"] += 1
+                self._metric_stages.setdefault(stage, _metric_bucket())["failed_calls"] += 1
             raise ModelError(
                 "model backend returned non-text output",
                 code="model_invalid_response",
@@ -44,7 +201,6 @@ class ModelExecutor:
                 validation_reason="response_shape",
             )
         return value
-
 
     @staticmethod
     def _set_stage_diagnostics(error: BaseException, *, purpose: str, attempt_count: int) -> None:
@@ -64,24 +220,19 @@ class ModelExecutor:
                 error.validation_reason = "schema_violation"
         error.attempt_count = attempt_count
 
-
     @staticmethod
     def _retryable_json_error(error: BaseException) -> bool:
         return isinstance(error, ModelOutputError) or (
             isinstance(error, ModelError) and error.code == "model_invalid_response"
         )
 
-
     @staticmethod
     def _allows_next_json_attempt(error: BaseException, attempt_count: int) -> bool:
         # Invalid extraction output is safe to retry with the bounded
-        # correction prompt.  Schema/shape violations are no less likely to
-        # be transient than an empty response; allowing the same final
-        # attempt prevents a single malformed JSON object from failing an
-        # otherwise recoverable automatic process.  The caller still stops
-        # after attempt three and preserves the final diagnostics.
+        # correction prompt. Schema/shape violations receive the same bounded
+        # retry allowance. The caller still stops after attempt three, except
+        # for the existing Gate invalid-span recovery below.
         return ModelExecutor._retryable_json_error(error) and attempt_count < 3
-
 
     @staticmethod
     def _safe_correction_hint(error: BaseException) -> Optional[str]:
@@ -93,7 +244,6 @@ class ModelExecutor:
             if isinstance(reason, str) and reason in MODEL_VALIDATION_REASONS:
                 return reason
         return None
-
 
     @staticmethod
     def _correction_instruction(error: BaseException) -> Optional[str]:
@@ -148,7 +298,6 @@ class ModelExecutor:
             return f"Previous output violated: {hint}."
         return None
 
-
     @staticmethod
     def _evidence_correction_context(error: BaseException) -> Optional[str]:
         """Build a bounded Gate repair hint from validator-owned context only."""
@@ -181,7 +330,6 @@ class ModelExecutor:
             "do not use the invalid value, a placeholder, event_key, call ID, digest, or a guessed mapping."
         )
 
-
     def _diagnostic_enabled(self) -> bool:
         try:
             config = self.service.vault.config()
@@ -191,7 +339,6 @@ class ModelExecutor:
             )
         except Exception:
             return False
-
 
     def _write_model_diagnostic(
         self,
@@ -311,7 +458,6 @@ class ModelExecutor:
         except Exception:
             return
 
-
     def _complete_json_stage(
         self,
         backend: Any,
@@ -321,6 +467,7 @@ class ModelExecutor:
         purpose: str,
         parser: Callable[[str], Any],
         diagnostic_context: Mapping[str, Any] | None = None,
+        metric_stage: str | None = None,
     ) -> Any:
         correction_prompt = prompt + "\n\n" + JSON_CORRECTION
         correction_instructions: list[str] = []
@@ -333,6 +480,8 @@ class ModelExecutor:
                     prompt if attempt_count == 1 else correction_prompt,
                     system=system,
                     purpose=purpose,
+                    metric_stage=metric_stage,
+                    retry=attempt_count > 1,
                 )
                 parsed = parser(raw)
             except (ModelError, ModelOutputError) as error:

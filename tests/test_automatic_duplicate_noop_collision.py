@@ -113,9 +113,12 @@ class AutomaticDuplicateNoopCollisionTests(unittest.TestCase):
             self.assertEqual(result["metadata_merged"], 0)
             self.assertEqual(core.read("mem-alpha").body, "alpha deployment changed state")
             self.assertEqual(len(core.vault.list_markdown("history")), 1)
+            # Candidate target reconciliation is deliberately completed before
+            # the bounded summary phase so independent summaries can be safely
+            # scheduled while same-target work remains ordered.
             self.assertEqual(
                 [purpose for purpose, _ in backend.calls],
-                ["gate", "gate", "summarize", "gate"],
+                ["gate", "gate", "gate", "summarize"],
             )
 
 
