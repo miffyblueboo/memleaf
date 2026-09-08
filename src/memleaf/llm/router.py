@@ -52,6 +52,16 @@ class ModelRouter:
         mode = kwargs.pop("mode", llm_config.get("mode", "auto"))
         return cls(mode=mode, config=llm_config, **kwargs)
 
+    @property
+    def parallel_safe(self) -> bool:
+        """Expose concurrency only when routing cannot fall through a host callback."""
+
+        if self.mode == "api":
+            return getattr(self.api, "parallel_safe", False) is True
+        if self.mode == "auto" and self.host is None:
+            return getattr(self.api, "parallel_safe", False) is True
+        return False
+
     @staticmethod
     def _coerce_host(value: Any) -> Optional[ModelBackend]:
         if value is None:
