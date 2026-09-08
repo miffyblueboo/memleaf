@@ -75,8 +75,7 @@ the object/deliverable, the concrete action or state, any source-stated
 business/workstream/background context needed to distinguish what the item is,
 and every number/code whose source-stated role is necessary to understand its
 meaning. The title/body must retain those facts sufficiently that the memory can
-be understood without reopening the source. Scope metadata alone does not
-substitute for a named subject that distinguishes the item. Do not ACCEPT a
+be understood without reopening the source. Scope metadata alone does not substitute for a named subject that distinguishes the item. Do not ACCEPT a
 generic umbrella phrase that replaces a concrete deliverable or turns named
 requirements into merely "related items", "coordination", or an equally vague
 summary. If a source explicitly distinguishes the entity/customer/project an
@@ -163,8 +162,7 @@ concrete action or state, any source-stated business/workstream/background
 context needed to distinguish what the item is, and every number/code whose
 source-stated role is necessary to understand its meaning. The title/body must
 retain those facts sufficiently that the memory can be understood without
-reopening the source. Scope metadata alone does not substitute for a named
-subject that distinguishes the item. Do not ACCEPT a generic umbrella phrase
+reopening the source. Scope metadata alone does not substitute for a named subject that distinguishes the item. Do not ACCEPT a generic umbrella phrase
 that replaces a concrete deliverable or turns named requirements into merely
 "related items", "coordination", or an equally vague summary. If a source
 explicitly distinguishes the entity/customer/project an item belongs to from a
@@ -205,8 +203,7 @@ Use REVISE only to remove unsupported expansion or restore omitted supported
 meaning while retaining all supported facts and future-use content. A topic or activity name by itself establishes only that the source mentions that topic or
 activity; it does not establish that the activity occurred or was completed. An
 organization name next to an activity title does not establish that the
-organization performed or owned it. Without an explicit subject-action
-relationship, keep the wording as a neutral source mention or remove the actor,
+organization performed or owned it. Without an explicit subject-action relationship, keep the wording as a neutral source mention or remove the actor,
 completion or ownership assertion. Use NO_CHANGE when no supported future-use
 fact or action remains. When a source is only a short unlabeled title or list,
 treat every number or code as an opaque literal; do not assign it a date,
