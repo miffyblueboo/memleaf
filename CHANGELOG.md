@@ -2,6 +2,14 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.35 — 2026-09-08
+
+- Add safe structural model-call telemetry across successful, deferred, and failed processing: call/retry/failure counts, model-request and stage wall-clock timing, input/output lengths, and maximum in-flight concurrency are retained without prompts, responses, memory bodies, credentials, provider secrets, URLs, or raw exception text.
+- Keep Gate admission serial, then allow bounded candidate-summary and final semantic-review concurrency only on explicitly parallel-safe model transports. `process.model_concurrency` defaults to 3 and is bounded to 1..8; host callbacks and caller-owned HTTP openers remain serial. Same-target UPDATE work stays ordered, target reconciliation happens before parallel work, and model calls never run while a Vault write lock is held.
+- Tighten semantic completeness so admitted memories preserve meaning-defining named subjects/entities, deliverables, concrete actions or states, required business/workstream context, and each number/code with its source-stated role. Final review now treats omission or over-generalization as a quality failure, preserves uncertainty, and must not invent owners, deadlines, statuses, completion meaning, or numeric roles.
+- Separate customer/project ownership from product/platform/system implementation context. Current-turn evidence remains authoritative for new relationships; existing memories are comparison context only and cannot create a new ownership or project-affiliation fact. Independent work remains source-neutrally split, while unresolved aggregate candidates defer instead of being silently discarded.
+- Validation for this release: deterministic regression, same-input synthetic serial-vs-parallel comparison, Linux Python 3.11/3.12/3.13, Windows Python 3.11/3.12/3.13, macOS Python 3.11/3.13, wheel/sdist, installed entry points, and native Codex Windows/macOS gates passed. One Windows Python 3.12 full-regression attempt had an isolated failure and its targeted rerun passed. Authorized real-model replay, production-conversation acceptance, and same-input real-provider latency comparison were not run, so this release does not claim a specific replacement for the previously observed 433-second session.
+
 ## 0.2.34 — 2026-09-08
 
 - Restrict automatic memory extraction to the current turn's visible user input and final assistant reply. Raw tool output, attachments, web/file/terminal payloads and legacy tool-evidence bodies are not new source evidence; existing or retrieved memory remains comparison context rather than source authority. Explicit memory-write prohibitions still fail closed.
