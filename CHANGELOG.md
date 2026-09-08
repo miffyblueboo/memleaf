@@ -2,6 +2,12 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.36 — 2026-09-08
+
+- Prevent the Hermes MemoryProvider from opening a visible console/Windows Terminal window whenever it starts its private `memleaf-mcp` stdio child on Windows. Provider-owned MCP launches now use `subprocess.CREATE_NO_WINDOW`; stdin/stdout pipes, stderr suppression, timeout handling, process reuse and shutdown semantics are unchanged.
+- Add deterministic regression coverage for the Windows creation flag, the non-Windows zero-flag path, and the exact `Popen` stdio contract.
+- Correct the README release banner that was still displaying 0.2.34 after the 0.2.35 publication.
+
 ## 0.2.35 — 2026-09-08
 
 - Add safe structural model-call telemetry across successful, deferred, and failed processing: call/retry/failure counts, model-request and stage wall-clock timing, input/output lengths, and maximum in-flight concurrency are retained without prompts, responses, memory bodies, credentials, provider secrets, URLs, or raw exception text.
