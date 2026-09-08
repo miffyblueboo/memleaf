@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import time
 import unittest
@@ -76,7 +77,7 @@ class ProcessJobsTests(unittest.TestCase):
 
     def test_same_running_session_requests_rerun_without_second_job(self):
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "memleaf.process_jobs._launch", return_value=_Child(1)
+            "memleaf.process_jobs._launch", return_value=_Child(os.getpid())
         ):
             vault = Path(temporary) / "vault"
             first = enqueue(vault, source="hermes", session_id="session")
