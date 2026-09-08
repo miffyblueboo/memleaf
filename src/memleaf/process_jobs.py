@@ -31,6 +31,26 @@ _MAX_RETAINED = 128
 _MAX_ATTEMPTS_RETAINED = 32
 _TERMINAL = {"succeeded", "failed", "deferred"}
 _ACTIVE = {"starting", "running"}
+_MODEL_METRIC_FIELDS = (
+    "call_count",
+    "retry_count",
+    "failed_calls",
+    "request_duration_ms",
+    "wall_clock_ms",
+    "input_chars",
+    "input_bytes",
+    "output_chars",
+    "output_bytes",
+    "max_in_flight",
+)
+_MODEL_METRIC_STAGES = frozenset({
+    "gate",
+    "summarize",
+    "semantic_review",
+    "coordination",
+    "target_reconciliation",
+    "other",
+})
 
 
 def _now() -> str:
@@ -131,6 +151,80 @@ def _prune_terminal(state: dict[str, Any]) -> bool:
     return True
 
 
+def _safe_metric_bucket(value: Any) -> dict[str, int]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, int] = {}
+    for key in _MODEL_METRIC_FIELDS:
+        item = value.get(key)
+        if type(item) is int and item >= 0:
+            result[key] = item
+    return result
+
+
+def _safe_model_metrics(value: Any) -> dict[str, Any]:
+    """Project structural-only telemetry; never retain prompt/response content."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, Any] = {}
+    total = _safe_metric_bucket(value.get("total"))
+    if total:
+        result["total"] = total
+    stages = value.get("stages")
+    if isinstance(stages, Mapping):
+        bounded: dict[str, dict[str, int]] = {}
+        for stage, bucket in stages.items():
+            if not isinstance(stage, str) or stage not in _MODEL_METRIC_STAGES:
+                continue
+            projected = _safe_metric_bucket(bucket)
+            if projected:
+                bounded[stage] = projected
+        if bounded:
+            result["stages"] = bounded
+    return result
+
+
+def _aggregate_metric_buckets(values: list[Mapping[str, Any]]) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for field in _MODEL_METRIC_FIELDS:
+        items = [value.get(field) for value in values if type(value.get(field)) is int and value.get(field) >= 0]
+        if not items:
+            continue
+        result[field] = max(items) if field == "max_in_flight" else sum(items)
+    return result
+
+
+def _aggregate_model_metrics(values: list[Mapping[str, Any]]) -> dict[str, Any]:
+    safe_values = [_safe_model_metrics(value) for value in values]
+    safe_values = [value for value in safe_values if value]
+    if not safe_values:
+        return {}
+    result: dict[str, Any] = {}
+    totals = [value["total"] for value in safe_values if isinstance(value.get("total"), Mapping)]
+    if totals:
+        result["total"] = _aggregate_metric_buckets(totals)
+    stage_names = sorted({
+        stage
+        for value in safe_values
+        for stage in value.get("stages", {})
+        if isinstance(value.get("stages"), Mapping) and stage in _MODEL_METRIC_STAGES
+    })
+    stages: dict[str, dict[str, int]] = {}
+    for stage in stage_names:
+        buckets = [
+            value["stages"][stage]
+            for value in safe_values
+            if isinstance(value.get("stages"), Mapping)
+            and isinstance(value["stages"].get(stage), Mapping)
+        ]
+        if buckets:
+            stages[stage] = _aggregate_metric_buckets(buckets)
+    if stages:
+        result["stages"] = stages
+    return result
+
+
 def _safe_result(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
@@ -146,6 +240,9 @@ def _safe_result(value: Any) -> dict[str, Any]:
     ids = value.get("memory_ids")
     if isinstance(ids, list):
         result["memory_ids"] = [item[:200] for item in ids if isinstance(item, str)][:100]
+    model_metrics = _safe_model_metrics(value.get("model_metrics"))
+    if model_metrics:
+        result["model_metrics"] = model_metrics
     for key in ("coverage_status", "external_evidence_status"):
         if isinstance(value.get(key), str):
             result[key] = value[key][:80]
@@ -221,6 +318,14 @@ def _aggregate_attempt_results(attempts: list[Any]) -> dict[str, Any]:
                 ids.append(value)
     if ids:
         aggregate["memory_ids"] = ids
+    metrics = _aggregate_model_metrics([
+        attempt.get("result", {}).get("model_metrics")
+        for attempt in attempts
+        if isinstance(attempt, Mapping) and isinstance(attempt.get("result"), Mapping)
+        and isinstance(attempt["result"].get("model_metrics"), Mapping)
+    ])
+    if metrics:
+        aggregate["model_metrics"] = metrics
     # The terminal result's coverage status is authoritative for the final
     # run; counters above intentionally retain the work done by earlier runs.
     for key in ("coverage_status", "external_evidence_status"):
