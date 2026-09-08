@@ -142,6 +142,7 @@ class ModelUnavailable(ModelError):
 class ModelBackend(Protocol):
     provider: str
     model: str
+    parallel_safe: bool
 
     def complete(
         self,
@@ -158,6 +159,9 @@ class CallableBackend:
     """Adapt an explicitly injected host/test callback to ``ModelBackend``."""
 
     provider = "host"
+    # Host callbacks can close over arbitrary mutable state. Never assume a
+    # caller-owned callback is thread-safe merely because candidate work is.
+    parallel_safe = False
 
     def __init__(self, callback: Callable[..., str], *, model: str = "host"):
         if not callable(callback):
@@ -220,6 +224,7 @@ class HTTPModelBackend:
     """Common standard-library HTTP transport for compatible adapters."""
 
     provider = "api"
+    parallel_safe = False
 
     def __init__(
         self,
@@ -241,6 +246,9 @@ class HTTPModelBackend:
         self.model = model
         self.timeout = normalize_request_timeout(timeout)
         self._opener = opener or urllib.request.urlopen
+        # The built-in stateless urllib transport can be used concurrently.
+        # An injected opener is caller-owned and therefore defaults to serial.
+        self.parallel_safe = opener is None
 
     @staticmethod
     def _is_timeout_reason(value: Any) -> bool:
