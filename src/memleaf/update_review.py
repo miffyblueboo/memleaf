@@ -63,19 +63,42 @@ string, when supplied beside an admitted span, is context from that same
 visible user or assistant message only and applies to admitted spans with the
 same event_key and role; use it to resolve negation, reference, ownership,
 scope, or status of each bound span, but never add an unbound fact from it. The
-admitted source is
-the only authority for NEW facts, states, owners, dates, obligations and
-supersessions. The proposed summary is untrusted model output, not source
-evidence. Compare the target and proposal semantically: ACCEPT only when every
-still-valid independent target fact, obligation, deadline and state remains
-represented and the proposal adds only admitted changes. Wording changes do
-not require a rewrite. Use REVISE when the proposal dropped or misstated a
-still-valid target item; return one complete summary that preserves semantic
-content without copying the whole old text or concatenating bodies. A REVISE
-summary must keep the proposal's target ID, type, scopes, scope source and
-admitted source references; it may not switch targets or broaden
-authorization. Use
-NO_CHANGE when the admitted source makes no confirmed change to this target.
+admitted source is the only authority for NEW facts, states, owners, dates,
+obligations and supersessions. The proposed summary is untrusted model output,
+not source evidence.
+
+Semantic completeness is as important as non-invention. Before ACCEPT, identify
+the meaning-defining information for this one candidate topic from the admitted
+source and the still-valid active target: the explicit subject or named entity,
+the object/deliverable, the concrete action or state, any source-stated
+business/workstream/background context needed to distinguish what the item is,
+and every number/code whose source-stated role is necessary to understand its
+meaning. The title/body must retain those facts sufficiently that the memory can
+be understood without reopening the source. Scope metadata alone does not
+substitute for a named subject that distinguishes the item. Do not ACCEPT a
+generic umbrella phrase that replaces a concrete deliverable or turns named
+requirements into merely "related items", "coordination", or an equally vague
+summary. If a source explicitly distinguishes the entity/customer/project an
+item belongs to from a broader product/platform/system where it is implemented,
+preserve that distinction; do not replace the owning subject with the
+implementation context. Existing memories may preserve still-valid target
+content or resolve a supplied alias for comparison, but they never establish a
+new subject-to-project relationship. Preserve uncertainty when attribution or
+the role of a value is not established. Never add an owner, deadline, status,
+field role, or completion meaning that the admitted source does not support.
+
+Compare the target and proposal semantically: ACCEPT only when every still-valid
+independent target fact, obligation, deadline and state remains represented,
+every meaning-defining admitted change is retained, and the proposal adds only
+admitted changes. Wording changes do not require a rewrite. Use REVISE when the
+proposal dropped or misstated a still-valid target item or omitted a
+meaning-defining admitted fact; return one complete summary that preserves
+semantic content without copying the whole old text or concatenating bodies. A
+REVISE summary must keep the proposal's target ID, type, scopes, scope source
+and admitted source references; it may not switch targets or broaden
+authorization. Use NO_CHANGE when the admitted source makes no confirmed change
+to this target.
+
 This review is for one candidate topic. Separate deliverables or state
 transitions that can be completed, tracked, or updated independently must not be
 merged into this target merely because they share a source message, project,
@@ -83,10 +106,10 @@ owner, deadline, or coordination step. Keep generic coordination with the
 deliverable it governs. If the proposed summary aggregates independent topics,
 use REVISE only when the proposal remains one topic after removing unsupported
 expansion; if splitting the aggregate would omit an independent sibling, use
-DEFERRED rather than selecting one sibling or approving the aggregate. When the admitted
-source contains sibling claims, keep each claim's polarity, completion state,
-uncertainty, ownership, and scope local to its exact source span; a negative or
-completed clause for one sibling does not suppress or alter another.
+DEFERRED rather than selecting one sibling or approving the aggregate. When the
+admitted source contains sibling claims, keep each claim's polarity, completion
+state, uncertainty, ownership, and scope local to its exact source span; a
+negative or completed clause for one sibling does not suppress or alter another.
 Treat a title or body that lists multiple independently closable deliverables
 under one shared coordination action as an aggregate proposal, even if every
 listed detail is source-supported. Two separately named changes followed by one
@@ -94,9 +117,10 @@ sentence to coordinate them remain separate topics; this is an illustrative
 example, not a fixed-count rule. A single review cannot create the missing
 sibling candidates, so use DEFERRED rather than selecting one sibling, replacing
 them with only the coordination action, or retaining the aggregate.
-Use DEFERRED when preservation, supersession, or contradiction cannot be
-resolved. Never use business keywords, string matching, or unrelated context
-to make the decision. Do not add fields to the response contract.
+Use DEFERRED when preservation, supersession, attribution, numeric meaning, or
+contradiction cannot be resolved without guessing. Never use business keywords,
+string matching, or unrelated context to make the decision. Do not add fields
+to the response contract.
 """
 
 
@@ -118,57 +142,87 @@ shadow_native_ids.
 The admitted source contains only the current turn's visible user input and
 Agent's final assistant reply. Historical conversation turns, intermediate
 assistant messages and existing memory context are comparison context, never new
-source. An assistant report may support a stated conclusion, confirmed fact or explicit
-pending action; questions, suggestions, plans, generic acknowledgements, pure
-restatements and unconfirmed claims do not independently establish a new fact.
-Tool calls, raw tool results, attachments and other external payloads are outside
-the source boundary, even when a visible message refers to them. A bounded
-source_context string, when supplied beside an admitted span, is context from
-that same visible user or assistant message only and applies to admitted spans
-with the same event_key and role; use it to resolve negation, reference,
+source. An assistant report may support a stated conclusion, confirmed fact or
+explicit pending action; questions, suggestions, plans, generic acknowledgements,
+pure restatements and unconfirmed claims do not independently establish a new
+fact. Tool calls, raw tool results, attachments and other external payloads are
+outside the source boundary, even when a visible message refers to them. A
+bounded source_context string, when supplied beside an admitted span, is context
+from that same visible user or assistant message only and applies to admitted
+spans with the same event_key and role; use it to resolve negation, reference,
 ownership, scope, or status of each bound span, but never add an unbound fact
-from it. The admitted source is the only authority for every new fact, relationship, identifier and its
-role, state, owner, obligation or date. The proposed summary is untrusted model
-output, not source evidence. ACCEPT only when every
-assertion and relationship in the proposal is supported by the admitted source
-and no identifier, date, status or ownership meaning was invented. This review
-is for one candidate topic. Separate deliverables or state transitions that can
-be completed, tracked, or updated independently must not be merged merely
-because they share a source message, project, owner, deadline, or coordination
-step. Keep generic coordination with the deliverable it governs. If the
-proposal aggregates independent topics, use REVISE only when it remains one
-topic after removing unsupported expansion; if splitting it would omit an
-independent sibling, use DEFERRED rather than selecting one sibling or
-approving the aggregate. When the admitted source contains sibling claims,
-keep each claim's polarity, completion state, uncertainty, ownership, and scope
-local to its exact source span; a negative or completed clause for one sibling
-does not suppress or alter another. Treat a title or body that lists multiple
+from it. The admitted source is the only authority for every new fact,
+relationship, identifier and its role, state, owner, obligation or date. The
+proposed summary is untrusted model output, not source evidence.
+
+Semantic completeness is as important as non-invention. Before ACCEPT, identify
+the meaning-defining information for this one candidate topic in the admitted
+source: the explicit subject or named entity, the object/deliverable, the
+concrete action or state, any source-stated business/workstream/background
+context needed to distinguish what the item is, and every number/code whose
+source-stated role is necessary to understand its meaning. The title/body must
+retain those facts sufficiently that the memory can be understood without
+reopening the source. Scope metadata alone does not substitute for a named
+subject that distinguishes the item. Do not ACCEPT a generic umbrella phrase
+that replaces a concrete deliverable or turns named requirements into merely
+"related items", "coordination", or an equally vague summary. If a source
+explicitly distinguishes the entity/customer/project an item belongs to from a
+broader product/platform/system where it is implemented, preserve that
+distinction; do not replace the owning subject with the implementation context.
+Existing memories are comparison context and may not supply a missing entity,
+relationship, field role, or business fact. Preserve uncertainty when
+attribution or the role of a value is not established. Never add an owner,
+deadline, status, field role, or completion meaning that the admitted source
+does not support.
+
+ACCEPT only when every assertion and relationship in the proposal is supported
+by the admitted source, no identifier/date/status/ownership meaning was
+invented, and no meaning-defining source fact for this candidate topic was
+omitted or generalized away. Use REVISE when the proposal can be made complete
+from the admitted source while preserving one topic. Use DEFERRED when restoring
+semantic completeness would require guessing.
+
+This review is for one candidate topic. Separate deliverables or state
+transitions that can be completed, tracked, or updated independently must not be
+merged merely because they share a source message, project, owner, deadline, or
+coordination step. Keep generic coordination with the deliverable it governs.
+If the proposal aggregates independent topics, use REVISE only when it remains
+one topic after removing unsupported expansion; if splitting it would omit an
+independent sibling, use DEFERRED rather than selecting one sibling or approving
+the aggregate. When the admitted source contains sibling claims, keep each
+claim's polarity, completion state, uncertainty, ownership, and scope local to
+its exact source span; a negative or completed clause for one sibling does not
+suppress or alter another. Treat a title or body that lists multiple
 independently closable deliverables under one shared coordination action as an
 aggregate proposal, even if every listed detail is source-supported. Two
 separately named changes followed by one sentence to coordinate them remain
 separate topics; this is an illustrative example, not a fixed-count rule. A
 single review cannot create the missing sibling candidates, so use DEFERRED
 rather than selecting one sibling, replacing them with only the coordination
-action, or retaining the aggregate. Use REVISE
-only to remove unsupported expansion while retaining all supported facts and
-future-use content. A topic or activity name by itself establishes only that
-the source mentions that topic or activity; it does not establish that the
-activity occurred or was completed. An organization name next to an activity title
-does not establish that the organization performed or owned it. Without
-an explicit subject-action relationship, keep the wording as a neutral source
-mention or remove the actor, completion or ownership assertion. Use
-NO_CHANGE when no supported future-use fact or action remains. When a source is
-only a short unlabeled title or list, treat every number or code as an opaque
-literal; do not assign it a date, identifier, amount, sequence, status or
-other field role. Never inherit a field role or relationship from
+action, or retaining the aggregate.
+
+Use REVISE only to remove unsupported expansion or restore omitted supported
+meaning while retaining all supported facts and future-use content. A topic or
+activity name by itself establishes only that the source mentions that topic or
+activity; it does not establish that the activity occurred or was completed. An
+organization name next to an activity title does not establish that the
+organization performed or owned it. Without an explicit subject-action
+relationship, keep the wording as a neutral source mention or remove the actor,
+completion or ownership assertion. Use NO_CHANGE when no supported future-use
+fact or action remains. When a source is only a short unlabeled title or list,
+treat every number or code as an opaque literal; do not assign it a date,
+identifier, amount, sequence, status or other field role. When the source does
+state what a number or code means, preserve that role together with the value
+when it is needed to interpret the memory; do not retain a naked literal while
+dropping its meaning. Never inherit a field role or relationship from
 proposed_summary, because its labels cannot explain an otherwise unlabelled
-source value. For REVISE, inspect every assertion and field across the entire summary,
-remove every unsupported expansion rather than only the first one found, and
-return DEFERRED when a complete source-supported revision cannot be formed with
-confidence. Use DEFERRED when the source cannot establish the
-proposed meaning or the correction would require guessing. Never use business
-keywords, domain rules, string matching, or unrelated context. Do not add
-fields to the response contract.
+source value. For REVISE, inspect every assertion and field across the entire
+summary, remove every unsupported expansion and restore every source-supported
+meaning-defining fact rather than only the first problem found. Return DEFERRED
+when a complete source-supported revision cannot be formed with confidence. Use
+DEFERRED when the source cannot establish the proposed meaning or the correction
+would require guessing. Never use business keywords, domain rules, string
+matching, or unrelated context. Do not add fields to the response contract.
 """
 
 
@@ -239,7 +293,7 @@ def _source_projection(source: Iterable[Mapping[str, Any]]) -> list[dict[str, An
     """Copy only admitted visible conversation source with provenance fields.
 
     ``summary_evidence`` is expected to provide this bounded shape already, but
-    the review boundary is enforced again here.  In particular, a stale caller
+    the review boundary is enforced again here. In particular, a stale caller
     or a legacy request must not reintroduce a tool result, attachment, or other
     external payload into the semantic reviewer simply by placing it in the
     iterable.
@@ -260,10 +314,6 @@ def _source_projection(source: Iterable[Mapping[str, Any]]) -> list[dict[str, An
         }.get(role)
         if expected_origin is None or origin != expected_origin:
             continue
-        # ``summary_evidence`` already returns this bounded shape.  Copy it
-        # explicitly so arbitrary request metadata cannot become source.  The
-        # optional source_context is context only and is accepted as a string;
-        # callers cannot smuggle arbitrary metadata or nested payloads through it.
         projected = {
             key: item[key]
             for key in (
@@ -429,6 +479,7 @@ def _run_review(
             purpose="summarize",
             parser=parse,
             diagnostic_context=diagnostic_context,
+            metric_stage="semantic_review",
         )
     except (ModelError, ModelOutputError, TypeError, ValueError):
         return {"decision": "DEFERRED", "reason": "semantic_review_failed"}
