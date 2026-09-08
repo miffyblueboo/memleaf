@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 
+from memleaf.config import DEFAULT_MODEL_CONCURRENCY, load_config, save_config
 from memleaf.model_execution import ModelExecutor
 from memleaf.parallel_model import run_ordered_keyed_jobs
 from memleaf.process_jobs import _safe_result
+from memleaf.prompts import GATE_SYSTEM, SUMMARIZE_SYSTEM
 from memleaf.update_coordinator import UpdateCoordinator
 from memleaf.update_review import CREATE_SEMANTIC_REVIEW_SYSTEM, UPDATE_SEMANTIC_REVIEW_SYSTEM
 from memleaf.validation import ModelOutputError
@@ -65,6 +69,28 @@ def _concurrency_jobs(count: int, active: dict[str, int], lock: threading.Lock):
 
 
 class ProcessingObservabilityConcurrencyTests(unittest.TestCase):
+    def test_model_concurrency_defaults_and_bounds_are_strict(self):
+        with tempfile.TemporaryDirectory(prefix="memleaf-concurrency-config-") as root:
+            path = Path(root) / "config.yaml"
+            loaded = load_config(path, vault=Path(root) / "vault")
+            self.assertEqual(
+                loaded["process"]["model_concurrency"],
+                DEFAULT_MODEL_CONCURRENCY,
+            )
+
+            for value in (1, 3, 8):
+                config = load_config(path, vault=Path(root) / "vault")
+                config["process"]["model_concurrency"] = value
+                save_config(path, config)
+                self.assertEqual(load_config(path)["process"]["model_concurrency"], value)
+
+            for value in (True, False, 0, 9, 2.5, "3"):
+                with self.subTest(value=value):
+                    config = load_config(path)
+                    config["process"]["model_concurrency"] = value
+                    with self.assertRaises(ValueError):
+                        save_config(path, config)
+
     def test_model_metrics_count_retry_lengths_and_never_include_text(self):
         executor = ModelExecutor(_ServiceStub())
         backend = _ParallelBackend(["bad", '{"ok":true}'])
@@ -190,6 +216,21 @@ class ProcessingObservabilityConcurrencyTests(unittest.TestCase):
         serialized = json.dumps(result, ensure_ascii=False)
         self.assertNotIn("DO-NOT-PERSIST", serialized)
         self.assertNotIn("evil-stage", serialized)
+
+    def test_gate_and_summary_contracts_preserve_meaning_and_attribution(self):
+        gate = " ".join(GATE_SYSTEM.split())
+        summary = " ".join(SUMMARIZE_SYSTEM.split())
+        for text in (gate, summary):
+            self.assertIn("business/workstream/background context", text)
+            self.assertIn("number", text)
+            self.assertIn("implementation", text)
+        self.assertIn("Candidate semantic completeness is mandatory", gate)
+        self.assertIn("ownership/affiliation", gate)
+        self.assertIn("implementation context alone", gate)
+        self.assertIn("Semantic completeness is required", summary)
+        self.assertIn("Scope metadata does not substitute", summary)
+        self.assertIn("owning subject", summary)
+        self.assertIn("Existing memories cannot supply a new relationship", summary)
 
     def test_semantic_review_contract_requires_completeness_not_only_non_invention(self):
         for system in (CREATE_SEMANTIC_REVIEW_SYSTEM, UPDATE_SEMANTIC_REVIEW_SYSTEM):
