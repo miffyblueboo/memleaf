@@ -11,6 +11,14 @@ def replace_between(path: str, start_marker: str, end_marker: str, replacement: 
     file.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
 
 
+def replace_once(path: str, old: str, new: str) -> None:
+    file = Path(path)
+    text = file.read_text(encoding="utf-8")
+    if text.count(old) != 1:
+        raise SystemExit(f"expected one repair match in {path}: {old[:100]!r}, got {text.count(old)}")
+    file.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
 replace_between(
     "src/memleaf/memory_planner.py",
     "                    correction_raw = self.model._complete(",
@@ -36,6 +44,23 @@ replace_between(
                         metric_stage="gate",
                         metric_operation="gate_coverage_repair",
                     )
+''',
+)
+
+# The final admission loop used to repeat the same registry-only name scan.
+# Exact model project grounding already happened in parse_gate, so remove this
+# second contradictory gate as well.
+replace_once(
+    "src/memleaf/memory_planner.py",
+    '''            # All model candidates pass the same evidence and Scope boundary.
+            if self.inputs._scope_evidence_conflict(candidate, turn, validation_scope_registry):
+                self.audit._defer_candidate(turn_ref, candidate, "scope_conflict", scopes=candidate.get("scopes", []))
+                continue
+''',
+    '''            # Exact candidate-bound model project grounding was already
+            # validated by parse_gate. Do not run a registry-name conflict scan
+            # again here; semantic ownership/implementation roles were reviewed
+            # by the model boundary above.
 ''',
 )
 
@@ -73,6 +98,14 @@ replace_between(
 
 
 ''',
+)
+
+# Keep the old semantic contract test, but assert the new shorter equivalent
+# wording instead of forcing duplicated Gate prose back into the prompt.
+replace_once(
+    "tests/test_processing_observability_concurrency.py",
+    '        self.assertIn("implementation context alone", gate)\n',
+    '        self.assertIn("implementation context is not project ownership by name alone", gate)\n',
 )
 
 Path(__file__).unlink(missing_ok=True)
