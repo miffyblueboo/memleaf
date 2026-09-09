@@ -1,0 +1,65 @@
+name: execute v0.2.38 source patch
+
+on:
+  push:
+    branches:
+      - work/v0.2.38-scope-gate-latency
+
+permissions:
+  contents: write
+
+jobs:
+  execute:
+    if: "${{ github.actor != 'github-actions[bot]' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/v0.2.38-scope-gate-latency
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Execute staged patch with low thinking default
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          source = Path('.github/workflows/_v0238_apply.yml').read_text(encoding='utf-8')
+          marker = "          python - <<'PY'\n"
+          start = source.index(marker) + len(marker)
+          end = source.index("\n          PY\n", start)
+          script = textwrap.dedent(source[start:end])
+          replacements = {
+              'DEFAULT_THINKING = {purpose: "default" for purpose in THINKING_PURPOSES}': 'DEFAULT_THINKING = {purpose: "low" for purpose in THINKING_PURPOSES}',
+              '# 3. Explicit thinking configuration. Default preserves provider\n# behavior; DeepSeek can be tested with gate=disabled/low/high/max.': '# 3. Explicit thinking configuration. Default uses the lowest\n# reasoning effort; users may select disabled/default/high/max.',
+              'the default remains `default` so provider behavior is preserved until real-model quality/latency A/B establishes a safe lower setting.': 'the default is `low` for Gate/summarize/compact to reduce model-side reasoning latency while retaining reasoning; users may explicitly select `disabled`, `default`, `high`, or `max`.',
+              'def test_thinking_config_defaults_preserve_provider_and_are_strict(self):': 'def test_thinking_config_defaults_to_low_and_is_strict(self):',
+          }
+          for old, new in replacements.items():
+              if old not in script:
+                  raise SystemExit(f'missing staged patch fragment: {old[:100]!r}')
+              script = script.replace(old, new, 1)
+          exec(compile(script, '<v0.2.38-staged-patch>', 'exec'), {'__name__': '__main__'})
+          PY
+      - name: Compile and run focused regressions
+        shell: bash
+        run: |
+          python -m compileall -q src tests
+          python -m unittest \
+            tests.test_gate_scope_latency_v038 \
+            tests.test_new_scope_source_grounding \
+            tests.test_v023_scope_correction \
+            tests.test_processing_observability_concurrency \
+            tests.test_model_discovery
+      - name: Commit source only
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A ':!.github/workflows/*'
+          git diff --cached --check
+          git commit -m "fix: unify scope grounding and reduce gate latency [skip ci]"
+          git push origin HEAD:work/v0.2.38-scope-gate-latency
