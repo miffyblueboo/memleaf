@@ -20,40 +20,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Execute staged patch with low thinking default
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          source = Path('.github/workflows/_v0238_apply.yml').read_text(encoding='utf-8')
-          marker = "          python - <<'PY'\n"
-          start = source.index(marker) + len(marker)
-          end = source.index("\n          PY\n", start)
-          raw = source[start:end]
-          lines = raw.splitlines()
-          script = "\n".join(
-              line[10:] if line.startswith("          ") else line
-              for line in lines
-          )
-
-          required = {
-              'DEFAULT_THINKING = {purpose: "default" for purpose in THINKING_PURPOSES}': 'DEFAULT_THINKING = {purpose: "low" for purpose in THINKING_PURPOSES}',
-          }
-          for old, new in required.items():
-              if old not in script:
-                  raise SystemExit(f'missing staged patch fragment: {old[:100]!r}')
-              script = script.replace(old, new, 1)
-
-          optional = {
-              'the default remains `default` so provider behavior is preserved until real-model quality/latency A/B establishes a safe lower setting.': 'the default is `low` for Gate/summarize/compact to reduce model-side reasoning latency while retaining reasoning; users may explicitly select `disabled`, `default`, `high`, or `max`.',
-              'def test_thinking_config_defaults_preserve_provider_and_are_strict(self):': 'def test_thinking_config_defaults_to_low_and_is_strict(self):',
-          }
-          for old, new in optional.items():
-              script = script.replace(old, new, 1)
-
-          exec(compile(script, '<v0.2.38-staged-patch>', 'exec'), {'__name__': '__main__'})
-          PY
+      - name: Apply v0.2.38 source patch
+        run: python _v0238_patch.py
       - name: Compile and run focused regressions
         shell: bash
         run: |
