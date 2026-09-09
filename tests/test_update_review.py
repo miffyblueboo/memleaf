@@ -121,82 +121,60 @@ def proposal():
 
 class UpdateReviewTests(unittest.TestCase):
     def test_prompt_boundary_allows_visible_reports_and_excludes_external_payloads(self):
-        gate_text = " ".join(GATE_SYSTEM.split())
-        summarize_text = " ".join(SUMMARIZE_SYSTEM.split())
+        gate_text = " ".join(GATE_SYSTEM.split()).casefold()
+        summarize_text = " ".join(SUMMARIZE_SYSTEM.split()).casefold()
         for text in (gate_text, summarize_text):
-            text = text.casefold()
             self.assertIn("current turn's visible user input", text)
             self.assertIn("final assistant reply", text)
             self.assertIn("assistant report", text)
             self.assertIn("raw tool results", text)
             self.assertIn("non-conversation payloads", text)
-        gate = gate_prompt([{
-            "event_key": "assistant-event",
-            "role": "assistant",
-            "content": "The visible report confirms the configuration.",
-        }])
-        self.assertIn("visible assistant report may support a conclusion", gate)
-        self.assertIn("raw tool results, other non-conversation payloads are excluded", gate)
+        gate = gate_prompt([{"event_key": "assistant-event", "role": "assistant", "content": "confirmed"}])
+        self.assertIn("Complete turn events", gate)
+        self.assertIn("Relevant existing memleaf/native memories", gate)
+        self.assertNotIn("Candidate decomposition check", gate)
         summary = summarize_prompt(
-            {"candidate_id": "c", "memory": "The configuration is confirmed."},
-            [{
-                "event_key": "assistant-event",
-                "role": "assistant",
-                "content": "The visible report confirms the configuration.",
-                "evidence_origin": "assistant_report",
-                "unit_id": "assistant-unit",
-            }],
+            {"candidate_id": "c", "memory": "confirmed", "type": "fact", "scopes": ["global"], "scope_source": "model"},
+            [{"event_key": "assistant-event", "role": "assistant", "content": "confirmed", "evidence_origin": "assistant_report", "unit_id": "assistant-unit"}],
         )
-        self.assertIn("An admitted assistant report may support a stated conclusion", summary)
-        self.assertIn("raw tool payloads", summary)
-
+        self.assertIn("Evidence (the only conversation content visible to this call):", summary)
+        self.assertNotIn("Final evidence re-check", summary)
     def test_gate_contract_requires_atomic_topics_and_candidate_scoped_bindings(self):
         gate_text = " ".join(GATE_SYSTEM.split()).casefold()
         for phrase in (
-            "first enumerate independently retrievable future-use topics",
+            "first enumerate the independent future uses",
             "separate items that can be completed, tracked, or updated independently",
             "keep shared coordination details with the deliverable they govern",
+            "candidate semantic completeness is mandatory",
             "a coverage row for a unit cited by several candidates must list every such candidate_id",
             "use whole_unit only when the complete unit supports that one candidate topic",
-            "do not use whole_unit to avoid splitting",
             "a negative, completed, hypothetical, or third-party clause limits only the candidate",
             "do not replace independently trackable requested deliverables with only their umbrella coordination request",
-            "atomicity test",
         ):
             self.assertIn(phrase.casefold(), gate_text)
-
-        prompt = gate_prompt([{
-            "event_key": "assistant-event",
-            "role": "assistant",
-            "content": "Deliverable A and deliverable B can be tracked independently.",
-        }])
-        self.assertIn("Candidate decomposition check", prompt)
-        self.assertIn("list every cited candidate ID in that unit's one coverage row", prompt)
-        self.assertIn("Use whole_unit only for a homogeneous unit", prompt)
-
+        prompt = gate_prompt([{"event_key": "assistant-event", "role": "assistant", "content": "A and B"}])
+        self.assertIn("Complete turn events", prompt)
+        self.assertNotIn("Atomicity test", prompt)
     def test_automatic_summary_and_semantic_review_keep_one_topic(self):
         summary_text = " ".join(SUMMARIZE_SYSTEM.split()).casefold()
         self.assertIn("candidate atomicity is decided at the gate", summary_text)
-        self.assertIn("return exactly {\"decision\":\"no_change\"}", summary_text)
+        self.assertIn('return exactly {"decision":"no_change"}', summary_text)
         self.assertIn("do not add sibling deliverables", summary_text)
         for system in (UPDATE_SEMANTIC_REVIEW_SYSTEM, CREATE_SEMANTIC_REVIEW_SYSTEM):
             review_text = " ".join(system.split()).casefold()
             self.assertIn("this review is for one candidate topic", review_text)
-            self.assertIn("completed, tracked, or updated independently", review_text)
-            self.assertIn("approving the aggregate", review_text)
             self.assertIn("a negative or completed clause for one sibling does not suppress or alter another", review_text)
-
+            self.assertIn("do not perform candidate discovery", review_text)
     def test_pure_restatement_is_no_change_but_new_report_remains_eligible(self):
         gate_text = " ".join(GATE_SYSTEM.split()).casefold()
         summarize_text = " ".join(SUMMARIZE_SYSTEM.split()).casefold()
         self.assertIn("a query and a mere restatement of existing memory add no new memory", gate_text)
-        self.assertIn("a restatement of an existing memory does not create a new memory", summarize_text)
-        self.assertIn("assistant reports may contribute a stated conclusion", summarize_text)
+        self.assertIn("a restatement of an existing memory do not create a new memory", summarize_text)
+        self.assertIn("assistant report", summarize_text)
         for system in (UPDATE_SEMANTIC_REVIEW_SYSTEM, CREATE_SEMANTIC_REVIEW_SYSTEM):
             review_text = " ".join(system.split()).casefold()
             self.assertIn("pure restatements", review_text)
             self.assertIn("no_change", review_text)
-
     def test_prompt_separates_safe_target_source_and_proposal(self):
         prompt = build_update_review_prompt(target(), source(), proposal())
         self.assertTrue(prompt.startswith("UPDATE_SEMANTIC_REVIEW\n"))
@@ -273,16 +251,12 @@ class UpdateReviewTests(unittest.TestCase):
 
     def test_create_review_contract_preserves_schema_and_explicit_roles(self):
         review_text = " ".join(CREATE_SEMANTIC_REVIEW_SYSTEM.split())
-        self.assertIn("title, body, tags,", review_text)
-        self.assertIn("topic or activity name by itself", review_text)
-        self.assertIn("organization name next to an activity title", review_text)
-        self.assertIn("explicit subject-action relationship", review_text)
-        self.assertIn("short unlabeled title or list", review_text)
-        self.assertIn("every number or code as an opaque", review_text)
-        self.assertIn("Never inherit a field role or relationship from", review_text)
-        self.assertIn("across the entire summary", review_text)
+        self.assertIn("Semantic completeness is as important as non-invention", review_text)
+        self.assertIn("meaning-defining", review_text)
+        self.assertIn("important numbers/codes with their stated meaning", review_text)
+        self.assertIn("project Scope is itself a claimed project affiliation", review_text)
         self.assertIn("complete source-supported revision", review_text)
-
+        self.assertIn("must not carry memory_id or update_memory_id", review_text)
     def test_create_review_accept_uses_the_same_executor_contract(self):
         proposed = dict(proposal())
         proposed.pop("update_memory_id")

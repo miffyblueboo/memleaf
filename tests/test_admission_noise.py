@@ -88,25 +88,27 @@ class AdmissionPromptTests(unittest.TestCase):
         text = " ".join(GATE_SYSTEM.casefold().split())
         for phrase in (
             "source-neutral",
-            "current user assertions",
-            "matched current-turn external observations",
-            "do not independently authorize a write",
             "concrete future reuse",
-            "stable fact, configuration, policy, identity, preference, or constraint",
-            "does not need to be a todo, a state transition, a user-assigned action, or an explicit remember request",
+            "support a later answer/action",
+            "preserve a commitment",
+            "avoid repeated investigation",
+            "temporary execution/status noise",
+            "one-off chatter",
             "source type, tool name, application, document kind, message kind, and business domain never decide worth",
-            "tool calls, raw tool results, other non-conversation payloads are excluded",
-            "one independently retrievable and updateable future-use topic",
+            "smallest complete memory",
+            "independently retrievable and updateable future-use topic",
+            "candidate count follows the independent future uses",
+            "do not impose a zero-or-one default",
+            "automatic processing does not require an explicit remember request",
             "a query and a mere restatement of existing memory add no new memory",
-            "explicit remember mode",
         ):
             self.assertIn(phrase, text)
-        self.assertIn("a single project name stated in the candidate's bound source text is sufficient", text)
         prompt = gate_prompt([{"event_key": "event-1", "role": "assistant", "content": "temporary result"}])
         self.assertIn("Mode: automatic capture/process", prompt)
-        self.assertIn("no explicit remember request is required", prompt)
-        self.assertIn("A pure query answered only by restating a related active memory is read-only", prompt)
-        self.assertIn("no admissible future-use information", gate_prompt([]))
+        self.assertIn("Complete turn events", prompt)
+        # Policy belongs in the system contract; dynamic prompt stays data-focused.
+        self.assertNotIn("Candidate decomposition check", prompt)
+        self.assertNotIn("Atomicity test", prompt)
 
     def test_summary_contract_is_source_neutral(self):
         text = " ".join(SUMMARIZE_SYSTEM.casefold().split())
@@ -114,16 +116,18 @@ class AdmissionPromptTests(unittest.TestCase):
             "source-neutral",
             "update or no_change takes precedence over create",
             "retain still-valid information",
-            "application-, tool-, document- or business-specific heuristics",
+            "remove or replace superseded facts",
+            "keep the target type identical",
             "smallest complete confirmed content",
-            "transient execution detail",
+            "do not create an adjacent sibling",
         ):
             self.assertIn(phrase, text)
         event = {"event_key": "event-1", "role": "user", "content": "a durable constraint"}
         prompt = summarize_prompt(candidate("risk", ["event-1"], memory="a durable constraint"), [event], explicit=False)
-        self.assertIn("Mode: candidate passed the gate", prompt)
+        self.assertIn("Mode: candidate passed the Gate", prompt)
+        self.assertNotIn("Final evidence re-check", prompt)
 
-    def test_update_summary_prompt_allows_semantic_no_change(self):
+    def test_update_summary_prompt_allows_semantic_no_change_without_repeating_policy(self):
         event = {"event_key": "event-1", "role": "user", "content": "the same confirmed state"}
         prompt = summarize_prompt(
             candidate(
@@ -135,23 +139,20 @@ class AdmissionPromptTests(unittest.TestCase):
             [event],
             explicit=False,
         )
-        for text in (SUMMARIZE_SYSTEM, prompt):
-            normalized = " ".join(text.casefold().split())
-            self.assertIn(
-                "first compare current evidence with the supplied target's state, facts, deadlines, and obligations",
-                normalized,
-            )
-            self.assertIn(
-                "no new confirmed state, fact, deadline, or obligation change",
-                normalized,
-            )
-            self.assertIn(
-                "wording changes, restatements, and new source/provenance alone do not count",
-                normalized,
-            )
-            self.assertIn('return exactly {"decision":"no_change"}', normalized)
-            self.assertIn("only when current evidence confirms a real semantic change", normalized)
-
+        system = " ".join(SUMMARIZE_SYSTEM.casefold().split())
+        for phrase in (
+            "first compare current evidence with the supplied target's state, facts, deadlines, and obligations",
+            "no new confirmed state, fact, deadline, or obligation change",
+            "wording changes, restatements, and new source/provenance alone do not count as change",
+            "only when current evidence confirms a real semantic change",
+            'return exactly {"decision":"no_change"}',
+        ):
+            self.assertIn(phrase, system)
+        # The dynamic prompt carries the fixed operation/data, not a duplicate policy essay.
+        dynamic = " ".join(prompt.casefold().split())
+        self.assertIn("gate operation: update", dynamic)
+        self.assertIn('return exactly {"decision":"no_change"}', dynamic)
+        self.assertNotIn("first compare current evidence", dynamic)
 
 class AdmissionFlowTests(unittest.TestCase):
     def setUp(self):
