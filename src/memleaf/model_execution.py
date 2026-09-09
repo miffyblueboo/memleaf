@@ -8,7 +8,7 @@ from typing import Any, Callable, Mapping, Optional
 from .config import DEFAULT_MODEL_CONCURRENCY, MAX_MODEL_CONCURRENCY, MIN_MODEL_CONCURRENCY
 from .llm import MODEL_VALIDATION_REASONS, CallableBackend, ModelError, ModelUnavailable, ModelRouter
 from .models import utc_now
-from .prompts import COVERAGE_ALREADY_COMPLETED_CORRECTION, COVERAGE_CANDIDATE_CORRECTION, COVERAGE_CORRECTION, DUPLICATE_TARGET_CORRECTION, EVIDENCE_EVENT_MAPPING_CORRECTION, EVIDENCE_SPAN_CORRECTION, GATE_TYPE_CORRECTION, JSON_CORRECTION, MIXED_FUTURE_USE_CORRECTION, MIXED_PROJECT_SCOPES_CORRECTION, RELATIVE_TIME_CORRECTION, SCOPE_GROUNDING_CORRECTION, SUMMARY_SCOPE_CORRECTION, SUMMARY_TARGET_CORRECTION, SUMMARY_TYPE_CORRECTION, TARGET_RELEVANCE_CORRECTION, UPDATE_TARGET_TYPE_CORRECTION
+from .prompts import COVERAGE_ALREADY_COMPLETED_CORRECTION, COVERAGE_CANDIDATE_CORRECTION, COVERAGE_CORRECTION, COVERAGE_SHAPE_CORRECTION, DUPLICATE_TARGET_CORRECTION, EVIDENCE_EVENT_MAPPING_CORRECTION, EVIDENCE_SPAN_CORRECTION, GATE_STRUCTURE_REPAIR_SYSTEM, GATE_TYPE_CORRECTION, JSON_CORRECTION, MIXED_FUTURE_USE_CORRECTION, MIXED_PROJECT_SCOPES_CORRECTION, RELATIVE_TIME_CORRECTION, SCOPE_GROUNDING_CORRECTION, SUMMARY_SCOPE_CORRECTION, SUMMARY_TARGET_CORRECTION, SUMMARY_TYPE_CORRECTION, TARGET_RELEVANCE_CORRECTION, UPDATE_TARGET_TYPE_CORRECTION, gate_structure_repair_prompt
 from .validation import MODEL_VALIDATION_DETAILS, ModelOutputError
 from .process_common import _DIAGNOSTIC_FILENAME, _DIAGNOSTIC_MAX_BYTES, _failure_metadata, _model_output_statistics, _safe_evidence_check, _safe_evidence_diagnostics
 
@@ -36,6 +36,9 @@ _THINKING_CONTROLS = frozenset({
     "deepseek_thinking_effort", "anthropic_effort", "anthropic_adaptive_effort",
     "gemini_thinking_level", "gemini_thinking_budget",
 })
+_COVERAGE_ALLOWED_FIELDS = frozenset({"unit_id", "decision", "candidate_ids", "reason", "memory_id"})
+_GATE_TOP_LEVEL_FIELDS = frozenset({"candidates", "coverage", "evidence_bindings"})
+_GATE_STRUCTURE_REPAIR_MAX_BYTES = 64 * 1024
 
 
 def _metric_bucket() -> dict[str, Any]:
@@ -59,6 +62,140 @@ def _metric_bucket() -> dict[str, Any]:
         "_first_started": None,
         "_last_finished": None,
     }
+
+
+def _safe_json_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, Mapping):
+        return "object"
+    if isinstance(value, (int, float)):
+        return "number"
+    return "other"
+
+
+def _safe_schema_field_name(value: Any) -> bool:
+    if not isinstance(value, str) or not 1 <= len(value) <= 64 or not value.isascii():
+        return False
+    if value[0].isdigit():
+        return False
+    return all(character.isalnum() or character == "_" for character in value)
+
+
+def _coverage_shape_diagnostics(raw: Any) -> dict[str, Any]:
+    """Describe one coverage-shape failure without retaining business values."""
+
+    if not isinstance(raw, str):
+        return {}
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(value, Mapping):
+        return {}
+    coverage = value.get("coverage")
+    if not isinstance(coverage, list):
+        return {
+            "coverage_actual_type": _safe_json_type(coverage),
+            "coverage_allowed_fields": sorted(_COVERAGE_ALLOWED_FIELDS),
+        }
+    for row_index, row in enumerate(coverage):
+        if not isinstance(row, Mapping):
+            return {
+                "coverage_row_index": row_index,
+                "coverage_actual_type": _safe_json_type(row),
+                "coverage_allowed_fields": sorted(_COVERAGE_ALLOWED_FIELDS),
+            }
+        unexpected = sorted(
+            key for key in set(row) - _COVERAGE_ALLOWED_FIELDS
+            if _safe_schema_field_name(key)
+        )
+        unexpected_count = len(set(row) - _COVERAGE_ALLOWED_FIELDS)
+        if unexpected_count:
+            return {
+                "coverage_row_index": row_index,
+                "coverage_actual_type": "object",
+                "coverage_unexpected_fields": unexpected[:8],
+                "coverage_unexpected_field_count": unexpected_count,
+                "coverage_allowed_fields": sorted(_COVERAGE_ALLOWED_FIELDS),
+            }
+    return {}
+
+
+def _coverage_shape_repairable(error: BaseException, raw: Any) -> bool:
+    """Allow targeted repair only when it can be proven to remove extra keys only."""
+
+    if (
+        not isinstance(error, ModelOutputError)
+        or getattr(error, "validation_detail", None) != "invalid_evidence"
+        or getattr(error, "evidence_check", None) != "coverage_shape"
+        or not isinstance(raw, str)
+        or len(raw.encode("utf-8")) > _GATE_STRUCTURE_REPAIR_MAX_BYTES
+    ):
+        return False
+    diagnostic = _coverage_shape_diagnostics(raw)
+    return (
+        diagnostic.get("coverage_actual_type") == "object"
+        and isinstance(diagnostic.get("coverage_unexpected_field_count"), int)
+        and diagnostic["coverage_unexpected_field_count"] > 0
+    )
+
+
+def _coverage_shape_repair_error() -> ModelOutputError:
+    return ModelOutputError(
+        "gate coverage shape repair changed legal semantic fields",
+        validation_detail="invalid_evidence",
+        evidence_check="coverage_shape",
+    )
+
+
+def _validate_coverage_shape_repair(previous_raw: str, repaired_raw: str) -> None:
+    """Prove that a targeted repair only removed unknown coverage fields."""
+
+    try:
+        previous = json.loads(previous_raw)
+        repaired = json.loads(repaired_raw)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise _coverage_shape_repair_error() from error
+    if not isinstance(previous, Mapping) or not isinstance(repaired, Mapping):
+        raise _coverage_shape_repair_error()
+    if set(previous) != _GATE_TOP_LEVEL_FIELDS or set(repaired) != _GATE_TOP_LEVEL_FIELDS:
+        raise _coverage_shape_repair_error()
+    if previous.get("candidates") != repaired.get("candidates"):
+        raise _coverage_shape_repair_error()
+    if previous.get("evidence_bindings") != repaired.get("evidence_bindings"):
+        raise _coverage_shape_repair_error()
+    previous_coverage = previous.get("coverage")
+    repaired_coverage = repaired.get("coverage")
+    if (
+        not isinstance(previous_coverage, list)
+        or not isinstance(repaired_coverage, list)
+        or len(previous_coverage) != len(repaired_coverage)
+    ):
+        raise _coverage_shape_repair_error()
+    for previous_row, repaired_row in zip(previous_coverage, repaired_coverage):
+        if not isinstance(previous_row, Mapping) or not isinstance(repaired_row, Mapping):
+            raise _coverage_shape_repair_error()
+        previous_legal = {
+            key: previous_row[key]
+            for key in _COVERAGE_ALLOWED_FIELDS
+            if key in previous_row
+        }
+        repaired_legal = {
+            key: repaired_row[key]
+            for key in _COVERAGE_ALLOWED_FIELDS
+            if key in repaired_row
+        }
+        if repaired_legal != previous_legal:
+            raise _coverage_shape_repair_error()
+        if set(repaired_row) - _COVERAGE_ALLOWED_FIELDS:
+            raise _coverage_shape_repair_error()
 
 
 class ModelExecutor:
@@ -112,6 +249,8 @@ class ModelExecutor:
     def _safe_metric_operation(stage: str, value: Any) -> str:
         if value == "gate_coverage_repair":
             return "gate_coverage_repair"
+        if stage == "gate" and value == "gate_semantic_retry":
+            return "gate_semantic_retry"
         if isinstance(value, str) and value in {
             f"{stage}_{suffix}" for suffix in _METRIC_OPERATION_SUFFIXES
         }:
@@ -406,6 +545,8 @@ class ModelExecutor:
         if stage == "gate" and hint == "invalid_evidence":
             if getattr(error, "evidence_check", None) == "invalid_span":
                 return EVIDENCE_SPAN_CORRECTION
+            if getattr(error, "evidence_check", None) == "coverage_shape":
+                return COVERAGE_SHAPE_CORRECTION
             if getattr(error, "evidence_check", None) == "coverage_candidate":
                 return COVERAGE_CANDIDATE_CORRECTION
             if getattr(error, "evidence_check", None) in {
@@ -519,6 +660,8 @@ class ModelExecutor:
         if evidence_check is not None:
             entry["evidence_check"] = evidence_check
         entry.update(_safe_evidence_diagnostics(error) if error is not None else {})
+        if evidence_check == "coverage_shape":
+            entry.update(_coverage_shape_diagnostics(raw))
         response_diagnostics = getattr(error, "response_diagnostics", None) if error is not None else None
         if isinstance(response_diagnostics, Mapping):
             allowed_diagnostics = {
@@ -602,23 +745,45 @@ class ModelExecutor:
         correction_prompt = prompt + "\n\n" + JSON_CORRECTION
         correction_instructions: list[str] = []
         saw_invalid_span = False
+        targeted_repair_pending = False
+        targeted_repair_used = False
+        targeted_previous_raw: Optional[str] = None
+        targeted_prompt = ""
         for attempt_count in (1, 2, 3, 4):
             raw: Any = None
+            using_targeted_repair = targeted_repair_pending
             try:
                 operation_stage = self._safe_metric_stage(metric_stage or purpose)
+                if attempt_count == 1:
+                    call_prompt = prompt
+                    call_system = system
+                    metric_operation = f"{operation_stage}_primary"
+                elif using_targeted_repair:
+                    call_prompt = targeted_prompt
+                    call_system = GATE_STRUCTURE_REPAIR_SYSTEM
+                    metric_operation = f"{operation_stage}_format_repair"
+                else:
+                    call_prompt = correction_prompt
+                    call_system = system
+                    metric_operation = (
+                        "gate_semantic_retry"
+                        if operation_stage == "gate"
+                        else f"{operation_stage}_format_repair"
+                    )
+                targeted_repair_pending = False
                 raw = self._complete(
                     backend,
-                    prompt if attempt_count == 1 else correction_prompt,
-                    system=system,
+                    call_prompt,
+                    system=call_system,
                     purpose=purpose,
                     metric_stage=metric_stage,
-                    metric_operation=(
-                        f"{operation_stage}_primary"
-                        if attempt_count == 1
-                        else f"{operation_stage}_format_repair"
-                    ),
+                    metric_operation=metric_operation,
                     retry=attempt_count > 1,
                 )
+                if using_targeted_repair:
+                    if not isinstance(targeted_previous_raw, str) or not isinstance(raw, str):
+                        raise _coverage_shape_repair_error()
+                    _validate_coverage_shape_repair(targeted_previous_raw, raw)
                 parsed = parser(raw)
             except (ModelError, ModelOutputError) as error:
                 self._set_stage_diagnostics(error, purpose=purpose, attempt_count=attempt_count)
@@ -649,6 +814,19 @@ class ModelExecutor:
                 )
                 saw_invalid_span = saw_invalid_span or invalid_span
                 if self._allows_next_json_attempt(error, attempt_count) or extra_span_recovery:
+                    if (
+                        purpose == "gate"
+                        and not targeted_repair_used
+                        and _coverage_shape_repairable(error, raw)
+                    ):
+                        targeted_repair_used = True
+                        targeted_previous_raw = raw
+                        targeted_prompt = gate_structure_repair_prompt(
+                            raw,
+                            _coverage_shape_diagnostics(raw),
+                        )
+                        targeted_repair_pending = True
+                        continue
                     correction_prompt = prompt + "\n\n" + JSON_CORRECTION
                     instruction = self._correction_instruction(error)
                     if instruction is not None and instruction not in correction_instructions:
