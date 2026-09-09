@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   apply-source:
-    if: github.event.head_commit.message == 'chore: apply v0.2.37 source patch'
+    if: github.event.head_commit.message == 'apply-v0237-source-patch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
