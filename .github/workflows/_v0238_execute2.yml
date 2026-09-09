@@ -22,6 +22,8 @@ jobs:
           python-version: '3.12'
       - name: Apply source patch
         run: python _v0238_patch2.py
+      - name: Repair generated syntax
+        run: python _v0238_repair_generated.py
       - name: Focused regression
         shell: bash
         run: |
