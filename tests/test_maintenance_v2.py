@@ -183,6 +183,7 @@ class MaintenanceV2Tests(unittest.TestCase):
                             [new_user, new_assistant],
                             "alpha 项目任务已同步到系统。",
                             scopes=["project:alpha"],
+                            scope_source="session_context",
                             type="project",
                             update_memory_id=old.memory_id,
                         )
@@ -193,6 +194,7 @@ class MaintenanceV2Tests(unittest.TestCase):
                     "alpha 项目采用达梦数据库，Tomcat 改造为东方通；负责人吴江波，计划 2026-10-27 完成。任务已同步到系统。",
                     title="alpha 项目技术路线与实施计划",
                     scopes=["project:alpha"],
+                    scope_source="session_context",
                     type="project",
                     update_memory_id=old.memory_id,
                 ),
