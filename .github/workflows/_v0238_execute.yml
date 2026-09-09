@@ -32,16 +32,22 @@ jobs:
           start = source.index(marker) + len(marker)
           end = source.index("\n          PY\n", start)
           script = textwrap.dedent(source[start:end])
-          replacements = {
+
+          required = {
               'DEFAULT_THINKING = {purpose: "default" for purpose in THINKING_PURPOSES}': 'DEFAULT_THINKING = {purpose: "low" for purpose in THINKING_PURPOSES}',
-              '# 3. Explicit thinking configuration. Default preserves provider\n# behavior; DeepSeek can be tested with gate=disabled/low/high/max.': '# 3. Explicit thinking configuration. Default uses the lowest\n# reasoning effort; users may select disabled/default/high/max.',
-              'the default remains `default` so provider behavior is preserved until real-model quality/latency A/B establishes a safe lower setting.': 'the default is `low` for Gate/summarize/compact to reduce model-side reasoning latency while retaining reasoning; users may explicitly select `disabled`, `default`, `high`, or `max`.',
-              'def test_thinking_config_defaults_preserve_provider_and_are_strict(self):': 'def test_thinking_config_defaults_to_low_and_is_strict(self):',
           }
-          for old, new in replacements.items():
+          for old, new in required.items():
               if old not in script:
                   raise SystemExit(f'missing staged patch fragment: {old[:100]!r}')
               script = script.replace(old, new, 1)
+
+          optional = {
+              'the default remains `default` so provider behavior is preserved until real-model quality/latency A/B establishes a safe lower setting.': 'the default is `low` for Gate/summarize/compact to reduce model-side reasoning latency while retaining reasoning; users may explicitly select `disabled`, `default`, `high`, or `max`.',
+              'def test_thinking_config_defaults_preserve_provider_and_are_strict(self):': 'def test_thinking_config_defaults_to_low_and_is_strict(self):',
+          }
+          for old, new in optional.items():
+              script = script.replace(old, new, 1)
+
           exec(compile(script, '<v0.2.38-staged-patch>', 'exec'), {'__name__': '__main__'})
           PY
       - name: Compile and run focused regressions
