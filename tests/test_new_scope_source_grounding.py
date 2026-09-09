@@ -196,21 +196,37 @@ class NewScopeSourceGroundingTests(unittest.TestCase):
         self.assertEqual(_explicit_project_scope_authorizations("project:Alpha"), ("project:Alpha",))
         self.assertEqual(_explicit_project_scope_authorizations("not-a-scope"), ())
 
-    def test_registered_project_alias_keeps_existing_scope_behavior(self) -> None:
+    def test_registered_project_alias_requires_alias_in_bound_source(self) -> None:
         units = analyze_turn_evidence([{
             "role": "user",
-            "content": "A source without the configured alias.",
+            "content": "OR-1 release plan is pending.",
             "event_key": "source",
         }])
         candidate = {
             "scope_source": "model",
             "worth": True,
-            "scopes": ["project:orion"],
-            "_evidence_bindings": [],
+            "scopes": ["project:Orion"],
+            "_evidence_bindings": [{
+                "unit_id": units[0].unit_id,
+                "quote": units[0].text,
+                "role": "source_excerpt",
+            }],
         }
-
         self.assertTrue(_model_project_scope_is_source_grounded(
-            candidate, units, {"project:Orion": {"aliases": ["Orion"]}},
+            candidate, units, {"project:Orion": {"aliases": ["OR-1"]}},
+        ))
+        other = analyze_turn_evidence([{
+            "role": "user",
+            "content": "A source without the configured name or alias.",
+            "event_key": "other",
+        }])
+        candidate["_evidence_bindings"] = [{
+            "unit_id": other[0].unit_id,
+            "quote": other[0].text,
+            "role": "source_excerpt",
+        }]
+        self.assertFalse(_model_project_scope_is_source_grounded(
+            candidate, other, {"project:Orion": {"aliases": ["OR-1"]}},
         ))
 
 

@@ -81,7 +81,7 @@ requirements into merely "related items", "coordination", or an equally vague
 summary. If a source explicitly distinguishes the entity/customer/project an
 item belongs to from a broader product/platform/system where it is implemented,
 preserve that distinction; do not replace the owning subject with the
-implementation context. Existing memories may preserve still-valid target
+implementation context. When proposed_summary carries a project:<name> Scope with scope_source=model, that Scope is itself a claimed project affiliation: ACCEPT only when the admitted source supports that affiliation for this candidate. A mere mention of the same name as a product, platform, system, notification source, comparison, or implementation location is insufficient. If admitted source explicitly assigns the item to another project, the fixed proposed Scope cannot be repaired in this review; use DEFERRED rather than ACCEPT or silently changing Scope. Existing memories may preserve still-valid target
 content or resolve a supplied alias for comparison, but they never establish a
 new subject-to-project relationship. Preserve uncertainty when attribution or
 the role of a value is not established. Never add an owner, deadline, status,
@@ -168,6 +168,13 @@ that replaces a concrete deliverable or turns named requirements into merely
 explicitly distinguishes the entity/customer/project an item belongs to from a
 broader product/platform/system where it is implemented, preserve that
 distinction; do not replace the owning subject with the implementation context.
+When proposed_summary carries a project:<name> Scope with scope_source=model,
+that Scope is itself a claimed project affiliation: ACCEPT only when the
+admitted source supports that affiliation for this candidate. A mere mention of
+the same name as a product, platform, system, notification source, comparison,
+or implementation location is insufficient. If admitted source explicitly
+assigns the item to another project, the fixed proposed Scope cannot be repaired
+in this review; use DEFERRED rather than ACCEPT or silently changing Scope.
 Existing memories are comparison context and may not supply a missing entity,
 relationship, field role, or business fact. Preserve uncertainty when
 attribution or the role of a value is not established. Never add an owner,

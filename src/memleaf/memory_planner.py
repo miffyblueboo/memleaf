@@ -15,7 +15,7 @@ from .update_coordinator import UpdateCoordinator
 from .target_reconciliation import reconcile_candidate_target
 from .evidence_policy import retain_tool_evidence
 from .parallel_model import run_ordered_keyed_jobs
-from .prompts import COVERAGE_ALREADY_COMPLETED_CORRECTION, COVERAGE_CORRECTION, GATE_SYSTEM, SUMMARIZE_SYSTEM, gate_prompt, summarize_prompt
+from .prompts import COVERAGE_ALREADY_COMPLETED_CORRECTION, COVERAGE_CORRECTION, GATE_COVERAGE_SYSTEM, GATE_SYSTEM, SUMMARIZE_SYSTEM, coverage_repair_prompt, gate_prompt, summarize_prompt
 from .retrieval import normalize_term
 from .scope_state import ScopeError, normalize_scopes
 from .validation import ModelOutputError, NO_CHANGE_DECISION, _model_scope_grounding_evidence, parse_gate_output, parse_strict_json, parse_summarize_output
@@ -36,48 +36,6 @@ def _explicit_project_scope_authorizations(scope: Any) -> tuple[str, ...]:
         if isinstance(value, str) and value.partition(":")[0] == "project"
     )
 
-
-def _unregistered_model_project_scopes(
-    candidate: Mapping[str, Any],
-    scope_registry: Mapping[str, Any] | None,
-    authorized_scopes: Iterable[str] = (),
-) -> tuple[str, ...]:
-    """Return model-selected project scopes absent from the local registry.
-
-    The existing Gate validator deliberately accepts a new project scope when
-    the candidate memory names it.  This second check needs to distinguish
-    that case from a registered canonical name or alias, whose behavior is
-    already covered by the normal scope rules.
-    """
-
-    if candidate.get("scope_source") != "model" or not candidate.get("worth"):
-        return ()
-    scopes = tuple(
-        scope
-        for scope in candidate.get("scopes", ())
-        if isinstance(scope, str) and scope.partition(":")[0] == "project"
-    )
-    if not scopes:
-        return ()
-    selected_owners, _ = _model_scope_grounding_evidence(
-        "", scopes, scope_registry
-    )
-    registered = {
-        key.casefold()
-        for key in (scope_registry or {})
-        if isinstance(key, str) and key.partition(":")[0] == "project"
-    }
-    authorized = {
-        value.casefold()
-        for value in authorized_scopes
-        if isinstance(value, str) and value.partition(":")[0] == "project"
-    }
-    return tuple(
-        scope
-        for scope in scopes
-        if selected_owners.get(scope.casefold(), scope.casefold()) not in registered
-        and scope.casefold() not in authorized
-    )
 
 
 def _candidate_bound_source_text(
@@ -127,25 +85,37 @@ def _model_project_scope_is_source_grounded(
     scope_registry: Mapping[str, Any] | None,
     authorized_scopes: Iterable[str] = (),
 ) -> bool:
-    """Require each new model project scope to occur in its bound source.
+    """Validate every model-selected project Scope against exact bound source.
 
-    Matching is delegated to the same registry-aware helper used by Gate
-    validation.  The input is restricted to immutable original ``EvidenceUnit``
-    text from this candidate's current batch, so candidate prose, other units,
-    related memories, domain-to-project expansion, and semantic inference
-    cannot lend a project name to this candidate.  A literal project name that
-    appears in the original source remains matchable.
+    Registered and newly named projects intentionally use the same rule. Core
+    verifies that the selected project's canonical name or configured alias is
+    present in this candidate's immutable bound source, unless the caller
+    explicitly authorized that project Scope. Core does not infer whether some
+    other mentioned name is an owner, implementation platform, product,
+    notification source, or comparison context; semantic review owns that
+    relationship judgment.
     """
 
-    new_scopes = _unregistered_model_project_scopes(
-        candidate, scope_registry, authorized_scopes
-    )
-    if not new_scopes:
+    if candidate.get("scope_source") != "model" or not candidate.get("worth"):
         return True
+    scopes = tuple(
+        scope
+        for scope in candidate.get("scopes", ())
+        if isinstance(scope, str) and scope.partition(":")[0] == "project"
+    )
+    if not scopes:
+        return True
+    authorized = {
+        value.casefold()
+        for value in authorized_scopes
+        if isinstance(value, str) and value.partition(":")[0] == "project"
+    }
     source_text = _candidate_bound_source_text(candidate, batch_units)
-    if not source_text:
-        return False
-    for scope in new_scopes:
+    for scope in scopes:
+        if scope.casefold() in authorized:
+            continue
+        if not source_text:
+            return False
         owners, matches = _model_scope_grounding_evidence(
             source_text, (scope,), scope_registry
         )
@@ -747,8 +717,9 @@ class MemoryPlanner:
             prepared_candidates: list[dict[str, Any]] = []
             for candidate in parsed["candidates"]:
                 item = dict(candidate)
-                if self.inputs._scope_evidence_conflict(item, turn, validation_scope_registry):
-                    item["_defer_reason"] = "scope_conflict"
+                # Exact candidate-bound grounding was already validated above.
+                # Do not reinterpret a second mentioned project/product/platform name
+                # as contradictory ownership with a registry-only name scan.
                 plan = self.inputs._scope_correction_plan(item, turn, validation_scope_registry)
                 if plan is not None:
                     item.pop("duplicate_memory_id", None)
@@ -937,20 +908,27 @@ class MemoryPlanner:
                     "target_relations", "unknown_target_ids", "candidate_level_target_ids",
                     "scope_correction_plans")]
                 try:
-                    correction_raw = self.model._complete(backend,
-                        "Coverage correction: classify ONLY the supplied unresolved evidence units. "
-                        "Do not re-emit already handled items. Return the same Gate JSON contract.\n"
-                        + gate_prompt([], related_memories=gate_related, scope_background=scope_background,
-                                      scope_registry=scope_registry)
-                        + evidence_prompt(missing, batch_index=batch_index, batch_count=batch_count,
-                                          todo_witnesses=todo_witnesses)
-                        + "\n"
-                        + COVERAGE_CORRECTION
-                        + "\n"
-                        + COVERAGE_ALREADY_COMPLETED_CORRECTION
-                        + "\nAlready handled candidate IDs: "
-                        + json.dumps([item["candidate_id"] for item in batch_gate["candidates"]]),
-                        system=GATE_SYSTEM, purpose="gate")
+                    correction_raw = self.model._complete(
+                        backend,
+                        coverage_repair_prompt(
+                            evidence_prompt(
+                                missing,
+                                batch_index=batch_index,
+                                batch_count=batch_count,
+                                todo_witnesses=todo_witnesses,
+                            ),
+                            related_memories=gate_related,
+                            scope_background=scope_background,
+                            scope_registry=scope_registry,
+                            already_handled_candidate_ids=[
+                                item["candidate_id"] for item in batch_gate["candidates"]
+                            ],
+                        ),
+                        system=GATE_COVERAGE_SYSTEM,
+                        purpose="gate",
+                        metric_stage="gate",
+                        metric_operation="gate_coverage_repair",
+                    )
                     correction_raw, correction_bindings = split_semantic_envelope(correction_raw)
                     correction_raw, correction_coverage = split_gate_envelope(correction_raw)
                     correction_gate = parse_gate_output(correction_raw,
@@ -1058,10 +1036,10 @@ class MemoryPlanner:
                 self.audit._record_disposition(turn_ref, candidate, "NO_CHANGE", reason="same_turn_duplicate")
                 continue
             seen_candidates.add(fingerprint)
-            # All model candidates pass the same evidence and Scope boundary.
-            if self.inputs._scope_evidence_conflict(candidate, turn, validation_scope_registry):
-                self.audit._defer_candidate(turn_ref, candidate, "scope_conflict", scopes=candidate.get("scopes", []))
-                continue
+            # Exact candidate-bound model project grounding was already
+            # validated by parse_gate. Do not run a registry-name conflict scan
+            # again here; semantic ownership/implementation roles were reviewed
+            # by the model boundary above.
             candidate_id_key = str(candidate.get("candidate_id", "")).casefold()
             correction_plan = scope_correction_plans.get(candidate_id_key)
             defer_reason = candidate.get("_defer_reason")

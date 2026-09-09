@@ -40,7 +40,7 @@ def gate(candidates):
     return json.dumps({"candidates": candidates}, ensure_ascii=False)
 
 
-def candidate(candidate_id, evidence, memory, *, scopes, update_memory_id=None):
+def candidate(candidate_id, evidence, memory, *, scopes, scope_source="model", update_memory_id=None):
     value = {
         "candidate_id": candidate_id,
         "memory": memory,
@@ -49,21 +49,21 @@ def candidate(candidate_id, evidence, memory, *, scopes, update_memory_id=None):
         "worth": True,
         "type": "project",
         "scopes": list(scopes),
-        "scope_source": "model",
+        "scope_source": scope_source,
     }
     if update_memory_id is not None:
         value["update_memory_id"] = update_memory_id
     return value
 
 
-def summary(event, body, *, title, scopes, update_memory_id=None):
+def summary(event, body, *, title, scopes, scope_source="model", update_memory_id=None):
     value = {
         "title": title,
         "body": body,
         "tags": ["session-lineage"],
         "type": "project",
         "scopes": list(scopes),
-        "scope_source": "model",
+        "scope_source": scope_source,
         "sources": [{"event_key": event}],
     }
     if update_memory_id is not None:
@@ -199,6 +199,7 @@ class SessionLineageTests(unittest.TestCase):
                             [child_user, child_assistant],
                             "alpha 项目的负责人更新为乙。",
                             scopes=["project:alpha"],
+                            scope_source="session_context",
                             update_memory_id=old.memory_id,
                         )
                     ]
@@ -208,6 +209,7 @@ class SessionLineageTests(unittest.TestCase):
                     "alpha 项目采用达梦数据库，负责人已更新为乙。",
                     title="alpha 项目负责人",
                     scopes=["project:alpha"],
+                    scope_source="session_context",
                     update_memory_id=old.memory_id,
                 ),
             ]
@@ -341,6 +343,7 @@ class SessionLineageTests(unittest.TestCase):
                             child_keys,
                             "alpha 项目负责人更新为乙。",
                             scopes=["project:alpha"],
+                            scope_source="session_context",
                             update_memory_id=old.memory_id,
                         )
                     ]
@@ -350,6 +353,7 @@ class SessionLineageTests(unittest.TestCase):
                     "alpha 项目采用达梦数据库，负责人已更新为乙。",
                     title="alpha 项目负责人",
                     scopes=["project:alpha"],
+                    scope_source="session_context",
                     update_memory_id=old.memory_id,
                 ),
             ]

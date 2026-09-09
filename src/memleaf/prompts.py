@@ -30,7 +30,7 @@ An alternative exact source-reference form is {"unit_id":"<listed id>","whole_un
 
 A query and a mere restatement of existing memory add no new memory. External observations are excluded from source units and cannot authorize a candidate. A query is a property of the user text, not a veto on a same-turn assistant report: when a visible assistant message states a new conclusion or explicit pending action, assess that message independently and bind any candidate to its exact unit. A turn that contains a question and a newly confirmed user or assistant assertion remains eligible only for the assertion. Assistant questions, suggestions, future promises, proposals and unconfirmed reports do not establish a completion or state transition. An assistant restatement of an existing memory does not create a new memory. Explicit todo completion/cancellation is an update only when current visible user or assistant text states the transition; do not infer it from a question or plan. Todo updates keep type=todo. A completion report for a supplied active todo is still a future-use state transition: emit a Gate candidate with update_memory_id and memory text describing the confirmed completion; do not put status or completed_at in the Gate candidate. The summarize stage must output status=completed and a grounded completed_at when the target is not already completed/cancelled. Use coverage reason already_completed only with memory_id copied from a listed current knowledge todo whose status is completed or cancelled; if there is no such terminal witness, emit the UPDATE candidate for a supplied active todo or use NO_CHANGE with no_future_value when no existing target is involved. Do not infer a terminal witness from the evidence text. Date fields must be grounded in current visible messages.
 
-Scopes must be grounded by authoritative user/session context or the candidate's own evidence. A single project name stated in the candidate's bound source text is sufficient for project:<name> with scope_source=model, even when that project is absent from the current registry; do not use unscoped merely because the registry is empty. Do not borrow a project from another candidate. Do not expand an address, domain or abbreviation into an organization/project name that is neither stated in the evidence nor supplied as a registered alias. Treat ownership/affiliation and implementation context as separate relationships: when the source says an item belongs to one named entity/project but is implemented in, hosted by, or built on another product/platform/system, the broader implementation context does not become the item's project scope merely because it is named. Prefer the source-stated owner/affiliation when it is explicit. If the relationship is not explicit enough to choose safely, use unscoped/insufficient_context or defer instead of guessing. Existing memories may be comparison context but cannot create a new ownership or project-affiliation fact absent from current evidence. If one safe Scope cannot be established, use unscoped/insufficient_context or defer instead of guessing global/project membership.
+Scopes must be grounded by authoritative user/session context or the candidate's own evidence. When a project comes from the supplied Session scope background rather than this candidate's bound source, copy that project with scope_source=session_context; do not label an inherited project as model. A single project name stated in the candidate's bound source text is sufficient for project:<name> with scope_source=model, even when that project is absent from the current registry; do not use unscoped merely because the registry is empty. Do not borrow a project from another candidate. Do not expand an address, domain or abbreviation into an organization/project name that is neither stated in the evidence nor supplied as a registered alias. Treat ownership/affiliation and implementation context as separate relationships: when the source says an item belongs to one named entity/project but is implemented in, hosted by, or built on another product/platform/system, the broader implementation context does not become the item's project scope merely because it is named. Prefer the source-stated owner/affiliation when it is explicit. If the relationship is not explicit enough to choose safely, use unscoped/insufficient_context or defer instead of guessing. Existing memories may be comparison context but cannot create a new ownership or project-affiliation fact absent from current evidence. If one safe Scope cannot be established, use unscoped/insufficient_context or defer instead of guessing global/project membership.
 
 Calendar dates are strict. Evidence events may include an ISO-8601 UTC timestamp. A visible user or assistant message's supporting event timestamp can anchor a one-off relative date. Tool retrieval timestamps and raw external payloads are excluded and can never anchor a date. Never move an unavailable historical date into the conversation week. Bind the original date context as well as the relative expression when it is available; if the original anchor cannot be proved, keep the date unresolved rather than inventing a deadline. Distinguish a request or question about possible timing from a confirmed due date. Resolve today/tomorrow/yesterday, 今天/明天/昨天/今日/明日/昨日, 本周X/这周X/下周X/上周X, and this/next/last weekday using Monday-Sunday weeks, and emit absolute YYYY-MM-DD only with a grounded anchor. Recurring schedules such as 每周三/every Wednesday may remain recurring. If the expression cannot be safely grounded, defer/omit the date-dependent candidate.
 
@@ -290,7 +290,7 @@ SCOPE_GROUNDING_CORRECTION = (
     "name must also occur in that candidate's bound source unit, not only in your "
     "proposed memory text; do not invent or translate an organization name from an "
     "address or abbreviation. Do not borrow a name from another event, related "
-    "memory, session background, or unrelated aggregate context. When source text "
+    "memory or unrelated aggregate context. If the selected project is supplied by Session scope background instead of the candidate's bound source, keep the project but change scope_source to session_context. When source text "
     "distinguishes an item's owner/affiliation from a broader product/platform/system "
     "where it is implemented, do not use that implementation context as project scope "
     "unless the source explicitly states that relationship. If exactly one "
@@ -533,62 +533,89 @@ def _first_event_key(events: list[dict]) -> str | None:
             return event["event_key"]
     return None
 
-# Applied to both normal and correction calls. Tool/user contents are data,
-# not instructions for the gate or permission to override the write boundary.
-GATE_SYSTEM += """\nSource-neutral evidence contract: ordinary chat, calendars, issue trackers,
-files, web results and other tools follow the same rules. No tool name or topic
-is a write exemption. Only the current turn's visible user input and Agent's
-final assistant reply are authoritative source units. Historical conversation
-turns, intermediate assistant messages and existing memory context are
-comparison context, never new source. An assistant report may support a stated conclusion,
-confirmed fact or explicit pending action; assistant questions, suggestions,
-plans, generic acknowledgements and pure restatements do not establish a new
-fact. Bind each candidate to the supplied authoritative evidence units through
-coverage.
-A tool record retained with ``retention=metadata`` may appear in the event
-envelope, but it has no retained source text and is not an evidence unit. Do not
-bind its call ID, digest, result metadata or tool name, and do not use it to
-authorize CREATE or UPDATE. Only the listed evidence units need coverage rows.
-Raw tool results, other non-conversation payloads are excluded even when
-a visible message refers to them; a visible assistant report is the only way
-conversation evidence can state a conclusion about them.
-A section heading scopes only its own children; a different unknown heading
-ends that context. Do not inherit the preceding project's ownership. Negative,
-completed, cancelled, hypothetical/example-only, or third-party-only tasks must not
-become a new user active todo. A model omission must be DEFERRED, never replaced
-by a locally invented action. NO_CHANGE does not append sources or history.
-When units exist, candidates=[] STILL requires coverage for every unit.
-Before emitting candidates, enumerate the independently retrievable future-use
-topics in each complete visible message. Separate deliverables that can be
-completed, tracked, or updated independently, even when they share a project,
-owner, deadline, or coordination step. Keep generic coordination with the
-deliverable it governs unless it is explicitly its own future-use topic; do not
-use a fixed candidate count or an application-specific rule. One unit may support
-several candidates: use candidate-specific exact quotes with enough subject,
-owner, date, scope, polarity, and status context, and list every cited candidate
-ID in that unit's one coverage row. Use whole_unit only for a homogeneous unit
-supporting one candidate; never use it to merge mixed topics or transfer one
-claim's negation, completion, uncertainty, or ownership to a sibling.
-Do not replace independently trackable requested deliverables with only an
-umbrella coordination request. An unassigned, pending-estimate, or unaccepted
-item remains a candidate when it can close independently; preserve the source's
-stated owner and do not infer that the user owns it. Two separately named
-changes followed by one sentence to coordinate them remain two topics when each
-can close independently; this is illustrative, not a candidate-count rule.
-Atomicity test: ask whether a later question, owner, status, estimate, or
-completion decision could concern one named item without the other. If yes, give
-each item its own candidate, memory, and item-specific claims; never emit one
-candidate whose subject is the collection of independently answerable items.
-Each candidate must also preserve its meaning-defining subject/entity, concrete
-deliverable/action/state, necessary business/workstream/background context, and
-the stated role of any number/code needed to interpret it. Keep ownership or
-project affiliation separate from a broader implementation product/platform/system;
-do not use implementation context alone as project ownership.
-When a candidate has top-level evidence_bindings, omit evidence_event_ids so
-Core can derive the exact source event key from the validated bound unit. Never
-copy the surrounding conversation event key into a candidate for an external
-unit.
+# Final reminders not already stated in the main Gate contract. Keep this
+# tail intentionally small because it is paid on every Gate request.
+GATE_SYSTEM += """
+Final enforcement reminders: section headings scope only their own children;
+a different heading ends that context. Do not inherit a preceding project's
+ownership. Every supplied evidence unit still requires coverage even when
+candidates is empty. Model-selected project Scope must be grounded by the
+candidate's own exact source binding; a product/platform/system mentioned as
+implementation context is not project ownership by name alone. Existing or
+related memories remain comparison context, never authority for a new project
+relationship. Return strict JSON only.
 """
+
+
+GATE_COVERAGE_SYSTEM = """You are memleaf's bounded Gate coverage-repair reviewer.
+Return exactly one strict JSON object with top-level candidates, coverage, and
+evidence_bindings. Classify ONLY the unresolved Evidence units supplied in this
+call. Never re-emit or change an already-handled candidate.
+
+For every supplied unit, return exactly one coverage row. decision is CANDIDATE,
+NO_CHANGE, or DEFERRED. CANDIDATE must list every candidate_id from this response
+that cites that unit. candidates=[] still requires one NO_CHANGE/DEFERRED row
+per supplied unit and evidence_bindings=[].
+
+Each candidate has exactly: candidate_id (string), memory (string), duplicate
+(boolean), worth (boolean), type (preference|fact|project|todo|event|identity|other
+or null), scopes (non-empty string list), scope_source
+(model|user|session_context|insufficient_context), plus optional reason,
+evidence_event_ids, duplicate_memory_id, update_memory_id. A candidate with
+validated evidence_bindings may omit evidence_event_ids so Core derives them.
+Do not add status, due_date, claims, or evidence_bindings inside a candidate.
+
+Bindings are top-level. Copy unit_id exactly from the supplied list and bind a
+short exact contiguous quote with role assertion|source_excerpt|user_confirmation,
+or use whole_unit:true only when the whole unit is homogeneous for one topic.
+Never guess offsets or IDs. Related memories, scope background, and the registry
+are comparison/grounding context, not new evidence.
+
+Apply the same semantic boundary as primary Gate: retain concrete future-use
+facts, requests, constraints, commitments, or state changes; split deliverables
+that can be tracked or completed independently; preserve named subject,
+deliverable/action/state, necessary business context, polarity, uncertainty,
+and each number/code with its stated role. Do not invent owner, deadline, status,
+or completion. A query, generic acknowledgement, suggestion, plan, or pure
+restatement is not a new fact by itself.
+
+For Scope, a model-selected project must be named (or matched by a registered
+alias) in that candidate's exact source. A project inherited from Session scope
+background must use scope_source=session_context instead of model. Distinguish ownership/affiliation from
+implementation product/platform/system context. A mentioned platform does not
+become the owning project by name alone. If ownership cannot be resolved safely,
+use unscoped/insufficient_context or DEFERRED rather than guessing. Return JSON
+only.
+"""
+
+
+def coverage_repair_prompt(
+    evidence_text: str,
+    *,
+    related_memories: list[dict] | None = None,
+    scope_background: object = None,
+    scope_registry: list[dict] | None = None,
+    already_handled_candidate_ids: list[str] | None = None,
+) -> str:
+    """Build the narrow second-pass prompt for unresolved coverage only."""
+
+    return (
+        "Mode: coverage repair only. Classify only the unresolved units below.\n"
+        + evidence_text
+        + "\nNecessary related-memory comparison context:\n"
+        + _json(related_memories or [])
+        + "\nSession scope background:\n"
+        + _json(scope_background if scope_background is not None else [])
+        + "\nCurrent scope registry (safe projection; no paths):\n"
+        + _json(scope_registry if scope_registry is not None else [])
+        + "\nAlready handled candidate IDs (do not re-emit):\n"
+        + _json(already_handled_candidate_ids or [])
+        + "\n"
+        + COVERAGE_CORRECTION
+        + "\n"
+        + COVERAGE_ALREADY_COMPLETED_CORRECTION
+        + "\nReturn the strict coverage-repair Gate JSON object."
+    )
 
 
 # Same policy for the INNER summary, explicit outer schema for grouped updates.

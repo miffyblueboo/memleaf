@@ -19,6 +19,9 @@ MAX_REQUEST_TIMEOUT = 240
 DEFAULT_MODEL_CONCURRENCY = 3
 MIN_MODEL_CONCURRENCY = 1
 MAX_MODEL_CONCURRENCY = 8
+THINKING_PURPOSES = ("gate", "summarize", "compact")
+THINKING_MODES = frozenset({"default", "disabled", "low", "high", "max"})
+DEFAULT_THINKING = {purpose: "low" for purpose in THINKING_PURPOSES}
 
 
 def _normalize_request_timeout(value: Any) -> int | float:
@@ -39,6 +42,21 @@ def _normalize_model_concurrency(value: Any) -> int:
     if not MIN_MODEL_CONCURRENCY <= value <= MAX_MODEL_CONCURRENCY:
         raise ValueError("invalid memleaf process.model_concurrency")
     return value
+
+
+def _normalize_thinking_settings(value: Any) -> dict[str, str]:
+    if value is None:
+        value = {}
+    if not isinstance(value, Mapping):
+        raise ValueError("invalid memleaf llm.thinking settings")
+    if set(value) - set(THINKING_PURPOSES):
+        raise ValueError("invalid memleaf llm.thinking settings")
+    result = dict(DEFAULT_THINKING)
+    for purpose, mode in value.items():
+        if not isinstance(mode, str) or mode not in THINKING_MODES:
+            raise ValueError("invalid memleaf llm.thinking settings")
+        result[purpose] = mode
+    return result
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -75,6 +93,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "context_window": 200000,
         "request_timeout": DEFAULT_REQUEST_TIMEOUT,
         "diagnostic_logging": False,
+        "thinking": dict(DEFAULT_THINKING),
     },
 }
 
@@ -188,6 +207,7 @@ def load_config(path: Path | str, *, vault: Path | str | None = None) -> dict[st
         raise ValueError("invalid memleaf llm settings")
     llm = dict(llm)
     llm["request_timeout"] = _normalize_request_timeout(llm.get("request_timeout", DEFAULT_REQUEST_TIMEOUT))
+    llm["thinking"] = _normalize_thinking_settings(llm.get("thinking"))
     if type(llm.get("diagnostic_logging", False)) is not bool:
         raise ValueError("invalid memleaf llm.diagnostic_logging")
     merged["llm"] = llm
@@ -231,6 +251,7 @@ def save_config(path: Path | str, config: Mapping[str, Any]) -> None:
     normalized_llm["request_timeout"] = _normalize_request_timeout(
         normalized_llm.get("request_timeout", DEFAULT_REQUEST_TIMEOUT)
     )
+    normalized_llm["thinking"] = _normalize_thinking_settings(normalized_llm.get("thinking"))
     diagnostic_logging = normalized_llm.get("diagnostic_logging", False)
     if type(diagnostic_logging) is not bool:
         raise ValueError("invalid memleaf llm.diagnostic_logging")
