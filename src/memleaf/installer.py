@@ -38,6 +38,7 @@ from .hermes_runtime import (
     HermesMcpInspection,
     inspect_hermes_mcp,
     is_absolute_memleaf_command,
+    memleaf_commands_same_runtime,
 )
 from .locking import atomic_write_json
 from .native_registration import ensure_hermes_native_sources
@@ -224,6 +225,33 @@ def _memleaf_mcp_command() -> Path:
         if resolved.is_file():
             return resolved
     raise RuntimeError("memleaf-mcp console entry point was not found after package installation")
+
+
+def _provider_mcp_command(runtime_command: Path | str) -> Path:
+    """Return the console entry point used by the copied MemoryProvider."""
+
+    runtime = Path(runtime_command).expanduser().resolve()
+    if os.name != "nt":
+        return runtime
+    if runtime.name.casefold() == "memleaf-mcp.exe":
+        return runtime
+    if runtime.name.casefold() == "memleaf-mcpw.exe":
+        console = runtime.with_name("memleaf-mcp.exe")
+        if console.is_file():
+            return console.resolve()
+    raise RuntimeError("the selected memleaf runtime has no memleaf-mcp.exe console entry point")
+
+
+def _hermes_public_mcp_command(runtime_command: Path | str) -> Path:
+    """Return the no-console public MCP launcher for the selected runtime."""
+
+    provider_command = _provider_mcp_command(runtime_command)
+    if os.name != "nt":
+        return provider_command
+    gui = provider_command.with_name("memleaf-mcpw.exe")
+    if not gui.is_file():
+        raise RuntimeError("the selected memleaf runtime has no memleaf-mcpw.exe GUI entry point")
+    return gui.resolve()
 
 
 def _copy_provider(hermes_home: Path) -> Path:
@@ -481,6 +509,15 @@ def _configure_hermes_mcp_entry(
             command=[detection.executable, "mcp", "list"],
         )
     allowed = inspection.status in {"absent", "legacy"}
+    same_runtime_launcher_migration = bool(
+        inspection.status == "runtime_conflict"
+        and inspection.configured_command
+        and memleaf_commands_same_runtime(
+            inspection.configured_command, command, platform=platform
+        )
+    )
+    if same_runtime_launcher_migration:
+        allowed = True
     if inspection.status == "runtime_conflict" and allow_runtime_migration:
         allowed = True
     if not allowed:
@@ -779,6 +816,7 @@ def install_hermes(
         selected_vault,
         current_command,
         platform=platform,
+        allow_same_runtime=True,
     )
     selected_command, runtime_details = _choose_hermes_mcp_command(
         preflight,
@@ -805,6 +843,26 @@ def install_hermes(
             mcp_runtime=runtime_details,
             user_action=action,
         )
+
+    try:
+        provider_command = _provider_mcp_command(selected_command)
+        public_command = _hermes_public_mcp_command(selected_command)
+    except RuntimeError as error:
+        return _failure_result(
+            stage="runtime_launcher",
+            reason=str(error),
+            core_version=core_version,
+            vault=selected_vault,
+            vault_source=vault_source,
+            mcp_runtime=runtime_details,
+        )
+    runtime_details = dict(runtime_details)
+    runtime_details.update(
+        {
+            "provider_command": str(provider_command),
+            "public_command": str(public_command),
+        }
+    )
 
     vault = Vault.initialize(selected_vault)
     model = _prepare_model_route(
@@ -872,7 +930,7 @@ def install_hermes(
                 adapter,
                 detection,
                 vault.root,
-                selected_command,
+                str(public_command),
                 allow_runtime_migration=(
                     mcp_runtime == "current" and preflight.status == "runtime_conflict"
                 ),
@@ -888,7 +946,7 @@ def install_hermes(
                     ),
                     recovery_commands=_mcp_recovery_commands(
                         detection.executable,
-                        selected_command,
+                        str(public_command),
                         vault.root,
                     ),
                 )
@@ -899,7 +957,7 @@ def install_hermes(
                     mcp=configured.to_dict(),
                     recovery_commands=_mcp_recovery_commands(
                         detection.executable,
-                        selected_command,
+                        str(public_command),
                         vault.root,
                     ),
                 )
@@ -933,7 +991,7 @@ def install_hermes(
                     ),
                 )
             try:
-                _write_provider_config(provider_config, Path(selected_command), vault.root)
+                _write_provider_config(provider_config, provider_command, vault.root)
             except Exception as error:
                 raise _HermesInstallFailure(
                     "provider_config",
@@ -1015,7 +1073,8 @@ def install_hermes(
         "vault": str(vault.root),
         "vault_source": vault_source,
         "provider": str(provider_path),
-        "mcp_command": selected_command,
+        "mcp_command": str(public_command),
+        "provider_mcp_command": str(provider_command),
         "mcp_runtime": runtime_details,
         "model": model,
         "native_sources": native_registration,

@@ -2,6 +2,13 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.37 — 2026-09-09
+
+- Add a dedicated `memleaf-mcpw` GUI entry point for the Hermes public MCP on Windows. The GUI-subsystem launcher does not allocate a console window even when an older Hermes/MCP SDK starts it without `CREATE_NO_WINDOW`; it enters the same `memleaf.mcp_server:main` implementation and keeps the same stdio JSON-RPC protocol.
+- Keep the Hermes MemoryProvider private MCP on `memleaf-mcp.exe` with the v0.2.36 `CREATE_NO_WINDOW` protection, so both Windows launch paths are covered without changing macOS/Linux behavior or the Markdown Vault architecture.
+- Treat `memleaf-mcp.exe` and its sibling `memleaf-mcpw.exe` as the same installed memleaf runtime for preflight/runtime policy while still requiring the GUI launcher for the public Hermes MCP. Existing v0.2.36 direct entries in the same runtime migrate automatically; different-runtime and different-Vault protections remain fail closed.
+- Add Windows acceptance that inspects the installed launcher PE Subsystem, starts `memleaf-mcpw.exe` with `creationflags=0`, performs real MCP initialize and tools/list over redirected stdio, confirms all 13 tools, and verifies clean EOF shutdown.
+
 ## 0.2.36 — 2026-09-08
 
 - Prevent the Hermes MemoryProvider from opening a visible console/Windows Terminal window whenever it starts its private `memleaf-mcp` stdio child on Windows. Provider-owned MCP launches now use `subprocess.CREATE_NO_WINDOW`; stdin/stdout pipes, stderr suppression, timeout handling, process reuse and shutdown semantics are unchanged.

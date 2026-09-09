@@ -53,6 +53,10 @@ class PyPIInstallTests(unittest.TestCase):
                 "name: memleaf\nversion: 0.2.9\n",
                 encoding="utf-8",
             )
+            runtime_command = root / ("memleaf-mcp.exe" if os.name == "nt" else "memleaf-mcp")
+            runtime_command.write_text("", encoding="utf-8")
+            if os.name == "nt":
+                runtime_command.with_name("memleaf-mcpw.exe").write_text("", encoding="utf-8")
             detection = SimpleNamespace(
                 detected=True,
                 confidence="high",
@@ -76,7 +80,7 @@ class PyPIInstallTests(unittest.TestCase):
                 to_dict=lambda: {"status": "configured", "reason": "configured"},
             )
 
-            with mock.patch("memleaf.installer._home_from_environment", return_value=home),                  mock.patch("memleaf.installer._hermes_home", return_value=hermes_home),                  mock.patch("memleaf.installer._select_vault_path", return_value=(vault_path, "default")),                  mock.patch("memleaf.installer.Vault.initialize", return_value=initialized),                  mock.patch("memleaf.installer._prepare_model_route", return_value=model),                  mock.patch("memleaf.installer.HermesAdapter", return_value=adapter),                  mock.patch("memleaf.installer._memleaf_mcp_command", return_value=root / "memleaf-mcp"),                  mock.patch("memleaf.installer._configure_hermes_mcp_entry", return_value=configured),                  mock.patch("memleaf.installer._copy_provider", return_value=provider_path),                  mock.patch("memleaf.installer._write_provider_config") as write_config:
+            with mock.patch("memleaf.installer._home_from_environment", return_value=home),                  mock.patch("memleaf.installer._hermes_home", return_value=hermes_home),                  mock.patch("memleaf.installer._select_vault_path", return_value=(vault_path, "default")),                  mock.patch("memleaf.installer.Vault.initialize", return_value=initialized),                  mock.patch("memleaf.installer._prepare_model_route", return_value=model),                  mock.patch("memleaf.installer.HermesAdapter", return_value=adapter),                  mock.patch("memleaf.installer._memleaf_mcp_command", return_value=runtime_command),                  mock.patch("memleaf.installer._configure_hermes_mcp_entry", return_value=configured),                  mock.patch("memleaf.installer._copy_provider", return_value=provider_path),                  mock.patch("memleaf.installer._write_provider_config") as write_config:
                 result = install_hermes()
 
             self.assertEqual("failure", result["status"])

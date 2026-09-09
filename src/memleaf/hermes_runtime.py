@@ -18,7 +18,7 @@ from typing import Any, Mapping, Sequence
 from .adapters.hermes import _parse_json_or_yaml_mcp
 
 
-_MEMLEAF_COMMAND_NAMES = frozenset({"memleaf-mcp", "memleaf-mcp.exe"})
+_MEMLEAF_COMMAND_NAMES = frozenset({"memleaf-mcp", "memleaf-mcp.exe", "memleaf-mcpw", "memleaf-mcpw.exe"})
 _TRUE_VALUES = frozenset({"true", "1", "yes", "on"})
 _FALSE_VALUES = frozenset({"false", "0", "no", "off"})
 
@@ -111,6 +111,27 @@ def is_absolute_memleaf_command(
     return Path(text).is_absolute()
 
 
+def memleaf_commands_same_runtime(
+    left: Path | str,
+    right: Path | str,
+    *,
+    platform: str | None = None,
+) -> bool:
+    """Return whether two absolute memleaf launchers belong to one runtime."""
+
+    if host_paths_equivalent(left, right, platform=platform):
+        return True
+    if _platform_name(platform) != "nt":
+        return False
+    left_text = _path_text(left).replace("/", "\\")
+    right_text = _path_text(right).replace("/", "\\")
+    if not is_absolute_memleaf_command(left_text, platform="nt"):
+        return False
+    if not is_absolute_memleaf_command(right_text, platform="nt"):
+        return False
+    return ntpath.normcase(ntpath.dirname(left_text)) == ntpath.normcase(ntpath.dirname(right_text))
+
+
 def _is_bare_memleaf_command(command: str, *, platform: str | None = None) -> bool:
     text = command.strip()
     return (
@@ -172,6 +193,7 @@ def inspect_hermes_mcp(
     expected_command: Path | str,
     *,
     platform: str | None = None,
+    allow_same_runtime: bool = False,
 ) -> HermesMcpInspection:
     """Inspect ``mcp_servers.memleaf`` without executing configured commands.
 
@@ -313,6 +335,17 @@ def inspect_hermes_mcp(
             configured_command=command,
             configured_vault=configured_vault,
         )
+    if allow_same_runtime and memleaf_commands_same_runtime(
+        command, expected_command, platform=platform
+    ):
+        return _result(
+            "correct",
+            "the existing memleaf MCP entry uses a sibling launcher from this runtime and Vault",
+            config_path=path,
+            expected_command=expected_command,
+            configured_command=command,
+            configured_vault=configured_vault,
+        )
     if _is_bare_memleaf_command(command, platform=platform):
         return _result(
             "legacy",
@@ -346,4 +379,5 @@ __all__ = [
     "host_paths_equivalent",
     "inspect_hermes_mcp",
     "is_absolute_memleaf_command",
+    "memleaf_commands_same_runtime",
 ]

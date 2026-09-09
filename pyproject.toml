@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memleaf"
-version = "0.2.36"
+version = "0.2.37"
 description = "A local-first Markdown memory core for AI agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,6 +26,9 @@ dependencies = []
 [project.scripts]
 memleaf-mcp = "memleaf.mcp_server:main"
 memleaf = "memleaf.cli:main"
+
+[project.gui-scripts]
+memleaf-mcpw = "memleaf.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
