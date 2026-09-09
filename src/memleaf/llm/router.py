@@ -113,6 +113,7 @@ class ModelRouter:
             "api_key": api_key,
             "model": model,
             "timeout": request_timeout,
+            "thinking": config.get("thinking") if isinstance(config.get("thinking"), Mapping) else None,
         }
         try:
             if protocol in ("claude", "anthropic") or "claude" in provider or "anthropic" in provider:
@@ -124,7 +125,6 @@ class ModelRouter:
                     **kwargs,
                     json_mode=provider in _JSON_MODE_PROVIDERS,
                     provider_name=provider or "openai",
-                    thinking=config.get("thinking") if isinstance(config.get("thinking"), Mapping) else None,
                 )
         except (ModelError, ValueError, TypeError):
             return None

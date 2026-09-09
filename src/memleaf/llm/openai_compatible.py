@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable, Mapping, Optional
 
 from .base import DEFAULT_REQUEST_TIMEOUT, HTTPModelBackend, ModelError
+from .thinking import openai_chat_controls, requested_thinking_mode
 
 
 class OpenAICompatibleBackend(HTTPModelBackend):
@@ -54,12 +55,8 @@ class OpenAICompatibleBackend(HTTPModelBackend):
         else:
             finish_reason = finish_reason.casefold()
             if finish_reason not in {
-                "stop",
-                "length",
-                "tool_calls",
-                "function_call",
-                "content_filter",
-                "insufficient_system_resource",
+                "stop", "length", "tool_calls", "function_call",
+                "content_filter", "insufficient_system_resource",
             }:
                 finish_reason = "unknown"
         usage = value.get("usage")
@@ -85,16 +82,14 @@ class OpenAICompatibleBackend(HTTPModelBackend):
             "reasoning_chars": reasoning_chars,
         }
 
-    def _thinking_mode(self, purpose: str) -> str:
-        if purpose not in {"gate", "summarize", "compact"}:
-            return "default"
-        value = self.thinking.get(purpose, "low")
-        return value if value in {"default", "disabled", "low", "high", "max"} else "low"
-
     @staticmethod
-    def _usage_metrics(value: Mapping[str, Any], *, thinking_mode: str) -> dict[str, Any]:
+    def _usage_metrics(
+        value: Mapping[str, Any],
+        *,
+        thinking_metrics: Mapping[str, Any],
+    ) -> dict[str, Any]:
         usage = value.get("usage")
-        result: dict[str, Any] = {"thinking_mode": thinking_mode}
+        result: dict[str, Any] = dict(thinking_metrics)
         if not isinstance(usage, Mapping):
             return result
         for key in (
@@ -104,6 +99,10 @@ class OpenAICompatibleBackend(HTTPModelBackend):
             item = usage.get(key)
             if isinstance(item, int) and not isinstance(item, bool) and 0 <= item <= 10_000_000:
                 result[key] = item
+        prompt_details = usage.get("prompt_tokens_details")
+        cached = prompt_details.get("cached_tokens") if isinstance(prompt_details, Mapping) else None
+        if "prompt_cache_hit_tokens" not in result and isinstance(cached, int) and not isinstance(cached, bool) and 0 <= cached <= 10_000_000:
+            result["prompt_cache_hit_tokens"] = cached
         details = usage.get("completion_tokens_details")
         reasoning = details.get("reasoning_tokens") if isinstance(details, Mapping) else None
         if isinstance(reasoning, int) and not isinstance(reasoning, bool) and 0 <= reasoning <= 10_000_000:
@@ -116,18 +115,14 @@ class OpenAICompatibleBackend(HTTPModelBackend):
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-        }
-        thinking_mode = self._thinking_mode(purpose)
-        if self.provider_name == "deepseek" and thinking_mode != "default":
-            if thinking_mode == "disabled":
-                payload["thinking"] = {"type": "disabled"}
-            else:
-                payload["thinking"] = {"type": "enabled"}
-                payload["reasoning_effort"] = thinking_mode
+        requested = requested_thinking_mode(self.thinking, purpose)
+        controls, thinking_metrics, omit_temperature = openai_chat_controls(
+            self.provider_name, self.model, requested
+        )
+        payload: dict[str, Any] = {"model": self.model, "messages": messages}
+        if not omit_temperature:
+            payload["temperature"] = temperature
+        payload.update(controls)
         if self.json_mode and purpose in {"gate", "summarize", "compact"}:
             payload["response_format"] = {"type": "json_object"}
         value = self._post_json(
@@ -136,6 +131,7 @@ class OpenAICompatibleBackend(HTTPModelBackend):
             {"Authorization": f"Bearer {self.api_key}"},
             stage=purpose,
         )
+        self._set_call_metrics(self._usage_metrics(value, thinking_metrics=thinking_metrics))
         choices = value.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
             raise ModelError(
@@ -152,7 +148,6 @@ class OpenAICompatibleBackend(HTTPModelBackend):
                 stage=purpose,
                 validation_reason="response_shape",
             )
-        self._set_call_metrics(self._usage_metrics(value, thinking_mode=thinking_mode))
         try:
             return self._text(message.get("content"), stage=purpose)
         except ModelError as error:

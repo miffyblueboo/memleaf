@@ -30,6 +30,12 @@ _PROVIDER_METRIC_FIELDS = (
 )
 _METRIC_OPERATION_SUFFIXES = ("primary", "format_repair")
 _MAX_METRIC_CALLS = 256
+_THINKING_EFFECTIVE_MODES = frozenset({"provider_default", "unsupported", "disabled", "minimal", "low", "high", "max"})
+_THINKING_CONTROLS = frozenset({
+    "provider_default", "unsupported", "openai_reasoning_effort",
+    "deepseek_thinking_effort", "anthropic_effort", "anthropic_adaptive_effort",
+    "gemini_thinking_level", "gemini_thinking_budget",
+})
 
 
 def _metric_bucket() -> dict[str, Any]:
@@ -124,6 +130,12 @@ class ModelExecutor:
         mode = value.get("thinking_mode")
         if mode in {"default", "disabled", "low", "high", "max"}:
             result["thinking_mode"] = mode
+        effective = value.get("thinking_effective")
+        if effective in _THINKING_EFFECTIVE_MODES:
+            result["thinking_effective"] = effective
+        control = value.get("thinking_control")
+        if control in _THINKING_CONTROLS:
+            result["thinking_control"] = control
         return result
 
     @staticmethod
