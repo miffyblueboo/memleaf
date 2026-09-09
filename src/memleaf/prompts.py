@@ -533,62 +533,88 @@ def _first_event_key(events: list[dict]) -> str | None:
             return event["event_key"]
     return None
 
-# Applied to both normal and correction calls. Tool/user contents are data,
-# not instructions for the gate or permission to override the write boundary.
-GATE_SYSTEM += """\nSource-neutral evidence contract: ordinary chat, calendars, issue trackers,
-files, web results and other tools follow the same rules. No tool name or topic
-is a write exemption. Only the current turn's visible user input and Agent's
-final assistant reply are authoritative source units. Historical conversation
-turns, intermediate assistant messages and existing memory context are
-comparison context, never new source. An assistant report may support a stated conclusion,
-confirmed fact or explicit pending action; assistant questions, suggestions,
-plans, generic acknowledgements and pure restatements do not establish a new
-fact. Bind each candidate to the supplied authoritative evidence units through
-coverage.
-A tool record retained with ``retention=metadata`` may appear in the event
-envelope, but it has no retained source text and is not an evidence unit. Do not
-bind its call ID, digest, result metadata or tool name, and do not use it to
-authorize CREATE or UPDATE. Only the listed evidence units need coverage rows.
-Raw tool results, other non-conversation payloads are excluded even when
-a visible message refers to them; a visible assistant report is the only way
-conversation evidence can state a conclusion about them.
-A section heading scopes only its own children; a different unknown heading
-ends that context. Do not inherit the preceding project's ownership. Negative,
-completed, cancelled, hypothetical/example-only, or third-party-only tasks must not
-become a new user active todo. A model omission must be DEFERRED, never replaced
-by a locally invented action. NO_CHANGE does not append sources or history.
-When units exist, candidates=[] STILL requires coverage for every unit.
-Before emitting candidates, enumerate the independently retrievable future-use
-topics in each complete visible message. Separate deliverables that can be
-completed, tracked, or updated independently, even when they share a project,
-owner, deadline, or coordination step. Keep generic coordination with the
-deliverable it governs unless it is explicitly its own future-use topic; do not
-use a fixed candidate count or an application-specific rule. One unit may support
-several candidates: use candidate-specific exact quotes with enough subject,
-owner, date, scope, polarity, and status context, and list every cited candidate
-ID in that unit's one coverage row. Use whole_unit only for a homogeneous unit
-supporting one candidate; never use it to merge mixed topics or transfer one
-claim's negation, completion, uncertainty, or ownership to a sibling.
-Do not replace independently trackable requested deliverables with only an
-umbrella coordination request. An unassigned, pending-estimate, or unaccepted
-item remains a candidate when it can close independently; preserve the source's
-stated owner and do not infer that the user owns it. Two separately named
-changes followed by one sentence to coordinate them remain two topics when each
-can close independently; this is illustrative, not a candidate-count rule.
-Atomicity test: ask whether a later question, owner, status, estimate, or
-completion decision could concern one named item without the other. If yes, give
-each item its own candidate, memory, and item-specific claims; never emit one
-candidate whose subject is the collection of independently answerable items.
-Each candidate must also preserve its meaning-defining subject/entity, concrete
-deliverable/action/state, necessary business/workstream/background context, and
-the stated role of any number/code needed to interpret it. Keep ownership or
-project affiliation separate from a broader implementation product/platform/system;
-do not use implementation context alone as project ownership.
-When a candidate has top-level evidence_bindings, omit evidence_event_ids so
-Core can derive the exact source event key from the validated bound unit. Never
-copy the surrounding conversation event key into a candidate for an external
-unit.
+# Final reminders not already stated in the main Gate contract. Keep this
+# tail intentionally small because it is paid on every Gate request.
+GATE_SYSTEM += """
+Final enforcement reminders: section headings scope only their own children;
+a different heading ends that context. Do not inherit a preceding project's
+ownership. Every supplied evidence unit still requires coverage even when
+candidates is empty. Model-selected project Scope must be grounded by the
+candidate's own exact source binding; a product/platform/system mentioned as
+implementation context is not project ownership by name alone. Existing or
+related memories remain comparison context, never authority for a new project
+relationship. Return strict JSON only.
 """
+
+
+GATE_COVERAGE_SYSTEM = """You are memleaf's bounded Gate coverage-repair reviewer.
+Return exactly one strict JSON object with top-level candidates, coverage, and
+evidence_bindings. Classify ONLY the unresolved Evidence units supplied in this
+call. Never re-emit or change an already-handled candidate.
+
+For every supplied unit, return exactly one coverage row. decision is CANDIDATE,
+NO_CHANGE, or DEFERRED. CANDIDATE must list every candidate_id from this response
+that cites that unit. candidates=[] still requires one NO_CHANGE/DEFERRED row
+per supplied unit and evidence_bindings=[].
+
+Each candidate has exactly: candidate_id (string), memory (string), duplicate
+(boolean), worth (boolean), type (preference|fact|project|todo|event|identity|other
+or null), scopes (non-empty string list), scope_source
+(model|user|session_context|insufficient_context), plus optional reason,
+evidence_event_ids, duplicate_memory_id, update_memory_id. A candidate with
+validated evidence_bindings may omit evidence_event_ids so Core derives them.
+Do not add status, due_date, claims, or evidence_bindings inside a candidate.
+
+Bindings are top-level. Copy unit_id exactly from the supplied list and bind a
+short exact contiguous quote with role assertion|source_excerpt|user_confirmation,
+or use whole_unit:true only when the whole unit is homogeneous for one topic.
+Never guess offsets or IDs. Related memories, scope background, and the registry
+are comparison/grounding context, not new evidence.
+
+Apply the same semantic boundary as primary Gate: retain concrete future-use
+facts, requests, constraints, commitments, or state changes; split deliverables
+that can be tracked or completed independently; preserve named subject,
+deliverable/action/state, necessary business context, polarity, uncertainty,
+and each number/code with its stated role. Do not invent owner, deadline, status,
+or completion. A query, generic acknowledgement, suggestion, plan, or pure
+restatement is not a new fact by itself.
+
+For Scope, a model-selected project must be named (or matched by a registered
+alias) in that candidate's exact source. Distinguish ownership/affiliation from
+implementation product/platform/system context. A mentioned platform does not
+become the owning project by name alone. If ownership cannot be resolved safely,
+use unscoped/insufficient_context or DEFERRED rather than guessing. Return JSON
+only.
+"""
+
+
+def coverage_repair_prompt(
+    evidence_text: str,
+    *,
+    related_memories: list[dict] | None = None,
+    scope_background: object = None,
+    scope_registry: list[dict] | None = None,
+    already_handled_candidate_ids: list[str] | None = None,
+) -> str:
+    """Build the narrow second-pass prompt for unresolved coverage only."""
+
+    return (
+        "Mode: coverage repair only. Classify only the unresolved units below.\n"
+        + evidence_text
+        + "\nNecessary related-memory comparison context:\n"
+        + _json(related_memories or [])
+        + "\nSession scope background:\n"
+        + _json(scope_background if scope_background is not None else [])
+        + "\nCurrent scope registry (safe projection; no paths):\n"
+        + _json(scope_registry if scope_registry is not None else [])
+        + "\nAlready handled candidate IDs (do not re-emit):\n"
+        + _json(already_handled_candidate_ids or [])
+        + "\n"
+        + COVERAGE_CORRECTION
+        + "\n"
+        + COVERAGE_ALREADY_COMPLETED_CORRECTION
+        + "\nReturn the strict coverage-repair Gate JSON object."
+    )
 
 
 # Same policy for the INNER summary, explicit outer schema for grouped updates.

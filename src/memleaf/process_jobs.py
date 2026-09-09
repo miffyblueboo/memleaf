@@ -42,6 +42,13 @@ _MODEL_METRIC_FIELDS = (
     "output_chars",
     "output_bytes",
     "max_in_flight",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "prompt_cache_hit_tokens",
+    "prompt_cache_miss_tokens",
+    "reasoning_tokens",
+    "cache_hit_calls",
 )
 _MODEL_METRIC_STAGES = frozenset({
     "gate",
@@ -51,6 +58,17 @@ _MODEL_METRIC_STAGES = frozenset({
     "target_reconciliation",
     "other",
 })
+_MODEL_METRIC_OPERATIONS = frozenset(
+    {f"{stage}_{suffix}" for stage in _MODEL_METRIC_STAGES for suffix in ("primary", "format_repair")}
+    | {"gate_coverage_repair"}
+)
+_MODEL_CALL_INT_FIELDS = frozenset({
+    "call_index", "request_duration_ms", "input_chars", "input_bytes",
+    "output_chars", "output_bytes", "prompt_tokens", "completion_tokens",
+    "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens",
+    "reasoning_tokens",
+})
+_MAX_MODEL_CALL_ROWS = 256
 
 
 def _now() -> str:
@@ -182,6 +200,41 @@ def _safe_model_metrics(value: Any) -> dict[str, Any]:
                 bounded[stage] = projected
         if bounded:
             result["stages"] = bounded
+    operations = value.get("operations")
+    if isinstance(operations, Mapping):
+        bounded_operations: dict[str, dict[str, int]] = {}
+        for operation, bucket in operations.items():
+            if not isinstance(operation, str) or operation not in _MODEL_METRIC_OPERATIONS:
+                continue
+            projected = _safe_metric_bucket(bucket)
+            if projected:
+                bounded_operations[operation] = projected
+        if bounded_operations:
+            result["operations"] = bounded_operations
+    calls = value.get("calls")
+    if isinstance(calls, list):
+        bounded_calls: list[dict[str, Any]] = []
+        for raw in calls[:_MAX_MODEL_CALL_ROWS]:
+            if not isinstance(raw, Mapping):
+                continue
+            stage = raw.get("stage")
+            operation = raw.get("operation")
+            if stage not in _MODEL_METRIC_STAGES or operation not in _MODEL_METRIC_OPERATIONS:
+                continue
+            row: dict[str, Any] = {"stage": stage, "operation": operation}
+            for key in ("retry", "failed"):
+                if isinstance(raw.get(key), bool):
+                    row[key] = raw[key]
+            for key in _MODEL_CALL_INT_FIELDS:
+                item = raw.get(key)
+                if type(item) is int and item >= 0:
+                    row[key] = item
+            mode = raw.get("thinking_mode")
+            if mode in {"default", "disabled", "low", "high", "max"}:
+                row["thinking_mode"] = mode
+            bounded_calls.append(row)
+        if bounded_calls:
+            result["calls"] = bounded_calls
     return result
 
 
@@ -222,6 +275,36 @@ def _aggregate_model_metrics(values: list[Mapping[str, Any]]) -> dict[str, Any]:
             stages[stage] = _aggregate_metric_buckets(buckets)
     if stages:
         result["stages"] = stages
+    operation_names = sorted({
+        operation
+        for value in safe_values
+        for operation in value.get("operations", {})
+        if isinstance(value.get("operations"), Mapping) and operation in _MODEL_METRIC_OPERATIONS
+    })
+    operations: dict[str, dict[str, int]] = {}
+    for operation in operation_names:
+        buckets = [
+            value["operations"][operation]
+            for value in safe_values
+            if isinstance(value.get("operations"), Mapping)
+            and isinstance(value["operations"].get(operation), Mapping)
+        ]
+        if buckets:
+            operations[operation] = _aggregate_metric_buckets(buckets)
+    if operations:
+        result["operations"] = operations
+    calls: list[dict[str, Any]] = []
+    for value in safe_values:
+        rows = value.get("calls")
+        if not isinstance(rows, list):
+            continue
+        for raw in rows:
+            if isinstance(raw, Mapping) and len(calls) < _MAX_MODEL_CALL_ROWS:
+                row = dict(raw)
+                row["call_index"] = len(calls) + 1
+                calls.append(row)
+    if calls:
+        result["calls"] = calls
     return result
 
 

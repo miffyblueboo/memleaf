@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Iterable, Mapping, Optional
-from .admission import analyze_turn_evidence, supporting_units
 from .inbox import InboxTurn
 from .memory_writer import MemoryWriter
 from .turn_plan import revision_digest
@@ -12,7 +11,7 @@ from .native_index import NativeIndexer
 from .retrieval import candidate_matches_query, filter_by_scope, normalize_term
 from .scope_state import project_scopes_for_domains
 from .scope_maintenance import ScopeMaintenanceError, scope_registry_projection
-from .process_common import ProcessingError, _RELATED_MAX_BODY_CHARS, _RELATED_MAX_CHARS, _RELATED_MAX_ITEMS, _SCOPE_CORRECTION_MARKER_RE, _SCOPE_DIRECTORY_MAX_CHARS, _SCOPE_DIRECTORY_MAX_ITEMS, _SCOPE_DIRECTORY_MAX_TITLE_CHARS, _TARGET_NOT_RELATED, _TARGET_SAME_USE, _TARGET_UNKNOWN, _event_payload, _invoke_native, _merge_related, _native_result, _project_scope_occurrences, _safe_scope_background, _session_key
+from .process_common import ProcessingError, _RELATED_MAX_BODY_CHARS, _RELATED_MAX_CHARS, _RELATED_MAX_ITEMS, _SCOPE_CORRECTION_MARKER_RE, _SCOPE_DIRECTORY_MAX_CHARS, _SCOPE_DIRECTORY_MAX_ITEMS, _SCOPE_DIRECTORY_MAX_TITLE_CHARS, _TARGET_NOT_RELATED, _TARGET_SAME_USE, _TARGET_UNKNOWN, _invoke_native, _merge_related, _native_result, _safe_scope_background, _session_key
 
 
 class PlanningContext:
@@ -536,35 +535,6 @@ class PlanningContext:
                     domains.append(item["domain"])
         matches = project_scopes_for_domains(domains, config if "scopes" in config else {"scopes": config})
         return matches[0] if len(matches) == 1 else None
-
-
-    def _scope_evidence_conflict(
-        self,
-        candidate: Mapping[str, Any],
-        turn: InboxTurn,
-        config: Mapping[str, Any],
-    ) -> bool:
-        if candidate.get("worth") is not True:
-            return False
-        units = supporting_units(candidate, analyze_turn_evidence(_event_payload(turn)))
-        selected = {value.casefold() for value in candidate.get("scopes", [])
-                    if isinstance(value, str) and value.startswith("project:")}
-        registry = config.get("scopes", config)
-        for unit in units:
-            if unit.origin != "assistant_report" and not unit.section_path:
-                continue
-            grounded = _project_scope_occurrences("\n".join((*unit.section_path, unit.text)), registry)
-            if grounded is None:
-                return True
-            projects = {item[2].casefold() for item in grounded}
-            if selected and projects and not selected.issubset(projects):
-                return True
-            if selected and unit.section_path and not projects:
-                return True
-            mapped = project_scopes_for_domains([unit.domain] if unit.domain else [], {"scopes": registry})
-            if selected and mapped and (len(mapped) != 1 or mapped[0].casefold() not in selected):
-                return True
-        return False
 
 
     @staticmethod

@@ -2,6 +2,14 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.38 — 2026-09-09
+
+- Unify automatic project-Scope grounding: registered and newly named model-selected projects now use the same exact candidate-bound source check. Remove the later registered-name occurrence conflict scan that could misclassify an implementation platform/product mention as ownership and reject the correct new project.
+- Strengthen final CREATE/UPDATE semantic review so a `project:<name>` Scope with `scope_source=model` is itself treated as an affiliation claim; product/platform/system/notification/implementation mentions cannot authorize project ownership, and an explicit contradictory owner defers instead of silently changing Scope.
+- Add safe per-model-call telemetry with fixed operation classes (`gate_primary`, `gate_coverage_repair`, format repair, summarize/review/coordination variants), request duration, input/output size, provider token usage, DeepSeek cache-hit/miss tokens and reasoning-token counts when supplied. Prompt/response text and credentials are never persisted.
+- Add explicit `llm.thinking` configuration for Gate/summarize/compact. The default is `low`, retaining reasoning at the lowest supported effort; users may select `disabled`, `default`, `high`, or `max` explicitly. DeepSeek OpenAI-format calls send the corresponding thinking controls.
+- Reduce Gate input cost by removing a duplicated system-policy tail and replace coverage re-checks with a narrow unresolved-evidence protocol instead of rerunning the full Gate prompt. Deterministic validation does not claim a specific real-provider latency reduction.
+
 ## 0.2.37 — 2026-09-09
 
 - Add a dedicated `memleaf-mcpw` GUI entry point for the Hermes public MCP on Windows. The GUI-subsystem launcher does not allocate a console window even when an older Hermes/MCP SDK starts it without `CREATE_NO_WINDOW`; it enters the same `memleaf.mcp_server:main` implementation and keeps the same stdio JSON-RPC protocol.
