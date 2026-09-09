@@ -96,7 +96,7 @@ class HermesRuntimeInspectionTests(unittest.TestCase):
             root = Path(temporary)
             config = root / "config.yaml"
             vault = root / "vault"
-            current = root / "managed" / "bin" / "memleaf-mcp"
+            current = root / "managed" / "bin" / ("memleaf-mcp.exe" if os.name == "nt" else "memleaf-mcp")
             existing = root / "source" / ".venv" / "bin" / "memleaf-mcp"
             vault.mkdir()
             current.parent.mkdir(parents=True)
@@ -485,7 +485,7 @@ class HermesInstallerTransactionTests(unittest.TestCase):
             hermes_home = root / "hermes"
             config = hermes_home / "config.yaml"
             vault = root / "vault"
-            current = root / "managed" / "bin" / "memleaf-mcp"
+            current = root / "managed" / "bin" / ("memleaf-mcp.exe" if os.name == "nt" else "memleaf-mcp")
             existing = root / "source" / ".venv" / "bin" / "memleaf-mcp"
             config.parent.mkdir(parents=True)
             vault.mkdir()
@@ -543,7 +543,7 @@ class HermesInstallerTransactionTests(unittest.TestCase):
             hermes_home = root / "hermes"
             config = hermes_home / "config.yaml"
             vault = root / "vault"
-            current = root / "managed" / "bin" / "memleaf-mcp"
+            current = root / "managed" / "bin" / ("memleaf-mcp.exe" if os.name == "nt" else "memleaf-mcp")
             existing = root / "source" / ".venv" / "bin" / "memleaf-mcp"
             config.parent.mkdir(parents=True)
             vault.mkdir()
