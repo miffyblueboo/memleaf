@@ -2,6 +2,13 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.40 — 2026-09-09
+
+- Slim the automatic extraction stage prompts without changing output schemas, parsers, evidence segmentation, model routing, the provider-neutral `thinking=low` policy, target/revision handling, idempotency, or commit semantics. Gate owns admission, atomic splitting, attribution and duplicate/update selection; Summary writes one already-admitted current-state memory; semantic review verifies fidelity; Core keeps deterministic validation and write safety.
+- Remove repeated policy essays from Gate dynamic/evidence prompts, narrow coverage repair to unresolved evidence, remove Summary's repeated final evidence re-check and dynamic JSON example, and reduce CREATE/UPDATE semantic-review prompts to grounding, completeness, candidate-boundary and UPDATE target-preservation checks. Stable prompt data markers used by host callbacks remain compatible.
+- On the same representative synthetic input, the Gate prompt input shrank from 27,478 to 8,157 characters (about 70.3%) and the Summary prompt input from 10,652 to 5,046 characters (about 52.6%); CREATE review system text shrank from 7,327 to 2,766 characters and UPDATE review from 6,539 to 3,004. These are static character-count measurements, not a claim of a specific reasoning-token or wall-clock reduction.
+- Validation covers focused semantic regressions plus the full Linux Python 3.11/3.12/3.13, Windows Python 3.11/3.12/3.13, macOS Python 3.11/3.13, wheel/sdist, installed-entry-point and native Codex matrices. A same-input real DeepSeek Flash A/B was not run before release, so this release does not claim a measured replacement for the previously observed 159-second session.
+
 ## 0.2.39 — 2026-09-09
 
 - Make `llm.thinking` a provider-neutral model policy instead of a DeepSeek-only request feature. Gate, summarize and compact continue to request `low` by default for every configured API model stage.
