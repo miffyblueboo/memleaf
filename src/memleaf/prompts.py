@@ -434,7 +434,7 @@ def summarize_prompt(
     else:
         parts.append(
             "UPDATE target is fixed. Preserve still-valid target content; if admitted Evidence makes no semantic change, "
-            '{"decision":"NO_CHANGE"}.'
+            'return exactly {"decision":"NO_CHANGE"}.'
         )
     parts.append(
         "Return one summary JSON object"
