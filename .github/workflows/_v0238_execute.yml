@@ -25,13 +25,17 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          import textwrap
 
           source = Path('.github/workflows/_v0238_apply.yml').read_text(encoding='utf-8')
           marker = "          python - <<'PY'\n"
           start = source.index(marker) + len(marker)
           end = source.index("\n          PY\n", start)
-          script = textwrap.dedent(source[start:end])
+          raw = source[start:end]
+          lines = raw.splitlines()
+          script = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in lines
+          )
 
           required = {
               'DEFAULT_THINKING = {purpose: "default" for purpose in THINKING_PURPOSES}': 'DEFAULT_THINKING = {purpose: "low" for purpose in THINKING_PURPOSES}',
