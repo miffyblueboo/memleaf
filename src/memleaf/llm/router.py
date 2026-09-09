@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Any, Callable, Mapping, Optional
 
 from .base import (
@@ -44,6 +45,7 @@ class ModelRouter:
         self.host = self._coerce_host(host)
         self.api = self._coerce_api(api) if api is not None else self._build_api()
         self.diagnostics: list[dict[str, str]] = []
+        self._call_metrics_local = threading.local()
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any], **kwargs: Any) -> "ModelRouter":
@@ -122,6 +124,7 @@ class ModelRouter:
                     **kwargs,
                     json_mode=provider in _JSON_MODE_PROVIDERS,
                     provider_name=provider or "openai",
+                    thinking=config.get("thinking") if isinstance(config.get("thinking"), Mapping) else None,
                 )
         except (ModelError, ValueError, TypeError):
             return None
@@ -142,6 +145,7 @@ class ModelRouter:
         return str(getattr(backend, "provider", "unknown")), str(getattr(backend, "model", "unknown"))
 
     def _call(self, backend: ModelBackend, prompt: str, *, system: str, purpose: str, temperature: float) -> str:
+        self._call_metrics_local.value = {}
         try:
             value = backend.complete(prompt, system=system, purpose=purpose, temperature=temperature)
         except ModelError as error:
@@ -149,9 +153,22 @@ class ModelRouter:
             raise
         except Exception as error:
             raise ModelError("model backend failed", stage=purpose) from error
+        finally:
+            consume = getattr(backend, "consume_call_metrics", None)
+            if callable(consume):
+                try:
+                    metrics = consume()
+                except Exception:
+                    metrics = {}
+                self._call_metrics_local.value = dict(metrics) if isinstance(metrics, Mapping) else {}
         if not isinstance(value, str):
             raise ModelError("model backend returned non-text output", code="model_invalid_response", stage=purpose)
         return value
+
+    def consume_call_metrics(self) -> dict[str, Any]:
+        value = getattr(self._call_metrics_local, "value", {})
+        self._call_metrics_local.value = {}
+        return dict(value) if isinstance(value, Mapping) else {}
 
     def complete(self, prompt: str, *, system: str = "", purpose: str = "", temperature: float = 0.0) -> str:
         if not isinstance(prompt, str):

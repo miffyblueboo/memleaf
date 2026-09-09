@@ -178,7 +178,7 @@ class V023ScopeCorrectionTests(unittest.TestCase):
         }
         processor = Processor(self.service)
         self.assertIsNone(processor.inputs._turn_evidence_project_scope(turn, self.service.vault.config()))
-        self.assertFalse(processor.inputs._scope_evidence_conflict(candidate, turn, self.service.vault.config()))
+        self.assertFalse(hasattr(processor.inputs, "_scope_evidence_conflict"))
 
 
 if __name__ == "__main__":

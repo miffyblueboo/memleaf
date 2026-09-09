@@ -20,6 +20,16 @@ _METRIC_STAGE_NAMES = frozenset({
     "coordination",
     "target_reconciliation",
 })
+_PROVIDER_METRIC_FIELDS = (
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "prompt_cache_hit_tokens",
+    "prompt_cache_miss_tokens",
+    "reasoning_tokens",
+)
+_METRIC_OPERATION_SUFFIXES = ("primary", "format_repair")
+_MAX_METRIC_CALLS = 256
 
 
 def _metric_bucket() -> dict[str, Any]:
@@ -33,6 +43,13 @@ def _metric_bucket() -> dict[str, Any]:
         "output_chars": 0,
         "output_bytes": 0,
         "max_in_flight": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 0,
+        "reasoning_tokens": 0,
+        "cache_hit_calls": 0,
         "_first_started": None,
         "_last_finished": None,
     }
@@ -44,6 +61,9 @@ class ModelExecutor:
         self._metrics_lock = threading.Lock()
         self._metrics = _metric_bucket()
         self._metric_stages: dict[str, dict[str, Any]] = {}
+        self._metric_operations: dict[str, dict[str, Any]] = {}
+        self._metric_calls: list[dict[str, Any]] = []
+        self._next_metric_call_index = 0
         self._active_calls = 0
 
     def _resolve_backend(self, model: Any = None, router: Any = None) -> Any:
@@ -82,34 +102,91 @@ class ModelExecutor:
             return DEFAULT_MODEL_CONCURRENCY
         return min(MAX_MODEL_CONCURRENCY, max(MIN_MODEL_CONCURRENCY, value))
 
-    def _metric_begin(self, *, stage: str, input_chars: int, input_bytes: int) -> float:
+    @staticmethod
+    def _safe_metric_operation(stage: str, value: Any) -> str:
+        if value == "gate_coverage_repair":
+            return "gate_coverage_repair"
+        if isinstance(value, str) and value in {
+            f"{stage}_{suffix}" for suffix in _METRIC_OPERATION_SUFFIXES
+        }:
+            return value
+        return f"{stage}_primary"
+
+    @staticmethod
+    def _safe_provider_metrics(value: Any) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            return {}
+        result: dict[str, Any] = {}
+        for key in _PROVIDER_METRIC_FIELDS:
+            item = value.get(key)
+            if isinstance(item, int) and not isinstance(item, bool) and 0 <= item <= 10_000_000:
+                result[key] = item
+        mode = value.get("thinking_mode")
+        if mode in {"default", "disabled", "low", "high", "max"}:
+            result["thinking_mode"] = mode
+        return result
+
+    @staticmethod
+    def _consume_provider_metrics(backend: Any) -> dict[str, Any]:
+        consume = getattr(backend, "consume_call_metrics", None)
+        if not callable(consume):
+            return {}
+        try:
+            return ModelExecutor._safe_provider_metrics(consume())
+        except Exception:
+            return {}
+
+    def _metric_begin(
+        self,
+        *,
+        stage: str,
+        operation: str,
+        input_chars: int,
+        input_bytes: int,
+    ) -> tuple[float, int]:
         started = time.perf_counter()
         with self._metrics_lock:
             self._active_calls += 1
-            for bucket in (self._metrics, self._metric_stages.setdefault(stage, _metric_bucket())):
+            self._next_metric_call_index += 1
+            call_index = self._next_metric_call_index
+            for bucket in (
+                self._metrics,
+                self._metric_stages.setdefault(stage, _metric_bucket()),
+                self._metric_operations.setdefault(operation, _metric_bucket()),
+            ):
                 if bucket["_first_started"] is None:
                     bucket["_first_started"] = started
                 bucket["call_count"] += 1
                 bucket["input_chars"] += input_chars
                 bucket["input_bytes"] += input_bytes
                 bucket["max_in_flight"] = max(bucket["max_in_flight"], self._active_calls)
-        return started
+        return started, call_index
 
     def _metric_finish(
         self,
         *,
         stage: str,
+        operation: str,
+        call_index: int,
         started: float,
+        input_chars: int,
+        input_bytes: int,
         output: Any,
         failed: bool,
         retry: bool,
+        provider_metrics: Mapping[str, Any] | None,
     ) -> None:
         finished = time.perf_counter()
         elapsed_ms = max(0, round((finished - started) * 1000))
         output_chars = len(output) if isinstance(output, str) else 0
         output_bytes = len(output.encode("utf-8")) if isinstance(output, str) else 0
+        provider_metrics = self._safe_provider_metrics(provider_metrics)
         with self._metrics_lock:
-            for bucket in (self._metrics, self._metric_stages.setdefault(stage, _metric_bucket())):
+            for bucket in (
+                self._metrics,
+                self._metric_stages.setdefault(stage, _metric_bucket()),
+                self._metric_operations.setdefault(operation, _metric_bucket()),
+            ):
                 bucket["_last_finished"] = finished
                 bucket["request_duration_ms"] += elapsed_ms
                 bucket["output_chars"] += output_chars
@@ -118,6 +195,25 @@ class ModelExecutor:
                     bucket["failed_calls"] += 1
                 if retry:
                     bucket["retry_count"] += 1
+                for field in _PROVIDER_METRIC_FIELDS:
+                    bucket[field] += int(provider_metrics.get(field, 0))
+                if int(provider_metrics.get("prompt_cache_hit_tokens", 0)) > 0:
+                    bucket["cache_hit_calls"] += 1
+            if len(self._metric_calls) < _MAX_METRIC_CALLS:
+                call = {
+                    "call_index": call_index,
+                    "stage": stage,
+                    "operation": operation,
+                    "retry": bool(retry),
+                    "failed": bool(failed),
+                    "request_duration_ms": elapsed_ms,
+                    "input_chars": input_chars,
+                    "input_bytes": input_bytes,
+                    "output_chars": output_chars,
+                    "output_bytes": output_bytes,
+                }
+                call.update(provider_metrics)
+                self._metric_calls.append(call)
             self._active_calls = max(0, self._active_calls - 1)
 
     @staticmethod
@@ -129,7 +225,7 @@ class ModelExecutor:
             if isinstance(first, (int, float)) and isinstance(last, (int, float)) and last >= first
             else 0
         )
-        return {
+        result = {
             "call_count": int(bucket.get("call_count", 0)),
             "retry_count": int(bucket.get("retry_count", 0)),
             "failed_calls": int(bucket.get("failed_calls", 0)),
@@ -140,10 +236,14 @@ class ModelExecutor:
             "output_chars": int(bucket.get("output_chars", 0)),
             "output_bytes": int(bucket.get("output_bytes", 0)),
             "max_in_flight": int(bucket.get("max_in_flight", 0)),
+            "cache_hit_calls": int(bucket.get("cache_hit_calls", 0)),
         }
+        for field in _PROVIDER_METRIC_FIELDS:
+            result[field] = int(bucket.get(field, 0))
+        return result
 
     def metrics(self) -> dict[str, Any]:
-        """Return aggregate structural telemetry only; never prompts, responses or credentials."""
+        """Return structural telemetry only; never prompts, responses or credentials."""
 
         with self._metrics_lock:
             total = self._public_metric_bucket(dict(self._metrics))
@@ -151,7 +251,15 @@ class ModelExecutor:
                 key: self._public_metric_bucket(dict(value))
                 for key, value in sorted(self._metric_stages.items())
             }
-        return {"total": total, "stages": stages}
+            operations = {
+                key: self._public_metric_bucket(dict(value))
+                for key, value in sorted(self._metric_operations.items())
+            }
+            calls = [
+                dict(value)
+                for value in sorted(self._metric_calls, key=lambda item: item["call_index"])
+            ]
+        return {"total": total, "stages": stages, "operations": operations, "calls": calls}
 
     def _complete(
         self,
@@ -161,12 +269,19 @@ class ModelExecutor:
         system: str,
         purpose: str,
         metric_stage: str | None = None,
+        metric_operation: str | None = None,
         retry: bool = False,
     ) -> str:
         stage = self._safe_metric_stage(metric_stage or purpose)
+        operation = self._safe_metric_operation(stage, metric_operation)
         input_chars = len(prompt) + len(system)
         input_bytes = len(prompt.encode("utf-8")) + len(system.encode("utf-8"))
-        started = self._metric_begin(stage=stage, input_chars=input_chars, input_bytes=input_bytes)
+        started, call_index = self._metric_begin(
+            stage=stage,
+            operation=operation,
+            input_chars=input_chars,
+            input_bytes=input_bytes,
+        )
         value: Any = None
         failed = False
         try:
@@ -179,21 +294,24 @@ class ModelExecutor:
             failed = True
             raise ModelError("model backend failed", stage=purpose) from error
         finally:
-            # Parser failures are recorded by the next call as retries; this
-            # metric records only one bounded backend invocation and never its text.
+            provider_metrics = self._consume_provider_metrics(backend)
             self._metric_finish(
                 stage=stage,
+                operation=operation,
+                call_index=call_index,
                 started=started,
+                input_chars=input_chars,
+                input_bytes=input_bytes,
                 output=value,
                 failed=failed,
                 retry=retry,
+                provider_metrics=provider_metrics,
             )
         if not isinstance(value, str):
-            # The transport call completed, but the response shape is still a
-            # model failure. Account for it without inspecting/repr-ing the value.
             with self._metrics_lock:
                 self._metrics["failed_calls"] += 1
                 self._metric_stages.setdefault(stage, _metric_bucket())["failed_calls"] += 1
+                self._metric_operations.setdefault(operation, _metric_bucket())["failed_calls"] += 1
             raise ModelError(
                 "model backend returned non-text output",
                 code="model_invalid_response",
@@ -475,12 +593,18 @@ class ModelExecutor:
         for attempt_count in (1, 2, 3, 4):
             raw: Any = None
             try:
+                operation_stage = self._safe_metric_stage(metric_stage or purpose)
                 raw = self._complete(
                     backend,
                     prompt if attempt_count == 1 else correction_prompt,
                     system=system,
                     purpose=purpose,
                     metric_stage=metric_stage,
+                    metric_operation=(
+                        f"{operation_stage}_primary"
+                        if attempt_count == 1
+                        else f"{operation_stage}_format_repair"
+                    ),
                     retry=attempt_count > 1,
                 )
                 parsed = parser(raw)

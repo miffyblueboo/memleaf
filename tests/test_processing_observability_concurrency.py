@@ -141,6 +141,11 @@ class ProcessingObservabilityConcurrencyTests(unittest.TestCase):
         self.assertGreater(stage["input_chars"], 0)
         self.assertGreaterEqual(stage["input_bytes"], stage["input_chars"])
         self.assertEqual(stage["output_chars"], len("bad") + len('{"ok":true}'))
+        self.assertEqual(metrics["operations"]["semantic_review_primary"]["call_count"], 1)
+        self.assertEqual(metrics["operations"]["semantic_review_format_repair"]["call_count"], 1)
+        self.assertEqual([row["operation"] for row in metrics["calls"]], [
+            "semantic_review_primary", "semantic_review_format_repair"
+        ])
         serialized = json.dumps(metrics, ensure_ascii=False)
         self.assertNotIn("TOP-SECRET-PROMPT", serialized)
         self.assertNotIn("TOP-SECRET-SYSTEM", serialized)
@@ -335,7 +340,7 @@ class ProcessingObservabilityConcurrencyTests(unittest.TestCase):
             self.assertIn("implementation", text)
         self.assertIn("Candidate semantic completeness is mandatory", gate)
         self.assertIn("ownership/affiliation", gate)
-        self.assertIn("implementation context alone", gate)
+        self.assertIn("implementation context is not project ownership by name alone", gate)
         self.assertIn("Semantic completeness is required", summary)
         self.assertIn("Scope metadata does not substitute", summary)
         self.assertIn("owning subject", summary)

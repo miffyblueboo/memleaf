@@ -622,21 +622,28 @@ class RouterAndAdapterTest(unittest.TestCase):
         router.complete("prompt", purpose=purpose)
         return json.loads(opener.requests[0][0].data.decode("utf-8"))
 
-    def test_supported_openai_json_mode_adds_response_format_without_forcing_reasoning_or_budget(self):
+    def test_supported_openai_json_mode_adds_response_format_and_deepseek_low_thinking(self):
         for provider in ("openai", "deepseek"):
             for purpose in ("gate", "summarize"):
                 with self.subTest(provider=provider, purpose=purpose):
                     payload = self._request_payload(provider, purpose)
                     self.assertEqual(payload["response_format"], {"type": "json_object"})
                     self.assertNotIn("max_tokens", payload)
-                    self.assertNotIn("thinking", payload)
+                    if provider == "deepseek":
+                        self.assertEqual(payload["thinking"], {"type": "enabled"})
+                        self.assertEqual(payload["reasoning_effort"], "low")
+                    else:
+                        self.assertNotIn("thinking", payload)
+                        self.assertNotIn("reasoning_effort", payload)
 
-    def test_deepseek_reasoning_is_not_overridden_for_any_stage(self):
+    def test_deepseek_low_thinking_is_limited_to_memleaf_model_stages(self):
         compact = self._request_payload("deepseek", "compact")
-        self.assertNotIn("thinking", compact)
+        self.assertEqual(compact["thinking"], {"type": "enabled"})
+        self.assertEqual(compact["reasoning_effort"], "low")
         regular = self._request_payload("deepseek", "chat")
         self.assertNotIn("response_format", regular)
         self.assertNotIn("thinking", regular)
+        self.assertNotIn("reasoning_effort", regular)
 
     def test_invalid_json_extraction_retries_twice_then_stops(self):
         schema_error = ModelOutputError(

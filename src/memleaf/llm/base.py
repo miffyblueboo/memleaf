@@ -6,6 +6,7 @@ import json
 import inspect
 import math
 import socket
+import threading
 import urllib.error
 import urllib.request
 from typing import Any, Callable, Mapping, Optional, Protocol
@@ -246,9 +247,18 @@ class HTTPModelBackend:
         self.model = model
         self.timeout = normalize_request_timeout(timeout)
         self._opener = opener or urllib.request.urlopen
+        self._call_metrics_local = threading.local()
         # The built-in stateless urllib transport can be used concurrently.
         # An injected opener is caller-owned and therefore defaults to serial.
         self.parallel_safe = opener is None
+
+    def _set_call_metrics(self, value: Mapping[str, Any] | None) -> None:
+        self._call_metrics_local.value = dict(value) if isinstance(value, Mapping) else {}
+
+    def consume_call_metrics(self) -> dict[str, Any]:
+        value = getattr(self._call_metrics_local, "value", {})
+        self._call_metrics_local.value = {}
+        return dict(value) if isinstance(value, Mapping) else {}
 
     @staticmethod
     def _is_timeout_reason(value: Any) -> bool:
