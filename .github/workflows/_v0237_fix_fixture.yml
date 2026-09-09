@@ -10,11 +10,11 @@ permissions:
 
 jobs:
   fix-fixture:
-    if: github.event.head_commit.message == 'apply-v0237-fixture-fix'
+    if: github.event.head_commit.message == 'apply-v0237-fixture-fix2'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Patch Windows runtime fixture
+      - name: Patch Windows runtime fixtures
         shell: bash
         run: |
           python - <<'PY'
@@ -23,9 +23,9 @@ jobs:
           text = p.read_text(encoding='utf-8')
           old = '            current = root / "managed" / "bin" / "memleaf-mcp"\n'
           new = '            current = root / "managed" / "bin" / ("memleaf-mcp.exe" if os.name == "nt" else "memleaf-mcp")\n'
-          if text.count(old) != 1:
-              raise SystemExit(f'expected exactly one fixture line, found {text.count(old)}')
-          p.write_text(text.replace(old, new, 1), encoding='utf-8')
+          if text.count(old) != 3:
+              raise SystemExit(f'expected exactly three fixture lines, found {text.count(old)}')
+          p.write_text(text.replace(old, new), encoding='utf-8')
           PY
       - name: Commit fixture correction
         shell: bash
@@ -33,5 +33,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add tests/test_hermes_runtime_install.py
-          git commit -m "test: model installed Windows MCP launcher"
+          git commit -m "test: model installed Windows MCP launchers"
           git push origin HEAD:work/v0.2.37-hermes-public-mcp-no-window
