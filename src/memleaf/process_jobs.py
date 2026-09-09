@@ -69,6 +69,12 @@ _MODEL_CALL_INT_FIELDS = frozenset({
     "reasoning_tokens",
 })
 _MAX_MODEL_CALL_ROWS = 256
+_THINKING_EFFECTIVE_MODES = frozenset({"provider_default", "unsupported", "disabled", "minimal", "low", "high", "max"})
+_THINKING_CONTROLS = frozenset({
+    "provider_default", "unsupported", "openai_reasoning_effort",
+    "deepseek_thinking_effort", "anthropic_effort", "anthropic_adaptive_effort",
+    "gemini_thinking_level", "gemini_thinking_budget",
+})
 
 
 def _now() -> str:
@@ -232,6 +238,12 @@ def _safe_model_metrics(value: Any) -> dict[str, Any]:
             mode = raw.get("thinking_mode")
             if mode in {"default", "disabled", "low", "high", "max"}:
                 row["thinking_mode"] = mode
+            effective = raw.get("thinking_effective")
+            if effective in _THINKING_EFFECTIVE_MODES:
+                row["thinking_effective"] = effective
+            control = raw.get("thinking_control")
+            if control in _THINKING_CONTROLS:
+                row["thinking_control"] = control
             bounded_calls.append(row)
         if bounded_calls:
             result["calls"] = bounded_calls

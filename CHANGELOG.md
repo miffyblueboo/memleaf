@@ -2,6 +2,13 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.39 — 2026-09-09
+
+- Make `llm.thinking` a provider-neutral model policy instead of a DeepSeek-only request feature. Gate, summarize and compact continue to request `low` by default for every configured API model stage.
+- Translate that policy through each supported protocol: OpenAI reasoning-capable Chat Completions use `reasoning_effort=low`; DeepSeek keeps its explicit thinking switch plus low effort; current Claude effort-capable Messages models use `output_config.effort=low` with adaptive thinking where the model generation requires it; Gemini 3+ uses the lowest supported thinking level (normally `low`, with documented `minimal` fallbacks where `low` is unavailable), while Gemini 2.5 maps low to the native 1,024-token thinking budget.
+- Keep compatibility fail-safe for older or unknown models: memleaf does not send speculative reasoning fields that the model cannot accept. Per-call telemetry now distinguishes requested thinking mode from effective mode and the fixed provider control used, so unsupported/provider-default execution is visible instead of being mislabeled as low.
+- Omit sampling temperature when an OpenAI reasoning request or current Claude effort request does not safely accept that parameter. Existing Markdown/Vault, extraction, review, retrieval and write semantics are unchanged.
+
 ## 0.2.38 — 2026-09-09
 
 - Unify automatic project-Scope grounding: registered and newly named model-selected projects now use the same exact candidate-bound source check. Remove the later registered-name occurrence conflict scan that could misclassify an implementation platform/product mention as ownership and reject the correct new project.
