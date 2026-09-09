@@ -107,7 +107,7 @@ class StageB3DScopeMaintenanceTest(unittest.TestCase):
             }
         )
 
-    def capture_turn(self, *, turn_id="turn-1", prefix="scope", content="move this fact"):
+    def capture_turn(self, *, turn_id="turn-1", prefix="scope", content="old fact moved to the new project"):
         self.service.capture(
             "codex", "s", turn_id, "user", content, event_id=f"{prefix}-user"
         )
@@ -122,7 +122,7 @@ class StageB3DScopeMaintenanceTest(unittest.TestCase):
         config = service.vault.config()
         config["scopes"] = {"project:old": {}}
         save_config(service.vault.config_path, config)
-        service.capture("codex", "s", "turn-1", "user", "move this fact", event_id=f"{name}-user")
+        service.capture("codex", "s", "turn-1", "user", "old fact moved to the new project", event_id=f"{name}-user")
         service.capture("codex", "s", "turn-1", "assistant", "confirmed", event_id=f"{name}-assistant")
         key = event_key(f"{name}-user")
         backend = QueueBackend(
@@ -531,7 +531,7 @@ class StageB3DScopeMaintenanceTest(unittest.TestCase):
 
     def test_config_success_then_processed_failure_is_idempotent_on_retry(self):
         self.service.capture(
-            "codex", "s", "turn-1", "user", "move this fact", event_id="scope-user"
+            "codex", "s", "turn-1", "user", "old fact moved to the new project", event_id="scope-user"
         )
         self.service.capture(
             "codex", "s", "turn-1", "assistant", "confirmed", event_id="scope-assistant"

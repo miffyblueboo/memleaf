@@ -86,6 +86,8 @@ class OpenAICompatibleBackend(HTTPModelBackend):
         }
 
     def _thinking_mode(self, purpose: str) -> str:
+        if purpose not in {"gate", "summarize", "compact"}:
+            return "default"
         value = self.thinking.get(purpose, "low")
         return value if value in {"default", "disabled", "low", "high", "max"} else "low"
 
