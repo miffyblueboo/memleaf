@@ -45,6 +45,10 @@ class StageC3PackagingTests(unittest.TestCase):
                 "memleaf-mcp": "memleaf.mcp_server:main",
             },
         )
+        self.assertEqual(
+            self.project["gui-scripts"],
+            {"memleaf-mcpw": "memleaf.mcp_server:main"},
+        )
         package_data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["setuptools"]["package-data"]
         self.assertIn("plugin.yaml", package_data["memleaf.hermes_provider"])
         self.assertIn("README.md", package_data["memleaf.hermes_provider"])

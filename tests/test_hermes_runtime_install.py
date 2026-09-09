@@ -148,6 +148,36 @@ class HermesRuntimeInspectionTests(unittest.TestCase):
 
             self.assertEqual("correct", inspection.status)
 
+    def test_windows_gui_sibling_is_same_runtime_only_when_allowed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="memleaf-runtime-windows-gui-") as temporary:
+            config = Path(temporary) / "config.yaml"
+            vault = r"F:\Memleaf\Vault"
+            config.write_text(
+                json.dumps(
+                    {
+                        "mcp_servers": {
+                            "memleaf": {
+                                "command": r"F:\Runtime\Scripts\memleaf-mcpw.exe",
+                                "args": ["--vault", vault],
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            strict = inspect_hermes_mcp(
+                config, vault, r"F:\Runtime\Scripts\memleaf-mcp.exe", platform="nt"
+            )
+            runtime_equivalent = inspect_hermes_mcp(
+                config,
+                vault,
+                r"F:\Runtime\Scripts\memleaf-mcp.exe",
+                platform="nt",
+                allow_same_runtime=True,
+            )
+            self.assertEqual("runtime_conflict", strict.status)
+            self.assertEqual("correct", runtime_equivalent.status)
+
     def test_other_vault_remains_a_hard_conflict(self) -> None:
         with tempfile.TemporaryDirectory(prefix="memleaf-runtime-vault-") as temporary:
             root = Path(temporary)
@@ -520,6 +550,8 @@ class HermesInstallerTransactionTests(unittest.TestCase):
             current.parent.mkdir(parents=True)
             existing.parent.mkdir(parents=True)
             current.write_text("", encoding="utf-8")
+            if os.name == "nt":
+                current.with_name("memleaf-mcpw.exe").write_text("", encoding="utf-8")
             existing.write_text("", encoding="utf-8")
             original = json.dumps(
                 {
