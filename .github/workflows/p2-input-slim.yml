@@ -23,21 +23,37 @@ jobs:
       - name: Install package
         run: python -m pip install -e .
       - name: Compile P2 assets
-        run: python -m py_compile benchmarks/p2/static_prompt_audit.py benchmarks/p2/test_static_prompt_audit.py
-      - name: Validate P2 input dedup
+        run: python -m py_compile benchmarks/p2/static_prompt_audit.py benchmarks/p2/test_static_prompt_audit.py benchmarks/p2/summary_prompt_audit.py benchmarks/p2/test_summary_input_slim.py
+      - name: Validate P2 input slimming
         run: |
-          python -m unittest benchmarks.p2.test_static_prompt_audit -v
-          python benchmarks/p2/static_prompt_audit.py > /tmp/p2-static.json
-          cat /tmp/p2-static.json
+          python -m unittest benchmarks.p2.test_static_prompt_audit benchmarks.p2.test_summary_input_slim -v
+          python benchmarks/p2/static_prompt_audit.py > /tmp/p2-gate-static.json
+          python benchmarks/p2/summary_prompt_audit.py > /tmp/p2-summary-static.json
+          cat /tmp/p2-gate-static.json
+          cat /tmp/p2-summary-static.json
           python - <<'PY'
           import json
           from pathlib import Path
-          value = json.loads(Path('/tmp/p2-static.json').read_text())
-          assert value['legacy_user_marker_occurrences'] == 2
-          assert value['p2_user_marker_occurrences'] == 1
-          assert value['legacy_assistant_marker_occurrences'] == 2
-          assert value['p2_assistant_marker_occurrences'] == 1
-          assert value['tool_body_occurrences_p2'] == 0
-          assert value['bytes_removed'] > 0
-          assert value['reduction_ratio'] > 0.25
+          gate = json.loads(Path('/tmp/p2-gate-static.json').read_text())
+          assert gate['legacy_user_marker_occurrences'] == 2
+          assert gate['p2_user_marker_occurrences'] == 1
+          assert gate['legacy_assistant_marker_occurrences'] == 2
+          assert gate['p2_assistant_marker_occurrences'] == 1
+          assert gate['tool_body_occurrences_p2'] == 0
+          assert gate['bytes_removed'] > 0
+          assert gate['reduction_ratio'] > 0.25
+          summary = json.loads(Path('/tmp/p2-summary-static.json').read_text())
+          create = summary['automatic_create']
+          update = summary['automatic_update']
+          assert create['bytes_removed'] > 0 and update['bytes_removed'] > 0
+          assert create['unrelated_a_occurrences'] == 0
+          assert create['unrelated_b_occurrences'] == 0
+          assert create['fixed_target_occurrences'] == 0
+          assert create['native_occurrences'] == 1
+          assert update['unrelated_a_occurrences'] == 0
+          assert update['unrelated_b_occurrences'] == 0
+          assert update['fixed_target_occurrences'] == 1
+          assert update['native_occurrences'] == 1
+          assert create['scope_background_occurrences'] == 1
+          assert create['scope_registry_occurrences'] == 1
           PY
