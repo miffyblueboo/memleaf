@@ -135,12 +135,8 @@ class PlanningContext:
         priority_only: bool = False,
         scope_records: Optional[list[Any]] = None,
         native_query: Optional[str] = None,
-    ) -> tuple[
-        list[dict[str, Any]],
-        Any,
-        list[dict[str, str]],
-        Optional[tuple[list[Any], bool]],
-    ]:
+        return_bound_status: bool = False,
+    ) -> Any:
         if isinstance(query, str):
             query_value: str | list[str] = query.strip()
         else:
@@ -238,7 +234,7 @@ class PlanningContext:
             query=visible,
             scope=scope,
         )
-        related = self._bound_related(
+        related, bound_complete = self._bound_related_with_status(
             related,
             priority_memory_ids=priority_memory_ids,
         )
@@ -252,6 +248,8 @@ class PlanningContext:
             and isinstance(item.get("native_source_id"), str)
             and isinstance(item.get("native_id"), str)
         ]
+        if return_bound_status:
+            return related, scope, native_refs, scope_fallback, bound_complete
         return related, scope, native_refs, scope_fallback
 
 
@@ -276,17 +274,17 @@ class PlanningContext:
 
 
     @classmethod
-    def _bound_related(
+    def _bound_related_with_status(
         cls,
         related: Iterable[Mapping[str, Any]],
         *,
         priority_memory_ids: Iterable[str] = (),
-    ) -> list[dict[str, Any]]:
-        """Keep model related-memory context within the processing budget.
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Return the legacy bounded projection plus whether it stayed complete.
 
-        Update/duplicate targets are placed first, but every body is still
-        bounded.  The serialized payload limit also covers metadata, so a
-        large tag/alias list cannot bypass the body budget.
+        B3 needs a proof that local comparison context was not dropped before it
+        may treat an absent target as CREATE-safe.  Legacy callers keep using
+        ``_bound_related`` and therefore retain the exact list-only API.
         """
 
         priority = {
@@ -315,25 +313,28 @@ class PlanningContext:
             reverse=True,
         )
         selected: list[dict[str, Any]] = []
-        used = 2  # The surrounding JSON array brackets.
+        used = 2
+        complete = True
         for value in values:
             if len(selected) >= _RELATED_MAX_ITEMS:
+                complete = False
                 break
             body = value.get("body")
             if isinstance(body, str) and len(body) > _RELATED_MAX_BODY_CHARS:
                 value["body"] = body[: _RELATED_MAX_BODY_CHARS - 1].rstrip() + "…"
+                complete = False
             size = cls._related_payload_size(value)
             if size < 0:
+                complete = False
                 continue
             additional = size + (1 if selected else 0)
             if used + additional > _RELATED_MAX_CHARS:
-                # A priority target still gets a minimal, bounded view when
-                # oversized metadata leaves no room for its normal payload.
                 memory_id = value.get("memory_id")
                 if not (
                     isinstance(memory_id, str)
                     and memory_id.casefold() in priority
                 ):
+                    complete = False
                     continue
                 minimal = {
                     key: value[key]
@@ -342,11 +343,30 @@ class PlanningContext:
                 }
                 size = cls._related_payload_size(minimal)
                 if size < 0 or used + size + (1 if selected else 0) > _RELATED_MAX_CHARS:
+                    complete = False
                     continue
                 value = minimal
                 additional = size + (1 if selected else 0)
+                complete = False
             selected.append(value)
             used += additional
+        if len(selected) != len(values):
+            complete = False
+        return selected, complete
+
+    @classmethod
+    def _bound_related(
+        cls,
+        related: Iterable[Mapping[str, Any]],
+        *,
+        priority_memory_ids: Iterable[str] = (),
+    ) -> list[dict[str, Any]]:
+        """Keep the legacy model related-memory projection unchanged."""
+
+        selected, _ = cls._bound_related_with_status(
+            related,
+            priority_memory_ids=priority_memory_ids,
+        )
         return selected
 
 
@@ -472,6 +492,126 @@ class PlanningContext:
             strict_relevance=not scoped_reply_context,
             native_query=visible,
         )
+
+
+    def _single_pass_scope_correction_context(
+        self,
+        turn: InboxTurn,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Return bounded local context for an explicit two-project correction.
+
+        This is only a retrieval expansion.  It does not decide which project is
+        old/new or which memory is the target; the single model call proposes
+        that decision and ``_scope_correction_plan`` remains the final Core
+        authorization boundary.
+        """
+
+        user_text = " ".join(
+            event.content for event in turn.events
+            if event.role == "user" and isinstance(event.content, str)
+        ).strip()
+        if not user_text or not _SCOPE_CORRECTION_MARKER_RE.search(user_text):
+            return [], True
+        try:
+            with self.service.vault.lock():
+                config = self.service.vault.config()
+                scopes = config.get("scopes", {}) if isinstance(config, Mapping) else {}
+                if not isinstance(scopes, Mapping):
+                    return [], False
+                mentioned = [
+                    scope for scope in scopes
+                    if isinstance(scope, str)
+                    and scope.startswith("project:")
+                    and self._scope_terms_present(user_text, scope, config)
+                ]
+                mentioned = list(dict.fromkeys(mentioned))
+                if len(mentioned) != 2:
+                    return [], True
+                records = self.service._read_memories_unlocked("knowledge")
+                values = [
+                    record.memory.to_dict()
+                    for record in records
+                    if any(filter_by_scope([record.memory], [scope], config) for scope in mentioned)
+                ]
+        except (OSError, UnicodeError, ValueError, TypeError):
+            return [], False
+        return self._bound_related_with_status(values)
+
+
+    def _single_pass_related(
+        self,
+        turn: InboxTurn,
+        state: Mapping[str, Any],
+        explicit_scope: Any = None,
+        *,
+        overlay: Iterable[Mapping[str, Any]] = (),
+        physical_units: Iterable[Any] = (),
+    ) -> tuple[
+        list[dict[str, Any]],
+        Any,
+        list[dict[str, str]],
+        Optional[tuple[list[Any], bool]],
+        bool,
+    ]:
+        """Read B3 comparison context before the single model call.
+
+        ``lookup_complete`` is true only when the bounded related projection is
+        complete and a scoped fallback did not discover multiple ambiguous
+        records. B3 permits no CREATE/UPDATE/NO_CHANGE when this proof is false.
+        """
+
+        visible = " ".join(
+            event.content for event in turn.events if isinstance(event.content, str)
+        ).strip()
+        physical_units = tuple(physical_units or ())
+        physical_queries = self._physical_query_texts(physical_units)
+        scope = _safe_scope_background(state, explicit_scope)
+        scoped_reply_context = self._has_specific_scope(scope) and any(
+            getattr(unit, "can_support", False) is True
+            and getattr(unit, "origin", None) == "assistant_report"
+            for unit in physical_units
+        )
+        query: str | list[str] = (
+            [visible, *physical_queries]
+            if physical_queries and self._has_specific_scope(scope)
+            else visible
+        )
+        related, scope_background, native_refs, scope_fallback, bound_complete = self._related_query(
+            turn,
+            state,
+            query,
+            explicit_scope,
+            overlay=overlay,
+            strict_relevance=not scoped_reply_context,
+            native_query=visible,
+            return_bound_status=True,
+        )
+        correction_rows, correction_complete = self._single_pass_scope_correction_context(turn)
+        if correction_rows:
+            existing_ids = {
+                item.get("memory_id").casefold()
+                for item in related
+                if isinstance(item, Mapping)
+                and isinstance(item.get("memory_id"), str)
+                and item.get("native") is not True
+            }
+            combined = list(related)
+            combined.extend(
+                row for row in correction_rows
+                if isinstance(row.get("memory_id"), str)
+                and row["memory_id"].casefold() not in existing_ids
+            )
+            related, combined_complete = self._bound_related_with_status(combined)
+            bound_complete = bool(bound_complete and correction_complete and combined_complete)
+        elif not correction_complete:
+            bound_complete = False
+        fallback_ambiguous = bool(
+            scope_fallback is not None
+            and len(scope_fallback) == 2
+            and scope_fallback[1] is True
+        )
+        lookup_complete = bool(bound_complete and not fallback_ambiguous)
+        return related, scope_background, native_refs, scope_fallback, lookup_complete
 
 
     @staticmethod

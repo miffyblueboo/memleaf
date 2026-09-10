@@ -549,6 +549,12 @@ def parse_coverage(
                     validation_detail="invalid_evidence",
                     evidence_check="coverage_terminal_witness",
                 )
+            if set(row) != {"unit_id", "decision", "candidate_ids"}:
+                raise ModelOutputError(
+                    "invalid coverage candidate shape",
+                    validation_detail="invalid_evidence",
+                    evidence_check="coverage_shape",
+                )
             if not units[uid].can_support or not isinstance(ids, list) or not ids or any(not isinstance(i, str) or i not in candidates for i in ids):
                 raise ModelOutputError("invalid coverage candidate", validation_detail="invalid_evidence",
                                        evidence_check="coverage_candidate")
@@ -583,6 +589,15 @@ def parse_coverage(
                     "coverage memory_id is only valid for already_completed",
                     validation_detail="invalid_evidence",
                     evidence_check="coverage_terminal_witness",
+                )
+            expected_fields = ({"unit_id", "decision", "reason", "memory_id"}
+                               if reason == "already_completed"
+                               else {"unit_id", "decision", "reason"})
+            if set(row) != expected_fields:
+                raise ModelOutputError(
+                    "invalid coverage decision shape",
+                    validation_detail="invalid_evidence",
+                    evidence_check="coverage_shape",
                 )
             # Normalize only the model's declared reason. This keeps the
             # protocol source-neutral: no local topic or business heuristic

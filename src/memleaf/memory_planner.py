@@ -14,7 +14,7 @@ from .create_coordinator import CreateCoordinator
 from .update_coordinator import UpdateCoordinator
 from .target_reconciliation import reconcile_candidate_target
 from .evidence_policy import retain_tool_evidence
-from .parallel_model import run_ordered_keyed_jobs
+from .summary_batch import run_summary_jobs_with_create_batching
 from .prompts import COVERAGE_ALREADY_COMPLETED_CORRECTION, COVERAGE_CORRECTION, GATE_COVERAGE_SYSTEM, GATE_SYSTEM, SUMMARIZE_SYSTEM, coverage_repair_prompt, gate_prompt, summarize_prompt
 from .retrieval import normalize_term
 from .scope_state import ScopeError, normalize_scopes
@@ -907,6 +907,7 @@ class MemoryPlanner:
                 saved_maps = [deepcopy(batch_state[key]) for key in (
                     "target_relations", "unknown_target_ids", "candidate_level_target_ids",
                     "scope_correction_plans")]
+                correction_metric_context: dict[str, Any] = {}
                 try:
                     correction_raw = self.model._complete(
                         backend,
@@ -928,6 +929,7 @@ class MemoryPlanner:
                         purpose="gate",
                         metric_stage="gate",
                         metric_operation="gate_coverage_repair",
+                        metric_context=correction_metric_context,
                     )
                     correction_raw, correction_bindings = split_semantic_envelope(correction_raw)
                     correction_raw, correction_coverage = split_gate_envelope(correction_raw)
@@ -939,11 +941,13 @@ class MemoryPlanner:
                     new_ids = {item["candidate_id"] for item in correction_gate["candidates"]}
                     if new_ids.intersection(item["candidate_id"] for item in batch_gate["candidates"]):
                         raise ModelOutputError("coverage correction reused a candidate id", validation_detail="duplicate_candidate_id")
-                    if correction_bindings is not None:
+                    correction_binding_map = (
                         validate_bindings(correction_bindings, missing, correction_gate["candidates"])
+                        if correction_bindings is not None else {}
+                    )
                     resolve_omitted_candidate_event_ids(
                         correction_gate["candidates"],
-                        correction_bindings if correction_bindings is not None else {},
+                        correction_binding_map,
                         missing,
                     )
                     new_coverage = (parse_coverage(correction_coverage, missing, correction_gate["candidates"],
@@ -957,7 +961,9 @@ class MemoryPlanner:
                               "coverage": list(saved_coverage.values()) + list(new_coverage.values()),
                               "evidence_bindings": old_bindings + (correction_bindings or [])}
                     batch_gate = parse_gate(json.dumps(merged, ensure_ascii=False), batch_units, batch_state)
-                except (ModelError, ModelOutputError):
+                except (ModelError, ModelOutputError) as error:
+                    if isinstance(error, ModelOutputError):
+                        self.model._record_invalid_output(correction_metric_context)
                     # A failed correction cannot invalidate already validated
                     # siblings, but the unresolved units remain retryable.
                     batch_gate = saved_gate
@@ -1473,6 +1479,11 @@ class MemoryPlanner:
             summary_jobs.append({
                 "key": target_key,
                 "call": run_summary,
+                "batchable": gate_update_target is None and correction_plan is None,
+                "item_id": f"summary-{job_index}",
+                "prompt": summary_prompt_value,
+                "parser": parse_summary,
+                "diagnostic_context": diagnostic_context,
                 "candidate": dict(candidate),
                 "candidate_related": candidate_related,
                 "candidate_native_refs": candidate_native_refs,
@@ -1482,10 +1493,10 @@ class MemoryPlanner:
             })
             request_slots.append({"kind": "summary", "job_index": job_index})
 
-        summary_outcomes = run_ordered_keyed_jobs(
+        summary_outcomes = run_summary_jobs_with_create_batching(
             self.model,
             backend,
-            [(job["key"], job["call"]) for job in summary_jobs],
+            summary_jobs,
         )
 
         for slot in request_slots:
