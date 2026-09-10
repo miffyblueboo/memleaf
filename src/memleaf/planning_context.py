@@ -511,10 +511,9 @@ class PlanningContext:
     ]:
         """Read B3 comparison context before the single model call.
 
-        ``create_allowed`` is true only when the bounded related projection is
+        ``lookup_complete`` is true only when the bounded related projection is
         complete and a scoped fallback did not discover multiple ambiguous
-        records. UPDATE/NO_CHANGE may still use returned local targets when
-        CREATE is disabled.
+        records. B3 permits no CREATE/UPDATE/NO_CHANGE when this proof is false.
         """
 
         visible = " ".join(
@@ -548,8 +547,8 @@ class PlanningContext:
             and len(scope_fallback) == 2
             and scope_fallback[1] is True
         )
-        create_allowed = bool(bound_complete and not fallback_ambiguous)
-        return related, scope_background, native_refs, scope_fallback, create_allowed
+        lookup_complete = bool(bound_complete and not fallback_ambiguous)
+        return related, scope_background, native_refs, scope_fallback, lookup_complete
 
 
     @staticmethod

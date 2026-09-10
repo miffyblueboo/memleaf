@@ -60,7 +60,7 @@ class FakeExecutor:
         return parser(self.raw)
 
 
-def validator(candidate_id, decision, target, target_record, proposed, evidence):
+def validator(candidate_id, decision, target, target_record, proposed, evidence, context):
     if not isinstance(proposed.get("title"), str) or not isinstance(proposed.get("body"), str):
         raise ModelOutputError("invalid test memory", validation_detail="candidate_shape")
     result = dict(proposed)
@@ -120,7 +120,7 @@ class SinglePassPlanTests(unittest.TestCase):
             raw,
             evidence_units=evidence,
             local_memories=[local("m-jdk", body="JDK is 17.")],
-            create_allowed=True,
+            lookup_complete=True,
             validate_memory=validator,
         )
         self.assertEqual([item["decision"] for item in result["items"]], ["CREATE", "NO_CHANGE"])
@@ -145,7 +145,7 @@ class SinglePassPlanTests(unittest.TestCase):
             raw,
             evidence_units=evidence,
             local_memories=[local("m-db", body="Alpha uses MySQL.")],
-            create_allowed=True,
+            lookup_complete=True,
             validate_memory=validator,
         )
         item = result["items"][0]
@@ -171,7 +171,7 @@ class SinglePassPlanTests(unittest.TestCase):
                 raw,
                 evidence_units=evidence,
                 local_memories=[],
-                create_allowed=True,
+                lookup_complete=True,
                 validate_memory=validator,
             )
 
@@ -195,7 +195,48 @@ class SinglePassPlanTests(unittest.TestCase):
                 raw,
                 evidence_units=evidence,
                 local_memories=[],
-                create_allowed=False,
+                lookup_complete=False,
+                validate_memory=validator,
+            )
+
+    def test_incomplete_lookup_forbids_update_and_nochange_too(self):
+        evidence = [unit("u1", "Alpha changed.")]
+        for decision, extra in (
+            ("UPDATE", {"target_memory_id": "m1", "memory": memory()}),
+            ("NO_CHANGE", {"target_memory_id": "m1"}),
+        ):
+            with self.subTest(decision=decision):
+                raw = json.dumps({
+                    "protocol_version": PROTOCOL_VERSION,
+                    "items": [{
+                        "candidate_id": "c1",
+                        "decision": decision,
+                        "evidence": [claim("u1", "Alpha changed.")],
+                        **extra,
+                    }],
+                    "no_memory": [],
+                })
+                with self.assertRaises(ModelOutputError):
+                    parse_single_pass_output(
+                        raw,
+                        evidence_units=evidence,
+                        local_memories=[local("m1")],
+                        lookup_complete=False,
+                        validate_memory=validator,
+                    )
+
+    def test_parser_requires_real_evidence_units_for_authority_validation(self):
+        raw = json.dumps({
+            "protocol_version": PROTOCOL_VERSION,
+            "items": [],
+            "no_memory": [{"unit_id": "u1", "reason": "no_future_value"}],
+        })
+        with self.assertRaises(TypeError):
+            parse_single_pass_output(
+                raw,
+                evidence_units=[{"unit_id": "u1", "event_key": "e", "role": "user", "content": "x"}],
+                local_memories=[],
+                lookup_complete=True,
                 validate_memory=validator,
             )
 
@@ -216,7 +257,7 @@ class SinglePassPlanTests(unittest.TestCase):
                 missing,
                 evidence_units=evidence,
                 local_memories=[],
-                create_allowed=True,
+                lookup_complete=True,
                 validate_memory=validator,
             )
         overlap = json.dumps({
@@ -237,7 +278,7 @@ class SinglePassPlanTests(unittest.TestCase):
                 overlap,
                 evidence_units=evidence,
                 local_memories=[],
-                create_allowed=True,
+                lookup_complete=True,
                 validate_memory=validator,
             )
 
@@ -271,7 +312,7 @@ class SinglePassPlanTests(unittest.TestCase):
             raw,
             evidence_units=evidence,
             local_memories=[],
-            create_allowed=True,
+            lookup_complete=True,
             validate_memory=validator,
         )
         self.assertEqual(len(result["items"]), 2)
@@ -291,7 +332,7 @@ class SinglePassPlanTests(unittest.TestCase):
                 raw,
                 evidence_units=evidence,
                 local_memories=[local("m1")],
-                create_allowed=True,
+                lookup_complete=True,
                 validate_memory=validator,
             )
 
@@ -307,7 +348,7 @@ class SinglePassPlanTests(unittest.TestCase):
             executor,
             "backend",
             evidence_units=evidence,
-            create_allowed=True,
+            lookup_complete=True,
             validate_memory=validator,
             diagnostic_context={"session_id": "s"},
         )

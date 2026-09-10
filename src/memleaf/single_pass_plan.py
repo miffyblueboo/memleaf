@@ -26,6 +26,7 @@ _NO_MEMORY_REASONS = frozenset({
     "no_future_value",
     "quoted_or_example",
     "negated",
+    "native_already_covered",
 })
 _DEFER_REASONS = frozenset({
     "target_ambiguous",
@@ -55,7 +56,7 @@ ONE-PASS JOB
 In this one response: identify every independently useful long-term memory in the current evidence, decide CREATE/UPDATE/NO_CHANGE/DEFERRED, and write final content for CREATE/UPDATE. Do not create a separate admission result, candidate proposal, summary draft, or review. One item is one independently retrievable/updateable future-use topic. Preserve subject/entity, condition, polarity, uncertainty, ownership, state, and important numbers/codes when required for meaning.
 
 DECISIONS
-CREATE: only for durable information not already represented by a supplied local memory, and only when input create_allowed=true. UPDATE: one supplied local memory represents the same evolving future use and current evidence establishes a real change. NO_CHANGE: current evidence is a duplicate/restatement or establishes no semantic change to that supplied target. DEFERRED: a durable candidate exists but target/scope/ownership/evidence is unsafe to decide. UPDATE/NO_CHANGE target_memory_id must be copied from LOCAL_MEMORY_CATALOG. One target may be used by at most one item.
+CREATE/UPDATE/NO_CHANGE are terminal decisions and require input lookup_complete=true. CREATE: only for durable information not already represented by a supplied local memory. UPDATE: one supplied local memory represents the same evolving future use and current evidence establishes a real change. NO_CHANGE: current evidence is a duplicate/restatement or establishes no semantic change to that supplied target. DEFERRED: a durable candidate exists but target/scope/ownership/evidence or lookup completeness is unsafe to decide. UPDATE/NO_CHANGE target_memory_id must be copied from LOCAL_MEMORY_CATALOG. One target may be used by at most one item.
 
 CONTENT
 CREATE supplies type, scopes, scope_source and memory. UPDATE supplies target_memory_id and memory; Core inherits immutable type/scopes from the target. memory contains title, body, tags and only optional aliases, keywords, status, completed_at, due_date. Do not emit type/scopes/sources/update_memory_id inside memory; Core supplies deterministic metadata and source references after validating evidence. Omission from current evidence is not retraction or completion. For an UPDATE, preserve still-valid target content unless current evidence supersedes it.
@@ -184,16 +185,16 @@ def build_single_pass_prompt(
     native_memories: Iterable[Mapping[str, Any]] = (),
     scope_background: Any = None,
     scope_registry: Any = None,
-    create_allowed: bool = True,
+    lookup_complete: bool = True,
 ) -> tuple[str, tuple[Any, ...], dict[str, dict[str, Any]]]:
-    if type(create_allowed) is not bool:
-        raise TypeError("create_allowed must be boolean")
+    if type(lookup_complete) is not bool:
+        raise TypeError("lookup_complete must be boolean")
     evidence, source_units = _evidence_projection(evidence_units)
     local, local_by_key = _local_catalog(related_memories)
     native = _native_catalog(native_memories)
     payload = {
         "protocol_version": PROTOCOL_VERSION,
-        "create_allowed": create_allowed,
+        "lookup_complete": lookup_complete,
         "current_evidence": evidence,
         "local_memory_catalog": local,
         "native_memory_catalog": native,
@@ -214,7 +215,7 @@ def _memory_object(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ModelOutputError("B3 write requires memory object", validation_detail="candidate_shape")
     unknown = set(value) - _MEMORY_FIELDS
-    required = {"title", "body", "tags"}
+    required = {"title", "body"}
     if unknown or not required.issubset(value):
         raise ModelOutputError(
             "B3 memory fields are invalid",
@@ -232,7 +233,7 @@ def _canonical_target(raw: Any, local_by_key: Mapping[str, Mapping[str, Any]]) -
     return target["memory_id"], target
 
 
-MemoryValidator = Callable[[str, str, str | None, Mapping[str, Any] | None, Mapping[str, Any], list[dict[str, Any]]], Mapping[str, Any]]
+MemoryValidator = Callable[[str, str, str | None, Mapping[str, Any] | None, Mapping[str, Any], list[dict[str, Any]], Mapping[str, Any]], Mapping[str, Any]]
 
 
 def parse_single_pass_output(
@@ -240,12 +241,20 @@ def parse_single_pass_output(
     *,
     evidence_units: Iterable[Any],
     local_memories: Iterable[Mapping[str, Any]],
-    create_allowed: bool,
+    lookup_complete: bool,
     validate_memory: MemoryValidator,
 ) -> dict[str, Any]:
     if not callable(validate_memory):
         raise TypeError("validate_memory must be callable")
-    _, source_units = _evidence_projection(evidence_units)
+    source_units = tuple(evidence_units)
+    if any(
+        isinstance(unit, Mapping)
+        or not isinstance(getattr(unit, "unit_id", None), str)
+        or getattr(unit, "can_support", False) is not True
+        for unit in source_units
+    ):
+        raise TypeError("B3 parser evidence_units must be validated EvidenceUnit objects")
+    _evidence_projection(source_units)
     _, local_by_key = _local_catalog(local_memories)
     value = parse_strict_json(raw)
     if not isinstance(value, Mapping) or set(value) != {"protocol_version", "items", "no_memory"}:
@@ -281,7 +290,13 @@ def parse_single_pass_output(
         if not isinstance(decision, str) or decision not in _DECISIONS:
             raise ModelOutputError("B3 decision is invalid", validation_detail="other_schema_violation")
         if set(raw_item) != decision_fields[decision]:
-            raise ModelOutputError("B3 item fields do not match decision", validation_detail="unknown_fields")
+            detail = "unknown_fields" if set(raw_item) - decision_fields[decision] else "missing_fields"
+            raise ModelOutputError("B3 item fields do not match decision", validation_detail=detail)
+        if decision in {"CREATE", "UPDATE", "NO_CHANGE"} and not lookup_complete:
+            raise ModelOutputError(
+                "incomplete B3 lookup cannot authorize a terminal decision",
+                validation_detail="other_schema_violation",
+            )
         candidate_ids.add(candidate_id)
         claims = raw_item.get("evidence")
         if not isinstance(claims, list) or not claims:
@@ -291,8 +306,6 @@ def parse_single_pass_output(
         target_record: Mapping[str, Any] | None = None
         item = dict(raw_item)
         if decision == "CREATE":
-            if not create_allowed:
-                raise ModelOutputError("B3 CREATE is forbidden by lookup state", validation_detail="other_schema_violation")
             if item.get("type") not in MEMORY_TYPES:
                 raise ModelOutputError("B3 CREATE type is invalid", validation_detail="invalid_type")
             scopes = item.get("scopes")
@@ -357,7 +370,7 @@ def parse_single_pass_output(
             "evidence": [dict(claim) for claim in bindings[candidate_id]],
         }
         if decision == "CREATE":
-            validated = validate_memory(candidate_id, decision, None, None, item["memory"], normalized["evidence"])
+            validated = validate_memory(candidate_id, decision, None, None, item["memory"], normalized["evidence"], item)
             normalized.update({
                 "type": item["type"],
                 "scopes": list(item["scopes"]),
@@ -366,7 +379,7 @@ def parse_single_pass_output(
             })
         elif decision == "UPDATE":
             target_id = item["target_memory_id"]
-            validated = validate_memory(candidate_id, decision, target_id, target_record, item["memory"], normalized["evidence"])
+            validated = validate_memory(candidate_id, decision, target_id, target_record, item["memory"], normalized["evidence"], item)
             normalized["target_memory_id"] = target_id
             normalized["memory"] = dict(validated)
         elif decision == "NO_CHANGE":
@@ -390,7 +403,7 @@ def run_single_pass_stage(
     native_memories: Iterable[Mapping[str, Any]] = (),
     scope_background: Any = None,
     scope_registry: Any = None,
-    create_allowed: bool = True,
+    lookup_complete: bool = True,
     validate_memory: MemoryValidator,
     diagnostic_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -400,7 +413,7 @@ def run_single_pass_stage(
         native_memories=native_memories,
         scope_background=scope_background,
         scope_registry=scope_registry,
-        create_allowed=create_allowed,
+        lookup_complete=lookup_complete,
     )
     complete = getattr(model_executor, "_complete_json_stage", None)
     if not callable(complete):
@@ -415,7 +428,7 @@ def run_single_pass_stage(
             raw,
             evidence_units=source_units,
             local_memories=local_rows,
-            create_allowed=create_allowed,
+            lookup_complete=lookup_complete,
             validate_memory=validate_memory,
         ),
         diagnostic_context=diagnostic_context,
