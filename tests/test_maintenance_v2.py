@@ -120,7 +120,7 @@ class MaintenanceV2Tests(unittest.TestCase):
 
     @staticmethod
     def related_payload(prompt):
-        start_marker = "Summary comparison context (native memories and fixed UPDATE target only):\n"
+        start_marker = "Relevant existing memleaf/native memories:\n"
         end_marker = "\nSession scope background:\n"
         start = prompt.index(start_marker) + len(start_marker)
         end = prompt.index(end_marker, start)
