@@ -10,8 +10,11 @@ Correctness baseline B0 is fixed at:
 `ea92756f31d1445792e2dff6657b9579641c9980`
 
 This is the P0 branch state after the Gate protocol candidate plus the isolated
-F01/F03/F04/F06 follow-up fixes passed the repository's Linux, Windows, macOS,
-wheel/sdist, and Codex-native CI matrix.
+F01/F03/F04/F06 follow-up fixes and the invalid-response metrics classification
+repair passed the repository's Linux, Windows, macOS, wheel/sdist, and
+Codex-native CI matrix. The P1 fixture, manifest, tests, and this README are
+pinned to that exact corrected B0; changing the product baseline requires an
+explicit fixture re-pin and hash verification before another real-model run.
 
 `cases-v1.json.gz` stores the exact compressed JSON fixture and preserves the ten
 synthetic semantic cases from the audit material. The exploration default is 3
@@ -54,6 +57,13 @@ completion token totals exist, charging every input token at the more expensive
 input tier. That observed value is not represented as a hard bound on future
 calls.
 
+`summarize_results.py` aggregates structural execution evidence such as wall
+latency, call/stage counts, retries, invalid outputs, failures, provider token
+availability, deferred/unresolved work, and fresh-instance visibility. Missing
+provider metrics stay unavailable rather than being converted to zero. Semantic
+quality remains `PENDING_INDEPENDENT_GRADING`; expected rubrics are not treated
+as an automatic ACCEPT signal.
+
 ## Current external blocker
 
 A zero-call GitHub Actions preflight on 2026-09-10 at commit
@@ -82,14 +92,17 @@ Inspect the local route identity without printing its URL or credential and
 without calling a model:
 
 ```bash
-python benchmarks/p1/run_baseline.py \
-  --config-template ~/.memleaf/config.yaml
+python benchmarks/p1/inspect_route.py
 ```
 
-Run the small asset tests (still no model call):
+Run the P1 asset tests (still no model call):
 
 ```bash
-python -m unittest benchmarks.p1.test_runner benchmarks.p1.test_cost_report -v
+python -m unittest \
+  benchmarks.p1.test_runner \
+  benchmarks.p1.test_cost_report \
+  benchmarks.p1.test_route_inspect \
+  benchmarks.p1.test_summarize_results -v
 ```
 
 ### Stage 1: three-call probe
@@ -110,6 +123,14 @@ python benchmarks/p1/run_baseline.py \
   --output benchmarks/results/p1-b0-probe.json \
   --max-process-runs 1 \
   --max-model-calls 3
+```
+
+Summarize the structural probe evidence without making another model call:
+
+```bash
+python benchmarks/p1/summarize_results.py \
+  --input benchmarks/results/p1-b0-probe.json \
+  --output benchmarks/results/p1-b0-probe-summary.json
 ```
 
 Price the observed calls only after verifying the current provider tariff:
