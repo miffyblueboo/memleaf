@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "decision": "cost_non_blocking",
+  "recorded_at": "2026-09-10",
+  "scope": "P1/P2 optimization execution",
+  "rules": {
+    "provider_and_exact_model_remain_ab_controls": true,
+    "provider_price_verification_required_before_probe": false,
+    "monetary_cap_required_before_probe": false,
+    "cost_reporting_is_optional": true,
+    "primary_optimization_targets": [
+      "reduce_prompt_and_input_tokens",
+      "reduce_prompt-induced unnecessary reasoning"
+    ]
+  },
+  "note": "User explicitly de-prioritized API cost. Do not block P1/P2 on tariff verification; keep model-route identity only for comparable real-model A/B runs."
+}
