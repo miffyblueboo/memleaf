@@ -129,7 +129,12 @@ class MaintenancePlanAdapterTests(unittest.TestCase):
 
         validator = make_existing_summary_validator(factory)
         create = validator("c1", "CREATE", None, {"title": "A", "body": "B"})
-        update = validator("c2", "UPDATE", "Mem-2", {"title": "C", "body": "D"})
+        update = validator(
+            "c2",
+            "UPDATE",
+            "Mem-2",
+            {"update_memory_id": "mem-2", "title": "C", "body": "D"},
+        )
         self.assertEqual(calls, [
             ("c1", "CREATE", None),
             ("c2", "UPDATE", "Mem-2"),
@@ -138,6 +143,15 @@ class MaintenancePlanAdapterTests(unittest.TestCase):
         self.assertTrue(update["parsed"])
         with self.assertRaises(ModelOutputError):
             validator("c3", "UPDATE", None, {"title": "E", "body": "F"})
+        with self.assertRaises(ModelOutputError):
+            validator("c3", "UPDATE", "m3", {"title": "E", "body": "F"})
+        with self.assertRaises(ModelOutputError):
+            validator(
+                "c3",
+                "UPDATE",
+                "m3",
+                {"update_memory_id": "wrong", "title": "E", "body": "F"},
+            )
 
     def test_shadow_comparison_reports_exact_candidate_decision_target_parity(self):
         baseline = [

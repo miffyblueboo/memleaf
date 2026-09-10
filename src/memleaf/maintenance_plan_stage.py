@@ -117,20 +117,23 @@ def _candidate_projection(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 def _evidence_projection(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen_unit_ids: set[str] = set()
     for raw in rows:
         if not isinstance(raw, Mapping):
             raise ModelOutputError("P4 evidence row must be an object", validation_detail="source_shape")
+        unit_id = raw.get("unit_id")
         event_key = raw.get("event_key")
         role = raw.get("role")
         content = raw.get("content")
-        if not isinstance(event_key, str) or not event_key or event_key in seen:
-            raise ModelOutputError("P4 evidence requires unique event_key", validation_detail="invalid_evidence")
+        if not isinstance(unit_id, str) or not unit_id or unit_id in seen_unit_ids:
+            raise ModelOutputError("P4 evidence requires unique unit_id", validation_detail="invalid_evidence")
+        if not isinstance(event_key, str) or not event_key:
+            raise ModelOutputError("P4 evidence requires event_key", validation_detail="invalid_evidence")
         if role not in {"user", "assistant"}:
             raise ModelOutputError("P4 evidence must be visible conversation content", validation_detail="invalid_evidence")
         if not isinstance(content, str) or not content:
             raise ModelOutputError("P4 evidence requires content", validation_detail="invalid_evidence")
-        seen.add(event_key)
+        seen_unit_ids.add(unit_id)
         projected = {
             field: _json_safe(raw[field])
             for field in _EVIDENCE_FIELDS

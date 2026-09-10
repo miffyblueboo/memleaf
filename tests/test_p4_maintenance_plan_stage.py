@@ -27,6 +27,7 @@ def candidate(candidate_id: str, **extra):
 
 def evidence(candidate_id: str):
     return [{
+        "unit_id": f"unit-{candidate_id}",
         "event_key": f"event-{candidate_id}",
         "timestamp": "2026-09-10T08:00:00Z",
         "role": "user",
@@ -151,6 +152,31 @@ class MaintenancePlanStageTests(unittest.TestCase):
                 evidence_by_candidate={"c1": evidence("c1")},
                 lookup_states={"c1": lookup("too_many_candidates", ["m1"])},
                 related_memories_by_candidate={"c1": [related("m2")]},
+            )
+
+    def test_multiple_units_from_same_event_are_allowed_but_unit_ids_are_unique(self):
+        rows = evidence("c1")
+        rows.append({
+            "unit_id": "unit-c1-second",
+            "event_key": rows[0]["event_key"],
+            "role": "user",
+            "content": "Second exact span from the same message.",
+            "evidence_origin": "user_assertion",
+        })
+        prompt, _, _ = build_maintenance_plan_prompt(
+            candidates=[candidate("c1")],
+            evidence_by_candidate={"c1": rows},
+            lookup_states={"c1": lookup("complete_no_target")},
+            related_memories_by_candidate={"c1": []},
+        )
+        self.assertIn("unit-c1-second", prompt)
+        rows[1]["unit_id"] = rows[0]["unit_id"]
+        with self.assertRaises(ModelOutputError):
+            build_maintenance_plan_prompt(
+                candidates=[candidate("c1")],
+                evidence_by_candidate={"c1": rows},
+                lookup_states={"c1": lookup("complete_no_target")},
+                related_memories_by_candidate={"c1": []},
             )
 
     def test_tool_role_cannot_enter_admitted_evidence(self):

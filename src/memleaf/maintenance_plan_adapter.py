@@ -168,6 +168,16 @@ def make_existing_summary_validator(
             raise ModelOutputError("CREATE cannot carry a target", validation_detail="invalid_update_target")
         if decision == "UPDATE" and not isinstance(target, str):
             raise ModelOutputError("UPDATE requires a target", validation_detail="invalid_update_target")
+        if decision == "UPDATE":
+            summary_target = summary.get("update_memory_id")
+            if (
+                not isinstance(summary_target, str)
+                or summary_target.casefold() != target.casefold()
+            ):
+                raise ModelOutputError(
+                    "UPDATE summary must keep the canonical maintenance target",
+                    validation_detail="invalid_update_target",
+                )
         parser = parser_factory(candidate_id, decision, target)
         if not callable(parser):
             raise TypeError("parser_factory must return a callable parser")
