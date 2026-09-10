@@ -3,7 +3,7 @@
 This class intentionally reuses the existing MemoryPlanner request identity,
 retry ledger, Core validation and writer contracts while replacing the normal
 automatic Gate -> reconciliation -> Summary -> semantic-review chain with one
-semantic model call.  Explicit remember remains delegated until its dedicated
+semantic model call. Explicit remember remains delegated until its dedicated
 B3 contract is validated.
 """
 from __future__ import annotations
@@ -44,6 +44,40 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             if values:
                 return list(dict.fromkeys(values)), "session_context"
         return ["unscoped"], "insufficient_context"
+
+    @staticmethod
+    def _scope_keyset(value: Any) -> frozenset[str]:
+        if isinstance(value, str):
+            values = [value]
+        elif isinstance(value, (list, tuple)):
+            values = value
+        else:
+            values = []
+        return frozenset(
+            item.casefold()
+            for item in values
+            if isinstance(item, str) and item
+        )
+
+    @classmethod
+    def _derived_scope_source(
+        cls,
+        scopes: Iterable[str],
+        scope_background: Any,
+        explicit_scope: Any,
+    ) -> str:
+        """Derive Scope provenance from Core-owned context, never model labels."""
+
+        selected = cls._scope_keyset(list(scopes))
+        if selected == frozenset({"unscoped"}):
+            return "insufficient_context"
+        explicit = cls._scope_keyset(explicit_scope)
+        if explicit_scope is not None and selected and selected == explicit:
+            return "user"
+        background = cls._scope_keyset(scope_background)
+        if selected and background and selected == background:
+            return "session_context"
+        return "model"
 
     @staticmethod
     def _claim_unit_ids(claims: Iterable[Mapping[str, Any]]) -> list[str]:
@@ -356,14 +390,14 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 memory_type = target_memory.type
                 if "scopes" in decision_context:
                     scopes = list(decision_context.get("scopes", []))
-                    scope_source = decision_context.get("scope_source")
+                    scope_source = self._derived_scope_source(scopes, scope_background, scope)
                 else:
                     scopes = list(target_memory.scopes)
                     scope_source = target_memory.scope_source
             else:
                 memory_type = decision_context.get("type")
                 scopes = list(decision_context.get("scopes", []))
-                scope_source = decision_context.get("scope_source")
+                scope_source = self._derived_scope_source(scopes, scope_background, scope)
 
             candidate = {
                 "candidate_id": candidate_id,
