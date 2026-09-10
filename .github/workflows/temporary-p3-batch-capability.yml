@@ -1,0 +1,112 @@
+name: Temporary P3 batch capability
+
+on:
+  push:
+    branches:
+      - automation/p3-batch-capability-20260910
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/p3-small-batch-20260910
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify exact P3 head
+        run: test "$(git rev-parse HEAD)" = "a2a522a60899569e963dc295661d15d9be8fe43e"
+      - name: Add explicit structured batch capability
+        shell: python
+        run: |
+          from pathlib import Path
+
+          base = Path('src/memleaf/llm/base.py')
+          source = base.read_text(encoding='utf-8')
+          old_protocol = '    parallel_safe: bool\n\n    def complete('
+          new_protocol = '    parallel_safe: bool\n    structured_batch_safe: bool\n\n    def complete('
+          assert source.count(old_protocol) == 1
+          source = source.replace(old_protocol, new_protocol, 1)
+          old_callable = '    parallel_safe = False\n\n    def __init__(self, callback:'
+          new_callable = '    parallel_safe = False\n    structured_batch_safe = False\n\n    def __init__(self, callback:'
+          assert source.count(old_callable) == 1
+          source = source.replace(old_callable, new_callable, 1)
+          old_http = '    provider = "api"\n    parallel_safe = False\n\n    def __init__('
+          new_http = '    provider = "api"\n    parallel_safe = False\n    structured_batch_safe = True\n\n    def __init__('
+          assert source.count(old_http) == 1
+          source = source.replace(old_http, new_http, 1)
+          base.write_text(source, encoding='utf-8')
+
+          helper = Path('src/memleaf/summary_batch.py')
+          source = helper.read_text(encoding='utf-8')
+          marker = '    if not jobs:\n        return []\n\n    batchable_indexes = ['
+          replacement = '''    if not jobs:
+        return []
+    if getattr(backend, "structured_batch_safe", False) is not True:
+        return run_ordered_keyed_jobs(
+            model_executor,
+            backend,
+            [(str(job["key"]), job["call"]) for job in jobs],
+        )
+
+    batchable_indexes = ['''
+          assert source.count(marker) == 1
+          source = source.replace(marker, replacement, 1)
+          helper.write_text(source, encoding='utf-8')
+
+          tests = Path('tests/test_p3_summary_batch.py')
+          source = tests.read_text(encoding='utf-8')
+          marker = 'class _FakeExecutor:\n'
+          backend = '''class _BatchBackend:
+    structured_batch_safe = True
+    parallel_safe = True
+
+
+class _LegacyBackend:
+    parallel_safe = True
+
+
+'''
+          assert source.count(marker) == 1
+          source = source.replace(marker, backend + marker, 1)
+          source = source.replace('run_summary_jobs_with_create_batching(executor, object(), jobs)', 'run_summary_jobs_with_create_batching(executor, _BatchBackend(), jobs)')
+          test_marker = '    def test_non_batch_update_jobs_keep_same_key_order(self):\n'
+          new_test = '''    def test_backend_without_explicit_batch_capability_uses_original_single_calls(self):
+        singles: list[str] = []
+        executor = _FakeExecutor([])
+        jobs = [
+            _job("c1", title="one", batchable=True, singles=singles),
+            _job("c2", title="two", batchable=True, singles=singles),
+        ]
+        result = run_summary_jobs_with_create_batching(executor, _LegacyBackend(), jobs)
+        self.assertEqual(singles, ["c1", "c2"])
+        self.assertEqual(executor.calls, [])
+        self.assertTrue(all(item["summary"]["single"] for item in result))
+
+'''
+          assert source.count(test_marker) == 1
+          source = source.replace(test_marker, new_test + test_marker, 1)
+          tests.write_text(source, encoding='utf-8')
+      - name: Validate capability and helper behavior
+        run: |
+          python -m pip install -e .
+          python -m py_compile src/memleaf/llm/base.py src/memleaf/summary_batch.py tests/test_p3_summary_batch.py
+          python -m unittest tests.test_p3_summary_batch -v
+          python - <<'PY'
+          from memleaf.llm.base import CallableBackend, HTTPModelBackend
+          assert CallableBackend.structured_batch_safe is False
+          assert HTTPModelBackend.structured_batch_safe is True
+          PY
+      - name: Commit exact capability changes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/memleaf/llm/base.py src/memleaf/summary_batch.py tests/test_p3_summary_batch.py
+          test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = "3"
+          git commit -m 'feat: gate P3 batching by backend capability'
+          git push origin HEAD:experiment/p3-small-batch-20260910
