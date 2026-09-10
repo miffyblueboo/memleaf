@@ -34,7 +34,8 @@ jobs:
             tests/test_b3_single_pass_plan.py \
             tests/test_b3_planning_context.py \
             tests/test_b3_single_pass_memory_planner.py \
-            tests/test_b3_activation.py
+            tests/test_b3_activation.py \
+            tests/test_stage_b1.py
       - name: Validate B3 single-pass behavior and activation
         run: |
           python -m unittest \
@@ -42,10 +43,11 @@ jobs:
             tests.test_b3_single_pass_plan \
             tests.test_b3_planning_context \
             tests.test_b3_single_pass_memory_planner -v
-      - name: Validate retained scope native and frozen-plan semantics
+      - name: Validate retained scope native frozen-plan and retry semantics
         run: |
           python -m unittest \
             tests.test_v023_scope_correction \
             tests.test_stage_b3d_scope_maintenance \
             tests.test_stage_b3b_native_context \
-            tests.test_processing_contract_v026.FrozenPlanTests -v
+            tests.test_processing_contract_v026.FrozenPlanTests \
+            tests.test_stage_b1.RouterAndAdapterTest.test_openai_whitespace_content_keeps_diagnostics_and_legacy_gate_allows_third_attempt -v
