@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "fixture": "cases-v1.json.gz",
-  "decompressed_sha256": "5cc911591b9badf6cde91de40f81d6d205bcef67a001e44612493b66a6da6e37",
-  "baseline_b0": "ea92756f31d1445792e2dff6657b9579641c9980",
+  "decompressed_sha256": "8766b932c363ff06478629c39b36d39cb7ded9dd7b4ebf4ac75984dfb9c49fcf",
+  "baseline_b0": "9e53b1e991e66315fd9fce51aca71ff6ac0eb022",
   "repetitions_per_case_per_arm": 3,
   "cases": [
     {

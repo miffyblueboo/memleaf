@@ -7,11 +7,11 @@ change memleaf's product pipeline and they do not claim real-model results.
 
 Correctness baseline B0 is fixed at:
 
-`ea92756f31d1445792e2dff6657b9579641c9980`
+`9e53b1e991e66315fd9fce51aca71ff6ac0eb022`
 
 This is the P0 branch state after the Gate protocol candidate plus the isolated
-F01/F03/F04/F06 follow-up fixes and the invalid-response metrics classification
-repair passed the repository's Linux, Windows, macOS, wheel/sdist, and
+F01/F02/F03/F04/F06 follow-up fixes, the invalid-response metrics classification
+repair, and the exact Gate decision/claim protocol matrix passed the repository's Linux, Windows, macOS, wheel/sdist, and
 Codex-native CI matrix. The P1 fixture, manifest, tests, and this README are
 pinned to that exact corrected B0; changing the product baseline requires an
 explicit fixture re-pin and hash verification before another real-model run.

@@ -45,7 +45,7 @@ class P1BaselineAssetsTests(unittest.TestCase):
         raw = gzip.decompress(self.fixture.read_bytes())
         self.assertEqual(hashlib.sha256(raw).hexdigest(), manifest["decompressed_sha256"])
         self.assertEqual(len(self.data["cases"]), 10)
-        self.assertEqual(self.data["baseline_refs"]["b0"], "ea92756f31d1445792e2dff6657b9579641c9980")
+        self.assertEqual(self.data["baseline_refs"]["b0"], "9e53b1e991e66315fd9fce51aca71ff6ac0eb022")
         self.assertEqual(self.data["status"], "DESIGN_ONLY_NOT_RUN_WITH_REAL_MODEL")
         self.assertEqual(self.data["repetitions_per_case_per_arm"], 3)
 

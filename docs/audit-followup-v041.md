@@ -18,6 +18,29 @@ unresolved evidence, byte-preservation of already committed records, and no
 extra history or duplicate creation. It stubs model responses; source binding,
 planning, parsing, journal and Markdown operations are real.
 
+## Gate protocol shape contract
+
+Coverage rows now enforce the same canonical field sets already documented by
+the Gate protocol instead of only rejecting globally unknown field names:
+
+* `CANDIDATE`: exactly `unit_id`, `decision`, `candidate_ids`.
+* ordinary `NO_CHANGE` / `DEFERRED`: exactly `unit_id`, `decision`, `reason`.
+* `already_completed`: exactly the ordinary decision fields plus `memory_id`.
+
+This closes a parser/prompt mismatch where a `CANDIDATE` row could carry a
+recognized-but-inapplicable `reason`, or a non-candidate decision could carry an
+empty `candidate_ids` list and still pass the earlier truthiness check. The
+special `coverage_terminal_witness` diagnostics retain priority when
+`memory_id` is missing for `already_completed`, appears on a candidate, or is
+otherwise misplaced; generic cross-variant fields use `coverage_shape`.
+
+`tests/test_gate_protocol_matrix_v041.py` is the executable decision/claim
+matrix requested by the audit. It covers canonical quote claims, legacy explicit
+offsets, whole-unit claims, CANDIDATE/NO_CHANGE/DEFERRED/terminal coverage rows,
+cross-variant field rejection, strict binding-row shape, and preservation of the
+terminal-witness diagnostic contract. The parser remains strict; no legacy
+business semantic or topic heuristic was introduced.
+
 ## Metrics contract
 
 `failed_calls` means the model call itself did not produce a usable text result
@@ -98,14 +121,15 @@ A rejected repair falls back within the existing bounded full-Gate retry flow.
 Run after installing console entry points in an isolated environment:
 
 ```sh
+python -m unittest tests.test_gate_protocol_matrix_v041 -v
 python -m unittest tests.test_model_invalid_response_metrics_v041 -v
 python -m unittest tests.test_audit_followup_v041 -v
 python -m unittest discover -s tests -p 'test_*.py' -v
 python -m compileall -q src tests examples
 ```
 
-The targeted suite includes independent parser rejection tests, response-vs-
-transport metrics classification, real diagnostic file writes, partial-failure
-recovery, concurrent metric attribution, bounded metric retention, and durable
-failed/rerun/success attempts read through MCP. No test substitutes a real
-model-quality or cross-platform CI result.
+The targeted suite includes the executable decision/claim matrix, independent
+parser rejection tests, response-vs-transport metrics classification, real
+diagnostic file writes, partial-failure recovery, concurrent metric attribution,
+bounded metric retention, and durable failed/rerun/success attempts read through
+MCP. No test substitutes a real model-quality or cross-platform CI result.
