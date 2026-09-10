@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -49,6 +50,34 @@ class P1BaselineAssetsTests(unittest.TestCase):
         self.assertEqual(self.data["status"], "DESIGN_ONLY_NOT_RUN_WITH_REAL_MODEL")
         self.assertEqual(self.data["repetitions_per_case_per_arm"], 3)
 
+    def test_fixture_privacy_invariants(self):
+        raw = gzip.decompress(self.fixture.read_bytes()).decode("utf-8")
+        self.assertEqual(
+            self.data.get("data_policy"),
+            "synthetic-only benchmark data; no production Vault, credentials, "
+            "local user paths, or user-specific project identifiers",
+        )
+        self.assertTrue(all(case.get("source") == "audit-synthetic" for case in self.data["cases"]))
+        scopes = {
+            scope
+            for case in self.data["cases"]
+            for scope in case.get("scope_registry", [])
+        }
+        self.assertEqual(
+            scopes,
+            {"project:星河", "project:天枢", "project:Alpha", "project:Beta"},
+        )
+        forbidden = {
+            "email": re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}"),
+            "china_mobile": re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"),
+            "windows_user_path": re.compile(r"(?i)\b[A-Z]:\\Users\\"),
+            "unix_user_path": re.compile(r"/Users/|/home/"),
+            "openai_style_secret": re.compile(r"\bsk-[A-Za-z0-9_-]{12,}"),
+            "bearer_secret": re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._-]{12,}"),
+        }
+        for label, pattern in forbidden.items():
+            self.assertIsNone(pattern.search(raw), label)
+
     def test_default_exploration_plan_is_30_process_runs(self):
         plan = build_plan(self.data, self.data["cases"], 3)
         self.assertEqual(plan["planned_process_runs"], 30)
@@ -77,7 +106,7 @@ class P1BaselineAssetsTests(unittest.TestCase):
             config["llm"]["provider"] = "synthetic-provider"
             config["llm"]["model"] = "synthetic-model"
             service = prepare_case_vault(root, case, template=config, fixed_time=self.data["fixed_event_time"])
-            self.assertEqual(set(service.vault.config()["scopes"]), {"project:星河", "project:Orion"})
+            self.assertEqual(set(service.vault.config()["scopes"]), {"project:星河", "project:天枢"})
 
     def test_evaluation_template_forces_low_without_mutating_source(self):
         config = default_config("/tmp/p1-source")
