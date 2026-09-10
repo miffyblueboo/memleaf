@@ -144,6 +144,7 @@ class ModelBackend(Protocol):
     provider: str
     model: str
     parallel_safe: bool
+    structured_batch_safe: bool
 
     def complete(
         self,
@@ -163,6 +164,7 @@ class CallableBackend:
     # Host callbacks can close over arbitrary mutable state. Never assume a
     # caller-owned callback is thread-safe merely because candidate work is.
     parallel_safe = False
+    structured_batch_safe = False
 
     def __init__(self, callback: Callable[..., str], *, model: str = "host"):
         if not callable(callback):
@@ -226,6 +228,7 @@ class HTTPModelBackend:
 
     provider = "api"
     parallel_safe = False
+    structured_batch_safe = True
 
     def __init__(
         self,

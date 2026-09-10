@@ -14,7 +14,7 @@ from .create_coordinator import CreateCoordinator
 from .update_coordinator import UpdateCoordinator
 from .target_reconciliation import reconcile_candidate_target
 from .evidence_policy import retain_tool_evidence
-from .parallel_model import run_ordered_keyed_jobs
+from .summary_batch import run_summary_jobs_with_create_batching
 from .prompts import COVERAGE_ALREADY_COMPLETED_CORRECTION, COVERAGE_CORRECTION, GATE_COVERAGE_SYSTEM, GATE_SYSTEM, SUMMARIZE_SYSTEM, coverage_repair_prompt, gate_prompt, summarize_prompt
 from .retrieval import normalize_term
 from .scope_state import ScopeError, normalize_scopes
@@ -1479,6 +1479,11 @@ class MemoryPlanner:
             summary_jobs.append({
                 "key": target_key,
                 "call": run_summary,
+                "batchable": gate_update_target is None and correction_plan is None,
+                "item_id": f"summary-{job_index}",
+                "prompt": summary_prompt_value,
+                "parser": parse_summary,
+                "diagnostic_context": diagnostic_context,
                 "candidate": dict(candidate),
                 "candidate_related": candidate_related,
                 "candidate_native_refs": candidate_native_refs,
@@ -1488,10 +1493,10 @@ class MemoryPlanner:
             })
             request_slots.append({"kind": "summary", "job_index": job_index})
 
-        summary_outcomes = run_ordered_keyed_jobs(
+        summary_outcomes = run_summary_jobs_with_create_batching(
             self.model,
             backend,
-            [(job["key"], job["call"]) for job in summary_jobs],
+            summary_jobs,
         )
 
         for slot in request_slots:
