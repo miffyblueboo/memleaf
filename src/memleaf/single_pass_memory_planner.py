@@ -49,7 +49,7 @@ class SinglePassMemoryPlanner(MemoryPlanner):
     def _scope_keyset(value: Any) -> frozenset[str]:
         if isinstance(value, str):
             values = [value]
-        elif isinstance(value, (list, tuple)):
+        elif isinstance(value, (list, tuple, set, frozenset)):
             values = value
         else:
             values = []
@@ -68,14 +68,14 @@ class SinglePassMemoryPlanner(MemoryPlanner):
     ) -> str:
         """Derive Scope provenance from Core-owned context, never model labels."""
 
-        selected = cls._scope_keyset(list(scopes))
+        selected = cls._scope_keyset(scopes)
         if selected == frozenset({"unscoped"}):
             return "insufficient_context"
         explicit = cls._scope_keyset(explicit_scope)
-        if explicit_scope is not None and selected and selected == explicit:
+        if explicit_scope is not None and selected and selected.issubset(explicit):
             return "user"
         background = cls._scope_keyset(scope_background)
-        if selected and background and selected == background:
+        if selected and background and selected.issubset(background):
             return "session_context"
         return "model"
 
