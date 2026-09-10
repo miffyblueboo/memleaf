@@ -1,0 +1,258 @@
+name: Temporary P3 wire batch review
+
+on:
+  push:
+    branches:
+      - automation/p3-wire-batch-review-20260910
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/p3-batched-model-stages-20260910
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify P3 kernel head
+        run: test "$(git rev-parse HEAD)" = "f9ff4c3bb9118ac396794ad35250e3991638a832"
+      - name: Apply exact coordinator wiring
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('src/memleaf/update_coordinator.py')
+          source = path.read_text(encoding='utf-8')
+
+          import_anchor = 'from .admission import summary_evidence\n'
+          assert source.count(import_anchor) == 1
+          source = source.replace(
+              import_anchor,
+              import_anchor + 'from .batch_review import MAX_REVIEW_BATCH_ITEMS, review_create_batch, review_update_batch\n',
+              1,
+          )
+
+          source = source.replace(
+              '        jobs: list[Callable[[], dict[str, Any]]] = []\n',
+              '        jobs: list[Callable[[], Any]] = []\n',
+              1,
+          )
+
+          helper_marker = '    @staticmethod\n    def _make_update_review_parser(\n'
+          assert source.count(helper_marker) == 1
+          helper = '''    def _run_batched_review_specs(
+              self,
+              specs: list[dict[str, Any]],
+              *,
+              backend: Any,
+              update: bool,
+          ) -> list[dict[str, Any]]:
+              """Batch independent reviews while preserving original result order."""
+
+              if not specs:
+                  return []
+              chunks = [
+                  specs[index:index + MAX_REVIEW_BATCH_ITEMS]
+                  for index in range(0, len(specs), MAX_REVIEW_BATCH_ITEMS)
+              ]
+              jobs: list[Callable[[], Any]] = []
+              for chunk in chunks:
+                  def run_chunk(
+                      *,
+                      chunk_value: list[dict[str, Any]] = chunk,
+                      update_value: bool = update,
+                  ) -> list[dict[str, Any]]:
+                      if update_value:
+                          return review_update_batch(self.model, backend, chunk_value)
+                      return review_create_batch(self.model, backend, chunk_value)
+                  jobs.append(run_chunk)
+              chunk_outcomes = self._run_review_jobs(jobs, backend=backend)
+              outcomes: list[dict[str, Any]] = []
+              for chunk, chunk_result in zip(chunks, chunk_outcomes):
+                  if not isinstance(chunk_result, list) or len(chunk_result) != len(chunk):
+                      # The batch kernel normally guarantees shape. Preserve the old
+                      # fail-closed single path if a custom/legacy executor violates it.
+                      chunk_result = []
+                      for spec in chunk:
+                          kwargs = {
+                              "admitted_source": spec["admitted_source"],
+                              "proposed_summary": spec["proposed_summary"],
+                              "parse_summary": spec["parse_summary"],
+                              "diagnostic_context": spec.get("diagnostic_context"),
+                          }
+                          if update:
+                              chunk_result.append(review_update(
+                                  self.model, backend, target=spec["target"], **kwargs
+                              ))
+                          else:
+                              chunk_result.append(review_create(self.model, backend, **kwargs))
+                  outcomes.extend(dict(item) for item in chunk_result if isinstance(item, Mapping))
+              if len(outcomes) != len(specs):
+                  raise ProcessingError("semantic review batch result count mismatch")
+              return outcomes
+
+'''
+          import textwrap
+          helper = textwrap.dedent(helper)
+          source = source.replace(helper_marker, helper + helper_marker, 1)
+
+          update_start = source.index('    def _review_final_updates(\n')
+          update_end = source.index('    def _review_final_creates(\n', update_start)
+          update_section = source[update_start:update_end]
+          assert update_section.count('        jobs: list[Callable[[], dict[str, Any]]] = []\n') == 1
+          update_section = update_section.replace(
+              '        jobs: list[Callable[[], dict[str, Any]]] = []\n',
+              '        review_specs: list[dict[str, Any]] = []\n',
+              1,
+          )
+          block_start = update_section.index('            def run_review(\n')
+          outcome_marker = '        outcomes = self._run_review_jobs(jobs, backend=backend)\n'
+          block_end = update_section.index(outcome_marker, block_start)
+          update_block = '''            job_index = len(review_specs)
+              review_specs.append({
+                  "review_id": f"update:{job_index}:{request.get('candidate_id', '')}",
+                  "target": target,
+                  "admitted_source": projected,
+                  "proposed_summary": self._review_content(summary),
+                  "parse_summary": parser,
+                  "diagnostic_context": diagnostic_context,
+              })
+              slots.append({
+                  "kind": "review",
+                  "request": request,
+                  "summary": summary,
+                  "target_id": target_id,
+                  "job_index": job_index,
+              })
+
+'''
+          update_block = textwrap.dedent(update_block)
+          update_section = (
+              update_section[:block_start]
+              + update_block
+              + update_section[block_end:]
+          )
+          update_section = update_section.replace(
+              outcome_marker,
+              '        outcomes = self._run_batched_review_specs(review_specs, backend=backend, update=True)\n',
+              1,
+          )
+          source = source[:update_start] + update_section + source[update_end:]
+
+          create_start = source.index('    def _review_final_creates(\n')
+          create_end = source.index('    def _defer(\n', create_start)
+          create_section = source[create_start:create_end]
+          assert create_section.count('        jobs: list[Callable[[], dict[str, Any]]] = []\n') == 1
+          create_section = create_section.replace(
+              '        jobs: list[Callable[[], dict[str, Any]]] = []\n',
+              '        review_specs: list[dict[str, Any]] = []\n',
+              1,
+          )
+          block_start = create_section.index('            def run_review(\n')
+          outcome_marker = '        outcomes = self._run_review_jobs(jobs, backend=backend)\n'
+          block_end = create_section.index(outcome_marker, block_start)
+          create_block = '''            job_index = len(review_specs)
+              review_specs.append({
+                  "review_id": f"create:{job_index}:{request.get('candidate_id', '')}",
+                  "admitted_source": projected,
+                  "proposed_summary": self._review_content(summary),
+                  "parse_summary": parser,
+                  "diagnostic_context": diagnostic_context,
+              })
+              slots.append({
+                  "kind": "review",
+                  "request": request,
+                  "summary": summary,
+                  "job_index": job_index,
+              })
+
+'''
+          create_block = textwrap.dedent(create_block)
+          create_section = (
+              create_section[:block_start]
+              + create_block
+              + create_section[block_end:]
+          )
+          create_section = create_section.replace(
+              outcome_marker,
+              '        outcomes = self._run_batched_review_specs(review_specs, backend=backend, update=False)\n',
+              1,
+          )
+          source = source[:create_start] + create_section + source[create_end:]
+
+          path.write_text(source, encoding='utf-8')
+      - name: Install and run focused suites
+        run: |
+          python -m pip install -e .
+          python -m py_compile src/memleaf/update_coordinator.py src/memleaf/batch_review.py
+          python -m unittest tests.test_batch_review tests.test_update_review -v
+          python -m unittest tests.test_update_coordinator tests.test_create_coordinator -v
+      - name: Four-create integration smoke
+        shell: python
+        run: |
+          import json
+          from memleaf.admission import EvidenceUnit
+          from memleaf.inbox import InboxEvent, InboxTurn
+          from memleaf.turn_audit import TurnAudit
+          from memleaf.update_coordinator import UpdateCoordinator
+
+          class Executor:
+              def __init__(self): self.calls = []
+              def _complete_json_stage(self, backend, prompt, *, system, purpose, parser, diagnostic_context=None, metric_stage=None):
+                  self.calls.append(prompt)
+                  assert prompt.startswith('CREATE_SEMANTIC_REVIEW_BATCH\n')
+                  payload = json.loads(prompt.split('\n', 1)[1].split('\n\nReview each row', 1)[0])
+                  raw = json.dumps({'reviews': [
+                      {'review_id': row['review_id'], 'decision': 'ACCEPT'}
+                      for row in reversed(payload['reviews'])
+                  ]})
+                  return parser(raw)
+
+          turn_events = []
+          units = []
+          candidates = {}
+          requests = []
+          for i in range(4):
+              event_key = f'e{i}'
+              unit_id = f'u{i}'
+              candidate_id = f'c{i}'
+              text = f'Fact {i}.'
+              turn_events.append(InboxEvent('src','session','t',1,'user',event_key,text,timestamp='2026-09-10T06:00:00Z'))
+              units.append(EvidenceUnit(unit_id,event_key,'user_assertion',text,source_role='user'))
+              candidates[candidate_id] = {
+                  'candidate_id': candidate_id, 'memory': text,
+                  'evidence_event_ids': [event_key], 'evidence_unit_ids': [unit_id],
+                  '_evidence_bindings': [{'unit_id': unit_id, 'quote': text, 'role': 'assertion'}],
+                  'type': 'fact', 'scopes': ['global'], 'scope_source': 'model',
+              }
+              requests.append({
+                  'summary': {'title': text, 'body': text, 'tags': [], 'type': 'fact',
+                              'scopes': ['global'], 'scope_source': 'model',
+                              'sources': [{'event_key': event_key}]},
+                  'turn': None, 'candidate_id': candidate_id, 'memory_id': f'm{i}',
+                  'evidence_unit_ids': [unit_id],
+              })
+          turn = InboxTurn('src','session','t',1,tuple(turn_events))
+          for request in requests: request['turn'] = turn
+          executor = Executor()
+          result = UpdateCoordinator(executor, TurnAudit(), lambda memory_id: None).resolve(
+              requests, candidates=candidates, evidence_units=units,
+              events=[{'event_key': event.event_key, 'role': event.role, 'content': event.content,
+                       'timestamp': event.timestamp} for event in turn.events],
+              backend='backend', scope_registry={}, validation_scope_registry={},
+          )
+          assert len(result) == 4
+          assert len(executor.calls) == 1
+      - name: Commit wired coordinator
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/memleaf/update_coordinator.py
+          test "$(git diff --cached --name-only)" = "src/memleaf/update_coordinator.py"
+          git commit -m 'perf: batch final semantic reviews'
+          git push origin HEAD:experiment/p3-batched-model-stages-20260910
