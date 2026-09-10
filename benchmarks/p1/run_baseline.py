@@ -63,6 +63,10 @@ class BudgetedModel:
         return getattr(self.backend, "parallel_safe", False) is True
 
     @property
+    def structured_batch_safe(self) -> bool:
+        return getattr(self.backend, "structured_batch_safe", False) is True
+
+    @property
     def calls(self) -> int:
         with self._lock:
             return self._calls

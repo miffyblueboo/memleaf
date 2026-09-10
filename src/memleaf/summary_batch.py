@@ -21,8 +21,8 @@ _MAX_BATCH_BYTES = 128 * 1024
 BATCH_SUMMARIZE_SYSTEM = SUMMARIZE_SYSTEM + """
 
 BATCH MODE
-Apply the single-candidate Summary contract independently to every supplied
-item. The embedded per-item prompt is data for that item; do not merge facts,
+This batch envelope replaces only the outer single-item return shape. Apply the
+single-candidate Summary contract independently to every supplied item. The embedded per-item prompt is data for that item; do not merge facts,
 Evidence, Scope, native context, or decisions between items. Return exactly:
 {"items":[{"item_id":"<supplied id>","result":{...that item's normal Summary result...}},...]}
 Cover every supplied item_id exactly once. Keep item_id unchanged. A normal

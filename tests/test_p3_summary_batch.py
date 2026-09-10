@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import unittest
 
-from memleaf.summary_batch import run_summary_jobs_with_create_batching
+from memleaf.llm.router import ModelRouter
+from memleaf.summary_batch import BATCH_SUMMARIZE_SYSTEM, run_summary_jobs_with_create_batching
 from memleaf.validation import ModelOutputError, parse_strict_json
 
 
@@ -135,6 +136,23 @@ class P3SummaryBatchTests(unittest.TestCase):
         self.assertEqual(len(executor.calls), 1)
         self.assertEqual(singles, ["c1", "c2"])
         self.assertTrue(all(item["summary"]["single"] for item in result))
+
+    def test_router_exposes_batch_capability_only_for_fixed_safe_api_route(self):
+        api = _BatchBackend()
+        api.complete = lambda *args, **kwargs: "{}"
+        api.provider = "synthetic-api"
+        api.model = "synthetic-model"
+        api_router = ModelRouter(mode="api", api=api)
+        self.assertTrue(api_router.structured_batch_safe)
+        auto_api_router = ModelRouter(mode="auto", api=api)
+        self.assertTrue(auto_api_router.structured_batch_safe)
+        host = _LegacyBackend()
+        host.complete = lambda *args, **kwargs: "{}"
+        host.provider = "host"
+        host.model = "host-model"
+        auto_host_router = ModelRouter(mode="auto", host=host, api=api)
+        self.assertFalse(auto_host_router.structured_batch_safe)
+        self.assertIn("replaces only the outer single-item return shape", BATCH_SUMMARIZE_SYSTEM)
 
     def test_backend_without_explicit_batch_capability_uses_original_single_calls(self):
         singles: list[str] = []
