@@ -240,29 +240,49 @@ class SinglePassPlanTests(unittest.TestCase):
                 validate_memory=validator,
             )
 
-    def test_update_scope_correction_fields_must_be_paired(self):
+    def test_update_scope_correction_requires_scopes_not_model_provenance(self):
         evidence = [unit("u1", "Move Alpha memory to Beta.")]
-        for extra in ({"scopes": ["project:Beta"]}, {"scope_source": "model"}):
-            raw = json.dumps({
-                "protocol_version": PROTOCOL_VERSION,
-                "items": [{
-                    "candidate_id": "c1",
-                    "decision": "UPDATE",
-                    "target_memory_id": "m1",
-                    "evidence": [claim("u1", "Move Alpha memory to Beta.")],
-                    "memory": memory(),
-                    **extra,
-                }],
-                "no_memory": [],
-            })
-            with self.assertRaises(ModelOutputError):
-                parse_single_pass_output(
-                    raw,
-                    evidence_units=evidence,
-                    local_memories=[local("m1")],
-                    lookup_complete=True,
-                    validate_memory=validator,
-                )
+        raw = json.dumps({
+            "protocol_version": PROTOCOL_VERSION,
+            "items": [{
+                "candidate_id": "c1",
+                "decision": "UPDATE",
+                "target_memory_id": "m1",
+                "scopes": ["project:Beta"],
+                "evidence": [claim("u1", "Move Alpha memory to Beta.")],
+                "memory": memory(),
+            }],
+            "no_memory": [],
+        })
+        parsed = parse_single_pass_output(
+            raw,
+            evidence_units=evidence,
+            local_memories=[local("m1")],
+            lookup_complete=True,
+            validate_memory=validator,
+        )
+        self.assertEqual(parsed["items"][0]["target_memory_id"], "m1")
+
+        legacy_provenance_only = json.dumps({
+            "protocol_version": PROTOCOL_VERSION,
+            "items": [{
+                "candidate_id": "c1",
+                "decision": "UPDATE",
+                "target_memory_id": "m1",
+                "scope_source": "model",
+                "evidence": [claim("u1", "Move Alpha memory to Beta.")],
+                "memory": memory(),
+            }],
+            "no_memory": [],
+        })
+        with self.assertRaises(ModelOutputError):
+            parse_single_pass_output(
+                legacy_provenance_only,
+                evidence_units=evidence,
+                local_memories=[local("m1")],
+                lookup_complete=True,
+                validate_memory=validator,
+            )
 
     def test_memory_allows_native_shadow_and_scope_operations(self):
         evidence = [unit("u1", "New current state.")]
