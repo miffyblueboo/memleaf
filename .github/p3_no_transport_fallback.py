@@ -46,7 +46,7 @@ assert source.count(marker) == 1
 case = '''    def test_batch_transport_failure_propagates_without_single_fanout(self):
         class FailingExecutor(ScriptedExecutor):
             def _complete_json_stage(self, *args, **kwargs):
-                self.calls.append({"prompt": args[2], "system": kwargs.get("system")})
+                self.calls.append({"prompt": args[1], "system": kwargs.get("system")})
                 raise ModelError("network failed", code="model_network_error", stage="summarize")
 
         executor = FailingExecutor("unused")
@@ -66,20 +66,18 @@ path.write_text(source, encoding="utf-8")
 path = Path("tests/test_p3_summary_batch.py")
 source = path.read_text(encoding="utf-8")
 if "from memleaf.llm import ModelError" not in source:
-    # Match either a grouped llm import or the first memleaf import region conservatively.
-    anchor = "from memleaf.summary_batch import"
-    position = source.index(anchor)
-    source = source[:position] + "from memleaf.llm import ModelError\n" + source[position:]
-marker_candidates = [
-    "    def test_router_exposes_batching_only_for_fixed_safe_api_route(self):\n",
-    "    def test_backend_without_batch_capability_uses_original_singles(self):\n",
-]
-marker = next((value for value in marker_candidates if value in source), None)
-assert marker is not None
+    anchor = "from memleaf.llm.router import ModelRouter\n"
+    assert source.count(anchor) == 1
+    source = source.replace(anchor, "from memleaf.llm import ModelError\n" + anchor, 1)
+marker = "    def test_router_exposes_batch_capability_only_for_fixed_safe_api_route(self):\n"
+assert source.count(marker) == 1
 case = '''    def test_summary_batch_transport_failure_propagates_without_single_fanout(self):
         class FailingExecutor:
             def __init__(self):
                 self.calls = 0
+
+            def max_parallel_calls(self, _backend):
+                return 1
 
             def _complete_json_stage(self, *args, **kwargs):
                 self.calls += 1
@@ -101,13 +99,9 @@ case = '''    def test_summary_batch_transport_failure_propagates_without_single
                 "diagnostic_context": {},
             })
 
-        class Backend:
-            structured_batch_safe = True
-            parallel_safe = False
-
         executor = FailingExecutor()
         with self.assertRaises(ModelError):
-            run_summary_jobs_with_create_batching(executor, Backend(), jobs)
+            run_summary_jobs_with_create_batching(executor, _BatchBackend(), jobs)
         self.assertEqual(executor.calls, 1)
         self.assertEqual(singles, [])
 
