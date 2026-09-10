@@ -174,7 +174,7 @@ def _review_batch(
         retry_ids = parsed.get("retry_ids")
         if not isinstance(outcomes, Mapping) or not isinstance(retry_ids, list):
             raise ModelOutputError("invalid semantic review batch result", validation_detail="root_shape")
-    except (ModelError, ModelOutputError, TypeError, ValueError):
+    except (ModelOutputError, TypeError, ValueError):
         return [_single(model_executor, backend, spec, update=update) for spec in specs]
 
     resolved = {key: dict(value) for key, value in outcomes.items() if isinstance(key, str) and isinstance(value, Mapping)}

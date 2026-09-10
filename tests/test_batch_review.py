@@ -4,6 +4,7 @@ import json
 import unittest
 
 from memleaf.batch_review import review_create_batch, review_update_batch
+from memleaf.llm import ModelError
 
 
 class _BatchBackend:
@@ -159,6 +160,21 @@ class BatchReviewTests(unittest.TestCase):
             {"decision": "ACCEPT"},
         ])
         self.assertEqual(len(executor.calls), 4)
+
+    def test_batch_transport_failure_propagates_without_single_fanout(self):
+        class FailingExecutor(ScriptedExecutor):
+            def _complete_json_stage(self, *args, **kwargs):
+                self.calls.append({"prompt": args[1], "system": kwargs.get("system")})
+                raise ModelError("network failed", code="model_network_error", stage="summarize")
+
+        executor = FailingExecutor("unused")
+        with self.assertRaises(ModelError):
+            review_create_batch(
+                executor,
+                _BATCH_BACKEND,
+                [create_spec("c1"), create_spec("c2"), create_spec("c3")],
+            )
+        self.assertEqual(len(executor.calls), 1)
 
     def test_backend_without_batch_capability_uses_legacy_single_reviews(self):
         executor = ScriptedExecutor(

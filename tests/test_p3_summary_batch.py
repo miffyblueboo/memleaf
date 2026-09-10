@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
+from memleaf.llm import ModelError
 from memleaf.llm.router import ModelRouter
 from memleaf.summary_batch import BATCH_SUMMARIZE_SYSTEM, run_summary_jobs_with_create_batching
 from memleaf.validation import ModelOutputError, parse_strict_json
@@ -136,6 +137,40 @@ class P3SummaryBatchTests(unittest.TestCase):
         self.assertEqual(len(executor.calls), 1)
         self.assertEqual(singles, ["c1", "c2"])
         self.assertTrue(all(item["summary"]["single"] for item in result))
+
+    def test_summary_batch_transport_failure_propagates_without_single_fanout(self):
+        class FailingExecutor:
+            def __init__(self):
+                self.calls = 0
+
+            def max_parallel_calls(self, _backend):
+                return 1
+
+            def _complete_json_stage(self, *args, **kwargs):
+                self.calls += 1
+                raise ModelError("timeout", code="model_timeout", stage="summarize")
+
+        singles = []
+        jobs = []
+        for index in range(2):
+            def single(index_value=index):
+                singles.append(index_value)
+                return {"status": "ok", "summary": {"index": index_value}}
+            jobs.append({
+                "key": f"create:{index}",
+                "call": single,
+                "batchable": True,
+                "item_id": f"c{index}",
+                "prompt": f"prompt-{index}",
+                "parser": lambda raw: {"parsed": raw},
+                "diagnostic_context": {},
+            })
+
+        executor = FailingExecutor()
+        with self.assertRaises(ModelError):
+            run_summary_jobs_with_create_batching(executor, _BatchBackend(), jobs)
+        self.assertEqual(executor.calls, 1)
+        self.assertEqual(singles, [])
 
     def test_router_exposes_batch_capability_only_for_fixed_safe_api_route(self):
         api = _BatchBackend()

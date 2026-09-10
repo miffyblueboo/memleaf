@@ -104,8 +104,9 @@ def _run_batch(
             parser=lambda raw: _parse_batch(raw, items),
             diagnostic_context=diagnostic,
         )
-    except (ModelError, ModelOutputError, TypeError, ValueError):
-        # A malformed/failed whole envelope must not strand either candidate.
+    except (ModelOutputError, TypeError, ValueError):
+        # A malformed whole envelope falls back to legacy singles. Transport/provider
+        # ModelError propagates so one failed batch cannot fan out into N new calls.
         return [(int(item["index"]), item["call"]()) for item in items]
 
     results: list[tuple[int, dict[str, Any]]] = []
