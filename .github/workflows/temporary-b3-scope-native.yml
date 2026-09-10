@@ -30,7 +30,9 @@ jobs:
       - name: Verify expected B3 head
         run: test "$(git rev-parse HEAD)" = "e0850bc5fb842a98659043c0def15e429ce4691e"
       - name: Apply B3 scope/native completion
-        run: python .patcher/scripts/patch_b3_scope_native.py
+        run: |
+          python .patcher/scripts/patch_b3_scope_native.py
+          python .patcher/scripts/fix_b3_scope_native_tests.py
       - name: Install and validate focused behavior
         run: |
           python -m pip install -e .
