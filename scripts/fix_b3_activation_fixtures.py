@@ -36,4 +36,8 @@ if count < 1:
     raise SystemExit("no B3 planner backend fixtures found")
 text = text.replace('_collect_turn_outputs("backend",', '_collect_turn_outputs(SAFE_BACKEND,')
 text = text.replace('            "backend",\n            turn(', '            SAFE_BACKEND,\n            turn(')
-path.write_text(text, encoding="utf-8")
+old = '        self.assertEqual(model.calls[0][0], "gate")\n'
+new = '        self.assertEqual(model.calls[0][0], "single_pass")\n'
+if text.count(old) != 1:
+    raise SystemExit(f"expected one old planner stage assertion, found {text.count(old)}")
+path.write_text(text.replace(old, new, 1), encoding="utf-8")
