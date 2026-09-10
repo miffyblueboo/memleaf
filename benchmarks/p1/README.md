@@ -13,37 +13,69 @@ This is the P0 branch state after the Gate protocol candidate plus the isolated
 F01/F03/F04/F06 follow-up fixes passed the repository's Linux, Windows, macOS,
 wheel/sdist, and Codex-native CI matrix.
 
-`cases-v1.json.gz` stores the exact compressed JSON fixture and preserves the ten synthetic semantic cases from the audit
-material. The exploration default is 3 repetitions per logical case (30 process
-runs per arm). Repetitions are repeated samples, not additional independent
-semantic cases. A later acceptance set must be expanded separately.
+`cases-v1.json.gz` stores the exact compressed JSON fixture and preserves the ten
+synthetic semantic cases from the audit material. The exploration default is 3
+repetitions per logical case (30 process runs per arm). Repetitions are repeated
+samples, not additional independent semantic cases. A later acceptance set must
+be expanded separately.
 
 ## Safety and control rules
 
 `run_baseline.py` is dry-run by default. It performs **zero model calls** unless
 `--execute` is explicitly supplied. Real execution also requires an explicit
-config template that pins `llm.provider` and exact `llm.model`, plus an output
-path. Every run uses a fresh temporary Vault. Seed memories and event text are
-synthetic. The runner does not copy a production Vault.
+config template that pins `llm.provider` and exact `llm.model`, an output path,
+and a positive `--max-model-calls` hard cap. Every run uses a fresh temporary
+Vault. Seed memories and event text are synthetic. The runner does not copy a
+production Vault.
 
 The temporary config keeps the selected provider/model/timeout/concurrency from
 the supplied template, disables diagnostic logging, and fixes Gate/Summary/
 Compact thinking to `low` for the experiment. It never serializes API keys,
-prompts, raw model responses, or the source config into benchmark output.
+provider URLs, prompts, raw model responses, or the source config into benchmark
+output.
+
+The model-call budget is enforced around the pinned API route, including
+concurrent model stages. A rejected call is never delegated after the cap has
+been reached. Each case writes a structural result even if processing fails, and
+the output JSON is replaced after every completed case so a later failure or
+budget stop does not discard earlier evidence.
 
 The runner records product output needed for manual semantic grading (active and
 history Markdown projections), structural model metrics, process wall time, and
 a fresh-instance visibility check. It deliberately leaves `price_usd` unknown;
-pricing must only be computed from verified provider pricing at run time.
+pricing and a monetary cap must only be computed from verified provider pricing
+at run time.
+
+## Current external blocker
+
+A zero-call GitHub Actions preflight on 2026-09-10 at commit
+`ed63b24c7a90148a735e8ec1ea9b3d304ae2841a` found the repository live-model
+route unconfigured: `MEMLEAF_LIVE_MODEL_TOKEN`, `MEMLEAF_LIVE_BASE_URL`, and
+`MEMLEAF_LIVE_MODEL` were all absent. The preflight made 0 model calls. This is a
+historical observation, not a claim that repository settings can never change.
+
+Do not add a credential merely to make CI green. The preferred next step is a
+small local pilot using the already configured local memleaf Model Route, if one
+exists, without uploading its key to GitHub.
 
 ## Commands
 
-The companion `cases-v1-manifest.json` lists the ten case IDs/categories and the SHA-256 of the decompressed JSON so the compressed fixture is independently checkable.
+The companion `cases-v1-manifest.json` lists the ten case IDs/categories and the
+SHA-256 of the decompressed JSON so the compressed fixture is independently
+checkable.
 
-Inspect the plan without calling a model:
+Inspect the default plan without calling a model:
 
 ```bash
 python benchmarks/p1/run_baseline.py
+```
+
+Inspect the local route identity without printing its URL or credential and
+without calling a model:
+
+```bash
+python benchmarks/p1/run_baseline.py \
+  --config-template ~/.memleaf/config.yaml
 ```
 
 Run the small asset tests (still no model call):
@@ -52,15 +84,33 @@ Run the small asset tests (still no model call):
 python -m unittest benchmarks.p1.test_runner -v
 ```
 
-A real B0 exploration is intentionally explicit:
+Before the 30-run exploration, run one bounded pilot to measure actual call and
+token usage. The model-call cap below is intentionally explicit; choose the
+monetary cap only after verifying current provider pricing.
+
+```bash
+python benchmarks/p1/run_baseline.py \
+  --execute \
+  --arm-label B0-pilot \
+  --case AB01_fact \
+  --repetitions 1 \
+  --config-template ~/.memleaf/config.yaml \
+  --output benchmarks/results/p1-b0-pilot.json \
+  --max-process-runs 1 \
+  --max-model-calls 12
+```
+
+After the pilot establishes a defensible call/token and pricing bound, the full
+B0 exploration remains explicit:
 
 ```bash
 python benchmarks/p1/run_baseline.py \
   --execute \
   --arm-label B0 \
-  --config-template /path/to/isolated-eval-config.yaml \
+  --config-template ~/.memleaf/config.yaml \
   --output benchmarks/results/p1-b0.json \
-  --max-process-runs 30
+  --max-process-runs 30 \
+  --max-model-calls <registered-call-cap>
 ```
 
 Do not put a credential-bearing config file into the repository. Do not compare

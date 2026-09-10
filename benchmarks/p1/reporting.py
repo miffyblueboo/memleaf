@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from copy import deepcopy
 from typing import Any, Mapping
 
@@ -13,6 +14,7 @@ SAFE_RESULT_FIELDS = (
     "deferred_candidates", "deferred_inbox_turns", "unresolved_evidence_count",
     "retryable_deferred_turns", "coverage_status", "external_evidence_status",
 )
+_SAFE_ERROR_LABEL = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 
 
 def revision(memory: Memory) -> str:
@@ -64,6 +66,26 @@ def safe_process_result(result: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(ids, list):
         projected["memory_ids"] = [item for item in ids if isinstance(item, str)]
     return projected
+
+
+def safe_failure(error: BaseException) -> dict[str, Any]:
+    """Project only structural failure labels; never persist exception text."""
+
+    result: dict[str, Any] = {"error_type": type(error).__name__}
+    for output_key, attribute in (
+        ("error_code", "code"),
+        ("stage", "stage"),
+        ("validation_reason", "validation_reason"),
+        ("validation_detail", "validation_detail"),
+        ("evidence_check", "evidence_check"),
+    ):
+        item = getattr(error, attribute, None)
+        if isinstance(item, str) and _SAFE_ERROR_LABEL.fullmatch(item):
+            result[output_key] = item
+    metrics = getattr(error, "model_metrics", None)
+    if isinstance(metrics, Mapping):
+        result["model_metrics"] = deepcopy(dict(metrics))
+    return result
 
 
 def call_graph(result: Mapping[str, Any]) -> list[dict[str, Any]]:

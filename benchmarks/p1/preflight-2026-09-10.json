@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-09-10T02:12:21Z",
+  "source_commit": "ed63b24c7a90148a735e8ec1ea9b3d304ae2841a",
+  "workflow_run_id": 34428509262,
+  "artifact_id": 10133557318,
+  "status": "blocked",
+  "provider": "unconfigured",
+  "model": null,
+  "base_url_configured": false,
+  "token_configured": false,
+  "model_calls": 0,
+  "note": "Historical zero-call preflight. Repository variables and secrets may be configured later."
+}

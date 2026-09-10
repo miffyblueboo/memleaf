@@ -55,17 +55,10 @@ def build_plan(data: Mapping[str, Any], cases: list[Mapping[str, Any]], repetiti
     }
 
 
-def _scope_registry(case: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    raw = case.get("scope_registry", [])
-    if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
-        raise ValueError(f"{case.get('id', '<case>')}: invalid scope_registry")
-    return {item: {} for item in raw}
+def evaluation_template(template: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the exact experiment config without changing the caller's mapping."""
 
-
-def _prepare_config(service: Memleaf, template: Mapping[str, Any], case: Mapping[str, Any]) -> None:
     config = deepcopy(dict(template))
-    config["vault"] = str(service.vault.root)
-    config["scopes"] = _scope_registry(case)
     llm = config.get("llm")
     if not isinstance(llm, Mapping):
         raise ValueError("config template has no llm section")
@@ -80,6 +73,20 @@ def _prepare_config(service: Memleaf, template: Mapping[str, Any], case: Mapping
     thinking.update({"gate": "low", "summarize": "low", "compact": "low"})
     llm["thinking"] = thinking
     config["llm"] = llm
+    return config
+
+
+def _scope_registry(case: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    raw = case.get("scope_registry", [])
+    if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+        raise ValueError(f"{case.get('id', '<case>')}: invalid scope_registry")
+    return {item: {} for item in raw}
+
+
+def _prepare_config(service: Memleaf, template: Mapping[str, Any], case: Mapping[str, Any]) -> None:
+    config = evaluation_template(template)
+    config["vault"] = str(service.vault.root)
+    config["scopes"] = _scope_registry(case)
     save_config(service.vault.config_path, config)
 
 

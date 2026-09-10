@@ -8,8 +8,29 @@ import unittest
 from pathlib import Path
 
 from memleaf.config import default_config
-from benchmarks.p1.fixture import build_plan, load_cases, prepare_case_vault
-from benchmarks.p1.reporting import snapshot
+from memleaf.llm import ModelUnavailable
+from benchmarks.p1.fixture import build_plan, evaluation_template, load_cases, prepare_case_vault
+from benchmarks.p1.reporting import safe_failure, snapshot
+from benchmarks.p1.run_baseline import BudgetedModel, _route_identity, main
+
+
+class _FakeBackend:
+    parallel_safe = True
+    provider = "synthetic"
+    model = "synthetic-model"
+
+    def __init__(self):
+        self.calls = 0
+        self.metrics = {}
+
+    def complete(self, prompt, *, system="", purpose="", temperature=0.0):
+        self.calls += 1
+        self.metrics = {"prompt_tokens": 3, "completion_tokens": 1}
+        return "{}"
+
+    def consume_call_metrics(self):
+        value, self.metrics = self.metrics, {}
+        return value
 
 
 class P1BaselineAssetsTests(unittest.TestCase):
@@ -57,6 +78,62 @@ class P1BaselineAssetsTests(unittest.TestCase):
             config["llm"]["model"] = "synthetic-model"
             service = prepare_case_vault(root, case, template=config, fixed_time=self.data["fixed_event_time"])
             self.assertEqual(set(service.vault.config()["scopes"]), {"project:星河", "project:Orion"})
+
+    def test_evaluation_template_forces_low_without_mutating_source(self):
+        config = default_config("/tmp/p1-source")
+        config["llm"]["provider"] = "deepseek"
+        config["llm"]["model"] = "synthetic-model"
+        config["llm"]["thinking"] = {"gate": "high", "summarize": "high", "compact": "high"}
+        evaluated = evaluation_template(config)
+        self.assertEqual(evaluated["llm"]["thinking"], {"gate": "low", "summarize": "low", "compact": "low"})
+        self.assertEqual(config["llm"]["thinking"]["gate"], "high")
+        self.assertFalse(evaluated["llm"]["diagnostic_logging"])
+
+    def test_budgeted_model_never_delegates_past_cap_and_keeps_metrics(self):
+        backend = _FakeBackend()
+        model = BudgetedModel(backend, 2)
+        self.assertTrue(model.parallel_safe)
+        self.assertEqual(model.complete("one"), "{}")
+        self.assertEqual(model.consume_call_metrics()["prompt_tokens"], 3)
+        self.assertEqual(model.complete("two"), "{}")
+        with self.assertRaises(ModelUnavailable):
+            model.complete("three")
+        self.assertEqual(model.calls, 2)
+        self.assertEqual(backend.calls, 2)
+
+    def test_execute_requires_explicit_model_call_budget_before_reading_config(self):
+        with self.assertRaisesRegex(SystemExit, "--max-model-calls"):
+            main([
+                "--execute",
+                "--config-template", "/definitely/missing/config.yaml",
+                "--output", "/tmp/never-written.json",
+            ])
+
+    def test_route_identity_never_contains_secret_or_base_url(self):
+        config = default_config("/tmp/p1-route")
+        config["llm"].update({
+            "mode": "api",
+            "provider": "deepseek",
+            "protocol": "openai",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "synthetic-secret-never-print",
+            "model": "deepseek-chat",
+        })
+        identity = _route_identity(evaluation_template(config))
+        encoded = json.dumps(identity)
+        self.assertTrue(identity["api_route_ready"])
+        self.assertTrue(identity["credential_configured"])
+        self.assertNotIn("synthetic-secret-never-print", encoded)
+        self.assertNotIn("api.deepseek.com", encoded)
+        self.assertNotIn("base_url", identity)
+
+    def test_safe_failure_does_not_persist_exception_message(self):
+        error = ModelUnavailable("synthetic-secret-in-message")
+        error.stage = "gate"
+        projected = safe_failure(error)
+        self.assertNotIn("synthetic-secret-in-message", json.dumps(projected))
+        self.assertEqual(projected["error_type"], "ModelUnavailable")
+        self.assertEqual(projected["stage"], "gate")
 
 
 if __name__ == "__main__":
