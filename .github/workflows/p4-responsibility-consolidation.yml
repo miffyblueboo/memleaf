@@ -22,12 +22,15 @@ jobs:
       - name: Compile P4 assets
         run: |
           python -m py_compile \
+            src/memleaf/candidate_identification.py \
             src/memleaf/maintenance_plan_protocol.py \
             src/memleaf/maintenance_plan_stage.py \
+            tests/test_p4_candidate_identification.py \
             tests/test_p4_maintenance_plan.py \
             tests/test_p4_maintenance_plan_stage.py
-      - name: Validate P4 protocol and stage-two boundary
+      - name: Validate P4 responsibility contracts
         run: |
           python -m unittest \
+            tests.test_p4_candidate_identification \
             tests.test_p4_maintenance_plan \
             tests.test_p4_maintenance_plan_stage -v
