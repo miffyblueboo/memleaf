@@ -109,7 +109,7 @@ update_section = update_section.replace(
 source = source[:update_start] + update_section + source[update_end:]
 
 create_start = source.index("    def _review_final_creates(\n")
-create_end = source.index("    def _defer(\n", create_start)
+create_end = source.index("    def _defer(self,", create_start)
 create_section = source[create_start:create_end]
 assert create_section.count("        jobs: list[Callable[[], dict[str, Any]]] = []\n") == 1
 create_section = create_section.replace(
