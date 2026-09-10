@@ -130,7 +130,8 @@ class UpdateReviewTests(unittest.TestCase):
             self.assertIn("raw tool results", text)
             self.assertIn("non-conversation payloads", text)
         gate = gate_prompt([{"event_key": "assistant-event", "role": "assistant", "content": "confirmed"}])
-        self.assertIn("Complete turn events", gate)
+        self.assertIn("Turn event metadata", gate)
+        self.assertNotIn("confirmed", gate)
         self.assertIn("Relevant existing memleaf/native memories", gate)
         self.assertNotIn("Candidate decomposition check", gate)
         summary = summarize_prompt(
@@ -153,7 +154,8 @@ class UpdateReviewTests(unittest.TestCase):
         ):
             self.assertIn(phrase.casefold(), gate_text)
         prompt = gate_prompt([{"event_key": "assistant-event", "role": "assistant", "content": "A and B"}])
-        self.assertIn("Complete turn events", prompt)
+        self.assertIn("Turn event metadata", prompt)
+        self.assertNotIn("A and B", prompt)
         self.assertNotIn("Atomicity test", prompt)
     def test_automatic_summary_and_semantic_review_keep_one_topic(self):
         summary_text = " ".join(SUMMARIZE_SYSTEM.split()).casefold()

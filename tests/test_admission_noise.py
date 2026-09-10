@@ -105,7 +105,8 @@ class AdmissionPromptTests(unittest.TestCase):
             self.assertIn(phrase, text)
         prompt = gate_prompt([{"event_key": "event-1", "role": "assistant", "content": "temporary result"}])
         self.assertIn("Mode: automatic capture/process", prompt)
-        self.assertIn("Complete turn events", prompt)
+        self.assertIn("Turn event metadata", prompt)
+        self.assertNotIn("temporary result", prompt)
         # Policy belongs in the system contract; dynamic prompt stays data-focused.
         self.assertNotIn("Candidate decomposition check", prompt)
         self.assertNotIn("Atomicity test", prompt)
