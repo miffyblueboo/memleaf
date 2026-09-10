@@ -64,6 +64,26 @@ class ModelRouter:
             return getattr(self.api, "parallel_safe", False) is True
         return False
 
+    @property
+    def structured_batch_safe(self) -> bool:
+        """Expose prompt-level batching only when routing is fixed to a safe API backend."""
+
+        if self.mode == "api":
+            return getattr(self.api, "structured_batch_safe", False) is True
+        if self.mode == "auto" and self.host is None:
+            return getattr(self.api, "structured_batch_safe", False) is True
+        return False
+
+    @property
+    def single_pass_safe(self) -> bool:
+        """Expose B3 only when routing is fixed to a built-in safe API backend."""
+
+        if self.mode == "api":
+            return getattr(self.api, "single_pass_safe", False) is True
+        if self.mode == "auto" and self.host is None:
+            return getattr(self.api, "single_pass_safe", False) is True
+        return False
+
     @staticmethod
     def _coerce_host(value: Any) -> Optional[ModelBackend]:
         if value is None:

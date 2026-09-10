@@ -6,7 +6,7 @@ import re
 from typing import Any, Mapping
 
 
-THINKING_PURPOSES = frozenset({"gate", "summarize", "compact"})
+THINKING_PURPOSES = frozenset({"gate", "summarize", "compact", "single_pass"})
 THINKING_MODES = frozenset({"default", "disabled", "low", "high", "max"})
 THINKING_EFFECTIVE_MODES = frozenset(
     {"provider_default", "unsupported", "disabled", "minimal", "low", "high", "max"}

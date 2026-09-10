@@ -42,7 +42,8 @@ class PromptRoleSlimV040Tests(unittest.TestCase):
             scope_background=["project:Alpha"],
             scope_registry=[{"scope": "project:Alpha"}],
         )
-        self.assertIn("Complete turn events", prompt)
+        self.assertIn("Turn event metadata", prompt)
+        self.assertNotIn("Alpha applies.", prompt)
         self.assertIn("Relevant existing memleaf/native memories", prompt)
         self.assertIn("Session scope background", prompt)
         self.assertNotIn("Candidate decomposition check", prompt)

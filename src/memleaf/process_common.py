@@ -227,6 +227,15 @@ _DIAGNOSTIC_CANDIDATE_ALLOWED = _DIAGNOSTIC_CANDIDATE_REQUIRED | frozenset(
 _DIAGNOSTIC_SUMMARY_REQUIRED = frozenset(("title", "body", "tags", "type", "scopes", "sources"))
 
 
+_DIAGNOSTIC_SINGLE_PASS_REQUIRED = frozenset(("protocol_version", "items", "no_memory"))
+_DIAGNOSTIC_SINGLE_PASS_ALLOWED = _DIAGNOSTIC_SINGLE_PASS_REQUIRED
+_DIAGNOSTIC_SINGLE_PASS_ITEM_REQUIRED = frozenset(("candidate_id", "decision", "evidence"))
+_DIAGNOSTIC_SINGLE_PASS_ITEM_ALLOWED = frozenset((
+    "candidate_id", "decision", "evidence", "type", "scopes", "scope_source",
+    "memory", "target_memory_id", "reason",
+))
+
+
 _DIAGNOSTIC_SUMMARY_ALLOWED = frozenset(
     (
         "memory_id",
@@ -290,7 +299,7 @@ def _failure_metadata(
         else:
             code = "model_failed"
     stage = getattr(error, "stage", None)
-    if stage not in {"gate", "summarize"}:
+    if stage not in {"gate", "summarize", "single_pass"}:
         stage = None
     validation_reason = getattr(error, "validation_reason", None)
     if not isinstance(validation_reason, str) or validation_reason not in MODEL_VALIDATION_REASONS:
@@ -361,10 +370,28 @@ def _model_output_statistics(raw: Any, purpose: str) -> dict[str, Any]:
     elif purpose == "summarize":
         required = _DIAGNOSTIC_SUMMARY_REQUIRED
         allowed = _DIAGNOSTIC_SUMMARY_ALLOWED
+    elif purpose == "single_pass":
+        required = _DIAGNOSTIC_SINGLE_PASS_REQUIRED
+        allowed = _DIAGNOSTIC_SINGLE_PASS_ALLOWED
     else:
         return stats
     stats["missing_fields_count"] = len(required - set(parsed))
     stats["unknown_fields_count"] = len(set(parsed) - allowed)
+    if purpose == "single_pass":
+        items = parsed.get("items")
+        if not isinstance(items, list):
+            return stats
+        stats["candidate_count"] = len(items)
+        missing_count = stats["missing_fields_count"]
+        unknown_count = stats["unknown_fields_count"]
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            missing_count += len(_DIAGNOSTIC_SINGLE_PASS_ITEM_REQUIRED - set(item))
+            unknown_count += len(set(item) - _DIAGNOSTIC_SINGLE_PASS_ITEM_ALLOWED)
+        stats["missing_fields_count"] = missing_count
+        stats["unknown_fields_count"] = unknown_count
+        return stats
     if purpose != "gate":
         return stats
     candidates = parsed.get("candidates")
