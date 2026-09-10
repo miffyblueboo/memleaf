@@ -372,6 +372,21 @@ replacement, and only propose a replacement whose local token estimate is
 smaller than its consumed sources."""
 
 
+
+def _gate_event_metadata(events: list[dict]) -> list[dict]:
+    """Project event identity/timing only; conversation text lives in Evidence units."""
+
+    projected: list[dict] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        projected.append({
+            key: value
+            for key, value in event.items()
+            if key not in {"content", "tool_evidence"}
+        })
+    return projected
+
 def gate_prompt(
     events: list[dict],
     *,
@@ -384,7 +399,7 @@ def gate_prompt(
 ) -> str:
     parts = [
         "Mode: automatic capture/process.",
-        "Complete turn events (the only conversation content visible to this call):\n" + _json(events),
+        "Turn event metadata (conversation text appears only in Evidence units below):\n" + _json(_gate_event_metadata(events)),
         "Relevant existing memleaf/native memories:\n"
         + _json(related_memories or []),
         "Session scope background:\n" + _json(scope_background if scope_background is not None else []),
