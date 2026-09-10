@@ -1,0 +1,89 @@
+name: P4 responsibility consolidation
+
+on:
+  push:
+    branches:
+      - experiment/p4-responsibility-consolidation-20260910
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-p4-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Compile P4 assets
+        run: |
+          python -m py_compile \
+            src/memleaf/candidate_identification.py \
+            src/memleaf/maintenance_plan_adapter.py \
+            src/memleaf/maintenance_plan_protocol.py \
+            src/memleaf/maintenance_plan_stage.py \
+            tests/test_p4_candidate_identification.py \
+            tests/test_p4_maintenance_plan_adapter.py \
+            tests/test_p4_maintenance_plan.py \
+            tests/test_p4_maintenance_plan_stage.py \
+            benchmarks/p4/comparison_runner.py \
+            benchmarks/p4/structure_audit.py
+      - name: Validate P4 responsibility contracts
+        run: |
+          python -m unittest \
+            tests.test_p4_candidate_identification \
+            tests.test_p4_maintenance_plan_adapter \
+            tests.test_p4_maintenance_plan \
+            tests.test_p4_maintenance_plan_stage -v
+      - name: Verify scripted end-to-end comparison harness
+        run: |
+          python benchmarks/p4/comparison_runner.py --output /tmp/p4-comparison.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          value = json.loads(Path('/tmp/p4-comparison.json').read_text())
+          assert value['measurement'] == 'scripted_end_to_end_contract_comparison_zero_real_model_calls_zero_vault_writes'
+          assert value['case_count'] == 3
+          assert value['total_candidate_count'] == 6
+          assert value['total_stage2_scripted_model_calls'] == 3
+          assert value['all_candidate_sets_equal'] is True
+          assert value['all_decision_targets_equal'] is True
+          by_id = {row['case_id']: row for row in value['cases']}
+          assert by_id['P4X01_mixed_four']['lookup_statuses']['c-defer'] == 'too_many_candidates'
+          assert by_id['P4X02_search_error']['lookup_statuses']['c1'] == 'search_error'
+          assert by_id['P4X03_evidence_insufficient']['lookup_statuses']['c1'] == 'evidence_insufficient'
+          assert all(row['difference_count'] == 0 for row in value['cases'])
+          PY
+          cat /tmp/p4-comparison.json
+      - name: Verify P4 structural call graph
+        run: |
+          python benchmarks/p4/structure_audit.py > /tmp/p4-structure.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          value = json.loads(Path('/tmp/p4-structure.json').read_text())
+          ordinary = {
+              row['candidate_count']: row
+              for row in value['scenarios']
+              if row['scenario'] == 'ordinary_independent_create'
+          }
+          assert ordinary[1]['p3_total_model_calls'] == 3
+          assert ordinary[1]['p4_total_model_calls'] == 3
+          assert ordinary[2]['p3_total_model_calls'] == 3
+          assert ordinary[2]['p4_total_model_calls'] == 3
+          assert ordinary[4]['p3_total_model_calls'] == 4
+          assert ordinary[4]['p4_total_model_calls'] == 3
+          assert ordinary[4]['call_reduction_ratio'] == 0.25
+          conditional = next(
+              row for row in value['scenarios']
+              if row['scenario'] == 'conditional_all_candidates_require_fresh_target_reconciliation'
+          )
+          assert conditional['p3_total_model_calls'] == 10
+          assert conditional['p4_total_model_calls'] == 3
+          assert conditional['call_reduction_ratio'] == 0.7
+          PY
+          cat /tmp/p4-structure.json
