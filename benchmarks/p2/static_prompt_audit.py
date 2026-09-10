@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from memleaf.admission import analyze_turn_evidence, evidence_prompt
-from memleaf.prompts import GATE_SYSTEM, _json, gate_prompt
+from memleaf.prompts import GATE_SYSTEM, SUMMARIZE_SYSTEM, _json, gate_prompt
 
 
 def sample_events() -> list[dict]:
@@ -57,7 +57,8 @@ def build_report() -> dict:
         "p2_gate_user_prompt_bytes": current_bytes,
         "bytes_removed": removed,
         "reduction_ratio": round(removed / legacy_bytes, 6),
-        "gate_system_bytes_phase1": len(GATE_SYSTEM.encode("utf-8")),
+        "gate_system_bytes_phase2": len(GATE_SYSTEM.encode("utf-8")),
+        "summary_system_bytes_phase2": len(SUMMARIZE_SYSTEM.encode("utf-8")),
         "legacy_user_marker_occurrences": legacy.count("P2_UNIQUE_USER"),
         "p2_user_marker_occurrences": current.count("P2_UNIQUE_USER"),
         "legacy_assistant_marker_occurrences": legacy.count("P2_UNIQUE_ASSISTANT"),
