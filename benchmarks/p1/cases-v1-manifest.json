@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "fixture": "cases-v1.json.gz",
+  "decompressed_sha256": "9b6aa011455ccfd25e1edaa7877a531706bce92c5a681c91366c4647edc8f5cd",
+  "baseline_b0": "e2106bc9d55b8109ebd8df54eff7c1bad0c11180",
+  "repetitions_per_case_per_arm": 3,
+  "cases": [
+    {
+      "id": "AB01_fact",
+      "category": "普通事实"
+    },
+    {
+      "id": "AB02_conditional_preference",
+      "category": "条件偏好"
+    },
+    {
+      "id": "AB03_multi_item",
+      "category": "多事项与否定"
+    },
+    {
+      "id": "AB04_project_platform",
+      "category": "项目与平台区分"
+    },
+    {
+      "id": "AB05_update",
+      "category": "已有记忆 UPDATE"
+    },
+    {
+      "id": "AB06_no_change",
+      "category": "NO_CHANGE 与检索复述"
+    },
+    {
+      "id": "AB07_duplicate",
+      "category": "重复陈述"
+    },
+    {
+      "id": "AB08_todo_terminal",
+      "category": "todo 完成与取消"
+    },
+    {
+      "id": "AB09_ambiguous_scope",
+      "category": "Scope 歧义"
+    },
+    {
+      "id": "AB10_shared_evidence",
+      "category": "多候选共享 evidence"
+    }
+  ],
+  "status": "DESIGN_ONLY_NOT_RUN_WITH_REAL_MODEL"
+}

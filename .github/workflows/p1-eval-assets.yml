@@ -1,0 +1,35 @@
+name: P1 evaluation assets
+
+on:
+  push:
+    branches:
+      - experiment/p1-baseline-20260910
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-p1-assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Compile P1 runner
+        run: python -m py_compile benchmarks/p1/run_baseline.py benchmarks/p1/test_runner.py
+      - name: Validate P1 fixture and dry-run guard
+        run: |
+          python -m unittest benchmarks.p1.test_runner -v
+          python benchmarks/p1/run_baseline.py > /tmp/p1-plan.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          value = json.loads(Path('/tmp/p1-plan.json').read_text())
+          assert value['case_count'] == 10
+          assert value['planned_process_runs'] == 30
+          assert value['thinking'] == 'low'
+          PY
