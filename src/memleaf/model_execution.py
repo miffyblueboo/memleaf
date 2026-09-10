@@ -501,9 +501,25 @@ class ModelExecutor:
         failed = False
         try:
             value = backend.complete(prompt, system=system, purpose=purpose, temperature=0.0)
+            if metric_context is not None:
+                # Any normal return means the backend produced a response, even
+                # when the response object itself violates the text contract.
+                metric_context["response_received"] = True
+            if not isinstance(value, str):
+                failed = True
+                raise ModelError(
+                    "model backend returned non-text output",
+                    code="model_invalid_response",
+                    stage=purpose,
+                    validation_reason="response_shape",
+                )
         except ModelError as error:
             failed = True
             error.with_stage(purpose)
+            if metric_context is not None and error.code == "model_invalid_response":
+                # Built-in backends use this code only after receiving a
+                # provider/callback response that violates the response contract.
+                metric_context["response_received"] = True
             raise
         except Exception as error:
             failed = True
@@ -522,19 +538,6 @@ class ModelExecutor:
                 retry=retry,
                 provider_metrics=provider_metrics,
             )
-        if not isinstance(value, str):
-            with self._metrics_lock:
-                self._metrics["failed_calls"] += 1
-                self._metric_stages.setdefault(stage, _metric_bucket())["failed_calls"] += 1
-                self._metric_operations.setdefault(operation, _metric_bucket())["failed_calls"] += 1
-            raise ModelError(
-                "model backend returned non-text output",
-                code="model_invalid_response",
-                stage=purpose,
-                validation_reason="response_shape",
-            )
-        if metric_context is not None:
-            metric_context["response_received"] = True
         return value
 
     @staticmethod
@@ -854,7 +857,9 @@ class ModelExecutor:
                     _validate_coverage_shape_repair(targeted_previous_raw, raw)
                 parsed = parser(raw)
             except (ModelError, ModelOutputError) as error:
-                if isinstance(error, ModelOutputError):
+                if isinstance(error, ModelOutputError) or (
+                    isinstance(error, ModelError) and error.code == "model_invalid_response"
+                ):
                     self._record_invalid_output(metric_context)
                 self._set_stage_diagnostics(error, purpose=purpose, attempt_count=attempt_count)
                 try:
