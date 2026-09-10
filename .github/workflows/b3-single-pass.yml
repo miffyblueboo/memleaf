@@ -32,20 +32,21 @@ jobs:
             src/memleaf/llm/router.py \
             src/memleaf/llm/thinking.py \
             benchmarks/p1/run_baseline.py \
+            benchmarks/b3/test_benchmark_harness.py \
             tests/test_b3_activation.py \
-            tests/test_b3_benchmark_harness.py \
             tests/test_b3_planning_context.py \
             tests/test_b3_single_pass_memory_planner.py \
             tests/test_b3_single_pass_plan.py \
             tests/test_stage_b1.py
-      - name: Validate B3 single-pass behavior activation and benchmark routing
+      - name: Validate B3 single-pass behavior and activation
         run: |
           python -m unittest \
             tests.test_b3_activation \
-            tests.test_b3_benchmark_harness \
             tests.test_b3_single_pass_plan \
             tests.test_b3_planning_context \
             tests.test_b3_single_pass_memory_planner -v
+      - name: Validate B3 benchmark routing
+        run: python -m unittest benchmarks.b3.test_benchmark_harness -v
       - name: Validate retained scope native frozen-plan and retry semantics
         run: |
           python -m unittest \
