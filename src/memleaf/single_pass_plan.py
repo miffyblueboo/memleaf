@@ -58,13 +58,13 @@ DECISIONS
 CREATE/UPDATE/NO_CHANGE require lookup_complete=true. CREATE only when no supplied local memory represents the durable information. UPDATE when one supplied local memory represents the same evolving future use and current evidence establishes a change. NO_CHANGE when current evidence adds no semantic change to that target. DEFERRED when a durable candidate exists but a safe decision cannot be made. UPDATE/NO_CHANGE target_memory_id must come from LOCAL_MEMORY_CATALOG; use each target at most once.
 
 CONTENT
-CREATE supplies type, scopes and memory; Core derives scope_source. UPDATE supplies target_memory_id and memory; Core inherits target type/scopes. Only an explicit current-evidence Scope correction may add both scopes and scope_source to UPDATE; Core re-derives provenance and independently authorizes it. CREATE memory requires title and body; UPDATE memory requires body and may omit an unchanged title. Optional memory fields are tags, aliases, keywords, status, completed_at, due_date, shadow_native_ids and scope_operations. Omit optional tags/aliases/keywords unless they add retrieval value, and omit empty optional metadata. Emit todo state/date fields only when needed by the todo state, shadow_native_ids only for supplied native IDs actually superseded, and scope_operations only under the existing Scope contract. Do not place type, scopes, sources, or update_memory_id inside memory. Omission is not retraction or completion. Preserve still-valid target content on UPDATE.
+CREATE supplies type, scopes and memory; Core derives scope_source. UPDATE supplies target_memory_id and memory; Core inherits target type/scopes. Only an explicit current-evidence Scope correction may add scopes to UPDATE; Core derives provenance and independently authorizes it. CREATE memory requires title and body; UPDATE memory requires body and may omit an unchanged title. Optional memory fields are tags, aliases, keywords, status, completed_at, due_date, shadow_native_ids and scope_operations. Omit optional tags/aliases/keywords unless they add retrieval value, and omit empty optional metadata. Emit todo state/date fields only when needed by the todo state, shadow_native_ids only for supplied native IDs actually superseded, and scope_operations only under the existing Scope contract. Do not place type, scopes, scope_source, sources, or update_memory_id inside memory. Omission is not retraction or completion. Preserve still-valid target content on UPDATE.
 
 EVIDENCE
 Each item needs exact CURRENT_EVIDENCE claims: {unit_id,quote,role}, {unit_id,whole_unit:true,role}, or the legacy exact-offset form. role is assertion, source_excerpt, or user_confirmation. Each evidence unit must be claimed by at least one item or appear once in no_memory, never both. Use only the supplied no_memory_reasons and defer_reasons.
 
 SCOPE/DATES
-CREATE scopes use global, domain:name, portfolio:name, project:name, or unscoped. Project ownership must be grounded by claimed evidence or an explicit supplied scope; a platform/system name alone is not ownership. Preserve supported date meaning; Core validates and grounds dates, Scope, target and revision.
+CREATE scopes use global, domain:name, portfolio:name, project:name, or unscoped. Project ownership must be grounded by claimed evidence or an explicit supplied scope; a platform/system name alone is not ownership. Preserve supported date meaning; Core derives scope provenance and validates dates, Scope, target and revision.
 
 OUTPUT
 Return exactly {protocol_version,items,no_memory} with protocol_version=b3-single-pass-v1 and complete CURRENT_EVIDENCE coverage."""
@@ -322,13 +322,12 @@ def parse_single_pass_output(
             # trusts it and new prompts no longer request it.
             allowed_fields = allowed_fields | {"scope_source"}
         elif decision == "UPDATE":
-            extra_scope_fields = actual_fields & update_scope_fields
-            if extra_scope_fields and extra_scope_fields != update_scope_fields:
+            allowed_fields = allowed_fields | update_scope_fields
+            if "scope_source" in actual_fields and "scopes" not in actual_fields:
                 raise ModelOutputError(
-                    "B3 UPDATE scope correction requires scopes and scope_source together",
+                    "legacy B3 UPDATE scope_source requires scopes",
                     validation_detail="missing_fields",
                 )
-            allowed_fields = allowed_fields | update_scope_fields
         required_fields = decision_fields[decision]
         if not required_fields.issubset(actual_fields) or actual_fields - allowed_fields:
             detail = "unknown_fields" if actual_fields - allowed_fields else "missing_fields"
@@ -372,11 +371,11 @@ def parse_single_pass_output(
                         isinstance(scope, str) and scope for scope in scopes
                     ):
                         raise ModelOutputError("B3 UPDATE scopes are invalid", validation_detail="invalid_scope")
-                    if item.get("scope_source") not in SCOPE_SOURCES:
-                        raise ModelOutputError(
-                            "B3 UPDATE scope_source is invalid",
-                            validation_detail="invalid_scope_source",
-                        )
+                if "scope_source" in item and item.get("scope_source") not in SCOPE_SOURCES:
+                    raise ModelOutputError(
+                        "B3 UPDATE scope_source is invalid",
+                        validation_detail="invalid_scope_source",
+                    )
         else:
             if item.get("reason") not in _DEFER_REASONS:
                 raise ModelOutputError("B3 defer reason is invalid", validation_detail="reason_too_long")
