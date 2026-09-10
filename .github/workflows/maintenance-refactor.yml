@@ -92,12 +92,14 @@ jobs:
         run: python -m compileall -q src tests examples
       - name: Run full Linux regression before staging commit
         run: python -m unittest discover -s tests -p 'test_*.py' -v
-      - name: Commit validated tree
+      - name: Commit validated non-workflow tree
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'miffyblueboo'
           git config user.email 'miffyblueboo@gmail.com'
           git add -A
+          git restore --staged .github/workflows/ci.yml
+          git restore .github/workflows/ci.yml
           git commit -m 'refactor: split oversized modules and remove benchmark assets [maintainability-applied]'
           git push origin HEAD
