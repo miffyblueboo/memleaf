@@ -11,10 +11,16 @@ Correctness baseline B0 is fixed at:
 
 This is the P0 branch state after the Gate protocol candidate plus the isolated
 F01/F02/F03/F04/F06 follow-up fixes, the invalid-response metrics classification
-repair, and the exact Gate decision/claim protocol matrix passed the repository's Linux, Windows, macOS, wheel/sdist, and
-Codex-native CI matrix. The P1 fixture, manifest, tests, and this README are
-pinned to that exact corrected B0; changing the product baseline requires an
-explicit fixture re-pin and hash verification before another real-model run.
+repair, and the exact Gate decision/claim protocol matrix passed the repository's
+Linux, Windows, macOS, wheel/sdist, and Codex-native CI matrix. The P1 fixture,
+manifest, tests, and this README are pinned to that exact corrected B0; changing
+the product baseline requires an explicit fixture re-pin and hash verification
+before another real-model run.
+
+The final strict-Gate B0 synchronization was independently verified on the P1
+branch after the fixture and manifest were re-pinned. The decompressed fixture
+SHA-256 is recorded in `cases-v1-manifest.json`; this verification step performs
+no model call.
 
 `cases-v1.json.gz` stores the exact compressed JSON fixture and preserves the ten
 synthetic semantic cases from the audit material. The exploration default is 3
