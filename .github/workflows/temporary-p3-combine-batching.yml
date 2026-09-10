@@ -1,0 +1,48 @@
+name: Temporary P3 combine batching experiments
+
+on:
+  push:
+    branches:
+      - automation/p3-combine-batching-20260910
+
+permissions:
+  contents: write
+
+jobs:
+  combine-test-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/p3-batched-model-stages-20260910
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify expected P3 review-batching head
+        run: test "$(git rev-parse HEAD)" = "82d574293028f78f8e8d3e255d400175d44b5dc9"
+      - name: Merge existing CREATE-summary batching experiment
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git merge --no-ff --no-edit origin/experiment/p3-small-batch-20260910
+          git diff --check HEAD^1..HEAD
+      - name: Install and validate combined batching contracts
+        run: |
+          python -m pip install -e .
+          python -m py_compile \
+            src/memleaf/summary_batch.py \
+            src/memleaf/batch_review.py \
+            src/memleaf/memory_planner.py \
+            src/memleaf/update_coordinator.py \
+            src/memleaf/llm/base.py \
+            src/memleaf/llm/router.py
+          python -m unittest \
+            tests.test_p3_summary_batch \
+            tests.test_batch_review \
+            tests.test_batch_review_integration \
+            tests.test_update_review -v
+          python benchmarks/p3/batch_call_audit.py
+          python benchmarks/p3/review_call_audit.py
+      - name: Push combined P3
+        run: git push origin HEAD:experiment/p3-batched-model-stages-20260910
