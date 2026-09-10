@@ -33,3 +33,52 @@ jobs:
           assert value['planned_process_runs'] == 30
           assert value['thinking'] == 'low'
           PY
+
+  route-preflight:
+    if: startsWith(github.event.head_commit.message, 'p1-preflight:')
+    runs-on: ubuntu-latest
+    env:
+      MEMLEAF_LIVE_MODEL_TOKEN: ${{ secrets.MEMLEAF_LIVE_MODEL_TOKEN }}
+      MEMLEAF_LIVE_BASE_URL: ${{ vars.MEMLEAF_LIVE_BASE_URL }}
+      MEMLEAF_LIVE_MODEL: ${{ vars.MEMLEAF_LIVE_MODEL }}
+    steps:
+      - name: Record non-secret route identity and configuration availability
+        shell: python
+        run: |
+          import json, os
+          from pathlib import Path
+          from urllib.parse import urlsplit
+
+          model = os.environ.get('MEMLEAF_LIVE_MODEL', '').strip()
+          base_url = os.environ.get('MEMLEAF_LIVE_BASE_URL', '').strip()
+          token_present = bool(os.environ.get('MEMLEAF_LIVE_MODEL_TOKEN', '').strip())
+          host = (urlsplit(base_url).hostname or '').casefold()
+          if host.endswith('deepseek.com'):
+              provider = 'deepseek'
+          elif host.endswith('openai.com'):
+              provider = 'openai'
+          elif host.endswith('openrouter.ai'):
+              provider = 'openrouter'
+          elif host.endswith('anthropic.com'):
+              provider = 'anthropic'
+          elif host.endswith('googleapis.com'):
+              provider = 'gemini'
+          elif base_url:
+              provider = 'openai-compatible'
+          else:
+              provider = 'unconfigured'
+          value = {
+              'status': 'ready' if model and base_url and token_present else 'blocked',
+              'provider': provider,
+              'model': model or None,
+              'base_url_configured': bool(base_url),
+              'token_configured': token_present,
+              'model_calls': 0,
+          }
+          Path('/tmp/p1-route-preflight.json').write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
+          print(json.dumps(value))
+      - uses: actions/upload-artifact@v4
+        with:
+          name: p1-route-preflight-${{ github.sha }}
+          path: /tmp/p1-route-preflight.json
+          retention-days: 14
