@@ -1,6 +1,7 @@
 """Bounded Model Route execution and model-output diagnostics."""
 from __future__ import annotations
 import json
+from decimal import Decimal, InvalidOperation
 import os
 import threading
 import time
@@ -9,7 +10,7 @@ from .config import DEFAULT_MODEL_CONCURRENCY, MAX_MODEL_CONCURRENCY, MIN_MODEL_
 from .llm import MODEL_VALIDATION_REASONS, CallableBackend, ModelError, ModelUnavailable, ModelRouter
 from .models import utc_now
 from .prompts import COVERAGE_ALREADY_COMPLETED_CORRECTION, COVERAGE_CANDIDATE_CORRECTION, COVERAGE_CORRECTION, COVERAGE_SHAPE_CORRECTION, DUPLICATE_TARGET_CORRECTION, EVIDENCE_EVENT_MAPPING_CORRECTION, EVIDENCE_SPAN_CORRECTION, GATE_STRUCTURE_REPAIR_SYSTEM, GATE_TYPE_CORRECTION, JSON_CORRECTION, MIXED_FUTURE_USE_CORRECTION, MIXED_PROJECT_SCOPES_CORRECTION, RELATIVE_TIME_CORRECTION, SCOPE_GROUNDING_CORRECTION, SUMMARY_SCOPE_CORRECTION, SUMMARY_TARGET_CORRECTION, SUMMARY_TYPE_CORRECTION, TARGET_RELEVANCE_CORRECTION, UPDATE_TARGET_TYPE_CORRECTION, gate_structure_repair_prompt
-from .validation import MODEL_VALIDATION_DETAILS, ModelOutputError
+from .validation import MODEL_VALIDATION_DETAILS, ModelOutputError, parse_strict_json
 from .process_common import _DIAGNOSTIC_FILENAME, _DIAGNOSTIC_MAX_BYTES, _failure_metadata, _model_output_statistics, _safe_evidence_check, _safe_evidence_diagnostics
 
 
@@ -39,6 +40,9 @@ _THINKING_CONTROLS = frozenset({
 _COVERAGE_ALLOWED_FIELDS = frozenset({"unit_id", "decision", "candidate_ids", "reason", "memory_id"})
 _GATE_TOP_LEVEL_FIELDS = frozenset({"candidates", "coverage", "evidence_bindings"})
 _GATE_STRUCTURE_REPAIR_MAX_BYTES = 64 * 1024
+# Only program-defined diagnostic labels may be emitted; arbitrary model keys
+# can themselves be credentials or business text. Counts still include all keys.
+_COVERAGE_DIAGNOSTIC_FIELDS = frozenset({"explanation"})
 
 
 def _metric_bucket() -> dict[str, Any]:
@@ -46,6 +50,7 @@ def _metric_bucket() -> dict[str, Any]:
         "call_count": 0,
         "retry_count": 0,
         "failed_calls": 0,
+        "invalid_output_count": 0,
         "request_duration_ms": 0,
         "input_chars": 0,
         "input_bytes": 0,
@@ -81,11 +86,7 @@ def _safe_json_type(value: Any) -> str:
 
 
 def _safe_schema_field_name(value: Any) -> bool:
-    if not isinstance(value, str) or not 1 <= len(value) <= 64 or not value.isascii():
-        return False
-    if value[0].isdigit():
-        return False
-    return all(character.isalnum() or character == "_" for character in value)
+    return isinstance(value, str) and value in _COVERAGE_DIAGNOSTIC_FIELDS
 
 
 def _coverage_shape_diagnostics(raw: Any) -> dict[str, Any]:
@@ -94,8 +95,8 @@ def _coverage_shape_diagnostics(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, str):
         return {}
     try:
-        value = json.loads(raw)
-    except (TypeError, ValueError, json.JSONDecodeError):
+        value = parse_strict_json(raw)
+    except (ModelOutputError, RecursionError):
         return {}
     if not isinstance(value, Mapping):
         return {}
@@ -155,21 +156,53 @@ def _coverage_shape_repair_error() -> ModelOutputError:
     )
 
 
+def _same_json_value(left: Any, right: Any) -> bool:
+    """Type-strict JSON equality: object order is irrelevant, array order is not."""
+
+    pending = [(left, right)]
+    while pending:
+        left, right = pending.pop()
+        if type(left) is not type(right):
+            return False
+        if isinstance(left, dict):
+            if left.keys() != right.keys():
+                return False
+            pending.extend((value, right[key]) for key, value in left.items())
+        elif isinstance(left, list):
+            if len(left) != len(right):
+                return False
+            pending.extend(zip(left, right))
+        elif left != right:
+            return False
+    return True
+
+
 def _validate_coverage_shape_repair(previous_raw: str, repaired_raw: str) -> None:
     """Prove that a targeted repair only removed unknown coverage fields."""
 
+    if any(
+        not isinstance(raw, str)
+        or len(raw.encode("utf-8")) > _GATE_STRUCTURE_REPAIR_MAX_BYTES
+        for raw in (previous_raw, repaired_raw)
+    ):
+        raise _coverage_shape_repair_error()
     try:
-        previous = json.loads(previous_raw)
-        repaired = json.loads(repaired_raw)
-    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        # Reuse the canonical duplicate-key/non-finite-constant rejection first.
+        # Decimal in this bounded second pass avoids float-rounding collisions
+        # when proving that *all* existing legal values are unchanged.
+        parse_strict_json(previous_raw)
+        parse_strict_json(repaired_raw)
+        previous = json.loads(previous_raw, parse_float=Decimal)
+        repaired = json.loads(repaired_raw, parse_float=Decimal)
+    except (ModelOutputError, TypeError, ValueError, RecursionError, InvalidOperation) as error:
         raise _coverage_shape_repair_error() from error
     if not isinstance(previous, Mapping) or not isinstance(repaired, Mapping):
         raise _coverage_shape_repair_error()
     if set(previous) != _GATE_TOP_LEVEL_FIELDS or set(repaired) != _GATE_TOP_LEVEL_FIELDS:
         raise _coverage_shape_repair_error()
-    if previous.get("candidates") != repaired.get("candidates"):
+    if not _same_json_value(previous.get("candidates"), repaired.get("candidates")):
         raise _coverage_shape_repair_error()
-    if previous.get("evidence_bindings") != repaired.get("evidence_bindings"):
+    if not _same_json_value(previous.get("evidence_bindings"), repaired.get("evidence_bindings")):
         raise _coverage_shape_repair_error()
     previous_coverage = previous.get("coverage")
     repaired_coverage = repaired.get("coverage")
@@ -192,7 +225,7 @@ def _validate_coverage_shape_repair(previous_raw: str, repaired_raw: str) -> Non
             for key in _COVERAGE_ALLOWED_FIELDS
             if key in repaired_row
         }
-        if repaired_legal != previous_legal:
+        if not _same_json_value(previous_legal, repaired_legal):
             raise _coverage_shape_repair_error()
         if set(repaired_row) - _COVERAGE_ALLOWED_FIELDS:
             raise _coverage_shape_repair_error()
@@ -357,6 +390,7 @@ class ModelExecutor:
                     "operation": operation,
                     "retry": bool(retry),
                     "failed": bool(failed),
+                    "invalid_output": False,
                     "request_duration_ms": elapsed_ms,
                     "input_chars": input_chars,
                     "input_bytes": input_bytes,
@@ -366,6 +400,29 @@ class ModelExecutor:
                 call.update(provider_metrics)
                 self._metric_calls.append(call)
             self._active_calls = max(0, self._active_calls - 1)
+
+    def _record_invalid_output(self, context: dict[str, Any]) -> None:
+        """Count each received response rejected by guard/parser once, not HTTP errors.
+
+        The per-call context belongs to one synchronous invocation, so concurrent
+        summary/review jobs never attribute a rejection to another call. Totals
+        remain exact even after the bounded per-call detail list is full.
+        """
+
+        with self._metrics_lock:
+            if not context.get("response_received") or context.get("invalid_output"):
+                return
+            context["invalid_output"] = True
+            for bucket in (
+                self._metrics,
+                self._metric_stages[context["stage"]],
+                self._metric_operations[context["operation"]],
+            ):
+                bucket["invalid_output_count"] += 1
+            for call in self._metric_calls:
+                if call["call_index"] == context["call_index"]:
+                    call["invalid_output"] = True
+                    break
 
     @staticmethod
     def _public_metric_bucket(bucket: Mapping[str, Any]) -> dict[str, int]:
@@ -380,6 +437,7 @@ class ModelExecutor:
             "call_count": int(bucket.get("call_count", 0)),
             "retry_count": int(bucket.get("retry_count", 0)),
             "failed_calls": int(bucket.get("failed_calls", 0)),
+            "invalid_output_count": int(bucket.get("invalid_output_count", 0)),
             "request_duration_ms": int(bucket.get("request_duration_ms", 0)),
             "wall_clock_ms": wall_clock_ms,
             "input_chars": int(bucket.get("input_chars", 0)),
@@ -422,6 +480,7 @@ class ModelExecutor:
         metric_stage: str | None = None,
         metric_operation: str | None = None,
         retry: bool = False,
+        metric_context: dict[str, Any] | None = None,
     ) -> str:
         stage = self._safe_metric_stage(metric_stage or purpose)
         operation = self._safe_metric_operation(stage, metric_operation)
@@ -433,6 +492,11 @@ class ModelExecutor:
             input_chars=input_chars,
             input_bytes=input_bytes,
         )
+        if metric_context is not None:
+            metric_context.update(
+                stage=stage, operation=operation, call_index=call_index,
+                response_received=False, invalid_output=False,
+            )
         value: Any = None
         failed = False
         try:
@@ -469,6 +533,8 @@ class ModelExecutor:
                 stage=purpose,
                 validation_reason="response_shape",
             )
+        if metric_context is not None:
+            metric_context["response_received"] = True
         return value
 
     @staticmethod
@@ -751,6 +817,7 @@ class ModelExecutor:
         targeted_prompt = ""
         for attempt_count in (1, 2, 3, 4):
             raw: Any = None
+            metric_context: dict[str, Any] = {}
             using_targeted_repair = targeted_repair_pending
             try:
                 operation_stage = self._safe_metric_stage(metric_stage or purpose)
@@ -779,6 +846,7 @@ class ModelExecutor:
                     metric_stage=metric_stage,
                     metric_operation=metric_operation,
                     retry=attempt_count > 1,
+                    metric_context=metric_context,
                 )
                 if using_targeted_repair:
                     if not isinstance(targeted_previous_raw, str) or not isinstance(raw, str):
@@ -786,6 +854,8 @@ class ModelExecutor:
                     _validate_coverage_shape_repair(targeted_previous_raw, raw)
                 parsed = parser(raw)
             except (ModelError, ModelOutputError) as error:
+                if isinstance(error, ModelOutputError):
+                    self._record_invalid_output(metric_context)
                 self._set_stage_diagnostics(error, purpose=purpose, attempt_count=attempt_count)
                 try:
                     self._write_model_diagnostic(

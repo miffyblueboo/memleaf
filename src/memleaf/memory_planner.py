@@ -907,6 +907,7 @@ class MemoryPlanner:
                 saved_maps = [deepcopy(batch_state[key]) for key in (
                     "target_relations", "unknown_target_ids", "candidate_level_target_ids",
                     "scope_correction_plans")]
+                correction_metric_context: dict[str, Any] = {}
                 try:
                     correction_raw = self.model._complete(
                         backend,
@@ -928,6 +929,7 @@ class MemoryPlanner:
                         purpose="gate",
                         metric_stage="gate",
                         metric_operation="gate_coverage_repair",
+                        metric_context=correction_metric_context,
                     )
                     correction_raw, correction_bindings = split_semantic_envelope(correction_raw)
                     correction_raw, correction_coverage = split_gate_envelope(correction_raw)
@@ -939,11 +941,13 @@ class MemoryPlanner:
                     new_ids = {item["candidate_id"] for item in correction_gate["candidates"]}
                     if new_ids.intersection(item["candidate_id"] for item in batch_gate["candidates"]):
                         raise ModelOutputError("coverage correction reused a candidate id", validation_detail="duplicate_candidate_id")
-                    if correction_bindings is not None:
+                    correction_binding_map = (
                         validate_bindings(correction_bindings, missing, correction_gate["candidates"])
+                        if correction_bindings is not None else {}
+                    )
                     resolve_omitted_candidate_event_ids(
                         correction_gate["candidates"],
-                        correction_bindings if correction_bindings is not None else {},
+                        correction_binding_map,
                         missing,
                     )
                     new_coverage = (parse_coverage(correction_coverage, missing, correction_gate["candidates"],
@@ -957,7 +961,9 @@ class MemoryPlanner:
                               "coverage": list(saved_coverage.values()) + list(new_coverage.values()),
                               "evidence_bindings": old_bindings + (correction_bindings or [])}
                     batch_gate = parse_gate(json.dumps(merged, ensure_ascii=False), batch_units, batch_state)
-                except (ModelError, ModelOutputError):
+                except (ModelError, ModelOutputError) as error:
+                    if isinstance(error, ModelOutputError):
+                        self.model._record_invalid_output(correction_metric_context)
                     # A failed correction cannot invalidate already validated
                     # siblings, but the unresolved units remain retryable.
                     batch_gate = saved_gate
