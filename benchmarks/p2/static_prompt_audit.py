@@ -5,6 +5,9 @@ import json
 from memleaf.admission import analyze_turn_evidence, evidence_prompt
 from memleaf.prompts import GATE_SYSTEM, SUMMARIZE_SYSTEM, _json, gate_prompt
 
+_GATE_SYSTEM_B0_BYTES = 8508
+_SUMMARY_SYSTEM_B0_BYTES = 4347
+
 
 def sample_events() -> list[dict]:
     return [
@@ -41,6 +44,17 @@ def legacy_gate_prompt(events: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
+def _system_delta(current: str, baseline_bytes: int) -> dict:
+    current_bytes = len(current.encode("utf-8"))
+    removed = baseline_bytes - current_bytes
+    return {
+        "baseline_bytes": baseline_bytes,
+        "p2_bytes": current_bytes,
+        "bytes_removed": removed,
+        "reduction_ratio": round(removed / baseline_bytes, 6),
+    }
+
+
 def build_report() -> dict:
     events = sample_events()
     units = analyze_turn_evidence(events)
@@ -51,19 +65,21 @@ def build_report() -> dict:
     current_bytes = len(current.encode("utf-8"))
     removed = legacy_bytes - current_bytes
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "measurement": "synthetic_static_utf8_bytes_zero_model_calls",
-        "legacy_gate_user_prompt_bytes": legacy_bytes,
-        "p2_gate_user_prompt_bytes": current_bytes,
-        "bytes_removed": removed,
-        "reduction_ratio": round(removed / legacy_bytes, 6),
-        "gate_system_bytes_phase2": len(GATE_SYSTEM.encode("utf-8")),
-        "summary_system_bytes_phase2": len(SUMMARIZE_SYSTEM.encode("utf-8")),
-        "legacy_user_marker_occurrences": legacy.count("P2_UNIQUE_USER"),
-        "p2_user_marker_occurrences": current.count("P2_UNIQUE_USER"),
-        "legacy_assistant_marker_occurrences": legacy.count("P2_UNIQUE_ASSISTANT"),
-        "p2_assistant_marker_occurrences": current.count("P2_UNIQUE_ASSISTANT"),
-        "tool_body_occurrences_p2": current.count("P2_TOOL_BODY_MUST_NOT_APPEAR"),
+        "gate_user_prompt": {
+            "legacy_bytes": legacy_bytes,
+            "p2_bytes": current_bytes,
+            "bytes_removed": removed,
+            "reduction_ratio": round(removed / legacy_bytes, 6),
+            "legacy_user_marker_occurrences": legacy.count("P2_UNIQUE_USER"),
+            "p2_user_marker_occurrences": current.count("P2_UNIQUE_USER"),
+            "legacy_assistant_marker_occurrences": legacy.count("P2_UNIQUE_ASSISTANT"),
+            "p2_assistant_marker_occurrences": current.count("P2_UNIQUE_ASSISTANT"),
+            "tool_body_occurrences_p2": current.count("P2_TOOL_BODY_MUST_NOT_APPEAR"),
+        },
+        "gate_system_prompt": _system_delta(GATE_SYSTEM, _GATE_SYSTEM_B0_BYTES),
+        "summary_system_prompt": _system_delta(SUMMARIZE_SYSTEM, _SUMMARY_SYSTEM_B0_BYTES),
     }
 
 
