@@ -30,7 +30,9 @@ jobs:
       - name: Verify expected B3 head
         run: test "$(git rev-parse HEAD)" = "4a0b7efab30df225f9ade61daac6096c12765071"
       - name: Apply B3 activation
-        run: python .patcher/scripts/patch_b3_activation.py
+        run: |
+          python .patcher/scripts/patch_b3_activation.py
+          python .patcher/scripts/fix_b3_activation_fixtures.py
       - name: Install and validate focused activation
         run: |
           python -m pip install -e .
@@ -67,7 +69,9 @@ jobs:
             src/memleaf/single_pass_plan.py \
             src/memleaf/single_pass_memory_planner.py \
             src/memleaf/processing.py \
-            tests/test_b3_activation.py
+            tests/test_b3_activation.py \
+            tests/test_b3_single_pass_plan.py \
+            tests/test_b3_single_pass_memory_planner.py
           git diff --cached --quiet && { echo "expected B3 activation changes missing"; exit 1; }
           git commit -m "experiment: activate B3 on fixed API routes"
           git push origin HEAD:experiment/b3-single-pass-planner-20260910
