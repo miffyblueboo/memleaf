@@ -30,7 +30,9 @@ jobs:
       - name: Verify expected B3 head
         run: test "$(git rev-parse HEAD)" = "8d2610e6fd0dd878e9b83b0b4700903a74f9a32e"
       - name: Apply B3 planner integration
-        run: python .patcher/scripts/patch_b3_planner_integration.py
+        run: |
+          python .patcher/scripts/patch_b3_planner_integration.py
+          python .patcher/scripts/fix_b3_integration_fixture.py
       - name: Install and validate B3 integration
         run: |
           python -m pip install -e .
