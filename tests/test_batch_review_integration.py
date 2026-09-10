@@ -9,6 +9,11 @@ from memleaf.turn_audit import TurnAudit
 from memleaf.update_coordinator import UpdateCoordinator
 
 
+class _BatchBackend:
+    structured_batch_safe = True
+    parallel_safe = False
+
+
 class BatchAcceptExecutor:
     def __init__(self):
         self.calls: list[str] = []
@@ -25,16 +30,18 @@ class BatchAcceptExecutor:
         metric_stage=None,
     ):
         self.calls.append(prompt)
-        if not prompt.startswith("CREATE_SEMANTIC_REVIEW_BATCH\n"):
-            raise AssertionError("integration path unexpectedly used a single review")
-        payload = json.loads(prompt.split("\n", 1)[1].split("\n\nReview each row", 1)[0])
-        raw = json.dumps({
-            "reviews": [
-                {"review_id": row["review_id"], "decision": "ACCEPT"}
-                for row in reversed(payload["reviews"])
-            ]
-        })
-        return parser(raw)
+        if prompt.startswith("CREATE_SEMANTIC_REVIEW_BATCH\n"):
+            payload = json.loads(prompt.split("\n", 1)[1].split("\n\nReview each row", 1)[0])
+            raw = json.dumps({
+                "reviews": [
+                    {"review_id": row["review_id"], "decision": "ACCEPT"}
+                    for row in reversed(payload["reviews"])
+                ]
+            })
+            return parser(raw)
+        if prompt.startswith("CREATE_SEMANTIC_REVIEW\n"):
+            return parser(json.dumps({"decision": "ACCEPT"}))
+        raise AssertionError("integration path used an unexpected review prompt")
 
 
 def build_create_case(count: int):
@@ -116,7 +123,7 @@ def run_create_case(count: int):
         candidates=candidates,
         evidence_units=units,
         events=events,
-        backend="synthetic-backend",
+        backend=_BatchBackend(),
         scope_registry={},
         validation_scope_registry={},
     )

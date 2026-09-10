@@ -152,6 +152,8 @@ def _review_batch(
     update: bool,
 ) -> list[dict[str, Any]]:
     specs = _validated_specs(items, update=update)
+    if getattr(backend, "structured_batch_safe", False) is not True:
+        return [_single(model_executor, backend, spec, update=update) for spec in specs]
     if len(specs) == 1:
         return [_single(model_executor, backend, specs[0], update=update)]
     try:

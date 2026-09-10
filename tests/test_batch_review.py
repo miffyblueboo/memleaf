@@ -6,6 +6,13 @@ import unittest
 from memleaf.batch_review import review_create_batch, review_update_batch
 
 
+class _BatchBackend:
+    structured_batch_safe = True
+
+
+_BATCH_BACKEND = _BatchBackend()
+
+
 class ScriptedExecutor:
     def __init__(self, batch_raw, singles=()):
         self.batch_raw = batch_raw
@@ -85,7 +92,7 @@ class BatchReviewTests(unittest.TestCase):
             ]
         })
         executor = ScriptedExecutor(raw)
-        outcomes = review_create_batch(executor, "backend", [create_spec(value) for value in ids])
+        outcomes = review_create_batch(executor, _BATCH_BACKEND, [create_spec(value) for value in ids])
         self.assertEqual(outcomes, [{"decision": "ACCEPT"}] * 4)
         self.assertEqual(len(executor.calls), 1)
         self.assertTrue(executor.calls[0]["prompt"].startswith("CREATE_SEMANTIC_REVIEW_BATCH\n"))
@@ -102,7 +109,7 @@ class BatchReviewTests(unittest.TestCase):
         executor = ScriptedExecutor(raw, [json.dumps({"decision": "ACCEPT"})])
         outcomes = review_create_batch(
             executor,
-            "backend",
+            _BATCH_BACKEND,
             [create_spec("c1"), create_spec("c2"), create_spec("c3")],
         )
         self.assertEqual(outcomes, [
@@ -123,7 +130,7 @@ class BatchReviewTests(unittest.TestCase):
         executor = ScriptedExecutor(raw, [json.dumps({"decision": "NO_CHANGE"})])
         outcomes = review_create_batch(
             executor,
-            "backend",
+            _BATCH_BACKEND,
             [create_spec("c1"), create_spec("c2"), create_spec("c3")],
         )
         self.assertEqual(outcomes[0], {"decision": "ACCEPT"})
@@ -143,7 +150,7 @@ class BatchReviewTests(unittest.TestCase):
         )
         outcomes = review_create_batch(
             executor,
-            "backend",
+            _BATCH_BACKEND,
             [create_spec("c1"), create_spec("c2"), create_spec("c3")],
         )
         self.assertEqual(outcomes, [
@@ -152,6 +159,20 @@ class BatchReviewTests(unittest.TestCase):
             {"decision": "ACCEPT"},
         ])
         self.assertEqual(len(executor.calls), 4)
+
+    def test_backend_without_batch_capability_uses_legacy_single_reviews(self):
+        executor = ScriptedExecutor(
+            "unused",
+            [json.dumps({"decision": "ACCEPT"}), json.dumps({"decision": "NO_CHANGE"})],
+        )
+        outcomes = review_create_batch(
+            executor,
+            object(),
+            [create_spec("c1"), create_spec("c2")],
+        )
+        self.assertEqual(outcomes, [{"decision": "ACCEPT"}, {"decision": "NO_CHANGE"}])
+        self.assertEqual(len(executor.calls), 2)
+        self.assertTrue(all("_BATCH\n" not in call["prompt"] for call in executor.calls))
 
     def test_update_batch_keeps_review_id_mapping_and_revision_parser(self):
         revised = dict(update_spec("u2")["proposed_summary"], body="Revised u2.")
@@ -164,7 +185,7 @@ class BatchReviewTests(unittest.TestCase):
         executor = ScriptedExecutor(raw)
         outcomes = review_update_batch(
             executor,
-            "backend",
+            _BATCH_BACKEND,
             [update_spec("u1"), update_spec("u2")],
         )
         self.assertEqual(outcomes[0], {"decision": "ACCEPT"})
