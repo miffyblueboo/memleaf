@@ -41,7 +41,8 @@ jobs:
             src/memleaf/memory_planner.py \
             src/memleaf/update_coordinator.py \
             src/memleaf/llm/base.py \
-            src/memleaf/llm/router.py
+            src/memleaf/llm/router.py \
+            benchmarks/p3/review_call_audit.py
           python -m unittest \
             tests.test_p3_summary_batch \
             tests.test_batch_review \
@@ -51,7 +52,11 @@ jobs:
           python benchmarks/p3/review_call_audit.py
       - name: Commit guard and push combined P3
         run: |
-          git add src/memleaf/batch_review.py tests/test_batch_review.py tests/test_batch_review_integration.py
-          test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = "3"
+          git add \
+            src/memleaf/batch_review.py \
+            tests/test_batch_review.py \
+            tests/test_batch_review_integration.py \
+            benchmarks/p3/review_call_audit.py
+          test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = "4"
           git commit -m 'fix: gate P3 review batching by backend capability'
           git push origin HEAD:experiment/p3-batched-model-stages-20260910
