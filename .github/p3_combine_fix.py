@@ -103,3 +103,20 @@ source = source.replace(old, new, 1)
 assert source.count('backend="synthetic-backend",') == 1
 source = source.replace('backend="synthetic-backend",', 'backend=_BatchBackend(),', 1)
 path.write_text(source, encoding="utf-8")
+
+
+# 4) Keep the structural audit directly invokable from the repository root.
+path = Path("benchmarks/p3/review_call_audit.py")
+source = path.read_text(encoding="utf-8")
+anchor = "import json\n\nfrom tests.test_batch_review_integration import run_create_case\n"
+assert source.count(anchor) == 1
+source = source.replace(
+    anchor,
+    "import json\nimport sys\nfrom pathlib import Path\n\n"
+    "_REPO_ROOT = Path(__file__).resolve().parents[2]\n"
+    "if str(_REPO_ROOT) not in sys.path:\n"
+    "    sys.path.insert(0, str(_REPO_ROOT))\n\n"
+    "from tests.test_batch_review_integration import run_create_case\n",
+    1,
+)
+path.write_text(source, encoding="utf-8")
