@@ -1,0 +1,46 @@
+name: Temporary P3 planner integration
+
+on:
+  push:
+    branches:
+      - automation/p3-planner-integration-20260910
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Copy patch helper and switch to exact P3 head
+        run: |
+          cp .github/scripts/temporary_p3_planner_integration.py /tmp/p3-planner-integration.py
+          git fetch origin experiment/p3-small-batch-20260910
+          git checkout -B experiment/p3-small-batch-20260910 origin/experiment/p3-small-batch-20260910
+          test "$(git rev-parse HEAD)" = "6e302b4307ed69bb370edf3274d58846873ccdba"
+      - name: Apply planner integration
+        run: python /tmp/p3-planner-integration.py
+      - name: Validate compile and compatibility paths
+        run: |
+          python -m pip install -e .
+          python -m py_compile src/memleaf/memory_planner.py src/memleaf/summary_batch.py
+          python -m unittest \
+            tests.test_p3_summary_batch \
+            tests.test_processing_observability_concurrency \
+            tests.test_stage_b3b_native_context \
+            tests.test_update_review.UpdateReviewTests \
+            tests.test_maintenance_v2.MaintenanceV2Tests.test_summary_related_context_uses_same_budget_and_keeps_target -v
+      - name: Commit exact planner integration
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/memleaf/memory_planner.py
+          test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = "1"
+          git commit -m 'feat: batch independent CREATE summary generation'
+          git push origin HEAD:experiment/p3-small-batch-20260910
