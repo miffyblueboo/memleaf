@@ -23,14 +23,46 @@ jobs:
         run: |
           python -m py_compile \
             src/memleaf/candidate_identification.py \
+            src/memleaf/maintenance_plan_adapter.py \
             src/memleaf/maintenance_plan_protocol.py \
             src/memleaf/maintenance_plan_stage.py \
             tests/test_p4_candidate_identification.py \
+            tests/test_p4_maintenance_plan_adapter.py \
             tests/test_p4_maintenance_plan.py \
-            tests/test_p4_maintenance_plan_stage.py
+            tests/test_p4_maintenance_plan_stage.py \
+            benchmarks/p4/structure_audit.py
       - name: Validate P4 responsibility contracts
         run: |
           python -m unittest \
             tests.test_p4_candidate_identification \
+            tests.test_p4_maintenance_plan_adapter \
             tests.test_p4_maintenance_plan \
             tests.test_p4_maintenance_plan_stage -v
+      - name: Verify P4 structural call graph
+        run: |
+          python benchmarks/p4/structure_audit.py > /tmp/p4-structure.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          value = json.loads(Path('/tmp/p4-structure.json').read_text())
+          ordinary = {
+              row['candidate_count']: row
+              for row in value['scenarios']
+              if row['scenario'] == 'ordinary_independent_create'
+          }
+          assert ordinary[1]['p3_total_model_calls'] == 3
+          assert ordinary[1]['p4_total_model_calls'] == 3
+          assert ordinary[2]['p3_total_model_calls'] == 3
+          assert ordinary[2]['p4_total_model_calls'] == 3
+          assert ordinary[4]['p3_total_model_calls'] == 4
+          assert ordinary[4]['p4_total_model_calls'] == 3
+          assert ordinary[4]['call_reduction_ratio'] == 0.25
+          conditional = next(
+              row for row in value['scenarios']
+              if row['scenario'] == 'conditional_all_candidates_require_fresh_target_reconciliation'
+          )
+          assert conditional['p3_total_model_calls'] == 10
+          assert conditional['p4_total_model_calls'] == 3
+          assert conditional['call_reduction_ratio'] == 0.7
+          PY
+          cat /tmp/p4-structure.json
