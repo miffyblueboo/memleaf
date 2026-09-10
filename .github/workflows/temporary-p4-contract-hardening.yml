@@ -1,0 +1,53 @@
+name: Temporary P4 contract hardening
+
+on:
+  push:
+    branches:
+      - automation/p4-contract-hardening-20260910
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/p4-responsibility-consolidation-20260910
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify expected P4 head
+        run: test "$(git rev-parse HEAD)" = "552ce56141c43552d36b7daae296094ad96bb28b"
+      - name: Apply exact P4 contract hardening
+        run: |
+          git show origin/automation/p4-contract-hardening-20260910:.github/p4_contract_hardening.py > /tmp/p4_contract_hardening.py
+          python /tmp/p4_contract_hardening.py
+          git diff --check
+      - name: Install and validate hardened P4 contracts
+        run: |
+          python -m pip install -e .
+          python -m py_compile \
+            src/memleaf/maintenance_plan_adapter.py \
+            src/memleaf/maintenance_plan_stage.py \
+            tests/test_p4_maintenance_plan_adapter.py \
+            tests/test_p4_maintenance_plan_stage.py
+          python -m unittest \
+            tests.test_p4_candidate_identification \
+            tests.test_p4_maintenance_plan_adapter \
+            tests.test_p4_maintenance_plan \
+            tests.test_p4_maintenance_plan_stage -v
+      - name: Commit and push hardening
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            src/memleaf/maintenance_plan_adapter.py \
+            src/memleaf/maintenance_plan_stage.py \
+            tests/test_p4_maintenance_plan_adapter.py \
+            tests/test_p4_maintenance_plan_stage.py
+          test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = "4"
+          git commit -m 'fix: harden P4 evidence and update contracts'
+          git push origin HEAD:experiment/p4-responsibility-consolidation-20260910
