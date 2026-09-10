@@ -149,8 +149,9 @@ class CandidateTests(unittest.TestCase):
         self.assertIn('gate_semantic_retry',_aggregate_model_metrics([m])['operations'])
     def test_lossless_guard_rejects_boolean_number_change(self):
         a=self.invalid();b=copy.deepcopy(EXAMPLE)
-        a['coverage'][0]['reason']=True;b['coverage'][0]['reason']=1
-        parse(raw(b)) # real canonical parser accepts this ancillary field today
+        # Keep F06 independent of the old permissive F02 coverage shape.
+        # A canonical candidate boolean must not compare equal to a JSON number.
+        b['candidates'][0]['duplicate']=0
         with self.assertRaises(ModelOutputError):self.guard(raw(a),raw(b))
     def test_downstream_blocks_boolean_number_candidate_mutation(self):
         a=self.invalid();b=copy.deepcopy(EXAMPLE);b['candidates'][0]['worth']=1
