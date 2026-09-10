@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  validate-p3-review-batching:
+  validate-p3-batching:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,27 +22,44 @@ jobs:
       - name: Compile P3 assets
         run: |
           python -m py_compile \
+            src/memleaf/summary_batch.py \
             src/memleaf/batch_review.py \
+            src/memleaf/memory_planner.py \
             src/memleaf/update_coordinator.py \
+            src/memleaf/llm/base.py \
+            src/memleaf/llm/router.py \
+            tests/test_p3_summary_batch.py \
             tests/test_batch_review.py \
             tests/test_batch_review_integration.py \
+            benchmarks/p3/batch_call_audit.py \
             benchmarks/p3/review_call_audit.py
-      - name: Validate batching and legacy semantic-review contracts
+      - name: Validate CREATE-summary and semantic-review batching
         run: |
           python -m unittest \
+            tests.test_p3_summary_batch \
             tests.test_batch_review \
             tests.test_batch_review_integration \
             tests.test_update_review -v
-      - name: Verify structural call-count reduction
+      - name: Verify structural batching reductions
         run: |
+          python benchmarks/p3/batch_call_audit.py > /tmp/p3-summary-calls.json
           python benchmarks/p3/review_call_audit.py > /tmp/p3-review-calls.json
           python - <<'PY'
           import json
           from pathlib import Path
-          value = json.loads(Path('/tmp/p3-review-calls.json').read_text())
+
+          summary = json.loads(Path('/tmp/p3-summary-calls.json').read_text())
+          assert summary['batch_size'] == 2
+          assert summary['legacy_summary_model_calls'] == 4
+          assert summary['p3_summary_model_calls'] == 2
+          assert summary['model_call_reduction_ratio'] == 0.5
+          assert summary['bytes_removed'] > 0
+          assert summary['byte_reduction_ratio'] > 0
+
+          review = json.loads(Path('/tmp/p3-review-calls.json').read_text())
           by_count = {
               row['reviewable_create_requests']: row
-              for row in value['scenarios']
+              for row in review['scenarios']
           }
           assert by_count[1]['p3_review_calls'] == 1
           assert by_count[2]['p3_review_calls'] == 1
@@ -51,6 +68,7 @@ jobs:
           assert by_count[8]['p3_review_calls'] == 2
           assert by_count[4]['call_reduction_ratio'] == 0.75
           assert by_count[8]['call_reduction_ratio'] == 0.75
-          assert value['max_review_batch_items'] == 4
+          assert review['max_review_batch_items'] == 4
           PY
+          cat /tmp/p3-summary-calls.json
           cat /tmp/p3-review-calls.json
