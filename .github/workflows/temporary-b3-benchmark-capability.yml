@@ -1,0 +1,46 @@
+name: Temporary B3 benchmark capability
+
+on:
+  push:
+    branches:
+      - automation/b3-benchmark-capability-20260910
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out B3 candidate
+        uses: actions/checkout@v4
+        with:
+          ref: experiment/b3-single-pass-planner-20260910
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Check out patcher
+        uses: actions/checkout@v4
+        with:
+          ref: automation/b3-benchmark-capability-20260910
+          path: .patcher
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify expected B3 head
+        run: test "$(git rev-parse HEAD)" = "fbf00b47c81a3c599735aeb3d2aa19ce8d19e88c"
+      - name: Apply benchmark capability patch
+        run: python .patcher/scripts/patch_b3_benchmark_capability.py
+      - name: Install and validate benchmark route
+        run: |
+          python -m pip install -e .
+          python -m py_compile benchmarks/p1/run_baseline.py tests/test_b3_benchmark_harness.py
+          python -m unittest tests.test_b3_benchmark_harness tests.test_b3_activation -v
+      - name: Commit and push benchmark correction
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add benchmarks/p1/run_baseline.py tests/test_b3_benchmark_harness.py
+          git diff --cached --quiet && { echo "expected benchmark changes missing"; exit 1; }
+          git commit -m "benchmarks: preserve B3 capability through call budget"
+          git push origin HEAD:experiment/b3-single-pass-planner-20260910
