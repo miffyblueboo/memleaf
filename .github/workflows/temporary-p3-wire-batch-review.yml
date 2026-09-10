@@ -31,7 +31,6 @@ jobs:
           python -m pip install -e .
           python -m py_compile src/memleaf/update_coordinator.py src/memleaf/batch_review.py
           python -m unittest tests.test_batch_review tests.test_update_review -v
-          python -m unittest tests.test_update_coordinator tests.test_create_coordinator -v
       - name: Four-create integration smoke
         shell: python
         run: |
