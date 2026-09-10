@@ -1,0 +1,55 @@
+name: Temporary P3 no transport fallback
+
+on:
+  push:
+    branches:
+      - automation/p3-no-transport-fallback-20260910
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/p3-batched-model-stages-20260910
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify expected P3 head
+        run: test "$(git rev-parse HEAD)" = "eea3db6983de1b4db5c4f92bbddd99577cc8e12d"
+      - name: Apply exact no-amplification patch
+        run: |
+          git show origin/automation/p3-no-transport-fallback-20260910:.github/p3_no_transport_fallback.py > /tmp/p3_no_transport_fallback.py
+          python /tmp/p3_no_transport_fallback.py
+          git diff --check
+      - name: Install and validate P3 batching
+        run: |
+          python -m pip install -e .
+          python -m py_compile \
+            src/memleaf/summary_batch.py \
+            src/memleaf/batch_review.py \
+            tests/test_p3_summary_batch.py \
+            tests/test_batch_review.py
+          python -m unittest \
+            tests.test_p3_summary_batch \
+            tests.test_batch_review \
+            tests.test_batch_review_integration \
+            tests.test_update_review -v
+          python benchmarks/p3/batch_call_audit.py
+          python benchmarks/p3/review_call_audit.py
+      - name: Commit no-amplification guard
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            src/memleaf/summary_batch.py \
+            src/memleaf/batch_review.py \
+            tests/test_p3_summary_batch.py \
+            tests/test_batch_review.py
+          test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = "4"
+          git commit -m 'fix: avoid batch transport failure amplification'
+          git push origin HEAD:experiment/p3-batched-model-stages-20260910
