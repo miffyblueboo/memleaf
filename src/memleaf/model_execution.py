@@ -20,6 +20,7 @@ _METRIC_STAGE_NAMES = frozenset({
     "semantic_review",
     "coordination",
     "target_reconciliation",
+    "single_pass",
 })
 _PROVIDER_METRIC_FIELDS = (
     "prompt_tokens",
@@ -810,7 +811,14 @@ class ModelExecutor:
         parser: Callable[[str], Any],
         diagnostic_context: Mapping[str, Any] | None = None,
         metric_stage: str | None = None,
+        max_attempts: int | None = None,
     ) -> Any:
+        if max_attempts is None:
+            effective_max_attempts = 4
+        elif isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or not 1 <= max_attempts <= 4:
+            raise ValueError("max_attempts must be an integer from 1 to 4")
+        else:
+            effective_max_attempts = max_attempts
         correction_prompt = prompt + "\n\n" + JSON_CORRECTION
         correction_instructions: list[str] = []
         saw_invalid_span = False
@@ -818,7 +826,7 @@ class ModelExecutor:
         targeted_repair_used = False
         targeted_previous_raw: Optional[str] = None
         targeted_prompt = ""
-        for attempt_count in (1, 2, 3, 4):
+        for attempt_count in range(1, effective_max_attempts + 1):
             raw: Any = None
             metric_context: dict[str, Any] = {}
             using_targeted_repair = targeted_repair_pending
@@ -888,7 +896,12 @@ class ModelExecutor:
                     and not saw_invalid_span
                 )
                 saw_invalid_span = saw_invalid_span or invalid_span
-                if self._allows_next_json_attempt(error, attempt_count) or extra_span_recovery:
+                can_retry = (
+                    self._allows_next_json_attempt(error, attempt_count)
+                    and attempt_count < effective_max_attempts
+                )
+                can_extra_span_recover = extra_span_recovery and attempt_count < effective_max_attempts
+                if can_retry or can_extra_span_recover:
                     if (
                         purpose == "gate"
                         and not targeted_repair_used

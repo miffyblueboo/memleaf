@@ -227,14 +227,16 @@ class SinglePassMemoryPlanner(MemoryPlanner):
         explicit_candidate: Optional[Mapping[str, Any]] = None,
         scope: Any = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        # Explicit remember has different authorization semantics. Keep the
-        # proven legacy route until the dedicated B3 explicit contract lands.
-        if explicit:
+        # Explicit remember is already a single summarize call. Host/custom
+        # callbacks are caller-owned and stay on the proven P3 route. B3 is
+        # activated only for a fixed built-in API route that advertises the
+        # capability explicitly.
+        if explicit or getattr(backend, "single_pass_safe", False) is not True:
             return super()._collect_turn_outputs(
                 backend,
                 turn,
                 state,
-                explicit=True,
+                explicit=explicit,
                 explicit_candidate=explicit_candidate,
                 scope=scope,
             )

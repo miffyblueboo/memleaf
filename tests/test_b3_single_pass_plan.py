@@ -49,7 +49,7 @@ class FakeExecutor:
         self.raw = raw
         self.calls: list[dict] = []
 
-    def _complete_json_stage(self, backend, prompt, *, system, purpose, parser, diagnostic_context=None):
+    def _complete_json_stage(self, backend, prompt, *, system, purpose, parser, diagnostic_context=None, max_attempts=None):
         self.calls.append({
             "backend": backend,
             "prompt": prompt,
@@ -408,7 +408,7 @@ class SinglePassPlanTests(unittest.TestCase):
         )
         self.assertEqual(len(executor.calls), 1)
         self.assertEqual(executor.calls[0]["system"], SINGLE_PASS_SYSTEM)
-        self.assertEqual(executor.calls[0]["purpose"], "gate")
+        self.assertEqual(executor.calls[0]["purpose"], "single_pass")
         self.assertEqual(result["items"], [])
 
 

@@ -12,7 +12,7 @@ from .turn_audit import TurnAudit
 from .model_execution import ModelExecutor
 from .process_journal import ProcessJournal
 from .planning_context import PlanningContext
-from .memory_planner import MemoryPlanner
+from .single_pass_memory_planner import SinglePassMemoryPlanner
 from .memory_commit import MemoryCommitter
 
 
@@ -24,7 +24,7 @@ class Processor:
         self.model = ModelExecutor(service)
         self.journal = ProcessJournal(service)
         self.inputs = PlanningContext(service, audit=self.audit, journal=self.journal)
-        self.planner = MemoryPlanner(service, audit=self.audit, model=self.model, inputs=self.inputs)
+        self.planner = SinglePassMemoryPlanner(service, audit=self.audit, model=self.model, inputs=self.inputs)
         self.committer = MemoryCommitter(service, writer=self.writer, audit=self.audit, journal=self.journal)
 
     def _auto_compact(self, *, model: Any = None, router: Any = None) -> dict[str, Any]:

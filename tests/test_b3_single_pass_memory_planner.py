@@ -15,6 +15,7 @@ from memleaf.single_pass_plan import PROTOCOL_VERSION
 
 
 TURN_KEY = "a" * 64
+SAFE_BACKEND = SimpleNamespace(single_pass_safe=True)
 
 
 def turn(user: str, assistant: str = "Noted.") -> InboxTurn:
@@ -92,7 +93,7 @@ class Inputs:
 
 class Model:
     def __init__(self, response): self.response = response; self.calls = []
-    def _complete_json_stage(self, backend, prompt, *, system, purpose, parser, diagnostic_context=None):
+    def _complete_json_stage(self, backend, prompt, *, system, purpose, parser, diagnostic_context=None, max_attempts=None):
         self.calls.append((purpose, prompt, system))
         return parser(json.dumps(self.response, ensure_ascii=False))
 
@@ -105,7 +106,7 @@ def item_claim(prompt: str, text: str) -> dict:
 
 class DynamicModel:
     def __init__(self, build): self.build=build; self.calls=[]
-    def _complete_json_stage(self, backend, prompt, *, system, purpose, parser, diagnostic_context=None):
+    def _complete_json_stage(self, backend, prompt, *, system, purpose, parser, diagnostic_context=None, max_attempts=None):
         self.calls.append((purpose,prompt,system))
         return parser(json.dumps(self.build(prompt), ensure_ascii=False))
 
@@ -138,9 +139,9 @@ class B3SinglePassMemoryPlannerTests(unittest.TestCase):
                 ],
             }
         planner, audit, model = self.planner(response)
-        requests, scopes = planner._collect_turn_outputs("backend", turn("Alpha uses PostgreSQL."), {})
+        requests, scopes = planner._collect_turn_outputs(SAFE_BACKEND, turn("Alpha uses PostgreSQL."), {})
         self.assertEqual(len(model.calls), 1)
-        self.assertEqual(model.calls[0][0], "gate")
+        self.assertEqual(model.calls[0][0], "single_pass")
         self.assertEqual(len(requests), 1)
         self.assertEqual(requests[0]["summary"]["body"], "Alpha uses PostgreSQL.")
         self.assertEqual(requests[0]["summary"]["tags"], [])
@@ -168,7 +169,7 @@ class B3SinglePassMemoryPlannerTests(unittest.TestCase):
                 "no_memory": [{"unit_id": assistant_uid, "reason": "assistant_restatement"}],
             }
         planner, audit, model = self.planner(response, related=related, target=target)
-        requests, _ = planner._collect_turn_outputs("backend", turn("Alpha now uses PostgreSQL instead of MySQL."), {})
+        requests, _ = planner._collect_turn_outputs(SAFE_BACKEND, turn("Alpha now uses PostgreSQL instead of MySQL."), {})
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(requests[0]["summary"]["update_memory_id"], "m-db")
         self.assertEqual(requests[0]["expected_revision"], revision_digest(target))
@@ -196,7 +197,7 @@ class B3SinglePassMemoryPlannerTests(unittest.TestCase):
             }
         planner, _, model = self.planner(response, related=related, target=target)
         requests, scopes = planner._collect_turn_outputs(
-            "backend",
+            SAFE_BACKEND,
             turn("New流程要求仍是双人复核，之前归错到Old。"),
             {},
             scope=["project:New"],
@@ -240,7 +241,7 @@ class B3SinglePassMemoryPlannerTests(unittest.TestCase):
                 "no_memory": [{"unit_id": assistant_uid, "reason": "assistant_restatement"}],
             }
         planner, _, model = self.planner(response, related=related)
-        requests, _ = planner._collect_turn_outputs("backend", turn("legacy state is replaced"), {})
+        requests, _ = planner._collect_turn_outputs(SAFE_BACKEND, turn("legacy state is replaced"), {})
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(requests[0]["summary"]["shadow_native_ids"], [native_id])
         self.assertEqual(requests[0]["summary"]["scope_operations"], [])
@@ -263,7 +264,7 @@ class B3SinglePassMemoryPlannerTests(unittest.TestCase):
                 "no_memory": [{"unit_id": assistant["unit_id"], "reason": "assistant_restatement"}],
             }
         planner, audit, model = self.planner(response, related=[target.to_dict()], target=target)
-        requests, _ = planner._collect_turn_outputs("backend", turn("Alpha uses PostgreSQL."), {})
+        requests, _ = planner._collect_turn_outputs(SAFE_BACKEND, turn("Alpha uses PostgreSQL."), {})
         self.assertEqual(requests, [])
         self.assertEqual(len(model.calls), 1)
         ref=("hermes","s",TURN_KEY)
@@ -284,7 +285,7 @@ class B3SinglePassMemoryPlannerTests(unittest.TestCase):
             }
         planner, _, model = self.planner(response, lookup_complete=False)
         with self.assertRaises(ModelOutputError):
-            planner._collect_turn_outputs("backend", turn("Remember x."), {})
+            planner._collect_turn_outputs(SAFE_BACKEND, turn("Remember x."), {})
         self.assertEqual(len(model.calls), 1)
 
     def test_deferred_keeps_turn_retryable_without_request(self):
@@ -300,7 +301,7 @@ class B3SinglePassMemoryPlannerTests(unittest.TestCase):
                 "no_memory":[{"unit_id":assistant["unit_id"],"reason":"assistant_restatement"}],
             }
         planner,audit,model=self.planner(response, scope_background=[])
-        requests,_=planner._collect_turn_outputs("backend",turn("Project ownership is unclear."),{})
+        requests,_=planner._collect_turn_outputs(SAFE_BACKEND,turn("Project ownership is unclear."),{})
         self.assertEqual(requests,[]); self.assertEqual(len(model.calls),1)
         ref=("hermes","s",TURN_KEY)
         self.assertEqual(audit._dispositions_by_turn[ref][0]["disposition"],"DEFERRED")

@@ -27,7 +27,7 @@ MODEL_ERROR_CODES = frozenset(
         "model_failed",
     }
 )
-MODEL_ERROR_STAGES = frozenset({"gate", "summarize"})
+MODEL_ERROR_STAGES = frozenset({"gate", "summarize", "single_pass"})
 MODEL_VALIDATION_REASONS = frozenset(
     {"empty_content", "invalid_json", "schema_violation", "response_shape"}
 )
@@ -145,6 +145,7 @@ class ModelBackend(Protocol):
     model: str
     parallel_safe: bool
     structured_batch_safe: bool
+    single_pass_safe: bool
 
     def complete(
         self,
@@ -165,6 +166,7 @@ class CallableBackend:
     # caller-owned callback is thread-safe merely because candidate work is.
     parallel_safe = False
     structured_batch_safe = False
+    single_pass_safe = False
 
     def __init__(self, callback: Callable[..., str], *, model: str = "host"):
         if not callable(callback):
@@ -229,6 +231,7 @@ class HTTPModelBackend:
     provider = "api"
     parallel_safe = False
     structured_batch_safe = True
+    single_pass_safe = True
 
     def __init__(
         self,

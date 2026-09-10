@@ -447,7 +447,8 @@ def run_single_pass_stage(
         backend,
         prompt,
         system=SINGLE_PASS_SYSTEM,
-        purpose="gate",
+        purpose="single_pass",
+        max_attempts=2,
         parser=lambda raw: parse_single_pass_output(
             raw,
             evidence_units=source_units,
