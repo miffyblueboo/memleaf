@@ -196,6 +196,11 @@ def main(argv: list[str] | None = None) -> int:
     if plan["planned_process_runs"] > args.max_process_runs:
         raise SystemExit(f"planned process runs {plan['planned_process_runs']} exceed --max-process-runs {args.max_process_runs}")
 
+    if args.execute and (args.max_model_calls is None or args.max_model_calls < 1):
+        raise SystemExit("--execute requires --max-model-calls >= 1")
+    if args.execute and (args.config_template is None or args.output is None):
+        raise SystemExit("--execute requires --config-template and --output")
+
     template: dict[str, Any] | None = None
     if args.config_template is not None:
         template = evaluation_template(load_config(args.config_template))
@@ -204,10 +209,6 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(plan, ensure_ascii=False, indent=2))
         return 0
 
-    if args.config_template is None or args.output is None:
-        raise SystemExit("--execute requires --config-template and --output")
-    if args.max_model_calls is None or args.max_model_calls < 1:
-        raise SystemExit("--execute requires --max-model-calls >= 1")
     assert template is not None
     route = _route_identity(template)
     if route.get("api_route_ready") is not True:
