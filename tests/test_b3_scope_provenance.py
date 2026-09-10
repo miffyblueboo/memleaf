@@ -156,10 +156,10 @@ class B3ScopeProvenanceTests(unittest.TestCase):
         self.assertEqual(raised.exception.validation_detail, "scope_not_grounded")
         self.assertEqual(len(model.calls), 1)
 
-    def test_session_scope_is_core_derived_and_model_field_is_not_required(self):
+    def test_session_scope_subset_is_core_derived_and_model_field_is_not_required(self):
         instance, model = planner(
             lambda prompt: create_response(prompt),
-            scope_background=[PROJECT_SCOPE],
+            scope_background=[PROJECT_SCOPE, "global"],
         )
         requests, scopes = instance._collect_turn_outputs(SAFE_BACKEND, make_turn(), {})
         self.assertEqual(len(model.calls), 1)
@@ -168,7 +168,7 @@ class B3ScopeProvenanceTests(unittest.TestCase):
         self.assertEqual(requests[0]["summary"]["scopes"], [PROJECT_SCOPE])
         self.assertIn(PROJECT_SCOPE, scopes)
 
-    def test_explicit_scope_is_core_derived_as_user_even_with_legacy_model_field(self):
+    def test_explicit_scope_subset_is_core_derived_as_user_even_with_legacy_model_field(self):
         instance, _ = planner(
             lambda prompt: create_response(prompt, scope_source="model")
         )
@@ -176,7 +176,7 @@ class B3ScopeProvenanceTests(unittest.TestCase):
             SAFE_BACKEND,
             make_turn(),
             {},
-            scope=[PROJECT_SCOPE],
+            scope=[PROJECT_SCOPE, "global"],
         )
         self.assertEqual(len(requests), 1)
         self.assertEqual(requests[0]["summary"]["scope_source"], "user")
