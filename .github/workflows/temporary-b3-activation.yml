@@ -1,0 +1,73 @@
+name: Temporary B3 activation
+
+on:
+  push:
+    branches:
+      - automation/b3-activation-20260910
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out B3 candidate
+        uses: actions/checkout@v4
+        with:
+          ref: experiment/b3-single-pass-planner-20260910
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Check out patcher
+        uses: actions/checkout@v4
+        with:
+          ref: automation/b3-activation-20260910
+          path: .patcher
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify expected B3 head
+        run: test "$(git rev-parse HEAD)" = "4a0b7efab30df225f9ade61daac6096c12765071"
+      - name: Apply B3 activation
+        run: python .patcher/scripts/patch_b3_activation.py
+      - name: Install and validate focused activation
+        run: |
+          python -m pip install -e .
+          python -m py_compile \
+            src/memleaf/llm/base.py \
+            src/memleaf/llm/router.py \
+            src/memleaf/llm/thinking.py \
+            src/memleaf/process_common.py \
+            src/memleaf/model_execution.py \
+            src/memleaf/single_pass_plan.py \
+            src/memleaf/single_pass_memory_planner.py \
+            src/memleaf/processing.py \
+            tests/test_b3_activation.py
+          python -m unittest \
+            tests.test_b3_activation \
+            tests.test_b3_single_pass_plan \
+            tests.test_b3_planning_context \
+            tests.test_b3_single_pass_memory_planner -v
+          python -m unittest \
+            tests.test_v023_scope_correction \
+            tests.test_stage_b3d_scope_maintenance \
+            tests.test_stage_b3b_native_context \
+            tests.test_processing_contract_v026.FrozenPlanTests -v
+      - name: Commit and push B3 activation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            src/memleaf/llm/base.py \
+            src/memleaf/llm/router.py \
+            src/memleaf/llm/thinking.py \
+            src/memleaf/process_common.py \
+            src/memleaf/model_execution.py \
+            src/memleaf/single_pass_plan.py \
+            src/memleaf/single_pass_memory_planner.py \
+            src/memleaf/processing.py \
+            tests/test_b3_activation.py
+          git diff --cached --quiet && { echo "expected B3 activation changes missing"; exit 1; }
+          git commit -m "experiment: activate B3 on fixed API routes"
+          git push origin HEAD:experiment/b3-single-pass-planner-20260910
