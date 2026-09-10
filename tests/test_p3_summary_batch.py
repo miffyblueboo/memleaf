@@ -7,6 +7,15 @@ from memleaf.summary_batch import run_summary_jobs_with_create_batching
 from memleaf.validation import ModelOutputError, parse_strict_json
 
 
+class _BatchBackend:
+    structured_batch_safe = True
+    parallel_safe = True
+
+
+class _LegacyBackend:
+    parallel_safe = True
+
+
 class _FakeExecutor:
     def __init__(self, responses, *, workers=1):
         self.responses = list(responses)
@@ -89,7 +98,7 @@ class P3SummaryBatchTests(unittest.TestCase):
             _job("c1", title="one", batchable=True, singles=singles),
             _job("c2", title="two", batchable=True, singles=singles),
         ]
-        result = run_summary_jobs_with_create_batching(executor, object(), jobs)
+        result = run_summary_jobs_with_create_batching(executor, _BatchBackend(), jobs)
         self.assertEqual(len(executor.calls), 1)
         self.assertEqual(singles, [])
         self.assertEqual([item["summary"]["title"] for item in result], ["one", "two"])
@@ -109,7 +118,7 @@ class P3SummaryBatchTests(unittest.TestCase):
             _job("c1", title="one", batchable=True, singles=singles),
             _job("c2", title="two", batchable=True, singles=singles),
         ]
-        result = run_summary_jobs_with_create_batching(executor, object(), jobs)
+        result = run_summary_jobs_with_create_batching(executor, _BatchBackend(), jobs)
         self.assertEqual(len(executor.calls), 1)
         self.assertEqual(singles, ["c2"])
         self.assertNotIn("single", result[0]["summary"])
@@ -122,9 +131,21 @@ class P3SummaryBatchTests(unittest.TestCase):
             _job("c1", title="one", batchable=True, singles=singles),
             _job("c2", title="two", batchable=True, singles=singles),
         ]
-        result = run_summary_jobs_with_create_batching(executor, object(), jobs)
+        result = run_summary_jobs_with_create_batching(executor, _BatchBackend(), jobs)
         self.assertEqual(len(executor.calls), 1)
         self.assertEqual(singles, ["c1", "c2"])
+        self.assertTrue(all(item["summary"]["single"] for item in result))
+
+    def test_backend_without_explicit_batch_capability_uses_original_single_calls(self):
+        singles: list[str] = []
+        executor = _FakeExecutor([])
+        jobs = [
+            _job("c1", title="one", batchable=True, singles=singles),
+            _job("c2", title="two", batchable=True, singles=singles),
+        ]
+        result = run_summary_jobs_with_create_batching(executor, _LegacyBackend(), jobs)
+        self.assertEqual(singles, ["c1", "c2"])
+        self.assertEqual(executor.calls, [])
         self.assertTrue(all(item["summary"]["single"] for item in result))
 
     def test_non_batch_update_jobs_keep_same_key_order(self):
@@ -149,7 +170,7 @@ class P3SummaryBatchTests(unittest.TestCase):
                 order=order,
             ),
         ]
-        result = run_summary_jobs_with_create_batching(executor, object(), jobs)
+        result = run_summary_jobs_with_create_batching(executor, _BatchBackend(), jobs)
         self.assertEqual(order, ["u1", "u2"])
         self.assertEqual([item["summary"]["title"] for item in result], ["one", "two"])
         self.assertEqual(executor.calls, [])

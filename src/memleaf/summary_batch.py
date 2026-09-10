@@ -137,6 +137,12 @@ def run_summary_jobs_with_create_batching(
 
     if not jobs:
         return []
+    if getattr(backend, "structured_batch_safe", False) is not True:
+        return run_ordered_keyed_jobs(
+            model_executor,
+            backend,
+            [(str(job["key"]), job["call"]) for job in jobs],
+        )
 
     batchable_indexes = [
         index
