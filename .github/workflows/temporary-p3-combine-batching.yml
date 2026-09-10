@@ -27,6 +27,11 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git merge --no-ff --no-edit origin/experiment/p3-small-batch-20260910
           git diff --check HEAD^1..HEAD
+      - name: Apply combined batching capability guard
+        run: |
+          git show origin/automation/p3-combine-batching-20260910:.github/p3_combine_fix.py > /tmp/p3_combine_fix.py
+          python /tmp/p3_combine_fix.py
+          git diff --check
       - name: Install and validate combined batching contracts
         run: |
           python -m pip install -e .
@@ -44,5 +49,9 @@ jobs:
             tests.test_update_review -v
           python benchmarks/p3/batch_call_audit.py
           python benchmarks/p3/review_call_audit.py
-      - name: Push combined P3
-        run: git push origin HEAD:experiment/p3-batched-model-stages-20260910
+      - name: Commit guard and push combined P3
+        run: |
+          git add src/memleaf/batch_review.py tests/test_batch_review.py tests/test_batch_review_integration.py
+          test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = "3"
+          git commit -m 'fix: gate P3 review batching by backend capability'
+          git push origin HEAD:experiment/p3-batched-model-stages-20260910
