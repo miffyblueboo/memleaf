@@ -1,0 +1,56 @@
+name: P3 batched model stages
+
+on:
+  push:
+    branches:
+      - experiment/p3-batched-model-stages-20260910
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-p3-review-batching:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Compile P3 assets
+        run: |
+          python -m py_compile \
+            src/memleaf/batch_review.py \
+            src/memleaf/update_coordinator.py \
+            tests/test_batch_review.py \
+            tests/test_batch_review_integration.py \
+            benchmarks/p3/review_call_audit.py
+      - name: Validate batching and legacy semantic-review contracts
+        run: |
+          python -m unittest \
+            tests.test_batch_review \
+            tests.test_batch_review_integration \
+            tests.test_update_review -v
+      - name: Verify structural call-count reduction
+        run: |
+          python benchmarks/p3/review_call_audit.py > /tmp/p3-review-calls.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          value = json.loads(Path('/tmp/p3-review-calls.json').read_text())
+          by_count = {
+              row['reviewable_create_requests']: row
+              for row in value['scenarios']
+          }
+          assert by_count[1]['p3_review_calls'] == 1
+          assert by_count[2]['p3_review_calls'] == 1
+          assert by_count[4]['p3_review_calls'] == 1
+          assert by_count[5]['p3_review_calls'] == 2
+          assert by_count[8]['p3_review_calls'] == 2
+          assert by_count[4]['call_reduction_ratio'] == 0.75
+          assert by_count[8]['call_reduction_ratio'] == 0.75
+          assert value['max_review_batch_items'] == 4
+          PY
+          cat /tmp/p3-review-calls.json
