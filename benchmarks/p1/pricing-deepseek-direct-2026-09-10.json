@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "observed_date": "2026-09-10",
+  "status": "CONDITIONAL_REFERENCE_ONLY",
+  "applies_only_when": {
+    "provider": "deepseek",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-flash"
+  },
+  "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+  "currency": "CNY",
+  "rates_per_million_tokens": {
+    "off_peak": {
+      "input_cache_hit": 0.05,
+      "input_cache_miss": 1.5,
+      "output": 4.5
+    },
+    "peak": {
+      "input_cache_hit": 0.10,
+      "input_cache_miss": 3.0,
+      "output": 9.0
+    }
+  },
+  "peak_schedule_utc": "Monday-Friday 01:00-04:00 and 06:00-10:00 UTC; all other times are off-peak",
+  "note": "Do not use this snapshot unless the local memleaf route is independently confirmed to match provider, base URL, and exact model. Re-verify provider pricing immediately before a paid run."
+}

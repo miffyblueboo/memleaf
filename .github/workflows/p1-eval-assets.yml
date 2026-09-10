@@ -19,20 +19,20 @@ jobs:
           python-version: '3.13'
       - name: Install package
         run: python -m pip install -e .
-      - name: Compile P1 runner
-        run: python -m py_compile benchmarks/p1/run_baseline.py benchmarks/p1/test_runner.py
-      - name: Validate P1 fixture and dry-run guard
+      - name: Compile P1 tools
+        run: python -m py_compile benchmarks/p1/run_baseline.py benchmarks/p1/cost_report.py benchmarks/p1/test_runner.py benchmarks/p1/test_cost_report.py
+      - name: Validate P1 fixture, dry-run guard, and cost reporting
         run: |
-          python -m unittest benchmarks.p1.test_runner -v
+          python -m unittest benchmarks.p1.test_runner benchmarks.p1.test_cost_report -v
           python benchmarks/p1/run_baseline.py > /tmp/p1-plan.json
-          python - <<'PY'
+          python - <<'PY2'
           import json
           from pathlib import Path
           value = json.loads(Path('/tmp/p1-plan.json').read_text())
           assert value['case_count'] == 10
           assert value['planned_process_runs'] == 30
           assert value['thinking'] == 'low'
-          PY
+          PY2
 
   route-preflight:
     if: startsWith(github.event.head_commit.message, 'p1-preflight:')

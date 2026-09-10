@@ -46,6 +46,14 @@ a fresh-instance visibility check. It deliberately leaves `price_usd` unknown;
 pricing and a monetary cap must only be computed from verified provider pricing
 at run time.
 
+`cost_report.py` prices only provider-reported token usage. It never infers token
+counts from prompt/output characters. An exact bill requires a complete cache
+hit/miss input split plus completion tokens for every retained call. If that is
+unavailable, it can still report a conservative **observed** cost when prompt and
+completion token totals exist, charging every input token at the more expensive
+input tier. That observed value is not represented as a hard bound on future
+calls.
+
 ## Current external blocker
 
 A zero-call GitHub Actions preflight on 2026-09-10 at commit
@@ -55,7 +63,7 @@ route unconfigured: `MEMLEAF_LIVE_MODEL_TOKEN`, `MEMLEAF_LIVE_BASE_URL`, and
 historical observation, not a claim that repository settings can never change.
 
 Do not add a credential merely to make CI green. The preferred next step is a
-small local pilot using the already configured local memleaf Model Route, if one
+small local probe using the already configured local memleaf Model Route, if one
 exists, without uploading its key to GitHub.
 
 ## Commands
@@ -81,12 +89,47 @@ python benchmarks/p1/run_baseline.py \
 Run the small asset tests (still no model call):
 
 ```bash
-python -m unittest benchmarks.p1.test_runner -v
+python -m unittest benchmarks.p1.test_runner benchmarks.p1.test_cost_report -v
 ```
 
-Before the 30-run exploration, run one bounded pilot to measure actual call and
-token usage. The model-call cap below is intentionally explicit; choose the
-monetary cap only after verifying current provider pricing.
+### Stage 1: three-call probe
+
+Before opening a larger pilot budget, run exactly one simple case with a hard
+three-call cap. The normal single-fact path is expected to exercise Gate,
+Summary, and Semantic Review. If a retry is needed, the cap may stop the process
+part-way; the retained call graph is still useful for measuring real token and
+latency behavior.
+
+```bash
+python benchmarks/p1/run_baseline.py \
+  --execute \
+  --arm-label B0-probe \
+  --case AB01_fact \
+  --repetitions 1 \
+  --config-template ~/.memleaf/config.yaml \
+  --output benchmarks/results/p1-b0-probe.json \
+  --max-process-runs 1 \
+  --max-model-calls 3
+```
+
+Price the observed calls only after verifying the current provider tariff:
+
+```bash
+python benchmarks/p1/cost_report.py \
+  --input benchmarks/results/p1-b0-probe.json \
+  --input-cache-hit-per-million <verified-rate> \
+  --input-cache-miss-per-million <verified-rate> \
+  --output-per-million <verified-rate> \
+  --currency <currency> \
+  --project-calls 12
+```
+
+### Stage 2: bounded pilot
+
+Only after the three-call probe has established actual usage and the provider
+price has been verified should the same `AB01_fact` case be allowed a larger
+call cap. Register that cap and the corresponding monetary rationale in the run
+notes before execution; do not silently increase it after a budget stop.
 
 ```bash
 python benchmarks/p1/run_baseline.py \
@@ -97,11 +140,13 @@ python benchmarks/p1/run_baseline.py \
   --config-template ~/.memleaf/config.yaml \
   --output benchmarks/results/p1-b0-pilot.json \
   --max-process-runs 1 \
-  --max-model-calls 12
+  --max-model-calls <registered-pilot-call-cap>
 ```
 
-After the pilot establishes a defensible call/token and pricing bound, the full
-B0 exploration remains explicit:
+### Stage 3: 30-run B0 exploration
+
+After the bounded pilot establishes a defensible call/token and pricing range,
+the full B0 exploration remains explicit:
 
 ```bash
 python benchmarks/p1/run_baseline.py \
