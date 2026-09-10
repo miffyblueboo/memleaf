@@ -34,6 +34,7 @@ jobs:
             benchmarks/p1/run_baseline.py \
             benchmarks/b3/test_benchmark_harness.py \
             tests/test_b3_activation.py \
+            tests/test_b3_closeout.py \
             tests/test_b3_planning_context.py \
             tests/test_b3_single_pass_memory_planner.py \
             tests/test_b3_single_pass_plan.py \
@@ -42,6 +43,7 @@ jobs:
         run: |
           python -m unittest \
             tests.test_b3_activation \
+            tests.test_b3_closeout \
             tests.test_b3_single_pass_plan \
             tests.test_b3_planning_context \
             tests.test_b3_single_pass_memory_planner -v
