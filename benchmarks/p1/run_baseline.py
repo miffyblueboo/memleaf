@@ -67,6 +67,10 @@ class BudgetedModel:
         return getattr(self.backend, "structured_batch_safe", False) is True
 
     @property
+    def single_pass_safe(self) -> bool:
+        return getattr(self.backend, "single_pass_safe", False) is True
+
+    @property
     def calls(self) -> int:
         with self._lock:
             return self._calls
