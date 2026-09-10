@@ -35,7 +35,8 @@ source = source.replace(
     1,
 )
 source = source.replace('executor, "backend",', 'executor, _BATCH_BACKEND,')
-assert 'executor, "backend",' not in source
+source = source.replace('            "backend",\n', '            _BATCH_BACKEND,\n')
+assert '"backend"' not in source
 method_anchor = "    def test_update_batch_keeps_review_id_mapping_and_revision_parser(self):\n"
 assert source.count(method_anchor) == 1
 legacy_test = '''    def test_backend_without_batch_capability_uses_legacy_single_reviews(self):
