@@ -225,8 +225,9 @@ def split_test_file(path: str, class_name: str, support_module: str, base_name: 
             raise RuntimeError(f"split test part still oversized: {stem}")
 
     # Keep a tiny import-compatibility facade for tests/modules that import support symbols.
+    postamble = "".join(lines[getattr(test_class, "end_lineno"):])
     stub = f'"""Compatibility facade; tests are split across cohesive part modules."""\nfrom tests.{support_module} import *\n\n{class_name} = {base_name}\n'
-    write(path, stub)
+    write(path, stub + "\n" + postamble)
     return modules
 
 

@@ -14,6 +14,14 @@ import unicodedata
 from typing import Any, Iterable, Mapping
 
 from .validation import ModelOutputError, parse_strict_json
+from .evidence_syntax import (
+    _BULLET, _CLOSED_TASK, _EXAMPLE, _EXTERNAL_OWNER, _HEADING, _NEGATIVE_TASK,
+    _POLITE, _QUERY_START, _QUERY_WORD, _READ_ONLY_CONTROL, _clauses, _query,
+)
+from .evidence_structure import (
+    MAX_EXTERNAL_UNIT_BYTES, _EXTERNAL_MARKER, _external_blocks,
+    _has_external_structure, _structured_external_blocks,
+)
 
 
 # Tool capture already bounds ordinary records to 32 KiB. JSON and unstructured
@@ -21,38 +29,13 @@ from .validation import ModelOutputError, parse_strict_json
 # explicit plain-text structure may be split into bounded semantic sections.
 # Oversized legacy records are split only when necessary; every block retains
 # the original record identity in its EvidenceUnit metadata.
-MAX_EXTERNAL_UNIT_BYTES = 32 * 1024
 MAX_GATE_BATCH_UNITS = 8
 MAX_GATE_BATCH_BYTES = 64 * 1024
 
 # Syntax recognizers, not a catalogue of business scenarios or tool names.
-_POLITE = re.compile(r"^(?:(?:麻烦你|麻烦|请问|请|帮我|替我|劳驾)\s*)+")
-_QUERY_START = re.compile(
-    r"^(?:查询|查一下|查下|看看|看下|查看|阅读|读取|检查|汇总|列出|罗列|告诉我|梳理|盘点|总结|给我|"
-    r"把.+(?:列出|发我|告诉我|整理|汇总|梳理|总结)|(?:please\s+)?(?:list|show|tell|summari[sz]e|"
-    r"recap|check|find|what|which|who|when|where|why|how)\b)", re.I)
-_QUERY_WORD = re.compile(r"有没有|有什么|有哪些|是什么|是谁|多少|哪个|哪些|什么时候|何时|"
-                         r"如何|怎么|为什么|是否|能否|可否|\b(?:what|which|who|when|where|why|how)\b", re.I)
 # A complete, standalone control sentence that only tells memleaf not to
 # mutate memory is still a query.  Keep this deliberately narrow: project
 # constraints such as "不要修改数据库配置" remain user assertions.
-_READ_ONLY_CONTROL = re.compile(
-    r"^(?:(?:不要|不|请勿|勿)\s*(?:修改|更新|写入|保存|删除)\s*记忆|"
-    r"(?:please\s+)?(?:do\s+not|don['’]t)\s+(?:modify|update|write|save|delete)\s+memor(?:y|ies))$",
-    re.IGNORECASE,
-)
-_EXAMPLE = re.compile(r"(?:仅供.{0,8}(?:参考示例|示例|测试)|举(?:一个|个).{0,16}(?:例子|示例)|"
-                      r"(?:只是|以下是|这是|作为).{0,12}(?:示例|样例|模板|测试数据)|"
-                      r"假设|例如|测试数据|不要.{0,16}(?:记住|记录|当成真实))|"
-                      r"\b(?:example|hypothetical|suppose|fictional|test fixture)\b", re.I)
-_HEADING = re.compile(r"^\s*(?:#{1,6}\s+.+|\d+[.)、]\s*[^。;；\n]{1,100}[:：]\s*.*)$")
-_BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.)、])\s+")
-_NEGATIVE_TASK = re.compile(r"无需|不需要|不用|不必|无须|毋须|(?:没有|不存在).{0,12}(?:需要|待办|问题)|"
-                            r"\b(?:no need|need not|not required|does not need|do not need)\b", re.I)
-_CLOSED_TASK = re.compile(r"(?:已|已经).{0,4}(?:全部|均)?(?:完成|取消|解决|关闭)|"
-                         r"\b(?:already (?:done|completed|cancelled)|all .{0,20}(?:resolved|completed))\b", re.I)
-_EXTERNAL_OWNER = re.compile(r"(?:客户|供应商|第三方)(?:自行|自己)?(?:需要|需|负责|必须|应当|要(?!求))|"
-                            r"\b(?:customer|vendor|supplier|third party)\s+(?:must|needs? to|is responsible)\b", re.I)
 
 
 @dataclass(frozen=True)
@@ -128,206 +111,12 @@ def partition_evidence_units(units: Iterable[EvidenceUnit]) -> EvidencePartition
     return EvidencePartition(tuple(physical), tuple(non_physical), tuple(unresolved))
 
 
-def _external_blocks(text: str) -> Iterable[tuple[int, int, str, str, tuple[str, ...]]]:
-    """Yield deterministic, exact source blocks for one external record.
-
-    JSON documents remain whole records.  Plain text that contains explicit
-    structure is divided at paragraphs, headings, numbered items and bullets
-    so coverage can account for each actionable item.  Ordinary prose and
-    line oriented logs remain whole records; punctuation never creates a
-    fragment.  The oversized fallback is byte bounded and always returns
-    Python character offsets.
-    """
-
-    stripped = text.lstrip()
-    is_json = False
-    if stripped.startswith(("{", "[")):
-        try:
-            json.loads(text)
-        except (TypeError, ValueError):
-            pass
-        else:
-            is_json = True
-
-    # Explicit record dividers delimit complete observations in a batched
-    # text result. Keep each record's header and paragraphs together so they
-    # cannot drift into unrelated model batches. This recognizes layout only;
-    # it assigns no business meaning, owner, scope or source authority.
-    dividers = list(re.finditer(r"(?m)^[ \t]*(?:={8,}|-{8,}|\*{8,})[ \t]*\r?$", text)) if not is_json else []
-    if dividers:
-        boundaries = sorted({0, *(match.start() for match in dividers), len(text)})
-        for left, right in zip(boundaries, boundaries[1:]):
-            block = text[left:right]
-            if not block.strip():
-                continue
-            if re.fullmatch(r"[ \t]*(?:={8,}|-{8,}|\*{8,})[ \t\r\n]*", block):
-                continue
-            # A divider is structural context, not an independent assertion.
-            if len(block.encode("utf-8")) <= MAX_EXTERNAL_UNIT_BYTES:
-                yield left, right, block, "external_record", ()
-            else:
-                # Avoid recursively recognizing the same leading divider.
-                cursor = left
-                while cursor < right:
-                    end = cursor
-                    size = 0
-                    while end < right:
-                        width = len(text[end].encode("utf-8"))
-                        if end > cursor and size + width > MAX_EXTERNAL_UNIT_BYTES:
-                            break
-                        size += width
-                        end += 1
-                    yield cursor, end, text[cursor:end], "external_block", ()
-                    cursor = end
-        return
-
-    if len(text.encode("utf-8")) <= MAX_EXTERNAL_UNIT_BYTES and (
-        is_json or not _has_external_structure(text)
-    ):
-        yield 0, len(text), text, "external_record", ()
-        return
-
-    if len(text.encode("utf-8")) <= MAX_EXTERNAL_UNIT_BYTES:
-        yield from _structured_external_blocks(text)
-        return
-
-    start = 0
-    while start < len(text):
-        end = start
-        encoded = 0
-        while end < len(text):
-            width = len(text[end].encode("utf-8"))
-            if end > start and encoded + width > MAX_EXTERNAL_UNIT_BYTES:
-                break
-            encoded += width
-            end += 1
-        if end <= start:
-            # A single code point larger than the budget is impossible for a
-            # normal Unicode scalar, but make progress defensively.
-            end = min(start + 1, len(text))
-        yield start, end, text[start:end], "external_block", ()
-        start = end
 
 
-_EXTERNAL_MARKER = re.compile(r"^\s*(?:#{1,6}\s+|[-*+•]\s+|\d+[.)、]\s+)")
 
 
-def _has_external_structure(text: str) -> bool:
-    """Recognize structural boundaries without treating every line as one."""
-
-    if "\n\n" in text or "\r\n\r\n" in text:
-        return True
-    for line in text.splitlines():
-        value = line.strip()
-        if not value:
-            continue
-        if _EXTERNAL_MARKER.match(line) or value.endswith((":", "：")):
-            return True
-    return False
 
 
-def _structured_external_blocks(
-    text: str,
-) -> Iterable[tuple[int, int, str, str, tuple[str, ...]]]:
-    """Split explicit text structure while retaining parent section context."""
-
-    # ``splitlines(True)`` keeps offsets exact while allowing us to discard
-    # only structural whitespace at each emitted boundary.
-    lines: list[tuple[int, int, str, str]] = []
-    cursor = 0
-    for raw in text.splitlines(True):
-        line_end = cursor + len(raw)
-        body = raw[:-1] if raw.endswith("\n") else raw
-        if body.endswith("\r"):
-            body = body[:-1]
-        lines.append((cursor, line_end, body, raw))
-        cursor = line_end
-    if cursor < len(text):
-        lines.append((cursor, len(text), text[cursor:], text[cursor:]))
-    if not lines:
-        return
-
-    # Stack entries are ``(indent, label, kind)``. Headings remain in scope for
-    # sibling numbered items; prior items only remain in scope for indented
-    # children such as the two Morgan bullets in the regression digest.
-    contexts: list[tuple[int, str, str]] = []
-    current_start: int | None = None
-    current_end: int | None = None
-    current_section: tuple[str, ...] = ()
-    current_syntax = "external_paragraph"
-
-    def emit_current() -> tuple[int, int, str, str, tuple[str, ...]] | None:
-        if current_start is None or current_end is None or current_start >= current_end:
-            return None
-        return (
-            current_start,
-            current_end,
-            text[current_start:current_end],
-            current_syntax,
-            current_section,
-        )
-
-    for line_start, line_end, body, raw in lines:
-        left = len(body) - len(body.lstrip())
-        right = len(body.rstrip())
-        value = body.strip()
-        if not value:
-            emitted = emit_current()
-            if emitted is not None:
-                yield emitted
-            current_start = current_end = None
-            current_section = ()
-            current_syntax = "external_paragraph"
-            continue
-
-        indent = left
-        marker = _EXTERNAL_MARKER.match(body)
-        heading = bool(re.match(r"^\s*#{1,6}\s+", body)) or (
-            not marker and value.endswith((":", "："))
-        )
-        structural = bool(marker) or heading
-        if structural:
-            emitted = emit_current()
-            if emitted is not None:
-                yield emitted
-            current_start = line_start + left
-            current_end = line_start + right
-            current_syntax = "external_section"
-
-            if heading:
-                contexts = [
-                    (level, label, kind)
-                    for level, label, kind in contexts
-                    if level < indent
-                ]
-                current_section = tuple(label for _, label, _ in contexts)
-                contexts.append((indent, value, "heading"))
-            else:
-                # Same-level numbered/bullet siblings replace the previous
-                # item, while a heading at that level remains their context.
-                contexts = [
-                    (level, label, kind)
-                    for level, label, kind in contexts
-                    if level < indent or (level == indent and kind == "heading")
-                ]
-                current_section = tuple(label for _, label, _ in contexts)
-                contexts.append((indent, value, "item"))
-            continue
-
-        # Non-structural lines continue the current item/paragraph. This keeps
-        # wrapped prose together and avoids turning line-oriented logs into one
-        # evidence unit per line.
-        line_content_start = line_start + left
-        line_content_end = line_start + right
-        if current_start is None:
-            current_start = line_content_start
-            current_section = tuple(label for _, label, _ in contexts)
-            current_syntax = "external_paragraph"
-        current_end = line_content_end
-
-    emitted = emit_current()
-    if emitted is not None:
-        yield emitted
 
 
 def gate_evidence_batches(
@@ -366,38 +155,8 @@ def gate_evidence_batches(
     return tuple(batches) if batches else ((),)
 
 
-def _query(text: str) -> bool:
-    text = _POLITE.sub("", text.strip())
-    control = text.rstrip("。！？!?；;.! ")
-    if _READ_ONLY_CONTROL.fullmatch(control):
-        return True
-    return bool(_QUERY_START.search(text) or _QUERY_WORD.search(text)
-                or re.search(r"[?？]|(?:吗|么|呢)[。！!\s]*$", text))
 
 
-def _clauses(text: str) -> Iterable[tuple[str, tuple[str, ...], bool]]:
-    """Separate syntax while retaining headings as context, never as ownership."""
-    section: tuple[str, ...] = ()
-    in_code = False
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("```") or line.startswith("~~~"):
-            in_code = not in_code
-            continue
-        if not line:
-            continue
-        if _HEADING.match(line):
-            # Every heading resets context, including unregistered names.
-            section = (re.sub(r"^(?:#{1,6}|\d+[.)、])\s*", "", line).split(":", 1)[0].split("：", 1)[0],)
-        quoted = in_code or line.startswith(">")
-        line = _BULLET.sub("", line)
-        # Independent assertion/query clauses must not suppress one another.
-        # Do not split numeric thousands separators.
-        line = re.sub(r"(?<![0-9])[,，]\s*|[,，](?![0-9])\s*", "\n", line)
-        for clause in re.split(r"(?<=[。!?！？;；])\s*|\n+|(?<=[A-Za-z0-9]\.)\s+", line):
-            clause = clause.strip()
-            if clause:
-                yield clause, section, quoted
 
 
 def analyze_turn_evidence(events: Iterable[Mapping[str, Any]]) -> tuple[EvidenceUnit, ...]:

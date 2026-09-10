@@ -24,7 +24,7 @@ class HermesWindowsSubprocessTests(unittest.TestCase):
         process = Mock()
         flag = 0x08000000
         with (
-            patch.object(provider_module, "_mcp_creationflags", return_value=flag),
+            patch.object(provider_module._MCPClient, "_creationflags", return_value=flag),
             patch.object(provider_module.subprocess, "Popen", return_value=process) as popen,
             patch.object(client, "_resolve_command", return_value="memleaf-mcp"),
             patch.object(client, "_start_stdout_reader_locked"),
