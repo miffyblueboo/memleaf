@@ -58,7 +58,7 @@ DECISIONS
 CREATE/UPDATE/NO_CHANGE require lookup_complete=true. CREATE only when no supplied local memory represents the durable information. UPDATE when one supplied local memory represents the same evolving future use and current evidence establishes a change. NO_CHANGE when current evidence adds no semantic change to that target. DEFERRED when a durable candidate exists but a safe decision cannot be made. UPDATE/NO_CHANGE target_memory_id must come from LOCAL_MEMORY_CATALOG; use each target at most once.
 
 CONTENT
-CREATE supplies type, scopes, scope_source and memory. UPDATE supplies target_memory_id and memory; Core inherits target type/scopes. Only an explicit current-evidence Scope correction may add both scopes and scope_source to UPDATE. CREATE memory requires title and body; UPDATE memory requires body and may omit an unchanged title. Optional memory fields: tags, aliases, keywords, status, completed_at, due_date, shadow_native_ids, scope_operations. Do not place type, scopes, sources, or update_memory_id inside memory. Omission is not retraction or completion. Preserve still-valid target content on UPDATE. shadow_native_ids may reference only supplied native IDs when current evidence supersedes them. scope_operations must follow the existing Scope contract.
+CREATE supplies type, scopes and memory; Core derives scope_source. UPDATE supplies target_memory_id and memory; Core inherits target type/scopes. Only an explicit current-evidence Scope correction may add both scopes and scope_source to UPDATE; Core re-derives provenance and independently authorizes it. CREATE memory requires title and body; UPDATE memory requires body and may omit an unchanged title. Optional memory fields are tags, aliases, keywords, status, completed_at, due_date, shadow_native_ids and scope_operations. Omit optional tags/aliases/keywords unless they add retrieval value, and omit empty optional metadata. Emit todo state/date fields only when needed by the todo state, shadow_native_ids only for supplied native IDs actually superseded, and scope_operations only under the existing Scope contract. Do not place type, scopes, sources, or update_memory_id inside memory. Omission is not retraction or completion. Preserve still-valid target content on UPDATE.
 
 EVIDENCE
 Each item needs exact CURRENT_EVIDENCE claims: {unit_id,quote,role}, {unit_id,whole_unit:true,role}, or the legacy exact-offset form. role is assertion, source_excerpt, or user_confirmation. Each evidence unit must be claimed by at least one item or appear once in no_memory, never both. Use only the supplied no_memory_reasons and defer_reasons.
@@ -299,7 +299,7 @@ def parse_single_pass_output(
 
     common = {"candidate_id", "decision", "evidence"}
     decision_fields = {
-        "CREATE": common | {"type", "scopes", "scope_source", "memory"},
+        "CREATE": common | {"type", "scopes", "memory"},
         "UPDATE": common | {"target_memory_id", "memory"},
         "NO_CHANGE": common | {"target_memory_id"},
         "DEFERRED": common | {"reason"},
@@ -317,7 +317,11 @@ def parse_single_pass_output(
             raise ModelOutputError("B3 decision is invalid", validation_detail="other_schema_violation")
         actual_fields = set(raw_item)
         allowed_fields = decision_fields[decision]
-        if decision == "UPDATE":
+        if decision == "CREATE":
+            # Accept the pre-slimming field for compatibility, but Core never
+            # trusts it and new prompts no longer request it.
+            allowed_fields = allowed_fields | {"scope_source"}
+        elif decision == "UPDATE":
             extra_scope_fields = actual_fields & update_scope_fields
             if extra_scope_fields and extra_scope_fields != update_scope_fields:
                 raise ModelOutputError(
@@ -350,7 +354,7 @@ def parse_single_pass_output(
                 isinstance(scope, str) and scope for scope in scopes
             ):
                 raise ModelOutputError("B3 CREATE scopes are invalid", validation_detail="invalid_scope")
-            if item.get("scope_source") not in SCOPE_SOURCES:
+            if "scope_source" in item and item.get("scope_source") not in SCOPE_SOURCES:
                 raise ModelOutputError("B3 CREATE scope_source is invalid", validation_detail="invalid_scope_source")
             item["memory"] = _memory_object(item.get("memory"), require_title=True)
         elif decision in {"UPDATE", "NO_CHANGE"}:
@@ -434,7 +438,6 @@ def parse_single_pass_output(
             normalized.update({
                 "type": item["type"],
                 "scopes": list(item["scopes"]),
-                "scope_source": item["scope_source"],
                 "memory": dict(validated),
             })
         elif decision == "UPDATE":
