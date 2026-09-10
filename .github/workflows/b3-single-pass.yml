@@ -23,6 +23,8 @@ jobs:
         run: |
           python -m py_compile \
             src/memleaf/single_pass_plan.py \
-            tests/test_b3_single_pass_plan.py
-      - name: Validate one-pass protocol and input boundary
-        run: python -m unittest tests.test_b3_single_pass_plan -v
+            src/memleaf/planning_context.py \
+            tests/test_b3_single_pass_plan.py \
+            tests/test_b3_planning_context.py
+      - name: Validate one-pass protocol and retrieval boundary
+        run: python -m unittest tests.test_b3_single_pass_plan tests.test_b3_planning_context -v
