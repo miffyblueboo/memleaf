@@ -1,0 +1,28 @@
+name: B3 single-pass planner
+
+on:
+  push:
+    branches:
+      - experiment/b3-single-pass-planner-20260910
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-b3-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Compile B3 assets
+        run: |
+          python -m py_compile \
+            src/memleaf/single_pass_plan.py \
+            tests/test_b3_single_pass_plan.py
+      - name: Validate one-pass protocol and input boundary
+        run: python -m unittest tests.test_b3_single_pass_plan -v
