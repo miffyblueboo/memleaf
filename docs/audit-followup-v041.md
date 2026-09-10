@@ -20,22 +20,35 @@ planning, parsing, journal and Markdown operations are real.
 
 ## Metrics contract
 
-`failed_calls` keeps its existing backend failure meaning. It is not a measure
-of whether a received response passed schema/evidence validation.
+`failed_calls` means the model call itself did not produce a usable text result
+for the stage. Transport/timeouts/auth/rate-limit failures are failed calls. A
+backend response that is received but violates the response contract (for
+example invalid provider JSON/shape, empty text, or a non-text callback result)
+is also a failed call.
 
-New additive fields:
+Additive fields:
 
-* `invalid_output_count` in total, stage, and operation buckets: a text response
-  received from the backend but rejected by `ModelOutputError` during JSON,
-  schema/evidence, or lossless-repair validation. Count once per response,
-  including a swallowed coverage-repair validation failure. An ordinary valid
-  semantic-review REJECT decision is not a protocol failure.
+* `invalid_output_count` in total, stage, and operation buckets: a response was
+  received from the backend but rejected either by the backend response-shape
+  contract (`model_invalid_response`) or by `ModelOutputError` during JSON,
+  schema/evidence, or lossless-repair validation. Count once per received
+  response, including a swallowed coverage-repair validation failure. An
+  ordinary valid semantic-review REJECT decision is not a protocol failure.
 * `invalid_output` in each retained call row: the corresponding boolean.
+
+This distinction is intentional: a provider response with invalid JSON may have
+both `failed=true` and `invalid_output=true`, while a timeout/network/HTTP
+failure has `failed=true` and `invalid_output=false`. A text response that reaches
+our parser and then fails schema/evidence validation has `failed=false` and
+`invalid_output=true`. This keeps transport failures, provider response failures,
+and local semantic/schema rejections separately observable.
 
 Counters are associated with the exact call index and protected by the metrics
 lock; they remain correct when the bounded call-detail list has reached its
-limit. Backend exceptions do not increment the new counter. Direct `_complete`
-callers that do no output validation do not invent a validation outcome.
+limit. Arbitrary backend exceptions do not increment `invalid_output_count`.
+Only the sanitized `model_invalid_response` code is treated as proof that a
+response was received but unusable. Direct `_complete` callers that do no
+additional parser validation do not invent a parser outcome.
 
 `gate_primary`, `gate_format_repair`, `gate_semantic_retry`, and
 `gate_coverage_repair` survive durable-job projection, aggregation, and MCP
@@ -44,6 +57,13 @@ callers that do no output validation do not invent a validation outcome.
 Old stored attempts need not contain these additive fields; absence is not
 proof of zero historical validation failures. Aggregation sums only available
 counters, and does not backfill or reinterpret historical `failed_calls`.
+
+The invalid-response follow-up adds focused regressions for three distinct
+paths: a non-text normal backend return, a backend-raised
+`model_invalid_response`, and an ordinary transport exception. The first two are
+both failed + invalid output; the transport exception is failed only. This
+follow-up changes metrics classification only; it does not change retry count,
+model prompts, response parsing rules, or commit semantics.
 
 ## Structural diagnostics
 
@@ -78,12 +98,14 @@ A rejected repair falls back within the existing bounded full-Gate retry flow.
 Run after installing console entry points in an isolated environment:
 
 ```sh
+python -m unittest tests.test_model_invalid_response_metrics_v041 -v
 python -m unittest tests.test_audit_followup_v041 -v
 python -m unittest discover -s tests -p 'test_*.py' -v
 python -m compileall -q src tests examples
 ```
 
-The targeted suite includes independent parser rejection tests, real diagnostic
-file writes, partial-failure recovery, concurrent metric attribution, bounded
-metric retention, and durable failed/rerun/success attempts read through MCP.
-No test substitutes a real model-quality or cross-platform CI result.
+The targeted suite includes independent parser rejection tests, response-vs-
+transport metrics classification, real diagnostic file writes, partial-failure
+recovery, concurrent metric attribution, bounded metric retention, and durable
+failed/rerun/success attempts read through MCP. No test substitutes a real
+model-quality or cross-platform CI result.

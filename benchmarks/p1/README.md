@@ -7,7 +7,7 @@ change memleaf's product pipeline and they do not claim real-model results.
 
 Correctness baseline B0 is fixed at:
 
-`e2106bc9d55b8109ebd8df54eff7c1bad0c11180`
+`ea92756f31d1445792e2dff6657b9579641c9980`
 
 This is the P0 branch state after the Gate protocol candidate plus the isolated
 F01/F03/F04/F06 follow-up fixes passed the repository's Linux, Windows, macOS,
