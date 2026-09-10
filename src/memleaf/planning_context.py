@@ -494,6 +494,50 @@ class PlanningContext:
         )
 
 
+    def _single_pass_scope_correction_context(
+        self,
+        turn: InboxTurn,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Return bounded local context for an explicit two-project correction.
+
+        This is only a retrieval expansion.  It does not decide which project is
+        old/new or which memory is the target; the single model call proposes
+        that decision and ``_scope_correction_plan`` remains the final Core
+        authorization boundary.
+        """
+
+        user_text = " ".join(
+            event.content for event in turn.events
+            if event.role == "user" and isinstance(event.content, str)
+        ).strip()
+        if not user_text or not _SCOPE_CORRECTION_MARKER_RE.search(user_text):
+            return [], True
+        try:
+            with self.service.vault.lock():
+                config = self.service.vault.config()
+                scopes = config.get("scopes", {}) if isinstance(config, Mapping) else {}
+                if not isinstance(scopes, Mapping):
+                    return [], False
+                mentioned = [
+                    scope for scope in scopes
+                    if isinstance(scope, str)
+                    and scope.startswith("project:")
+                    and self._scope_terms_present(user_text, scope, config)
+                ]
+                mentioned = list(dict.fromkeys(mentioned))
+                if len(mentioned) != 2:
+                    return [], True
+                records = self.service._read_memories_unlocked("knowledge")
+                values = [
+                    record.memory.to_dict()
+                    for record in records
+                    if any(filter_by_scope([record.memory], [scope], config) for scope in mentioned)
+                ]
+        except (OSError, UnicodeError, ValueError, TypeError):
+            return [], False
+        return self._bound_related_with_status(values)
+
+
     def _single_pass_related(
         self,
         turn: InboxTurn,
@@ -542,6 +586,25 @@ class PlanningContext:
             native_query=visible,
             return_bound_status=True,
         )
+        correction_rows, correction_complete = self._single_pass_scope_correction_context(turn)
+        if correction_rows:
+            existing_ids = {
+                item.get("memory_id").casefold()
+                for item in related
+                if isinstance(item, Mapping)
+                and isinstance(item.get("memory_id"), str)
+                and item.get("native") is not True
+            }
+            combined = list(related)
+            combined.extend(
+                row for row in correction_rows
+                if isinstance(row.get("memory_id"), str)
+                and row["memory_id"].casefold() not in existing_ids
+            )
+            related, combined_complete = self._bound_related_with_status(combined)
+            bound_complete = bool(bound_complete and correction_complete and combined_complete)
+        elif not correction_complete:
+            bound_complete = False
         fallback_ambiguous = bool(
             scope_fallback is not None
             and len(scope_fallback) == 2

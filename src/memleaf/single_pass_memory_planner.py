@@ -324,6 +324,7 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             if isinstance(item.get("native_id"), str)
         ]
         target_revisions: dict[str, str] = {}
+        scope_correction_plans: dict[str, dict[str, Any]] = {}
         for item in local_related:
             memory_id = item.get("memory_id")
             active = self.inputs._active_memory_by_id(memory_id)
@@ -351,8 +352,12 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 if target_memory is None:
                     raise ModelOutputError("B3 update target disappeared", validation_detail="invalid_update_target")
                 memory_type = target_memory.type
-                scopes = list(target_memory.scopes)
-                scope_source = target_memory.scope_source
+                if "scopes" in decision_context:
+                    scopes = list(decision_context.get("scopes", []))
+                    scope_source = decision_context.get("scope_source")
+                else:
+                    scopes = list(target_memory.scopes)
+                    scope_source = target_memory.scope_source
             else:
                 memory_type = decision_context.get("type")
                 scopes = list(decision_context.get("scopes", []))
@@ -373,7 +378,7 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             }
             if decision == "UPDATE" and isinstance(target_id, str):
                 candidate["update_memory_id"] = target_id
-            if decision == "CREATE" and not _model_project_scope_is_source_grounded(
+            if decision in {"CREATE", "UPDATE"} and not _model_project_scope_is_source_grounded(
                 candidate,
                 planning_units,
                 validation_scope_registry,
@@ -383,6 +388,33 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                     "B3 project scope is not grounded by claimed source",
                     validation_detail="scope_not_grounded",
                 )
+            if (
+                decision == "UPDATE"
+                and target_memory is not None
+                and [scope.casefold() for scope in scopes]
+                    != [scope.casefold() for scope in target_memory.scopes]
+            ):
+                correction_plan = self.inputs._scope_correction_plan(
+                    candidate,
+                    turn,
+                    self.service.vault.config(),
+                )
+                if (
+                    not isinstance(correction_plan, Mapping)
+                    or correction_plan.get("ambiguous")
+                    or correction_plan.get("unresolved")
+                    or not isinstance(correction_plan.get("target_memory_id"), str)
+                    or correction_plan["target_memory_id"].casefold() != target_memory.memory_id.casefold()
+                    or not isinstance(correction_plan.get("new_scope"), str)
+                    or correction_plan["new_scope"].casefold() not in {
+                        scope.casefold() for scope in scopes if isinstance(scope, str)
+                    }
+                ):
+                    raise ModelOutputError(
+                        "B3 cross-scope UPDATE is not authorized by explicit correction evidence",
+                        validation_detail="scope_drift",
+                    )
+                scope_correction_plans[candidate_id] = dict(correction_plan)
 
             admitted_events = summary_evidence(candidate, planning_units, events=events)
             admitted_keys = tuple(dict.fromkeys(
@@ -504,6 +536,33 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                     self.audit._record_disposition(
                         turn_ref, candidate, "NO_CHANGE", reason="same_turn_duplicate"
                     )
+                    continue
+                correction_plan = scope_correction_plans.get(candidate_id)
+                if (
+                    isinstance(correction_plan, Mapping)
+                    and isinstance(correction_plan.get("survivor_memory_id"), str)
+                    and correction_plan.get("survivor_memory_id")
+                ):
+                    request = self.inputs._scope_correction_request(
+                        candidate,
+                        turn,
+                        correction_plan,
+                        conversation_title=title,
+                        native_refs=native_refs,
+                    )
+                    request["evidence_unit_ids"] = unit_ids
+                    requests.append(request)
+                    survivor = self.inputs._active_memory_by_id(correction_plan["survivor_memory_id"])
+                    self.audit._record_disposition(
+                        turn_ref,
+                        candidate,
+                        "UPDATE",
+                        memory_id=survivor.memory_id if survivor is not None else correction_plan["survivor_memory_id"],
+                    )
+                    if survivor is not None:
+                        for value in survivor.scopes:
+                            if value not in observed_scopes:
+                                observed_scopes.append(value)
                     continue
                 request = self._request(
                     summary,

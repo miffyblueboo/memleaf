@@ -37,7 +37,8 @@ _DEFER_REASONS = frozenset({
     "maintenance_uncertain",
 })
 _MEMORY_FIELDS = frozenset({
-    "title", "body", "tags", "aliases", "keywords", "status", "completed_at", "due_date"
+    "title", "body", "tags", "aliases", "keywords", "status", "completed_at", "due_date",
+    "shadow_native_ids", "scope_operations",
 })
 _LOCAL_FIELDS = (
     "memory_id", "title", "body", "type", "scopes", "status", "completed_at", "due_date"
@@ -59,7 +60,7 @@ DECISIONS
 CREATE/UPDATE/NO_CHANGE are terminal decisions and require input lookup_complete=true. CREATE: only for durable information not already represented by a supplied local memory. UPDATE: one supplied local memory represents the same evolving future use and current evidence establishes a real change. NO_CHANGE: current evidence is a duplicate/restatement or establishes no semantic change to that supplied target. DEFERRED: a durable candidate exists but target/scope/ownership/evidence or lookup completeness is unsafe to decide. UPDATE/NO_CHANGE target_memory_id must be copied from LOCAL_MEMORY_CATALOG. One target may be used by at most one item.
 
 CONTENT
-CREATE supplies type, scopes, scope_source and memory. UPDATE supplies target_memory_id and memory; Core inherits immutable type/scopes from the target. memory contains title, body, tags and only optional aliases, keywords, status, completed_at, due_date. Do not emit type/scopes/sources/update_memory_id inside memory; Core supplies deterministic metadata and source references after validating evidence. Omission from current evidence is not retraction or completion. For an UPDATE, preserve still-valid target content unless current evidence supersedes it.
+CREATE supplies type, scopes, scope_source and memory. UPDATE normally supplies target_memory_id and memory; Core inherits immutable type/scopes from the target. Only when CURRENT_EVIDENCE explicitly corrects a prior project/Scope attribution may UPDATE additionally supply scopes and scope_source together; Core must independently authorize that correction or reject it. memory contains title and body plus only optional tags, aliases, keywords, status, completed_at, due_date, shadow_native_ids and scope_operations. shadow_native_ids may copy only supplied NATIVE_MEMORY_CATALOG IDs when current evidence supersedes that native content; use no_memory reason native_already_covered when unchanged native content already covers the fact. scope_operations are allowed only under the existing memleaf Scope contract. Do not emit type/scopes/sources/update_memory_id inside memory; Core supplies deterministic metadata and source references after validating evidence. Omission from current evidence is not retraction or completion. For an UPDATE, preserve still-valid target content unless current evidence supersedes it.
 
 EVIDENCE
 Every item must carry one or more exact evidence claims. A claim is exactly {unit_id,quote,role}, {unit_id,whole_unit:true,role}, or the legacy exact-offset form adding start/end. role is assertion, source_excerpt, or user_confirmation. Claims must use CURRENT_EVIDENCE only. Every current evidence unit must be either claimed by at least one item or appear exactly once in no_memory; never both. no_memory is only for evidence with no durable memory action and uses one of the supplied no-memory reasons.
@@ -280,6 +281,7 @@ def parse_single_pass_output(
         "NO_CHANGE": common | {"target_memory_id"},
         "DEFERRED": common | {"reason"},
     }
+    update_scope_fields = frozenset({"scopes", "scope_source"})
     for raw_item in items:
         if not isinstance(raw_item, Mapping):
             raise ModelOutputError("B3 item must be object", validation_detail="candidate_shape")
@@ -289,8 +291,19 @@ def parse_single_pass_output(
             raise ModelOutputError("B3 candidate_id is invalid", validation_detail="duplicate_candidate_id")
         if not isinstance(decision, str) or decision not in _DECISIONS:
             raise ModelOutputError("B3 decision is invalid", validation_detail="other_schema_violation")
-        if set(raw_item) != decision_fields[decision]:
-            detail = "unknown_fields" if set(raw_item) - decision_fields[decision] else "missing_fields"
+        actual_fields = set(raw_item)
+        allowed_fields = decision_fields[decision]
+        if decision == "UPDATE":
+            extra_scope_fields = actual_fields & update_scope_fields
+            if extra_scope_fields and extra_scope_fields != update_scope_fields:
+                raise ModelOutputError(
+                    "B3 UPDATE scope correction requires scopes and scope_source together",
+                    validation_detail="missing_fields",
+                )
+            allowed_fields = allowed_fields | update_scope_fields
+        required_fields = decision_fields[decision]
+        if not required_fields.issubset(actual_fields) or actual_fields - allowed_fields:
+            detail = "unknown_fields" if actual_fields - allowed_fields else "missing_fields"
             raise ModelOutputError("B3 item fields do not match decision", validation_detail=detail)
         if decision in {"CREATE", "UPDATE", "NO_CHANGE"} and not lookup_complete:
             raise ModelOutputError(
@@ -323,6 +336,17 @@ def parse_single_pass_output(
             item["target_memory_id"] = canonical
             if decision == "UPDATE":
                 item["memory"] = _memory_object(item.get("memory"))
+                if "scopes" in item:
+                    scopes = item.get("scopes")
+                    if not isinstance(scopes, list) or not scopes or not all(
+                        isinstance(scope, str) and scope for scope in scopes
+                    ):
+                        raise ModelOutputError("B3 UPDATE scopes are invalid", validation_detail="invalid_scope")
+                    if item.get("scope_source") not in SCOPE_SOURCES:
+                        raise ModelOutputError(
+                            "B3 UPDATE scope_source is invalid",
+                            validation_detail="invalid_scope_source",
+                        )
         else:
             if item.get("reason") not in _DEFER_REASONS:
                 raise ModelOutputError("B3 defer reason is invalid", validation_detail="reason_too_long")

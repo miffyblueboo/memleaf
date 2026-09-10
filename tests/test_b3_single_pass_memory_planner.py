@@ -74,6 +74,20 @@ class Inputs:
         if self.target is not None and isinstance(memory_id, str) and memory_id.casefold() == self.target.memory_id.casefold():
             return self.target
         return None
+    def _scope_correction_plan(self, candidate, turn, config):
+        if self.target is None or candidate.get("update_memory_id") != self.target.memory_id:
+            return None
+        scopes = candidate.get("scopes", [])
+        if scopes == list(self.target.scopes):
+            return None
+        return {
+            "target_memory_id": self.target.memory_id,
+            "old_scope": self.target.scopes[0],
+            "new_scope": scopes[0],
+            "survivor_memory_id": None,
+            "ambiguous": False,
+            "unresolved": False,
+        }
 
 
 class Model:
@@ -160,6 +174,77 @@ class B3SinglePassMemoryPlannerTests(unittest.TestCase):
         self.assertEqual(requests[0]["expected_revision"], revision_digest(target))
         self.assertEqual(requests[0]["summary"]["type"], "fact")
         self.assertEqual(requests[0]["summary"]["scopes"], ["global"])
+
+    def test_update_may_apply_core_authorized_scope_correction_in_same_call(self):
+        target = active("m-old", "双人复核", scope="project:Old", memory_type="project")
+        related = [target.to_dict()]
+        def response(prompt):
+            payload = json.loads(prompt.split("B3_INPUT\n",1)[1].split("\nReturn",1)[0])
+            assistant_uid = next(row["unit_id"] for row in payload["current_evidence"] if row["role"] == "assistant")
+            return {
+                "protocol_version": PROTOCOL_VERSION,
+                "items": [{
+                    "candidate_id": "c1",
+                    "decision": "UPDATE",
+                    "target_memory_id": "m-old",
+                    "scopes": ["project:New"],
+                    "scope_source": "model",
+                    "evidence": [{"unit_id": row["unit_id"], "whole_unit": True, "role": "assertion"} for row in payload["current_evidence"] if row["role"] == "user"],
+                    "memory": {"title": "流程", "body": "New流程要求仍是双人复核。"},
+                }],
+                "no_memory": [{"unit_id": assistant_uid, "reason": "assistant_restatement"}],
+            }
+        planner, _, model = self.planner(response, related=related, target=target)
+        requests, scopes = planner._collect_turn_outputs(
+            "backend",
+            turn("New流程要求仍是双人复核，之前归错到Old。"),
+            {},
+            scope=["project:New"],
+        )
+        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(requests[0]["summary"]["scopes"], ["project:New"])
+        self.assertEqual(requests[0]["summary"]["update_memory_id"], "m-old")
+        self.assertIn("project:New", scopes)
+
+    def test_create_passes_native_shadow_and_scope_operations_through_core_parser(self):
+        native_id = "native-1"
+        related = [{
+            "native": True,
+            "native_id": native_id,
+            "native_source_id": "source-1",
+            "source": "native",
+            "content": "legacy state",
+            "title": "Legacy",
+            "body": "legacy state",
+            "scopes": ["global"],
+        }]
+        def response(prompt):
+            payload = json.loads(prompt.split("B3_INPUT\n",1)[1].split("\nReturn",1)[0])
+            assistant_uid = payload["current_evidence"][1]["unit_id"]
+            return {
+                "protocol_version": PROTOCOL_VERSION,
+                "items": [{
+                    "candidate_id": "c1",
+                    "decision": "CREATE",
+                    "type": "fact",
+                    "scopes": ["global"],
+                    "scope_source": "model",
+                    "evidence": [item_claim(prompt, "legacy state is replaced")],
+                    "memory": {
+                        "title": "Current state",
+                        "body": "legacy state is replaced",
+                        "shadow_native_ids": [native_id],
+                        "scope_operations": [],
+                    },
+                }],
+                "no_memory": [{"unit_id": assistant_uid, "reason": "assistant_restatement"}],
+            }
+        planner, _, model = self.planner(response, related=related)
+        requests, _ = planner._collect_turn_outputs("backend", turn("legacy state is replaced"), {})
+        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(requests[0]["summary"]["shadow_native_ids"], [native_id])
+        self.assertEqual(requests[0]["summary"]["scope_operations"], [])
+        self.assertEqual(requests[0]["native_refs"], [{"source_id": "source-1", "native_id": native_id}])
 
     def test_no_change_and_query_make_no_requests(self):
         target = active("m-db", "Alpha uses PostgreSQL.")

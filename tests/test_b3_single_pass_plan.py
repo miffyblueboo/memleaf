@@ -240,6 +240,60 @@ class SinglePassPlanTests(unittest.TestCase):
                 validate_memory=validator,
             )
 
+    def test_update_scope_correction_fields_must_be_paired(self):
+        evidence = [unit("u1", "Move Alpha memory to Beta.")]
+        for extra in ({"scopes": ["project:Beta"]}, {"scope_source": "model"}):
+            raw = json.dumps({
+                "protocol_version": PROTOCOL_VERSION,
+                "items": [{
+                    "candidate_id": "c1",
+                    "decision": "UPDATE",
+                    "target_memory_id": "m1",
+                    "evidence": [claim("u1", "Move Alpha memory to Beta.")],
+                    "memory": memory(),
+                    **extra,
+                }],
+                "no_memory": [],
+            })
+            with self.assertRaises(ModelOutputError):
+                parse_single_pass_output(
+                    raw,
+                    evidence_units=evidence,
+                    local_memories=[local("m1")],
+                    lookup_complete=True,
+                    validate_memory=validator,
+                )
+
+    def test_memory_allows_native_shadow_and_scope_operations(self):
+        evidence = [unit("u1", "New current state.")]
+        raw = json.dumps({
+            "protocol_version": PROTOCOL_VERSION,
+            "items": [{
+                "candidate_id": "c1",
+                "decision": "CREATE",
+                "type": "fact",
+                "scopes": ["global"],
+                "scope_source": "model",
+                "evidence": [claim("u1", "New current state.")],
+                "memory": {
+                    "title": "Current state",
+                    "body": "New current state.",
+                    "shadow_native_ids": ["native-1"],
+                    "scope_operations": [],
+                },
+            }],
+            "no_memory": [],
+        })
+        result = parse_single_pass_output(
+            raw,
+            evidence_units=evidence,
+            local_memories=[],
+            lookup_complete=True,
+            validate_memory=validator,
+        )
+        self.assertEqual(result["items"][0]["memory"]["shadow_native_ids"], ["native-1"])
+        self.assertEqual(result["items"][0]["memory"]["scope_operations"], [])
+
     def test_evidence_coverage_must_be_complete_and_disjoint(self):
         evidence = [unit("u1", "A."), unit("u2", "B.")]
         missing = json.dumps({

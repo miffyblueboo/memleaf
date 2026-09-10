@@ -49,8 +49,15 @@ class B3PlanningContextTests(unittest.TestCase):
         self.assertFalse(complete)
         self.assertTrue(selected[0]["body"].endswith("…"))
 
+    def test_scope_correction_prefetch_is_noop_without_explicit_marker(self):
+        turn = SimpleNamespace(events=[SimpleNamespace(role="user", content="Alpha ordinary update")])
+        context = object.__new__(PlanningContext)
+        rows, complete = context._single_pass_scope_correction_context(turn)
+        self.assertEqual(rows, [])
+        self.assertTrue(complete)
+
     def test_single_pass_create_requires_complete_unambiguous_context(self):
-        turn = SimpleNamespace(events=[SimpleNamespace(content="Alpha changed")])
+        turn = SimpleNamespace(events=[SimpleNamespace(role="user", content="Alpha changed")])
         complete = FakeContext(([], ["project:Alpha"], [], None, True))
         result = complete._single_pass_related(turn, {}, physical_units=())
         self.assertTrue(result[-1])
