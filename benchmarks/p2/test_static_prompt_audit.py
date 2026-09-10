@@ -16,7 +16,7 @@ class P2GateInputSlimTests(unittest.TestCase):
         self.assertNotIn("P2_TOOL_BODY_MUST_NOT_APPEAR", prompt)
 
     def test_combined_gate_input_contains_each_conversation_body_once(self):
-        report = build_report()
+        report = build_report()["gate_user_prompt"]
         self.assertEqual(report["legacy_user_marker_occurrences"], 2)
         self.assertEqual(report["p2_user_marker_occurrences"], 1)
         self.assertEqual(report["legacy_assistant_marker_occurrences"], 2)
