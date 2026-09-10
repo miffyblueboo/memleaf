@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "observed_date": "2026-09-10",
+  "fixture": "cases-v1.json.gz",
+  "decompressed_sha256": "c9ccb135efe0683a5837ca2b22497194cad5c5fbc1a9e49ed7d842ffff57349b",
+  "data_policy": "synthetic-only benchmark data; no production Vault, credentials, local user paths, or user-specific project identifiers",
+  "checks": {
+    "email_patterns": 0,
+    "china_mobile_patterns": 0,
+    "local_user_path_patterns": 0,
+    "credential_or_bearer_patterns": 0,
+    "known_user_specific_project_identifiers": 0
+  },
+  "sanitation": {
+    "case": "AB04_project_platform",
+    "change": "replaced a user-specific implementation-platform identifier with a fictional identifier while preserving project-vs-platform semantics"
+  },
+  "model_calls": 0,
+  "note": "The executable privacy invariant in test_runner.py protects the fixture against common personal-path and credential patterns; this dated scan records the current sanitized fixture state and makes no claim about arbitrary future identifiers."
+}
