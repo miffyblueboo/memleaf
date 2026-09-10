@@ -143,7 +143,7 @@ class UpdateReviewTests(unittest.TestCase):
     def test_gate_contract_requires_atomic_topics_and_candidate_scoped_bindings(self):
         gate_text = " ".join(GATE_SYSTEM.split()).casefold()
         for phrase in (
-            "first enumerate the independent future uses",
+            "candidate count follows the independent future uses",
             "separate items that can be completed, tracked, or updated independently",
             "keep shared coordination details with the deliverable they govern",
             "candidate semantic completeness is mandatory",
@@ -171,7 +171,7 @@ class UpdateReviewTests(unittest.TestCase):
         gate_text = " ".join(GATE_SYSTEM.split()).casefold()
         summarize_text = " ".join(SUMMARIZE_SYSTEM.split()).casefold()
         self.assertIn("a query and a mere restatement of existing memory add no new memory", gate_text)
-        self.assertIn("a restatement of an existing memory do not create a new memory", summarize_text)
+        self.assertIn("restatements do not create new information by themselves", summarize_text)
         self.assertIn("assistant report", summarize_text)
         for system in (UPDATE_SEMANTIC_REVIEW_SYSTEM, CREATE_SEMANTIC_REVIEW_SYSTEM):
             review_text = " ".join(system.split()).casefold()

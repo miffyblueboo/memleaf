@@ -142,7 +142,7 @@ class AdmissionPromptTests(unittest.TestCase):
         )
         system = " ".join(SUMMARIZE_SYSTEM.casefold().split())
         for phrase in (
-            "first compare current evidence with the supplied target's state, facts, deadlines, and obligations",
+            "treat the supplied target as prior state and current admitted evidence as the only authority for change",
             "no new confirmed state, fact, deadline, or obligation change",
             "wording changes, restatements, and new source/provenance alone do not count as change",
             "only when current evidence confirms a real semantic change",
