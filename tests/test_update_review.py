@@ -130,7 +130,8 @@ class UpdateReviewTests(unittest.TestCase):
             self.assertIn("raw tool results", text)
             self.assertIn("non-conversation payloads", text)
         gate = gate_prompt([{"event_key": "assistant-event", "role": "assistant", "content": "confirmed"}])
-        self.assertIn("Complete turn events", gate)
+        self.assertIn("Turn event metadata", gate)
+        self.assertNotIn("confirmed", gate)
         self.assertIn("Relevant existing memleaf/native memories", gate)
         self.assertNotIn("Candidate decomposition check", gate)
         summary = summarize_prompt(
@@ -142,7 +143,7 @@ class UpdateReviewTests(unittest.TestCase):
     def test_gate_contract_requires_atomic_topics_and_candidate_scoped_bindings(self):
         gate_text = " ".join(GATE_SYSTEM.split()).casefold()
         for phrase in (
-            "first enumerate the independent future uses",
+            "candidate count follows the independent future uses",
             "separate items that can be completed, tracked, or updated independently",
             "keep shared coordination details with the deliverable they govern",
             "candidate semantic completeness is mandatory",
@@ -153,7 +154,8 @@ class UpdateReviewTests(unittest.TestCase):
         ):
             self.assertIn(phrase.casefold(), gate_text)
         prompt = gate_prompt([{"event_key": "assistant-event", "role": "assistant", "content": "A and B"}])
-        self.assertIn("Complete turn events", prompt)
+        self.assertIn("Turn event metadata", prompt)
+        self.assertNotIn("A and B", prompt)
         self.assertNotIn("Atomicity test", prompt)
     def test_automatic_summary_and_semantic_review_keep_one_topic(self):
         summary_text = " ".join(SUMMARIZE_SYSTEM.split()).casefold()
@@ -169,7 +171,7 @@ class UpdateReviewTests(unittest.TestCase):
         gate_text = " ".join(GATE_SYSTEM.split()).casefold()
         summarize_text = " ".join(SUMMARIZE_SYSTEM.split()).casefold()
         self.assertIn("a query and a mere restatement of existing memory add no new memory", gate_text)
-        self.assertIn("a restatement of an existing memory do not create a new memory", summarize_text)
+        self.assertIn("restatements do not create new information by themselves", summarize_text)
         self.assertIn("assistant report", summarize_text)
         for system in (UPDATE_SEMANTIC_REVIEW_SYSTEM, CREATE_SEMANTIC_REVIEW_SYSTEM):
             review_text = " ".join(system.split()).casefold()
