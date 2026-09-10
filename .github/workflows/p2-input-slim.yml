@@ -23,10 +23,10 @@ jobs:
       - name: Install package
         run: python -m pip install -e .
       - name: Compile P2 assets
-        run: python -m py_compile benchmarks/p2/static_prompt_audit.py benchmarks/p2/test_static_prompt_audit.py benchmarks/p2/summary_prompt_audit.py benchmarks/p2/test_summary_input_slim.py
-      - name: Validate P2 input slimming
+        run: python -m py_compile benchmarks/p2/static_prompt_audit.py benchmarks/p2/test_static_prompt_audit.py benchmarks/p2/summary_prompt_audit.py benchmarks/p2/test_summary_input_slim.py benchmarks/p2/test_system_prompt_slim.py
+      - name: Validate P2 input and system prompt slimming
         run: |
-          python -m unittest benchmarks.p2.test_static_prompt_audit benchmarks.p2.test_summary_input_slim -v
+          python -m unittest benchmarks.p2.test_static_prompt_audit benchmarks.p2.test_summary_input_slim benchmarks.p2.test_system_prompt_slim -v
           python benchmarks/p2/static_prompt_audit.py > /tmp/p2-gate-static.json
           python benchmarks/p2/summary_prompt_audit.py > /tmp/p2-summary-static.json
           cat /tmp/p2-gate-static.json
@@ -34,7 +34,8 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-          gate = json.loads(Path('/tmp/p2-gate-static.json').read_text())
+          report = json.loads(Path('/tmp/p2-gate-static.json').read_text())
+          gate = report['gate_user_prompt']
           assert gate['legacy_user_marker_occurrences'] == 2
           assert gate['p2_user_marker_occurrences'] == 1
           assert gate['legacy_assistant_marker_occurrences'] == 2
@@ -42,6 +43,13 @@ jobs:
           assert gate['tool_body_occurrences_p2'] == 0
           assert gate['bytes_removed'] > 0
           assert gate['reduction_ratio'] > 0.25
+          gate_system = report['gate_system_prompt']
+          summary_system = report['summary_system_prompt']
+          assert gate_system['baseline_bytes'] == 8508
+          assert gate_system['p2_bytes'] < gate_system['baseline_bytes']
+          assert summary_system['baseline_bytes'] == 4347
+          assert summary_system['p2_bytes'] < summary_system['baseline_bytes']
+
           summary = json.loads(Path('/tmp/p2-summary-static.json').read_text())
           create = summary['automatic_create']
           update = summary['automatic_update']
