@@ -13,6 +13,7 @@ import json
 from typing import Any, Callable, Mapping
 
 from .admission import summary_evidence
+from .batch_review import MAX_REVIEW_BATCH_ITEMS, review_create_batch, review_update_batch
 from .llm import ModelError
 from .prompts import UPDATE_GROUP_SYSTEM, summarize_prompt
 from .process_common import ProcessingError, _grounded_due_dates, _normalize_summary_dates, _summary_date_grounding_violations
@@ -231,6 +232,57 @@ class UpdateCoordinator:
             futures = [pool.submit(job) for job in jobs]
             return [future.result() for future in futures]
 
+    def _run_batched_review_specs(
+        self,
+        specs: list[dict[str, Any]],
+        *,
+        backend: Any,
+        update: bool,
+    ) -> list[dict[str, Any]]:
+        """Batch independent reviews while preserving original result order."""
+
+        if not specs:
+            return []
+        chunks = [
+            specs[index:index + MAX_REVIEW_BATCH_ITEMS]
+            for index in range(0, len(specs), MAX_REVIEW_BATCH_ITEMS)
+        ]
+        jobs: list[Callable[[], Any]] = []
+        for chunk in chunks:
+            def run_chunk(
+                *,
+                chunk_value: list[dict[str, Any]] = chunk,
+                update_value: bool = update,
+            ) -> list[dict[str, Any]]:
+                if update_value:
+                    return review_update_batch(self.model, backend, chunk_value)
+                return review_create_batch(self.model, backend, chunk_value)
+            jobs.append(run_chunk)
+        chunk_outcomes = self._run_review_jobs(jobs, backend=backend)
+        outcomes: list[dict[str, Any]] = []
+        for chunk, chunk_result in zip(chunks, chunk_outcomes):
+            if not isinstance(chunk_result, list) or len(chunk_result) != len(chunk):
+                # The batch kernel normally guarantees shape. Preserve the old
+                # fail-closed single path if a custom executor violates it.
+                chunk_result = []
+                for spec in chunk:
+                    kwargs = {
+                        "admitted_source": spec["admitted_source"],
+                        "proposed_summary": spec["proposed_summary"],
+                        "parse_summary": spec["parse_summary"],
+                        "diagnostic_context": spec.get("diagnostic_context"),
+                    }
+                    if update:
+                        chunk_result.append(review_update(
+                            self.model, backend, target=spec["target"], **kwargs
+                        ))
+                    else:
+                        chunk_result.append(review_create(self.model, backend, **kwargs))
+            outcomes.extend(dict(item) for item in chunk_result if isinstance(item, Mapping))
+        if len(outcomes) != len(specs):
+            raise ProcessingError("semantic review batch result count mismatch")
+        return outcomes
+
     @staticmethod
     def _make_update_review_parser(
         *,
@@ -398,7 +450,7 @@ class UpdateCoordinator:
         """Review final automatic UPDATEs after same-target resolution."""
 
         slots: list[dict[str, Any]] = []
-        jobs: list[Callable[[], dict[str, Any]]] = []
+        review_specs: list[dict[str, Any]] = []
         for request in requests:
             if not self._is_reviewable_update(request):
                 slots.append({"kind": "passthrough", "request": request})
@@ -470,26 +522,15 @@ class UpdateCoordinator:
                 "turn_index": turn.turn_index,
             }
 
-            def run_review(
-                *,
-                target_value: Any = target,
-                projected_value: list[dict[str, Any]] = projected,
-                summary_value: Mapping[str, Any] = self._review_content(summary),
-                parser_value: Callable[[Mapping[str, Any]], Mapping[str, Any]] = parser,
-                diagnostic_value: Mapping[str, Any] = diagnostic_context,
-            ) -> dict[str, Any]:
-                return review_update(
-                    self.model,
-                    backend,
-                    target=target_value,
-                    admitted_source=projected_value,
-                    proposed_summary=summary_value,
-                    parse_summary=parser_value,
-                    diagnostic_context=diagnostic_value,
-                )
-
-            job_index = len(jobs)
-            jobs.append(run_review)
+            job_index = len(review_specs)
+            review_specs.append({
+                "review_id": f"update:{job_index}:{request.get('candidate_id', '')}",
+                "target": target,
+                "admitted_source": projected,
+                "proposed_summary": self._review_content(summary),
+                "parse_summary": parser,
+                "diagnostic_context": diagnostic_context,
+            })
             slots.append({
                 "kind": "review",
                 "request": request,
@@ -498,7 +539,7 @@ class UpdateCoordinator:
                 "job_index": job_index,
             })
 
-        outcomes = self._run_review_jobs(jobs, backend=backend)
+        outcomes = self._run_batched_review_specs(review_specs, backend=backend, update=True)
         reviewed: list[dict[str, Any]] = []
         for slot in slots:
             kind = slot["kind"]
@@ -557,7 +598,7 @@ class UpdateCoordinator:
         """Review final ordinary automatic CREATEs before plan freeze."""
 
         slots: list[dict[str, Any]] = []
-        jobs: list[Callable[[], dict[str, Any]]] = []
+        review_specs: list[dict[str, Any]] = []
         for request in requests:
             if not self._is_reviewable_create(request):
                 slots.append({"kind": "passthrough", "request": request})
@@ -614,24 +655,14 @@ class UpdateCoordinator:
                 "turn_index": turn.turn_index,
             }
 
-            def run_review(
-                *,
-                projected_value: list[dict[str, Any]] = projected,
-                summary_value: Mapping[str, Any] = self._review_content(summary),
-                parser_value: Callable[[Mapping[str, Any]], Mapping[str, Any]] = parser,
-                diagnostic_value: Mapping[str, Any] = diagnostic_context,
-            ) -> dict[str, Any]:
-                return review_create(
-                    self.model,
-                    backend,
-                    admitted_source=projected_value,
-                    proposed_summary=summary_value,
-                    parse_summary=parser_value,
-                    diagnostic_context=diagnostic_value,
-                )
-
-            job_index = len(jobs)
-            jobs.append(run_review)
+            job_index = len(review_specs)
+            review_specs.append({
+                "review_id": f"create:{job_index}:{request.get('candidate_id', '')}",
+                "admitted_source": projected,
+                "proposed_summary": self._review_content(summary),
+                "parse_summary": parser,
+                "diagnostic_context": diagnostic_context,
+            })
             slots.append({
                 "kind": "review",
                 "request": request,
@@ -639,7 +670,7 @@ class UpdateCoordinator:
                 "job_index": job_index,
             })
 
-        outcomes = self._run_review_jobs(jobs, backend=backend)
+        outcomes = self._run_batched_review_specs(review_specs, backend=backend, update=False)
         reviewed: list[dict[str, Any]] = []
         for slot in slots:
             kind = slot["kind"]
