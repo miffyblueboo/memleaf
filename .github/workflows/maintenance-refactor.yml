@@ -42,6 +42,8 @@ jobs:
 
           shared_path = Path('src/memleaf/hermes_provider/_shared.py')
           provider_path = Path('src/memleaf/hermes_provider/_provider.py')
+          client_path = Path('src/memleaf/hermes_provider/_mcp_client.py')
+
           shared = shared_path.read_text(encoding='utf-8')
           tree = ast.parse(shared)
           node = next(
@@ -62,18 +64,26 @@ jobs:
           provider = provider.replace(marker, function_text + '\n\n\n' + marker, 1)
           provider_path.write_text(provider, encoding='utf-8')
 
+          client = client_path.read_text(encoding='utf-8')
+          class_marker = '''class _MCPClient:\n    """Small synchronous JSON-RPC client for memleaf's stdio MCP server."""\n'''
+          class_replacement = class_marker + '''\n    @staticmethod\n    def _creationflags() -> int:\n        """Return platform-specific flags owned by the MCP transport."""\n\n        return _mcp_creationflags()\n'''
+          if class_marker not in client or 'creationflags=_mcp_creationflags(),' not in client:
+              raise RuntimeError('MCP client launch shape changed')
+          client = client.replace(class_marker, class_replacement, 1)
+          client = client.replace('creationflags=_mcp_creationflags(),', 'creationflags=self._creationflags(),', 1)
+          client_path.write_text(client, encoding='utf-8')
+
           windows_path = Path('tests/test_hermes_windows_subprocess.py')
           windows = windows_path.read_text(encoding='utf-8')
-          if 'import sys\n' not in windows:
-              windows = windows.replace('import unittest\n', 'import sys\nimport unittest\n', 1)
           old = '''        with (\n            patch.object(provider_module, "_mcp_creationflags", return_value=flag),\n            patch.object(provider_module.subprocess, "Popen", return_value=process) as popen,\n'''
-          new = '''        mcp_client_module = sys.modules[provider_module._MCPClient.__module__]\n        with (\n            patch.object(mcp_client_module, "_mcp_creationflags", return_value=flag),\n            patch.object(mcp_client_module.subprocess, "Popen", return_value=process) as popen,\n'''
+          new = '''        with (\n            patch.object(provider_module._MCPClient, "_creationflags", return_value=flag),\n            patch.object(provider_module.subprocess, "Popen", return_value=process) as popen,\n'''
           if old not in windows:
               raise RuntimeError('Windows MCP patch target changed')
           windows_path.write_text(windows.replace(old, new, 1), encoding='utf-8')
 
           ast.parse(shared_path.read_text(encoding='utf-8'))
           ast.parse(provider_path.read_text(encoding='utf-8'))
+          ast.parse(client_path.read_text(encoding='utf-8'))
           ast.parse(windows_path.read_text(encoding='utf-8'))
           PY
       - name: Install package
