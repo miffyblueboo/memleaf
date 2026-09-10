@@ -19,6 +19,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+      - name: Preserve test classes after split target
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/_maintenance_refactor.py')
+          lines = path.read_text(encoding='utf-8').splitlines()
+          stub_index = next(i for i, line in enumerate(lines) if line.lstrip().startswith("stub = f'\"\"\"Compatibility facade"))
+          write_index = next(i for i in range(stub_index + 1, len(lines)) if lines[i].strip() == 'write(path, stub)')
+          lines.insert(stub_index, '    postamble = "".join(lines[getattr(test_class, "end_lineno"):])')
+          write_index += 1
+          lines[write_index] = '    write(path, stub + "\\n" + postamble)'
+          path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
       - name: Apply mechanical refactor
         run: python scripts/_maintenance_refactor.py
       - name: Install package
