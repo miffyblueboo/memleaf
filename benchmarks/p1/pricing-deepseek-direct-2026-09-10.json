@@ -7,7 +7,7 @@
     "base_url": "https://api.deepseek.com",
     "model": "deepseek-v4-flash"
   },
-  "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+  "source": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
   "currency": "CNY",
   "rates_per_million_tokens": {
     "off_peak": {
