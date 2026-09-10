@@ -14,12 +14,6 @@ source = source.replace(
     1,
 )
 
-source = source.replace(
-    "        jobs: list[Callable[[], dict[str, Any]]] = []\n",
-    "        jobs: list[Callable[[], Any]] = []\n",
-    1,
-)
-
 helper_marker = "    @staticmethod\n    def _make_update_review_parser(\n"
 assert source.count(helper_marker) == 1
 helper = '''    def _run_batched_review_specs(
