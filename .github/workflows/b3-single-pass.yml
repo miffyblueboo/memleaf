@@ -23,8 +23,29 @@ jobs:
         run: |
           python -m py_compile \
             src/memleaf/single_pass_plan.py \
+            src/memleaf/single_pass_memory_planner.py \
             src/memleaf/planning_context.py \
+            src/memleaf/processing.py \
+            src/memleaf/model_execution.py \
+            src/memleaf/process_common.py \
+            src/memleaf/llm/base.py \
+            src/memleaf/llm/router.py \
+            src/memleaf/llm/thinking.py \
             tests/test_b3_single_pass_plan.py \
-            tests/test_b3_planning_context.py
-      - name: Validate one-pass protocol and retrieval boundary
-        run: python -m unittest tests.test_b3_single_pass_plan tests.test_b3_planning_context -v
+            tests/test_b3_planning_context.py \
+            tests/test_b3_single_pass_memory_planner.py \
+            tests/test_b3_activation.py
+      - name: Validate B3 single-pass behavior and activation
+        run: |
+          python -m unittest \
+            tests.test_b3_activation \
+            tests.test_b3_single_pass_plan \
+            tests.test_b3_planning_context \
+            tests.test_b3_single_pass_memory_planner -v
+      - name: Validate retained scope native and frozen-plan semantics
+        run: |
+          python -m unittest \
+            tests.test_v023_scope_correction \
+            tests.test_stage_b3d_scope_maintenance \
+            tests.test_stage_b3b_native_context \
+            tests.test_processing_contract_v026.FrozenPlanTests -v
