@@ -47,6 +47,7 @@ A supplied `validate_summary(candidate_id, decision, target, summary)` callback 
 - Oversized batches/prompts fail before the call; there is no hidden splitting into additional heavy calls.
 - Gate-era target/final-decision fields are excluded from the candidate projection.
 - Only admitted visible `user`/`assistant` evidence can authorize new facts.
+- Evidence rows are identified by unique `unit_id`; multiple exact spans from the same event are legal.
 - Local related memories are comparison context and must match Core's authorized target set when lookup is complete.
 - Native context is separate background and never target-authorizing.
 - Output is parsed by `p4-maintenance-plan-v1` and still has no Vault/writer side effect.
@@ -63,7 +64,7 @@ A supplied `validate_summary(candidate_id, decision, target, summary)` callback 
 
 This removes target selection from the intended stage-one responsibility. Core lookup becomes the first point where target candidates are available, and stage two becomes the single place that decides CREATE/UPDATE/NO_CHANGE/DEFERRED and writes final content.
 
-## Phase 4: Core adapter and no-write comparison harness
+## Phase 4: Core adapter and no-write comparison primitives
 
 `maintenance_plan_adapter.py` translates existing Core-style lookup results into the versioned P4 contract without adding business inference.
 
@@ -71,7 +72,7 @@ This removes target selection from the intended stage-one responsibility. Core l
 - Search failure and evidence insufficiency override any apparent completeness and force incomplete lookup states.
 - More than the configured bounded local-target limit becomes `too_many_candidates`; the adapter does not truncate it into a false complete target set.
 - Native, history and inactive records are excluded from local writable targets. Native context remains separately available as comparison context.
-- `make_existing_summary_validator()` converts an existing per-candidate parser factory into the P4 summary-validation hook. The current summary parser remains authoritative for evidence/type/scope/date/target rules.
+- `make_existing_summary_validator()` converts an existing per-candidate parser factory into the P4 summary-validation hook. UPDATE summaries must retain the same canonical target in their `update_memory_id` before the existing parser runs.
 - `compare_shadow_outcomes()` compares candidate/decision/target parity only. It has no model or Vault side effects and deliberately does not pretend to judge semantic truth or final-summary quality.
 
 `structure_audit.py` records derived zero-model-call call graphs. For 4 ordinary independent CREATE candidates that fit one identification call:
@@ -84,15 +85,35 @@ For the conditional case where all 4 candidates require the current fresh-target
 
 P4 continues to retain independent semantic review; no review omission is credited as a speedup.
 
-## Current status and next step
+## Phase 5: scripted end-to-end no-write harness
+
+`comparison_runner.py` and `cases-v1.json` connect the existing evidence machinery to the P4 responsibilities without external model access or Vault writes.
+
+For every scripted case the runner:
+
+1. parses the full stage-one envelope with existing `split_gate_envelope` / `split_semantic_envelope`;
+2. validates stage-one candidates through `parse_identification_candidates` and the existing Gate candidate parser;
+3. validates exact evidence bindings with `validate_bindings`, complete coverage with `parse_coverage`, and cross-checks them with `validate_coverage_bindings`;
+4. derives candidate-specific admitted support through existing `supporting_units`;
+5. adapts Core lookup fixtures into explicit P4 lookup states and separates local writable targets from native context;
+6. sends a scripted stage-two envelope through the real P4 maintenance-plan parser;
+7. validates CREATE/UPDATE summary objects through the existing `parse_summarize_output` contract;
+8. compares candidate/decision/target parity against the P3 disposition fixture.
+
+The runner has no live-model option: it never loads provider/model configuration and its executor is intentionally scripted. The fixture currently contains 3 cases / 6 candidates covering CREATE, UPDATE, NO_CHANGE, incomplete lookup, search failure, evidence insufficiency, target canonicalization and native comparison context.
+
+Passing this harness means the new responsibility graph can preserve the existing structural evidence and write-shape contracts on these fixtures. It is **not** real-model semantic-quality, token or latency evidence.
+
+## Current status and next boundary
 
 - Phase 1 protocol: implemented/tested.
 - Phase 2 stage-two prompt/call boundary: implemented/tested.
 - Phase 3 stage-one role/parser wrapper: implemented/tested.
-- Phase 4 lookup adapter, existing-parser adapter, no-write parity harness and structural audit: implemented/tested.
+- Phase 4 lookup/parser adapters and structural audit: implemented/tested.
+- Phase 5 scripted end-to-end no-write comparison harness: implemented/tested when its CI is green.
 - Production `MemoryPlanner` integration: **not enabled**.
 - Independent batch semantic review: retained.
 - Writer/Markdown/history behavior: unchanged.
 - Real-model latency/token/quality claim: none yet.
 
-Next: build an isolated end-to-end P4 comparison runner that reuses the existing Gate coverage/evidence machinery and Core lookup fixtures, produces P3-vs-P4 disposition reports, and never writes the real Vault. Only after retained-set parity/quality checks should a production planner switch be considered.
+The next evidence boundary is a controlled real-model/retained-set comparison of P3 versus P4. Until that exists, P4 must remain experimental and must not replace the fully validated P3 path in production. P5 review conditionization must also remain unentered because the plan requires independent review-value evidence first.

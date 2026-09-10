@@ -30,6 +30,7 @@ jobs:
             tests/test_p4_maintenance_plan_adapter.py \
             tests/test_p4_maintenance_plan.py \
             tests/test_p4_maintenance_plan_stage.py \
+            benchmarks/p4/comparison_runner.py \
             benchmarks/p4/structure_audit.py
       - name: Validate P4 responsibility contracts
         run: |
@@ -38,6 +39,26 @@ jobs:
             tests.test_p4_maintenance_plan_adapter \
             tests.test_p4_maintenance_plan \
             tests.test_p4_maintenance_plan_stage -v
+      - name: Verify scripted end-to-end comparison harness
+        run: |
+          python benchmarks/p4/comparison_runner.py --output /tmp/p4-comparison.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          value = json.loads(Path('/tmp/p4-comparison.json').read_text())
+          assert value['measurement'] == 'scripted_end_to_end_contract_comparison_zero_real_model_calls_zero_vault_writes'
+          assert value['case_count'] == 3
+          assert value['total_candidate_count'] == 6
+          assert value['total_stage2_scripted_model_calls'] == 3
+          assert value['all_candidate_sets_equal'] is True
+          assert value['all_decision_targets_equal'] is True
+          by_id = {row['case_id']: row for row in value['cases']}
+          assert by_id['P4X01_mixed_four']['lookup_statuses']['c-defer'] == 'too_many_candidates'
+          assert by_id['P4X02_search_error']['lookup_statuses']['c1'] == 'search_error'
+          assert by_id['P4X03_evidence_insufficient']['lookup_statuses']['c1'] == 'evidence_insufficient'
+          assert all(row['difference_count'] == 0 for row in value['cases'])
+          PY
+          cat /tmp/p4-comparison.json
       - name: Verify P4 structural call graph
         run: |
           python benchmarks/p4/structure_audit.py > /tmp/p4-structure.json

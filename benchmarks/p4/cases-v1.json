@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "measurement": "scripted_structural_and_contract_comparison_zero_real_model_calls",
+  "baseline": "P3 disposition fixture",
+  "cases": [
+    {
+      "case_id": "P4X01_mixed_four",
+      "evidence_units": [
+        {"unit_id": "u-create", "event_key": "e-create", "origin": "user_assertion", "text": "The deployment region is Singapore.", "source_role": "user"},
+        {"unit_id": "u-update", "event_key": "e-update", "origin": "user_assertion", "text": "The backup region is now Tokyo.", "source_role": "user"},
+        {"unit_id": "u-nochange", "event_key": "e-nochange", "origin": "user_assertion", "text": "The log format is JSON.", "source_role": "user"},
+        {"unit_id": "u-defer", "event_key": "e-defer", "origin": "user_assertion", "text": "The storage policy remains important for later use.", "source_role": "user"}
+      ],
+      "stage1": {
+        "candidates": [
+          {"candidate_id": "c-create", "memory": "The deployment region is Singapore.", "evidence_event_ids": ["e-create"], "duplicate": false, "worth": true, "type": "fact", "scopes": ["global"], "scope_source": "model"},
+          {"candidate_id": "c-update", "memory": "The backup region is now Tokyo.", "evidence_event_ids": ["e-update"], "duplicate": false, "worth": true, "type": "fact", "scopes": ["global"], "scope_source": "model"},
+          {"candidate_id": "c-nochange", "memory": "The log format is JSON.", "evidence_event_ids": ["e-nochange"], "duplicate": false, "worth": true, "type": "fact", "scopes": ["global"], "scope_source": "model"},
+          {"candidate_id": "c-defer", "memory": "The storage policy remains important for later use.", "evidence_event_ids": ["e-defer"], "duplicate": false, "worth": true, "type": "fact", "scopes": ["global"], "scope_source": "model"}
+        ],
+        "coverage": [
+          {"unit_id": "u-create", "decision": "CANDIDATE", "candidate_ids": ["c-create"]},
+          {"unit_id": "u-update", "decision": "CANDIDATE", "candidate_ids": ["c-update"]},
+          {"unit_id": "u-nochange", "decision": "CANDIDATE", "candidate_ids": ["c-nochange"]},
+          {"unit_id": "u-defer", "decision": "CANDIDATE", "candidate_ids": ["c-defer"]}
+        ],
+        "evidence_bindings": [
+          {"candidate_id": "c-create", "claims": [{"unit_id": "u-create", "whole_unit": true, "role": "assertion"}]},
+          {"candidate_id": "c-update", "claims": [{"unit_id": "u-update", "whole_unit": true, "role": "assertion"}]},
+          {"candidate_id": "c-nochange", "claims": [{"unit_id": "u-nochange", "whole_unit": true, "role": "assertion"}]},
+          {"candidate_id": "c-defer", "claims": [{"unit_id": "u-defer", "whole_unit": true, "role": "assertion"}]}
+        ]
+      },
+      "related_by_candidate": {
+        "c-create": [
+          {"native": true, "native_id": "native-create", "content": "Native comparison context only."}
+        ],
+        "c-update": [
+          {"memory_id": "mem-backup", "title": "Backup region", "body": "The backup region is Singapore.", "type": "fact", "scopes": ["global"]},
+          {"native": true, "native_id": "native-update", "content": "Old native note."}
+        ],
+        "c-nochange": [
+          {"memory_id": "Mem-Log", "title": "Log format", "body": "The log format is JSON.", "type": "fact", "scopes": ["global"]}
+        ],
+        "c-defer": [
+          {"memory_id": "mem-storage-a", "title": "Storage policy A", "body": "Policy A.", "type": "fact", "scopes": ["global"]},
+          {"memory_id": "mem-storage-b", "title": "Storage policy B", "body": "Policy B.", "type": "fact", "scopes": ["global"]}
+        ]
+      },
+      "lookup_complete_by_candidate": {
+        "c-create": true,
+        "c-update": true,
+        "c-nochange": true,
+        "c-defer": false
+      },
+      "stage2": {
+        "protocol_version": "p4-maintenance-plan-v1",
+        "items": [
+          {"candidate_id": "c-nochange", "decision": "NO_CHANGE", "target_memory_id": "mem-log"},
+          {"candidate_id": "c-defer", "decision": "DEFERRED", "reason": "lookup_incomplete"},
+          {"candidate_id": "c-create", "decision": "CREATE", "summary": {"title": "Deployment region", "body": "The deployment region is Singapore.", "tags": [], "type": "fact", "scopes": ["global"], "scope_source": "model", "sources": [{"event_key": "e-create"}]}},
+          {"candidate_id": "c-update", "decision": "UPDATE", "target_memory_id": "MEM-BACKUP", "summary": {"update_memory_id": "mem-backup", "title": "Backup region", "body": "The backup region is now Tokyo.", "tags": [], "type": "fact", "scopes": ["global"], "scope_source": "model", "sources": [{"event_key": "e-update"}]}}
+        ]
+      },
+      "baseline_dispositions": [
+        {"candidate_id": "c-create", "decision": "CREATE"},
+        {"candidate_id": "c-update", "decision": "UPDATE", "target_memory_id": "mem-backup"},
+        {"candidate_id": "c-nochange", "decision": "NO_CHANGE", "target_memory_id": "Mem-Log"},
+        {"candidate_id": "c-defer", "decision": "DEFERRED"}
+      ]
+    },
+    {
+      "case_id": "P4X02_search_error",
+      "evidence_units": [
+        {"unit_id": "u1", "event_key": "e1", "origin": "user_assertion", "text": "The retention rule is seven days.", "source_role": "user"}
+      ],
+      "stage1": {
+        "candidates": [{"candidate_id": "c1", "memory": "The retention rule is seven days.", "evidence_event_ids": ["e1"], "duplicate": false, "worth": true, "type": "fact", "scopes": ["global"], "scope_source": "model"}],
+        "coverage": [{"unit_id": "u1", "decision": "CANDIDATE", "candidate_ids": ["c1"]}],
+        "evidence_bindings": [{"candidate_id": "c1", "claims": [{"unit_id": "u1", "whole_unit": true, "role": "assertion"}]}]
+      },
+      "related_by_candidate": {"c1": []},
+      "lookup_complete_by_candidate": {"c1": true},
+      "search_error_candidate_ids": ["c1"],
+      "stage2": {"protocol_version": "p4-maintenance-plan-v1", "items": [{"candidate_id": "c1", "decision": "DEFERRED", "reason": "lookup_failed"}]},
+      "baseline_dispositions": [{"candidate_id": "c1", "decision": "DEFERRED"}]
+    },
+    {
+      "case_id": "P4X03_evidence_insufficient",
+      "evidence_units": [
+        {"unit_id": "u1", "event_key": "e1", "origin": "user_assertion", "text": "The owner may change later.", "source_role": "user"}
+      ],
+      "stage1": {
+        "candidates": [{"candidate_id": "c1", "memory": "The owner may change later.", "evidence_event_ids": ["e1"], "duplicate": false, "worth": true, "type": "fact", "scopes": ["global"], "scope_source": "model"}],
+        "coverage": [{"unit_id": "u1", "decision": "CANDIDATE", "candidate_ids": ["c1"]}],
+        "evidence_bindings": [{"candidate_id": "c1", "claims": [{"unit_id": "u1", "whole_unit": true, "role": "assertion"}]}]
+      },
+      "related_by_candidate": {"c1": []},
+      "lookup_complete_by_candidate": {"c1": true},
+      "evidence_insufficient_candidate_ids": ["c1"],
+      "stage2": {"protocol_version": "p4-maintenance-plan-v1", "items": [{"candidate_id": "c1", "decision": "DEFERRED", "reason": "evidence_insufficient"}]},
+      "baseline_dispositions": [{"candidate_id": "c1", "decision": "DEFERRED"}]
+    }
+  ]
+}
