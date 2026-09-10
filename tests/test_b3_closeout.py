@@ -158,6 +158,41 @@ class B3CloseoutTests(unittest.TestCase):
         )
         self.assertEqual(result["items"][0]["memory"]["title"], "Existing title")
 
+    def test_update_scope_correction_does_not_require_scope_source(self):
+        evidence = [unit("u1", "This belongs to project:New, not project:Old.")]
+        raw = json.dumps({
+            "protocol_version": PROTOCOL_VERSION,
+            "items": [{
+                "candidate_id": "c1",
+                "decision": "UPDATE",
+                "target_memory_id": "m-old",
+                "scopes": ["project:New"],
+                "evidence": [claim("u1", "This belongs to project:New, not project:Old.")],
+                "memory": {"body": "This belongs to project:New."},
+            }],
+            "no_memory": [],
+        })
+        captured_context = {}
+
+        def validator(candidate_id, decision, target, target_record, proposed, claims, context):
+            captured_context.update(context)
+            return passthrough_validator(
+                candidate_id, decision, target, target_record, proposed, claims, context
+            )
+
+        target = local("m-old")
+        target["scopes"] = ["project:Old"]
+        result = parse_single_pass_output(
+            raw,
+            evidence_units=evidence,
+            local_memories=[target],
+            lookup_complete=True,
+            validate_memory=validator,
+        )
+        self.assertEqual(result["items"][0]["target_memory_id"], "m-old")
+        self.assertEqual(captured_context["scopes"], ["project:New"])
+        self.assertNotIn("scope_source", captured_context)
+
     def test_candidate_ids_are_unique_case_insensitively(self):
         evidence = [unit("u1", "A."), unit("u2", "B.")]
         raw = json.dumps({
@@ -232,7 +267,6 @@ class B3CloseoutTests(unittest.TestCase):
                     "decision": "CREATE",
                     "type": "todo",
                     "scopes": ["global"],
-                    "scope_source": "model",
                     "evidence": [{
                         "unit_id": user["unit_id"],
                         "whole_unit": True,
