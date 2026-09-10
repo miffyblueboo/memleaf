@@ -754,7 +754,7 @@ class RouterAndAdapterTest(unittest.TestCase):
         )
         self.assertEqual(raised.exception.response_diagnostics["completion_tokens"], 4096)
 
-    def test_openai_whitespace_content_keeps_diagnostics_and_allows_third_attempt(self):
+    def test_openai_whitespace_content_keeps_diagnostics_and_legacy_gate_allows_third_attempt(self):
         responses = [
             {
                 "choices": [
@@ -789,6 +789,10 @@ class RouterAndAdapterTest(unittest.TestCase):
             json_mode=True,
             provider_name="deepseek",
         )
+        # This regression protects the legacy P3 Gate executor's three-attempt
+        # empty-content behavior. Fixed API routes now intentionally use B3,
+        # whose independent budget is capped at one primary call plus one repair.
+        backend.single_pass_safe = False
         with tempfile.TemporaryDirectory() as temporary:
             service = Memleaf(Path(temporary) / "vault", model=backend)
             service.capture("codex", "whitespace", "t1", "user", "visible user", event_id="wu")
