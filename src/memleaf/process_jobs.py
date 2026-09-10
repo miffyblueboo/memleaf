@@ -35,6 +35,7 @@ _MODEL_METRIC_FIELDS = (
     "call_count",
     "retry_count",
     "failed_calls",
+    "invalid_output_count",
     "request_duration_ms",
     "wall_clock_ms",
     "input_chars",
@@ -60,7 +61,7 @@ _MODEL_METRIC_STAGES = frozenset({
 })
 _MODEL_METRIC_OPERATIONS = frozenset(
     {f"{stage}_{suffix}" for stage in _MODEL_METRIC_STAGES for suffix in ("primary", "format_repair")}
-    | {"gate_coverage_repair"}
+    | {"gate_coverage_repair", "gate_semantic_retry"}
 )
 _MODEL_CALL_INT_FIELDS = frozenset({
     "call_index", "request_duration_ms", "input_chars", "input_bytes",
@@ -228,7 +229,7 @@ def _safe_model_metrics(value: Any) -> dict[str, Any]:
             if stage not in _MODEL_METRIC_STAGES or operation not in _MODEL_METRIC_OPERATIONS:
                 continue
             row: dict[str, Any] = {"stage": stage, "operation": operation}
-            for key in ("retry", "failed"):
+            for key in ("retry", "failed", "invalid_output"):
                 if isinstance(raw.get(key), bool):
                     row[key] = raw[key]
             for key in _MODEL_CALL_INT_FIELDS:
