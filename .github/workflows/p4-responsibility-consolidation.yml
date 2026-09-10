@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  validate-p4-protocol:
+  validate-p4-contracts:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,10 +19,15 @@ jobs:
           python-version: '3.13'
       - name: Install package
         run: python -m pip install -e .
-      - name: Compile P4 protocol assets
+      - name: Compile P4 assets
         run: |
           python -m py_compile \
             src/memleaf/maintenance_plan_protocol.py \
-            tests/test_p4_maintenance_plan.py
-      - name: Validate versioned maintenance-plan contract
-        run: python -m unittest tests.test_p4_maintenance_plan -v
+            src/memleaf/maintenance_plan_stage.py \
+            tests/test_p4_maintenance_plan.py \
+            tests/test_p4_maintenance_plan_stage.py
+      - name: Validate P4 protocol and stage-two boundary
+        run: |
+          python -m unittest \
+            tests.test_p4_maintenance_plan \
+            tests.test_p4_maintenance_plan_stage -v
