@@ -1,0 +1,65 @@
+name: Temporary B3 scope native
+
+on:
+  push:
+    branches:
+      - automation/b3-scope-native-20260910
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out B3 candidate
+        uses: actions/checkout@v4
+        with:
+          ref: experiment/b3-single-pass-planner-20260910
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Check out patcher
+        uses: actions/checkout@v4
+        with:
+          ref: automation/b3-scope-native-20260910
+          path: .patcher
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify expected B3 head
+        run: test "$(git rev-parse HEAD)" = "e0850bc5fb842a98659043c0def15e429ce4691e"
+      - name: Apply B3 scope/native completion
+        run: python .patcher/scripts/patch_b3_scope_native.py
+      - name: Install and validate focused behavior
+        run: |
+          python -m pip install -e .
+          python -m py_compile \
+            src/memleaf/single_pass_plan.py \
+            src/memleaf/single_pass_memory_planner.py \
+            src/memleaf/planning_context.py \
+            tests/test_b3_single_pass_plan.py \
+            tests/test_b3_planning_context.py \
+            tests/test_b3_single_pass_memory_planner.py
+          python -m unittest \
+            tests.test_b3_single_pass_plan \
+            tests.test_b3_planning_context \
+            tests.test_b3_single_pass_memory_planner -v
+          python -m unittest \
+            tests.test_v023_scope_correction \
+            tests.test_stage_b3d_scope_maintenance \
+            tests.test_stage_b3b_native_context -v
+      - name: Commit and push B3 source changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            src/memleaf/single_pass_plan.py \
+            src/memleaf/single_pass_memory_planner.py \
+            src/memleaf/planning_context.py \
+            tests/test_b3_single_pass_plan.py \
+            tests/test_b3_planning_context.py \
+            tests/test_b3_single_pass_memory_planner.py
+          git diff --cached --quiet && { echo "expected B3 scope/native changes missing"; exit 1; }
+          git commit -m "experiment: complete B3 scope and native semantics"
+          git push origin HEAD:experiment/b3-single-pass-planner-20260910
