@@ -1,0 +1,28 @@
+name: P4 responsibility consolidation
+
+on:
+  push:
+    branches:
+      - experiment/p4-responsibility-consolidation-20260910
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-p4-protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Compile P4 protocol assets
+        run: |
+          python -m py_compile \
+            src/memleaf/maintenance_plan_protocol.py \
+            tests/test_p4_maintenance_plan.py
+      - name: Validate versioned maintenance-plan contract
+        run: python -m unittest tests.test_p4_maintenance_plan -v
