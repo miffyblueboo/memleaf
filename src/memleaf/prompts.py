@@ -422,6 +422,34 @@ def gate_prompt(
     return "\n\n".join(parts)
 
 
+
+def _summary_related_memories(
+    candidate: dict,
+    related_memories: list[dict] | None,
+    *,
+    explicit: bool,
+) -> list[dict]:
+    """Keep only comparison context the Summary stage can still act on."""
+
+    items = [item for item in (related_memories or []) if isinstance(item, dict)]
+    if explicit:
+        return items
+    update_id = candidate.get("update_memory_id") if isinstance(candidate, dict) else None
+    update_key = update_id.casefold() if isinstance(update_id, str) and update_id else None
+    projected: list[dict] = []
+    for item in items:
+        if item.get("native") is True:
+            projected.append(item)
+            continue
+        memory_id = item.get("memory_id")
+        if (
+            update_key is not None
+            and isinstance(memory_id, str)
+            and memory_id.casefold() == update_key
+        ):
+            projected.append(item)
+    return projected
+
 def summarize_prompt(
     candidate: dict,
     events: list[dict],
@@ -438,8 +466,8 @@ def summarize_prompt(
         "Gate operation: " + operation,
         "Candidate:\n" + _json(candidate),
         "Evidence (the only conversation content visible to this call):\n" + _json(events),
-        "Relevant existing memleaf/native memories:\n"
-        + _json(related_memories or []),
+        "Summary comparison context (native memories and fixed UPDATE target only):\n"
+        + _json(_summary_related_memories(candidate, related_memories, explicit=explicit)),
         "Session scope background:\n" + _json(scope_background if scope_background is not None else []),
         "Current scope registry (safe projection; no paths):\n"
         + _json(scope_registry if scope_registry is not None else []),
