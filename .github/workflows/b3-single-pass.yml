@@ -36,6 +36,7 @@ jobs:
             tests/test_b3_activation.py \
             tests/test_b3_closeout.py \
             tests/test_b3_planning_context.py \
+            tests/test_b3_scope_provenance.py \
             tests/test_b3_single_pass_memory_planner.py \
             tests/test_b3_single_pass_plan.py \
             tests/test_stage_b1.py
@@ -44,6 +45,7 @@ jobs:
           python -m unittest \
             tests.test_b3_activation \
             tests.test_b3_closeout \
+            tests.test_b3_scope_provenance \
             tests.test_b3_single_pass_plan \
             tests.test_b3_planning_context \
             tests.test_b3_single_pass_memory_planner -v
