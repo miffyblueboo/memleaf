@@ -273,7 +273,7 @@ def _copy_provider(hermes_home: Path) -> Path:
     plugins.mkdir(parents=True, exist_ok=True)
 
     package = resources.files("memleaf").joinpath("hermes_provider")
-    required = ("__init__.py", "evidence_budget.py", "plugin.yaml", "README.md")
+    required = ("__init__.py", "_shared.py", "_mcp_client.py", "_provider.py", "evidence_budget.py", "plugin.yaml", "README.md")
     with tempfile.TemporaryDirectory(prefix=".memleaf-provider-", dir=plugins) as temporary:
         staging = Path(temporary)
         for name in required:
