@@ -1,0 +1,92 @@
+name: Assemble v0.2.41 release candidate
+
+on:
+  push:
+    branches:
+      - automation/release-v0.2.41-20260911
+
+permissions:
+  contents: write
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build clean release commit from verified main
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_SHA="b2e0a17bd00b284085eabe9723ca77c6c7d0e982"
+          VERSION="0.2.41"
+          RC_BRANCH="release/v0.2.41-rc-20260911"
+
+          git config user.name "miffyblueboo"
+          git config user.email "miffyblueboo@gmail.com"
+          git checkout -B release-work "$BASE_SHA"
+
+          python - <<'PY'
+          from pathlib import Path
+
+          old = "0.2.40"
+          new = "0.2.41"
+
+          replacements = {
+              Path("pyproject.toml"): (f'version = "{old}"', f'version = "{new}"'),
+              Path("src/memleaf/__init__.py"): (f'__version__ = "{old}"', f'__version__ = "{new}"'),
+              Path("src/memleaf/hermes_provider/plugin.yaml"): (f'version: {old}', f'version: {new}'),
+              Path("README.md"): (f'> **版本：{old}。**', f'> **版本：{new}。**'),
+              Path("README.en.md"): (f'> **Version: {old}.**', f'> **Version: {new}.**'),
+          }
+
+          for path, (before, after) in replacements.items():
+              text = path.read_text(encoding="utf-8")
+              if text.count(before) != 1:
+                  raise SystemExit(f"{path}: expected exactly one {before!r}")
+              path.write_text(text.replace(before, after, 1), encoding="utf-8")
+
+          changelog = Path("CHANGELOG.md")
+          text = changelog.read_text(encoding="utf-8")
+          if "## 0.2.41" in text:
+              raise SystemExit("CHANGELOG already contains 0.2.41")
+          marker = "All notable changes to memleaf are documented here.\n\n"
+          if text.count(marker) != 1:
+              raise SystemExit("unexpected CHANGELOG header")
+          section = """## 0.2.41 — 2026-09-11
+
+- Promote the B3 single-pass automatic memory planner for explicitly `single_pass_safe` API backends. Core prepares bounded local retrieval/context once, one semantic planner stage decides CREATE / UPDATE / NO_CHANGE / DEFERRED, deterministic validation remains authoritative, and model-output repair is bounded to at most one retry (`max_attempts=2`). Host/custom/host-backed providers keep the proven P3 fallback, while explicit `remember` retains its existing single-summary path.
+- Make project Scope provenance Core-owned in the single-pass path. The model can no longer authorize `scope_source`; Core derives `user`, `session_context`, `insufficient_context`, or `model` from the selected scope set and applies deterministic grounding for model-derived project affiliation. Legacy model-provided `scope_source` is tolerated only for compatibility and ignored.
+- Carry forward the P0/P2/P3 transport reductions used by the fallback path, including bounded batch semantic review and CREATE-summary batching, while preserving Gate admission, target reconciliation, history/audit/commit semantics, idempotency, provider-neutral `thinking=low`, and fail-closed handling for invalid or unresolved evidence.
+- Remove committed long-run benchmark scripts/results/docs from `main` and split oversized admission, Hermes provider, and large regression-test modules by responsibility. This is repository-maintainability cleanup rather than a search-performance claim; regression coverage is retained rather than deleted.
+- Preserve the product architecture: Markdown under `knowledge/` remains the active-memory source of truth, `history/` remains historical state, permanent memory stays globally shared across agents using the same Vault, provenance/session fields do not become visibility filters, and no database, Redis, vector service, daemon, background resident service, or local-model dependency is introduced.
+- Validation for the integrated production tree passed the full Linux Python 3.11/3.12/3.13, Windows Python 3.11/3.12/3.13, macOS Python 3.11/3.13, wheel/sdist, installed-entry-point, Hermes/Codex host acceptance, and native Codex Windows/macOS matrices before release.
+
+"""
+          changelog.write_text(text.replace(marker, marker + section, 1), encoding="utf-8")
+          PY
+
+          git add CHANGELOG.md README.md README.en.md pyproject.toml src/memleaf/__init__.py src/memleaf/hermes_provider/plugin.yaml
+          EXPECTED=$'CHANGELOG.md\nREADME.en.md\nREADME.md\npyproject.toml\nsrc/memleaf/__init__.py\nsrc/memleaf/hermes_provider/plugin.yaml'
+          ACTUAL="$(git diff --cached --name-only | sort)"
+          test "$ACTUAL" = "$EXPECTED" || {
+            echo "Unexpected release file set:" >&2
+            printf '%s\n' "$ACTUAL" >&2
+            exit 1
+          }
+
+          python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          version = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          assert version == "0.2.41"
+          assert '__version__ = "0.2.41"' in Path("src/memleaf/__init__.py").read_text(encoding="utf-8")
+          assert "version: 0.2.41" in Path("src/memleaf/hermes_provider/plugin.yaml").read_text(encoding="utf-8")
+          assert "## 0.2.41 — 2026-09-11" in Path("CHANGELOG.md").read_text(encoding="utf-8")
+          PY
+
+          git commit -m "release: v0.2.41" -m "Release the validated B3 single-pass planner and fallback batching work on top of the maintainability cleanup, with synchronized package/plugin/README metadata and release notes."
+          git push origin "HEAD:refs/heads/${RC_BRANCH}" --force
