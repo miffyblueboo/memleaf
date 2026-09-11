@@ -2,6 +2,15 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.41 — 2026-09-11
+
+- Promote the B3 single-pass automatic memory planner for explicitly `single_pass_safe` API backends. Core prepares bounded local retrieval/context once, one semantic planner stage decides CREATE / UPDATE / NO_CHANGE / DEFERRED, deterministic validation remains authoritative, and model-output repair is bounded to at most one retry (`max_attempts=2`). Host/custom/host-backed providers keep the proven P3 fallback, while explicit `remember` retains its existing single-summary path.
+- Make project Scope provenance Core-owned in the single-pass path. The model can no longer authorize `scope_source`; Core derives `user`, `session_context`, `insufficient_context`, or `model` from the selected scope set and applies deterministic grounding for model-derived project affiliation. Legacy model-provided `scope_source` is tolerated only for compatibility and ignored.
+- Carry forward the P0/P2/P3 transport reductions used by the fallback path, including bounded batch semantic review and CREATE-summary batching, while preserving Gate admission, target reconciliation, history/audit/commit semantics, idempotency, provider-neutral `thinking=low`, and fail-closed handling for invalid or unresolved evidence.
+- Remove committed long-run benchmark scripts/results/docs from `main` and split oversized admission, Hermes provider, and large regression-test modules by responsibility. This is repository-maintainability cleanup rather than a search-performance claim; regression coverage is retained rather than deleted.
+- Preserve the product architecture: Markdown under `knowledge/` remains the active-memory source of truth, `history/` remains historical state, permanent memory stays globally shared across agents using the same Vault, provenance/session fields do not become visibility filters, and no database, Redis, vector service, daemon, background resident service, or local-model dependency is introduced.
+- Validation for the integrated production tree passed the full Linux Python 3.11/3.12/3.13, Windows Python 3.11/3.12/3.13, macOS Python 3.11/3.13, wheel/sdist, installed-entry-point, Hermes/Codex host acceptance, and native Codex Windows/macOS matrices before release.
+
 ## 0.2.40 — 2026-09-09
 
 - Slim the automatic extraction stage prompts without changing output schemas, parsers, evidence segmentation, model routing, the provider-neutral `thinking=low` policy, target/revision handling, idempotency, or commit semantics. Gate owns admission, atomic splitting, attribution and duplicate/update selection; Summary writes one already-admitted current-state memory; semantic review verifies fidelity; Core keeps deterministic validation and write safety.
