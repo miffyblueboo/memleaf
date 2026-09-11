@@ -1,0 +1,70 @@
+name: Controlled B3 port
+
+on:
+  push:
+    branches:
+      - automation/b3-port-20260911
+
+permissions:
+  contents: write
+
+jobs:
+  port:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconcile old B3 RC with refactored main
+        shell: bash
+        env:
+          BASE_SHA: 8b14013ee719660c7ed1f1399c4b4a083c83ab73
+          B3_SHA: 37487fecb5823720e83f0928c93f105abce18bcd
+          TARGET_BRANCH: integration/b3-main-20260911
+        run: |
+          set -euo pipefail
+          cp scripts/port_b3_maintenance.py /tmp/port_b3_maintenance.py
+          git config user.name "miffyblueboo"
+          git config user.email "miffyblueboo@gmail.com"
+          export GIT_EDITOR=true
+
+          git fetch origin main release/b3-single-pass-rc-20260910 "$TARGET_BRANCH"
+          test "$(git rev-parse origin/main)" = "$BASE_SHA"
+          test "$(git rev-parse origin/release/b3-single-pass-rc-20260910)" = "$B3_SHA"
+          test "$(git rev-parse origin/$TARGET_BRANCH)" = "$BASE_SHA"
+          git switch --detach "$BASE_SHA"
+
+          if ! git cherry-pick "$B3_SHA"; then
+            conflicts="$(git diff --name-only --diff-filter=U | sort)"
+            expected="$(printf '%s\n' src/memleaf/admission.py tests/test_stage_b1.py | sort)"
+            test "$conflicts" = "$expected"
+            git checkout --ours -- src/memleaf/admission.py tests/test_stage_b1.py
+            python /tmp/port_b3_maintenance.py
+            git add src/memleaf/admission.py tests/test_stage_b1.py
+            git cherry-pick --continue
+          fi
+
+          git commit --amend -m "feat: integrate B3 single-pass memory planner"
+          test ! -e scripts/benchmark_long_run.py
+          test ! -e benchmarks/results/v0.2.28-linux.json
+          test ! -e docs/performance.md
+          test -f src/memleaf/evidence_structure.py
+          test -f src/memleaf/evidence_syntax.py
+          test -f src/memleaf/single_pass_memory_planner.py
+          test -f src/memleaf/single_pass_plan.py
+          test -f src/memleaf/batch_review.py
+          test -f src/memleaf/summary_batch.py
+          test ! -e .github/workflows/b3-single-pass.yml
+          python - <<'PY'
+          from pathlib import Path
+          assert Path("src/memleaf/hermes_provider/__init__.py").stat().st_size < 4096
+          assert Path("src/memleaf/admission.py").stat().st_size < 45000
+          PY
+          git diff --check "$BASE_SHA"..HEAD
+
+          python -m pip install .
+          python -m compileall -q src tests examples
+          python -m unittest discover -s tests -p 'test_*.py'
+
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
