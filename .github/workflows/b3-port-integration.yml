@@ -1,0 +1,115 @@
+name: Assemble B3 integration candidate
+
+on:
+  push:
+    branches:
+      - automation/b3-port-20260911
+
+permissions:
+  contents: write
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rebuild validated B3 changes on refactored main
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=8b14013ee719660c7ed1f1399c4b4a083c83ab73
+          RC=37487fecb5823720e83f0928c93f105abce18bcd
+          TARGET=integration/b3-main-20260911
+
+          git checkout --detach "$BASE"
+
+          paths=(
+            src/memleaf/batch_review.py
+            src/memleaf/llm/base.py
+            src/memleaf/llm/router.py
+            src/memleaf/llm/thinking.py
+            src/memleaf/memory_planner.py
+            src/memleaf/model_execution.py
+            src/memleaf/planning_context.py
+            src/memleaf/process_common.py
+            src/memleaf/process_jobs.py
+            src/memleaf/processing.py
+            src/memleaf/prompts.py
+            src/memleaf/single_pass_memory_planner.py
+            src/memleaf/single_pass_plan.py
+            src/memleaf/summary_batch.py
+            src/memleaf/update_coordinator.py
+            tests/test_admission_noise.py
+            tests/test_audit_followup_v041.py
+            tests/test_b3_activation.py
+            tests/test_b3_closeout.py
+            tests/test_b3_planning_context.py
+            tests/test_b3_scope_provenance.py
+            tests/test_b3_single_pass_memory_planner.py
+            tests/test_b3_single_pass_plan.py
+            tests/test_batch_review.py
+            tests/test_batch_review_integration.py
+            tests/test_gate_output_protocol_v041.py
+            tests/test_gate_output_references_v041.py
+            tests/test_gate_protocol_matrix_v041.py
+            tests/test_model_invalid_response_metrics_v041.py
+            tests/test_p3_summary_batch.py
+            tests/test_prompt_role_slim_v040.py
+            tests/test_update_review.py
+          )
+
+          for path in "${paths[@]}"; do
+            mkdir -p "$(dirname "$path")"
+            git show "$RC:$path" > "$path"
+          done
+
+          python - <<'PY'
+          from pathlib import Path
+
+          admission = Path("src/memleaf/admission.py")
+          text = admission.read_text(encoding="utf-8")
+          candidate_anchor = '''            if "memory_id" in row:\n                raise ModelOutputError(\n                    "coverage memory_id is only valid for already_completed",\n                    validation_detail="invalid_evidence",\n                    evidence_check="coverage_terminal_witness",\n                )\n            if not units[uid].can_support or not isinstance(ids, list) or not ids or any(not isinstance(i, str) or i not in candidates for i in ids):\n'''
+          candidate_replacement = '''            if "memory_id" in row:\n                raise ModelOutputError(\n                    "coverage memory_id is only valid for already_completed",\n                    validation_detail="invalid_evidence",\n                    evidence_check="coverage_terminal_witness",\n                )\n            if set(row) != {"unit_id", "decision", "candidate_ids"}:\n                raise ModelOutputError(\n                    "invalid coverage candidate shape",\n                    validation_detail="invalid_evidence",\n                    evidence_check="coverage_shape",\n                )\n            if not units[uid].can_support or not isinstance(ids, list) or not ids or any(not isinstance(i, str) or i not in candidates for i in ids):\n'''
+          assert text.count(candidate_anchor) == 1, "candidate coverage anchor changed"
+          text = text.replace(candidate_anchor, candidate_replacement, 1)
+
+          decision_anchor = '''            elif "memory_id" in row:\n                raise ModelOutputError(\n                    "coverage memory_id is only valid for already_completed",\n                    validation_detail="invalid_evidence",\n                    evidence_check="coverage_terminal_witness",\n                )\n            # Normalize only the model's declared reason. This keeps the\n'''
+          decision_replacement = '''            elif "memory_id" in row:\n                raise ModelOutputError(\n                    "coverage memory_id is only valid for already_completed",\n                    validation_detail="invalid_evidence",\n                    evidence_check="coverage_terminal_witness",\n                )\n            expected_fields = ({"unit_id", "decision", "reason", "memory_id"}\n                               if reason == "already_completed"\n                               else {"unit_id", "decision", "reason"})\n            if set(row) != expected_fields:\n                raise ModelOutputError(\n                    "invalid coverage decision shape",\n                    validation_detail="invalid_evidence",\n                    evidence_check="coverage_shape",\n                )\n            # Normalize only the model's declared reason. This keeps the\n'''
+          assert text.count(decision_anchor) == 1, "decision coverage anchor changed"
+          text = text.replace(decision_anchor, decision_replacement, 1)
+          admission.write_text(text, encoding="utf-8")
+
+          stage_b1 = Path("tests/test_stage_b1.py")
+          text = stage_b1.read_text(encoding="utf-8")
+          old_name = "def test_openai_whitespace_content_keeps_diagnostics_and_allows_third_attempt(self):"
+          new_name = "def test_openai_whitespace_content_keeps_diagnostics_and_legacy_gate_allows_third_attempt(self):"
+          assert text.count(old_name) == 1, "legacy Gate test name anchor changed"
+          text = text.replace(old_name, new_name, 1)
+
+          backend_anchor = '''        backend = OpenAICompatibleBackend(\n            base_url="https://provider.invalid/v1",\n            api_key="key",\n            model="model",\n            opener=opener,\n            json_mode=True,\n            provider_name="deepseek",\n        )\n        with tempfile.TemporaryDirectory() as temporary:\n            service = Memleaf(Path(temporary) / "vault", model=backend)\n            service.capture("codex", "whitespace", "t1", "user", "visible user", event_id="wu")\n'''
+          backend_replacement = '''        backend = OpenAICompatibleBackend(\n            base_url="https://provider.invalid/v1",\n            api_key="key",\n            model="model",\n            opener=opener,\n            json_mode=True,\n            provider_name="deepseek",\n        )\n        # This regression protects the legacy P3 Gate executor's three-attempt\n        # empty-content behavior. Fixed API routes now intentionally use B3,\n        # whose independent budget is capped at one primary call plus one repair.\n        backend.single_pass_safe = False\n        with tempfile.TemporaryDirectory() as temporary:\n            service = Memleaf(Path(temporary) / "vault", model=backend)\n            service.capture("codex", "whitespace", "t1", "user", "visible user", event_id="wu")\n'''
+          assert text.count(backend_anchor) == 1, "legacy Gate backend anchor changed"
+          text = text.replace(backend_anchor, backend_replacement, 1)
+          stage_b1.write_text(text, encoding="utf-8")
+          PY
+
+          test ! -e benchmarks/results/v0.2.28-linux.json
+          test ! -e scripts/benchmark_long_run.py
+          test ! -e docs/performance.md
+          test "$(wc -c < src/memleaf/hermes_provider/__init__.py)" -lt 5000
+          test "$(wc -c < src/memleaf/admission.py)" -lt 40000
+          test "$(wc -c < tests/test_stage_b2a.py)" -lt 5000
+          test "$(wc -c < tests/test_hermes_provider.py)" -lt 5000
+
+          python -m compileall -q src tests
+          python -m unittest discover -s tests -p 'test_*.py'
+
+          git add src tests
+          test -z "$(git status --porcelain | grep -E '^(.. )?(benchmarks/|scripts/benchmark_long_run.py|docs/performance.md)' || true)"
+          git config user.name "memleaf-integration-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -m "integrate: B3 single-pass planner on refactored main"
+          git push origin "HEAD:refs/heads/$TARGET"
