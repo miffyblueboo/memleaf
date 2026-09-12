@@ -395,8 +395,8 @@ def _aggregate_attempt_results(attempts: list[Any]) -> dict[str, Any]:
     aggregate: dict[str, Any] = {}
     numeric = (
         "processed_turns", "memories_written", "metadata_merged", "cleaned_turns",
-        "deferred_candidates", "deferred_inbox_turns", "pending_inbox_turns",
-        "unresolved_evidence_count", "retryable_deferred_turns",
+        "deferred_candidates", "deferred_inbox_turns", "unresolved_evidence_count",
+        "retryable_deferred_turns",
     )
     for key in numeric:
         total = 0
@@ -408,6 +408,14 @@ def _aggregate_attempt_results(attempts: list[Any]) -> dict[str, Any]:
                 seen = True
         if seen:
             aggregate[key] = total
+    # Backlog is a current gauge, not cumulative work. If a requested rerun
+    # drains the remaining turns, the final status must report zero rather
+    # than summing every intermediate pending count.
+    for attempt in reversed(attempts):
+        value = attempt.get("result", {}).get("pending_inbox_turns") if isinstance(attempt, Mapping) else None
+        if type(value) is int and value >= 0:
+            aggregate["pending_inbox_turns"] = value
+            break
     ids: list[str] = []
     for attempt in attempts:
         values = attempt.get("result", {}).get("memory_ids") if isinstance(attempt, Mapping) else None
