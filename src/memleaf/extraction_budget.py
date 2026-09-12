@@ -7,6 +7,7 @@ specific prompt/transport details.
 """
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
 from typing import Any, Mapping
@@ -187,13 +188,32 @@ class ExtractionWorkBudget:
     remaining two seconds are reserved for deterministic validation/commit.
     If the ten-second total deadline has already elapsed, the turn is not
     allowed to enter the mutation boundary.
+
+    ``elapsed_seconds`` restores time already consumed by the same durable
+    background work item before a worker restart.  The persisted ledger uses a
+    wall clock only to measure that cross-process age; once restored, all new
+    deadline checks remain monotonic inside the current process.
     """
 
-    def __init__(self, *, clock: Any = time.monotonic):
+    def __init__(
+        self,
+        *,
+        clock: Any = time.monotonic,
+        elapsed_seconds: float = 0.0,
+    ):
+        if (
+            isinstance(elapsed_seconds, bool)
+            or not isinstance(elapsed_seconds, (int, float))
+            or not math.isfinite(float(elapsed_seconds))
+            or float(elapsed_seconds) < 0
+        ):
+            raise ValueError("elapsed_seconds must be a finite non-negative number")
         self._clock = clock
-        self._started = float(clock())
-        self._model_deadline = self._started + MODEL_TIME_BUDGET_SECONDS
-        self._total_deadline = self._started + TARGET_TOTAL_SECONDS
+        current = float(clock())
+        elapsed = float(elapsed_seconds)
+        self._started = current - elapsed
+        self._model_deadline = current + (MODEL_TIME_BUDGET_SECONDS - elapsed)
+        self._total_deadline = current + (TARGET_TOTAL_SECONDS - elapsed)
 
     @property
     def started(self) -> float:
