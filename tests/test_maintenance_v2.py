@@ -420,9 +420,6 @@ class MaintenanceV2Tests(unittest.TestCase):
                 type="project",
                 scopes=["project:summary-budget"],
             )
-        # The target is visible in the bounded gate context, but not the first
-        # result; the summarize call must promote it before applying its own
-        # budget.
         target_id = memory_ids[7]
         user_event, assistant_event = self.capture(
             "summary-related-budget",
@@ -613,7 +610,6 @@ class MaintenanceV2Tests(unittest.TestCase):
         self.assertTrue(all(body not in gate_prompt_text for body in bodies))
         self.assertNotIn(unrelated.body, gate_prompt_text)
 
-
     def test_final_reply_units_extend_related_search(self):
         target = self.service.create_memory(
             memory_id="mem-cedar-source-match",
@@ -744,7 +740,6 @@ class MaintenanceV2Tests(unittest.TestCase):
         self.assertIn(tool_body, native_queries[0][0])
         self.assertEqual(native_queries[0][1], ["project:cedar", "project:birch"])
 
-
     def test_sparse_inherited_scope_uses_metadata_directory_then_selected_body(self):
         target_body = "技术路线：达梦数据库与东方通；负责人吴江波；期限为2026-10-27；约束是按既定信创方案推进。"
         contact_body = "CONTACT-ONLY-BODY"
@@ -771,9 +766,6 @@ class MaintenanceV2Tests(unittest.TestCase):
             scopes=["project:orion"],
         )
 
-        # Establish the inherited scope without adding a memory.  The next
-        # sparse turn must resolve it from the directory rather than a body
-        # dump or a recency guess.
         context_user, context_assistant = self.capture(
             "orion-directory",
             "turn-1",
@@ -1078,7 +1070,7 @@ class MaintenanceV2Tests(unittest.TestCase):
         self.assertEqual(len(self.service._read_memories_unlocked("history")), 1)
         self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize", "gate", "summarize", "gate"])
 
-    def test_batch_state_updates_recover_forward_after_processed_write_failure(self):
+    def test_sequential_state_updates_recover_forward_after_processed_write_failure(self):
         first_user, first_assistant = self.capture(
             "forward-recovery",
             "turn-1",
@@ -1139,16 +1131,26 @@ class MaintenanceV2Tests(unittest.TestCase):
         self.assertEqual(self.service._read_memories_unlocked("knowledge")[0].memory.body, "项目负责人已更新为乙。")
         self.assertEqual(len(self.service._read_memories_unlocked("history")), 1)
         failed = self.processed()["sessions"]["hermes/forward-recovery"]
-        self.assertNotIn("watermark", failed)
+        # Turn 1 crossed its own durable commit boundary before turn 2's
+        # final journal write failed. Forward recovery must keep that progress
+        # instead of reverting the whole snapshot batch to watermark zero.
+        self.assertEqual(failed["watermark"], 1)
+        self.assertEqual(failed["processed_watermark"], 1)
+        self.assertEqual([entry["turn_index"] for entry in failed["processed_turns"]], [1])
         self.assertEqual(failed["processing"]["status"], "failed")
+        self.assertEqual(failed["processing"]["turn_indices"], [2])
 
-        backend.responses.extend(responses)
+        calls_before_retry = len(backend.calls)
         result = self.service.process(
             source="hermes", session_id="forward-recovery", model=backend
         )
 
-        self.assertEqual(result["processed_turns"], 2)
+        # Turn 2's frozen plan and already-applied Markdown are the retry
+        # anchors: only that turn is resumed, without another model request or
+        # duplicate history write.
+        self.assertEqual(result["processed_turns"], 1)
         self.assertEqual(result["memories_written"], 0)
+        self.assertEqual(len(backend.calls), calls_before_retry)
         self.assertEqual(self.service._read_memories_unlocked("knowledge")[0].memory.body, "项目负责人已更新为乙。")
         self.assertEqual(len(self.service._read_memories_unlocked("history")), 1)
         recovered = self.processed()["sessions"]["hermes/forward-recovery"]
