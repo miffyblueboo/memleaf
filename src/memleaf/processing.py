@@ -19,6 +19,9 @@ from .memory_commit import MemoryCommitter
 from .extraction_budget import ExtractionWorkBudget
 
 
+_MAX_TURNS_PER_PROCESS = 4
+
+
 class Processor:
     def __init__(self, service: Any):
         self.service = service
@@ -61,9 +64,9 @@ class Processor:
 
         ``ProcessJournal._turn_is_read_only`` is intentionally a scheduling
         heuristic and treats classification errors as read-only so older
-        deferred work is not retried accidentally.  That fallback is not a
+        deferred work is not retried accidentally. That fallback is not a
         commit authorization: malformed evidence must never be silently
-        settled as NO_CHANGE.  Here we apply only the explicit user memory
+        settled as NO_CHANGE. Here we apply only the explicit user memory
         write-disable rule and let malformed input surface normally.
         """
 
@@ -74,6 +77,93 @@ class Processor:
                 event["tool_evidence"], policy_config
             )
         return memory_writes_disabled(analyze_turn_evidence(events))
+
+    def _limit_claimed_snapshots(
+        self,
+        snapshots: list[Any],
+        *,
+        scope: Any = None,
+    ) -> tuple[list[Any], int]:
+        """Bound backlog drain and release claims that this invocation skips.
+
+        ``ProcessJournal`` takes a durable ownership marker before returning
+        snapshots.  Older implementations then drained every contiguous turn,
+        so one hook could spend an unbounded amount of model time.  Keep the
+        first small batch and atomically shrink/release the already-written
+        ownership markers before any model call.  Deferred retry counters are
+        restored for skipped turns because no retry was actually attempted.
+        """
+
+        if len(snapshots) <= _MAX_TURNS_PER_PROCESS:
+            return snapshots, 0
+        kept = list(snapshots[:_MAX_TURNS_PER_PROCESS])
+        skipped = list(snapshots[_MAX_TURNS_PER_PROCESS:])
+        kept_by_state: dict[str, list[Any]] = {}
+        skipped_by_state: dict[str, list[Any]] = {}
+        all_by_state: dict[str, list[Any]] = {}
+        for snapshot in snapshots:
+            all_by_state.setdefault(snapshot.state_key, []).append(snapshot)
+        for snapshot in kept:
+            kept_by_state.setdefault(snapshot.state_key, []).append(snapshot)
+        for snapshot in skipped:
+            skipped_by_state.setdefault(snapshot.state_key, []).append(snapshot)
+
+        explicit_retry = scope is not None and scope not in ("", [])
+        with self.service.vault.lock():
+            processed = _read_processed(self.service.vault.processed_state_path)
+            sessions = processed.setdefault("sessions", {})
+            if not isinstance(sessions, dict):
+                raise ProcessingError("processed sessions are invalid")
+            for state_key, claimed in all_by_state.items():
+                state = sessions.get(state_key)
+                if not isinstance(state, dict):
+                    raise ProcessingError("processing session disappeared")
+                marker = state.get("processing")
+                token = claimed[0].token
+                if not isinstance(marker, Mapping) or marker.get("token") != token:
+                    raise ProcessingError("processing ownership changed")
+                if any(snapshot.token != token for snapshot in claimed):
+                    raise ProcessingError("processing ownership changed")
+
+                retained = kept_by_state.get(state_key, [])
+                if retained:
+                    narrowed = dict(marker)
+                    narrowed["turn_keys"] = [snapshot.turn.turn_key for snapshot in retained]
+                    narrowed["turn_indices"] = [snapshot.turn.turn_index for snapshot in retained]
+                    state["processing"] = narrowed
+                else:
+                    state["processing"] = {
+                        "status": "idle",
+                        "reason": "backlog_limit_release",
+                    }
+
+                if not explicit_retry:
+                    skipped_keys = {
+                        snapshot.turn.turn_key
+                        for snapshot in skipped_by_state.get(state_key, [])
+                        if isinstance(snapshot.turn.turn_key, str)
+                    }
+                    entries = state.get("processed_turns")
+                    if skipped_keys and isinstance(entries, list):
+                        for entry in entries:
+                            if (
+                                not isinstance(entry, dict)
+                                or entry.get("turn_key") not in skipped_keys
+                                or not (
+                                    entry.get("deferred_candidates")
+                                    or entry.get("deferred_evidence")
+                                )
+                            ):
+                                continue
+                            count = entry.get("automatic_retry_count")
+                            if type(count) is int and count > 0:
+                                if count == 1:
+                                    entry.pop("automatic_retry_count", None)
+                                else:
+                                    entry["automatic_retry_count"] = count - 1
+                sessions[state_key] = state
+            self.journal._write_processed_unlocked(processed)
+        return kept, len(skipped)
 
     @staticmethod
     def _scope_snapshot(state: Mapping[str, Any]) -> tuple[bool, Any]:
@@ -147,9 +237,19 @@ class Processor:
                 "cleaned_turns": cleaned,
                 "deferred_candidates": deferred_candidates,
                 "deferred_inbox_turns": deferred_turns,
+                "pending_inbox_turns": 0,
                 "model_metrics": self.model.metrics(),
                 "compaction": self._critical_path_compaction_status(),
             }
+
+        try:
+            snapshots, pending_inbox_turns = self._limit_claimed_snapshots(
+                snapshots, scope=scope
+            )
+        except Exception as error:
+            self._attach_failure_metrics(error)
+            self.journal._mark_failed(snapshots, error)
+            raise
 
         # Freeze only the pre-invocation session Scope. Permanent memories and
         # processed journal state are deliberately re-read after every turn.
@@ -275,6 +375,7 @@ class Processor:
             "cleaned_turns": cleaned,
             "deferred_candidates": deferred_candidates,
             "deferred_inbox_turns": deferred_turns,
+            "pending_inbox_turns": pending_inbox_turns,
             "model_metrics": self.model.metrics(),
             "compaction": compaction,
         }
@@ -332,6 +433,7 @@ class Processor:
                 "cleaned_turns": cleaned,
                 "deferred_candidates": 0,
                 "deferred_inbox_turns": 0,
+                "pending_inbox_turns": 0,
                 "model_metrics": self.model.metrics(),
                 "compaction": self._critical_path_compaction_status(),
             }
@@ -371,6 +473,7 @@ class Processor:
                 "cleaned_turns": cleaned,
                 "deferred_candidates": 0,
                 "deferred_inbox_turns": 0,
+                "pending_inbox_turns": 0,
                 "model_metrics": self.model.metrics(),
                 "compaction": self._critical_path_compaction_status(),
             }
