@@ -47,28 +47,28 @@ _LOCAL_FIELDS = (
 _EVIDENCE_FIELDS = ("unit_id", "role", "content", "origin", "section_path")
 _SCOPE_REGISTRY_FIELDS = ("scope", "aliases", "parent")
 
-SINGLE_PASS_SYSTEM = """You are memleaf's single-pass memory planner. Return strict JSON only.
+SINGLE_PASS_SYSTEM = """You are memleaf's single-pass memory planner. Return strict JSON only; never explain reasoning.
 
-AUTHORITY
-Only CURRENT_EVIDENCE can establish new facts or state changes. LOCAL_MEMORY_CATALOG and NATIVE_MEMORY_CATALOG are comparison context only. Native memory is never an UPDATE/NO_CHANGE target. Do not invent facts, ownership, dates, status, obligations, numbers, relationships, IDs, or source text.
+SOURCE
+Only current_evidence may establish new facts or changes. local_memory_catalog and native_memory_catalog are comparison context; native memory is never an UPDATE/NO_CHANGE target. Never invent source facts, ownership, dates, status, obligations, numbers, relationships or IDs.
 
-JOB
-Find every independently useful long-term memory in CURRENT_EVIDENCE. One item represents one independently retrievable/updateable topic. Preserve subject/entity, condition, polarity, uncertainty, ownership, state, and meaning-critical numbers/codes. Decide CREATE, UPDATE, NO_CHANGE, or DEFERRED and write final content for CREATE/UPDATE.
+TASK
+Extract every independently useful long-term memory. Keep independently retrievable/updateable topics separate and preserve entity, condition, polarity, uncertainty, ownership, state and meaning-critical numbers/codes.
 
-DECISIONS
-CREATE/UPDATE/NO_CHANGE require lookup_complete=true. CREATE only when no supplied local memory represents the durable information. UPDATE when one supplied local memory represents the same evolving future use and current evidence establishes a change. NO_CHANGE when current evidence adds no semantic change to that target. DEFERRED when a durable candidate exists but a safe decision cannot be made. UPDATE/NO_CHANGE target_memory_id must come from LOCAL_MEMORY_CATALOG; use each target at most once.
+DECIDE
+CREATE/UPDATE/NO_CHANGE require lookup_complete=true. CREATE only if no supplied local memory represents the durable information. UPDATE one supplied local memory for the same evolving future use when current evidence proves a change. NO_CHANGE when it adds no semantic change. DEFERRED when a durable candidate exists but a safe terminal decision cannot be made. UPDATE/NO_CHANGE targets come only from local_memory_catalog and each target may be used once.
 
-CONTENT
-CREATE supplies type, scopes and memory; Core derives scope_source. UPDATE supplies target_memory_id and memory; Core inherits target type/scopes. Only an explicit current-evidence Scope correction may add scopes to UPDATE; Core derives provenance and independently authorizes it. CREATE memory requires title and body; UPDATE memory requires body and may omit an unchanged title. Optional memory fields are tags, aliases, keywords, status, completed_at, due_date, shadow_native_ids and scope_operations. Omit optional tags/aliases/keywords unless they add retrieval value, and omit empty optional metadata. Emit todo state/date fields only when needed by the todo state, shadow_native_ids only for supplied native IDs actually superseded, and scope_operations only under the existing Scope contract. Do not place type, scopes, scope_source, sources, or update_memory_id inside memory. Omission is not retraction or completion. Preserve still-valid target content on UPDATE.
+WRITE
+CREATE supplies type, scopes, evidence and memory; memory requires title+body. UPDATE supplies target_memory_id, evidence and memory; memory requires body and may omit unchanged title. Core inherits UPDATE type/scopes; only explicit current-evidence Scope correction may add UPDATE scopes. Optional memory fields: tags, aliases, keywords, status, completed_at, due_date, shadow_native_ids, scope_operations. Emit todo state/date only when needed; shadow only supplied native IDs actually superseded; scope_operations only under the existing Scope contract. Omit empty/unneeded metadata. Omission is not retraction/completion; preserve still-valid target content. Never put type, scopes, scope_source, sources or update_memory_id inside memory.
 
 EVIDENCE
-Each item needs exact CURRENT_EVIDENCE claims: {unit_id,quote,role}, {unit_id,whole_unit:true,role}, or the legacy exact-offset form. role is assertion, source_excerpt, or user_confirmation. Each evidence unit must be claimed by at least one item or appear once in no_memory, never both. Use only the supplied no_memory_reasons and defer_reasons.
+Each item cites exact current_evidence with {unit_id,quote,role}, {unit_id,whole_unit:true,role}, or exact offsets; role is assertion, source_excerpt or user_confirmation. Every evidence unit is either claimed by >=1 item or appears once in no_memory, never both. Use only supplied no_memory_reasons/defer_reasons.
 
 SCOPE/DATES
-CREATE scopes use global, domain:name, portfolio:name, project:name, or unscoped. Project ownership must be grounded by claimed evidence or an explicit supplied scope; a platform/system name alone is not ownership. Preserve supported date meaning; Core derives scope provenance and validates dates, Scope, target and revision.
+CREATE scopes are global, domain:name, portfolio:name, project:name or unscoped. Project ownership needs claimed evidence or explicit supplied scope; a platform/system name alone is insufficient. Preserve supported date meaning. Core derives scope provenance and validates evidence, dates, Scope, target and revision.
 
 OUTPUT
-Return exactly {protocol_version,items,no_memory} with protocol_version=b3-single-pass-v1 and complete CURRENT_EVIDENCE coverage."""
+Return exactly {protocol_version,items,no_memory}; protocol_version=b3-single-pass-v1; cover all current_evidence."""
 
 
 def _json_safe(value: Any, *, depth: int = 0) -> Any:
@@ -491,8 +491,8 @@ def run_single_pass_stage(
         raise TypeError("model executor does not support JSON stages")
     local_rows = list(local_by_key.values())
     # Test/inspection executors sometimes pass an opaque sentinel because they
-    # never execute the backend.  Production backends expose complete() and
-    # are wrapped so the existing two parser attempts become a true two-request
+    # never execute the backend. Production backends expose complete() and are
+    # wrapped so the existing two parser attempts become a true two-request
     # outbound budget with a shared eight-second model deadline.
     budgeted_backend = (
         budget_single_pass_backend(backend) if hasattr(backend, "complete") else backend
