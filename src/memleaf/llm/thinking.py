@@ -9,7 +9,13 @@ from typing import Any, Mapping
 THINKING_PURPOSES = frozenset({"gate", "summarize", "compact", "single_pass"})
 THINKING_MODES = frozenset({"default", "disabled", "low", "high", "max"})
 THINKING_EFFECTIVE_MODES = frozenset(
-    {"provider_default", "unsupported", "disabled", "minimal", "low", "high", "max"}
+    {
+        "provider_default", "unsupported", "disabled", "minimal", "low", "high", "max",
+        "reasoning_observed", "no_reasoning_observed", "unknown",
+    }
+)
+THINKING_OBSERVATION_SOURCES = frozenset(
+    {"request_parameter", "reasoning_tokens", "reasoning_content", "unavailable"}
 )
 THINKING_CONTROLS = frozenset(
     {
@@ -34,14 +40,19 @@ def requested_thinking_mode(settings: Any, purpose: str) -> str:
     return value if isinstance(value, str) and value in THINKING_MODES else "low"
 
 
-def thinking_metrics(requested: str, effective: str, control: str) -> dict[str, str]:
+def thinking_metrics(requested: str, effective: str, control: str) -> dict[str, Any]:
     requested = requested if requested in THINKING_MODES else "low"
     effective = effective if effective in THINKING_EFFECTIVE_MODES else "unsupported"
     control = control if control in THINKING_CONTROLS else "unsupported"
+    applied = control not in {"provider_default", "unsupported"}
     return {
+        # thinking_mode is the v0.2.44 compatibility alias for requested.
         "thinking_mode": requested,
+        "thinking_requested": requested,
+        "thinking_applied": applied,
         "thinking_effective": effective,
         "thinking_control": control,
+        "thinking_observation_source": "request_parameter" if applied else "unavailable",
     }
 
 
@@ -67,17 +78,17 @@ def _openai_max_supported(model: Any) -> bool:
 
 
 def openai_chat_controls(
-    provider_name: Any,
+    provider_family: Any,
     model: Any,
     requested: str,
-) -> tuple[dict[str, Any], dict[str, str], bool]:
+) -> tuple[dict[str, Any], dict[str, Any], bool]:
     """Map one policy request to an OpenAI-format Chat Completions payload.
 
     The final bool says that sampling temperature must be omitted because the
     selected reasoning mode/model does not accept or use it safely.
     """
 
-    provider = provider_name.casefold().strip() if isinstance(provider_name, str) else ""
+    provider = provider_family.casefold().strip() if isinstance(provider_family, str) else ""
     if requested == "default":
         return {}, thinking_metrics(requested, "provider_default", "provider_default"), False
 
@@ -97,7 +108,7 @@ def openai_chat_controls(
 
     # Unknown OpenAI-compatible services are deliberately not assumed to
     # accept reasoning_effort merely because they implement Chat Completions.
-    if "openai" not in provider or not _openai_reasoning_model(model):
+    if provider != "openai" or not _openai_reasoning_model(model):
         return {}, thinking_metrics(requested, "unsupported", "unsupported"), False
 
     if requested == "disabled":
@@ -142,7 +153,7 @@ def _claude_profile(model: Any) -> str:
 def claude_messages_controls(
     model: Any,
     requested: str,
-) -> tuple[dict[str, Any], dict[str, str], bool]:
+) -> tuple[dict[str, Any], dict[str, Any], bool]:
     """Map policy effort to current Claude Messages capabilities."""
 
     profile = _claude_profile(model)
@@ -210,7 +221,7 @@ def _gemini3_low_level(model: Any) -> tuple[str, str]:
 def gemini_generate_controls(
     model: Any,
     requested: str,
-) -> tuple[dict[str, Any], dict[str, str], bool]:
+) -> tuple[dict[str, Any], dict[str, Any], bool]:
     """Map policy effort to native Gemini generateContent thinkingConfig.
 
     The final bool asks the adapter to omit explicit temperature for Gemini 3.x,

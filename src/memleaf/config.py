@@ -9,6 +9,9 @@ from typing import Any, Mapping
 
 from .frontmatter import FrontmatterError, dump_yaml, load_yaml
 from .locking import atomic_write_text
+from .model_capabilities import (
+    legacy_protocol_for_provider, normalize_protocol, normalize_provider_family,
+)
 from .native_index import NativeConfigError, validate_native_sources
 from .scope_state import ScopeError, validate_scope_registry
 
@@ -19,6 +22,10 @@ MAX_REQUEST_TIMEOUT = 240
 DEFAULT_MODEL_CONCURRENCY = 3
 MIN_MODEL_CONCURRENCY = 1
 MAX_MODEL_CONCURRENCY = 8
+DEFAULT_SINGLE_PASS_PRIMARY_MAX_TOKENS = 8192
+DEFAULT_SINGLE_PASS_REPAIR_MAX_TOKENS = 8192
+MIN_SINGLE_PASS_MAX_TOKENS = 2048
+MAX_SINGLE_PASS_MAX_TOKENS = 32768
 THINKING_PURPOSES = ("gate", "summarize", "compact", "single_pass")
 THINKING_MODES = frozenset({"default", "disabled", "low", "high", "max"})
 DEFAULT_THINKING = {purpose: "low" for purpose in THINKING_PURPOSES}
@@ -38,6 +45,16 @@ def _normalize_request_timeout(value: Any) -> int | float:
     if not math.isfinite(parsed) or not MIN_REQUEST_TIMEOUT <= parsed <= MAX_REQUEST_TIMEOUT:
         raise ValueError("invalid memleaf llm.request_timeout")
     return int(parsed) if parsed.is_integer() else parsed
+
+
+def _normalize_single_pass_token_limit(value: Any, *, field: str, default: int) -> int:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"invalid memleaf llm.{field}")
+    if not MIN_SINGLE_PASS_MAX_TOKENS <= value <= MAX_SINGLE_PASS_MAX_TOKENS:
+        raise ValueError(f"invalid memleaf llm.{field}")
+    return value
 
 
 def _normalize_model_concurrency(value: Any) -> int:
@@ -89,6 +106,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "llm": {
         "mode": "auto",
         "provider": "",
+        "provider_family": "",
         "protocol": "openai",
         "base_url": "",
         "api_key": "",
@@ -96,6 +114,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "model": "",
         "context_window": 200000,
         "request_timeout": DEFAULT_REQUEST_TIMEOUT,
+        "single_pass_primary_max_tokens": DEFAULT_SINGLE_PASS_PRIMARY_MAX_TOKENS,
+        "single_pass_repair_max_tokens": DEFAULT_SINGLE_PASS_REPAIR_MAX_TOKENS,
         "diagnostic_logging": False,
         "thinking": dict(DEFAULT_THINKING),
     },
@@ -148,6 +168,19 @@ def _normalize_legacy_config(value: Mapping[str, Any]) -> dict[str, Any]:
             # the current default restore normal bounded evidence capture.
             current["tool_evidence_mode"] = "off"
         normalized["capture"] = current
+    llm = normalized.get("llm")
+    if llm is not None and not isinstance(llm, Mapping):
+        raise ValueError("invalid memleaf llm settings")
+    if isinstance(llm, Mapping):
+        current_llm = dict(llm)
+        # Old configs often omitted protocol and relied on the provider name.
+        # Preserve only exact built-in identifiers; custom aliases never
+        # override an explicitly configured protocol.
+        if not isinstance(current_llm.get("protocol"), str) or not current_llm.get("protocol", "").strip():
+            legacy_protocol = legacy_protocol_for_provider(current_llm.get("provider"))
+            if legacy_protocol is not None:
+                current_llm["protocol"] = legacy_protocol
+        normalized["llm"] = current_llm
     return normalized
 
 
@@ -210,7 +243,17 @@ def load_config(path: Path | str, *, vault: Path | str | None = None) -> dict[st
     if not isinstance(llm, Mapping):
         raise ValueError("invalid memleaf llm settings")
     llm = dict(llm)
+    llm["provider_family"] = normalize_provider_family(llm.get("provider_family"))
+    llm["protocol"] = normalize_protocol(llm.get("protocol"), provider=llm.get("provider"))
     llm["request_timeout"] = _normalize_request_timeout(llm.get("request_timeout", DEFAULT_REQUEST_TIMEOUT))
+    llm["single_pass_primary_max_tokens"] = _normalize_single_pass_token_limit(
+        llm.get("single_pass_primary_max_tokens"),
+        field="single_pass_primary_max_tokens", default=DEFAULT_SINGLE_PASS_PRIMARY_MAX_TOKENS,
+    )
+    llm["single_pass_repair_max_tokens"] = _normalize_single_pass_token_limit(
+        llm.get("single_pass_repair_max_tokens"),
+        field="single_pass_repair_max_tokens", default=DEFAULT_SINGLE_PASS_REPAIR_MAX_TOKENS,
+    )
     llm["thinking"] = _normalize_thinking_settings(llm.get("thinking"))
     if type(llm.get("diagnostic_logging", False)) is not bool:
         raise ValueError("invalid memleaf llm.diagnostic_logging")
@@ -252,8 +295,20 @@ def save_config(path: Path | str, config: Mapping[str, Any]) -> None:
     if not isinstance(llm, Mapping):
         raise ValueError("invalid memleaf llm settings")
     normalized_llm = dict(llm)
+    normalized_llm["provider_family"] = normalize_provider_family(normalized_llm.get("provider_family"))
+    normalized_llm["protocol"] = normalize_protocol(
+        normalized_llm.get("protocol"), provider=normalized_llm.get("provider")
+    )
     normalized_llm["request_timeout"] = _normalize_request_timeout(
         normalized_llm.get("request_timeout", DEFAULT_REQUEST_TIMEOUT)
+    )
+    normalized_llm["single_pass_primary_max_tokens"] = _normalize_single_pass_token_limit(
+        normalized_llm.get("single_pass_primary_max_tokens"),
+        field="single_pass_primary_max_tokens", default=DEFAULT_SINGLE_PASS_PRIMARY_MAX_TOKENS,
+    )
+    normalized_llm["single_pass_repair_max_tokens"] = _normalize_single_pass_token_limit(
+        normalized_llm.get("single_pass_repair_max_tokens"),
+        field="single_pass_repair_max_tokens", default=DEFAULT_SINGLE_PASS_REPAIR_MAX_TOKENS,
     )
     normalized_llm["thinking"] = _normalize_thinking_settings(normalized_llm.get("thinking"))
     diagnostic_logging = normalized_llm.get("diagnostic_logging", False)

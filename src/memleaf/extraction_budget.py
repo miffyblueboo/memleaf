@@ -26,8 +26,6 @@ class SinglePassBudgetBackend:
     its repair overrides the transport's configured ``llm.request_timeout``.
     """
 
-    single_pass_safe = True
-
     def __init__(
         self,
         backend: Any,
@@ -49,6 +47,18 @@ class SinglePassBudgetBackend:
     @property
     def model(self) -> str:
         return str(getattr(self._backend, "model", "unknown"))
+
+    @property
+    def single_pass_safe(self) -> bool:
+        """Preserve the underlying adapter/route request-boundary guarantee."""
+
+        return getattr(self._backend, "single_pass_safe", False) is True
+
+    @property
+    def single_pass_protocol(self) -> bool:
+        """Preserve protocol identity while this wrapper enforces request count."""
+
+        return getattr(self._backend, "single_pass_protocol", False) is True
 
     @property
     def parallel_safe(self) -> bool:
@@ -144,6 +154,7 @@ class ExtractionTiming:
             "failed_turn_count": int(failed),
             "over_target_turn_count": int(seconds > TARGET_TOTAL_SECONDS),
             "successful_within_target_count": int(not failed and seconds <= TARGET_TOTAL_SECONDS),
+            "commit_accepted_count": int(not failed and commit_started is not None),
             "total_duration_ms": int(seconds * 1000),
             "max_turn_duration_ms": int(seconds * 1000),
             "planning_duration_ms": int(max(0.0, planning_end - self._started) * 1000),
@@ -156,7 +167,7 @@ def aggregate_extraction_metrics(values: Iterable[Mapping[str, Any]]) -> dict[st
 
     summed = (
         "turn_count", "failed_turn_count", "over_target_turn_count",
-        "successful_within_target_count", "total_duration_ms",
+        "successful_within_target_count", "commit_accepted_count", "total_duration_ms",
         "planning_duration_ms", "commit_duration_ms",
     )
     result = {key: 0 for key in summed}

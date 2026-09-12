@@ -2,6 +2,15 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.45 — 2026-09-12
+
+- Repair the `b3-single-pass-v1` automatic extraction contract so model output is constrained by the same CREATE / UPDATE / NO_CHANGE / DEFERRED fields, evidence shapes, no-memory/defer reasons, target rules and lookup-completeness checks that Core validates. Pure ASCII decision-case differences are normalized locally; unknown decisions and missing semantic fields still fail closed.
+- Replace the generic second full-prompt retry with one B3-specific structural repair. The repair receives only the previous untrusted B3 object, the compact protocol and allowlisted structural diagnostics; Core rejects candidate count/order changes, evidence/target/scope/memory drift, or any edit outside the explicitly repairable protocol redundancy. Automatic extraction remains limited to at most two actual model requests and never fabricates a terminal disposition.
+- Separate credential/profile name (`provider`), wire protocol (`protocol`) and capability identity (`provider_family`). DeepSeek capabilities are resolved only from explicit configuration, exact legacy provider IDs, or exact official hostnames; custom aliases, model-name substrings and lookalike domains no longer grant provider-specific JSON/thinking behavior or override an explicit protocol. Unknown OpenAI-compatible services fail closed for single-pass capability.
+- Make DeepSeek single-pass primary and repair requests send explicit `thinking: {type: disabled}` and `response_format: {type: json_object}` from the resolved capability profile, with independently configurable bounded output ceilings. Finish-reason truncation is rejected before commit, repair output is never truncated to fit a budget, and transport success, parser rejection and commit acceptance remain separate metrics.
+- Refine thinking telemetry to distinguish requested, applied and observed state, preserve missing usage as unknown, and report observed reasoning when provider usage or response content proves it. The HTTP transport base no longer grants `single_pass_safe` by inheritance; B3 protocol compatibility and bounded one-request transport semantics are evaluated separately.
+- Validation for this release used the exact v0.2.44 source artifact at `c13c6dedacfdf6206fd8ebdaa04c4d84fdc0b919`: 88 focused tests passed, including temporary-Vault atomicity/idempotency/revision-conflict boundaries, provider request serialization, B3 repair fidelity, request-count limits and the advisory ten-second latency rule. No real provider call or production-session replay was used, so real-model first-pass success rate, repair success rate, reasoning reduction and latency improvement remain unmeasured.
+
 ## 0.2.44 — 2026-09-12
 
 - Correct the extraction latency policy: ten seconds is an advisory performance target, not a cancellation or commit deadline. Remove the fixed six-second primary cap and eight-second shared window; single-pass HTTP requests now honor `llm.request_timeout`, including the one bounded format repair.

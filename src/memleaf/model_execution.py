@@ -29,10 +29,14 @@ _PROVIDER_METRIC_FIELDS = (
     "prompt_cache_hit_tokens",
     "prompt_cache_miss_tokens",
     "reasoning_tokens",
+    "max_output_tokens",
 )
 _METRIC_OPERATION_SUFFIXES = ("primary", "format_repair")
 _MAX_METRIC_CALLS = 256
-_THINKING_EFFECTIVE_MODES = frozenset({"provider_default", "unsupported", "disabled", "minimal", "low", "high", "max"})
+_THINKING_EFFECTIVE_MODES = frozenset({
+    "provider_default", "unsupported", "disabled", "minimal", "low", "high", "max",
+    "reasoning_observed", "no_reasoning_observed", "unknown",
+})
 _THINKING_CONTROLS = frozenset({
     "provider_default", "unsupported", "openai_reasoning_effort",
     "deepseek_thinking_effort", "anthropic_effort", "anthropic_adaptive_effort",
@@ -44,6 +48,13 @@ _GATE_STRUCTURE_REPAIR_MAX_BYTES = 64 * 1024
 # Only program-defined diagnostic labels may be emitted; arbitrary model keys
 # can themselves be credentials or business text. Counts still include all keys.
 _COVERAGE_DIAGNOSTIC_FIELDS = frozenset({"explanation"})
+_METRIC_EVENT_FIELDS = frozenset({
+    "repair_attempted_count", "repair_rejected_semantic_drift_count",
+    "parse_accepted_count", "decision_case_normalization_count",
+})
+_THINKING_OBSERVATION_SOURCES = frozenset({
+    "request_parameter", "reasoning_tokens", "reasoning_content", "unavailable",
+})
 
 
 def _metric_bucket() -> dict[str, Any]:
@@ -64,7 +75,13 @@ def _metric_bucket() -> dict[str, Any]:
         "prompt_cache_hit_tokens": 0,
         "prompt_cache_miss_tokens": 0,
         "reasoning_tokens": 0,
+        "max_output_tokens": 0,
         "cache_hit_calls": 0,
+        "reasoning_usage_reported_calls": 0,
+        "repair_attempted_count": 0,
+        "repair_rejected_semantic_drift_count": 0,
+        "parse_accepted_count": 0,
+        "decision_case_normalization_count": 0,
         "_first_started": None,
         "_last_finished": None,
     }
@@ -303,12 +320,21 @@ class ModelExecutor:
         mode = value.get("thinking_mode")
         if mode in {"default", "disabled", "low", "high", "max"}:
             result["thinking_mode"] = mode
+        requested = value.get("thinking_requested")
+        if requested in {"default", "disabled", "low", "high", "max"}:
+            result["thinking_requested"] = requested
+        applied = value.get("thinking_applied")
+        if type(applied) is bool:
+            result["thinking_applied"] = applied
         effective = value.get("thinking_effective")
         if effective in _THINKING_EFFECTIVE_MODES:
             result["thinking_effective"] = effective
         control = value.get("thinking_control")
         if control in _THINKING_CONTROLS:
             result["thinking_control"] = control
+        observation = value.get("thinking_observation_source")
+        if observation in _THINKING_OBSERVATION_SOURCES:
+            result["thinking_observation_source"] = observation
         return result
 
     @staticmethod
@@ -382,6 +408,8 @@ class ModelExecutor:
                     bucket["retry_count"] += 1
                 for field in _PROVIDER_METRIC_FIELDS:
                     bucket[field] += int(provider_metrics.get(field, 0))
+                if "reasoning_tokens" in provider_metrics:
+                    bucket["reasoning_usage_reported_calls"] += 1
                 if int(provider_metrics.get("prompt_cache_hit_tokens", 0)) > 0:
                     bucket["cache_hit_calls"] += 1
             if len(self._metric_calls) < _MAX_METRIC_CALLS:
@@ -425,6 +453,29 @@ class ModelExecutor:
                     call["invalid_output"] = True
                     break
 
+    def _record_metric_event(self, context: Mapping[str, Any], field: str, amount: int = 1) -> None:
+        """Record one structural B3 outcome without retaining model content."""
+
+        if field not in _METRIC_EVENT_FIELDS or type(amount) is not int or amount <= 0:
+            return
+        stage = context.get("stage") if isinstance(context, Mapping) else None
+        operation = context.get("operation") if isinstance(context, Mapping) else None
+        call_index = context.get("call_index") if isinstance(context, Mapping) else None
+        if not isinstance(stage, str) or not isinstance(operation, str):
+            return
+        with self._metrics_lock:
+            for bucket in (
+                self._metrics,
+                self._metric_stages.setdefault(stage, _metric_bucket()),
+                self._metric_operations.setdefault(operation, _metric_bucket()),
+            ):
+                bucket[field] += amount
+            if type(call_index) is int:
+                for call in self._metric_calls:
+                    if call.get("call_index") == call_index:
+                        call[field.removesuffix("_count")] = True if amount == 1 else amount
+                        break
+
     @staticmethod
     def _public_metric_bucket(bucket: Mapping[str, Any]) -> dict[str, int]:
         first = bucket.get("_first_started")
@@ -447,6 +498,14 @@ class ModelExecutor:
             "output_bytes": int(bucket.get("output_bytes", 0)),
             "max_in_flight": int(bucket.get("max_in_flight", 0)),
             "cache_hit_calls": int(bucket.get("cache_hit_calls", 0)),
+            "reasoning_usage_reported_calls": int(bucket.get("reasoning_usage_reported_calls", 0)),
+            "reasoning_usage_missing_calls": max(
+                0, int(bucket.get("call_count", 0)) - int(bucket.get("reasoning_usage_reported_calls", 0))
+            ),
+            "repair_attempted_count": int(bucket.get("repair_attempted_count", 0)),
+            "repair_rejected_semantic_drift_count": int(bucket.get("repair_rejected_semantic_drift_count", 0)),
+            "parse_accepted_count": int(bucket.get("parse_accepted_count", 0)),
+            "decision_case_normalization_count": int(bucket.get("decision_case_normalization_count", 0)),
         }
         for field in _PROVIDER_METRIC_FIELDS:
             result[field] = int(bucket.get(field, 0))

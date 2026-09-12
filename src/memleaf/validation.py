@@ -54,6 +54,16 @@ class ModelOutputError(ValueError):
         self.evidence_expected_ids: tuple[str, ...] = ()
         self.evidence_expected_count: int | None = None
         self.evidence_expected_sha256: str | None = None
+        # B3 schema diagnostics are structural only.  They never retain the
+        # rejected value or arbitrary model-provided field names.
+        self.schema_path: str | None = None
+        self.schema_rule: str | None = None
+        self.schema_actual_type: str | None = None
+        self.schema_expected_type: str | None = None
+        self.schema_allowed_values: tuple[str, ...] = ()
+        self.schema_missing_fields: tuple[str, ...] = ()
+        self.schema_unexpected_field_count: int | None = None
+        self.schema_safe_unexpected_fields: tuple[str, ...] = ()
 
     def with_detail(self, detail: str | None) -> "ModelOutputError":
         if isinstance(detail, str) and detail in MODEL_VALIDATION_DETAILS:
@@ -86,6 +96,43 @@ class ModelOutputError(ValueError):
         self.evidence_expected_ids = expected
         self.evidence_expected_count = len(expected)
         self.evidence_expected_sha256 = _evidence_ids_digest(expected)
+        return self
+
+
+    def with_schema_context(
+        self,
+        *,
+        path: str | None = None,
+        rule: str | None = None,
+        actual_type: str | None = None,
+        expected_type: str | None = None,
+        allowed_values: Iterable[Any] = (),
+        missing_fields: Iterable[Any] = (),
+        unexpected_field_count: Any = None,
+        safe_unexpected_fields: Iterable[Any] = (),
+    ) -> "ModelOutputError":
+        if isinstance(path, str) and _safe_schema_path(path):
+            self.schema_path = path
+        if isinstance(rule, str) and rule in _SCHEMA_RULES:
+            self.schema_rule = rule
+        if isinstance(actual_type, str) and actual_type in _SCHEMA_VALUE_TYPES:
+            self.schema_actual_type = actual_type
+        if isinstance(expected_type, str) and expected_type in _SCHEMA_VALUE_TYPES:
+            self.schema_expected_type = expected_type
+        self.schema_allowed_values = tuple(sorted({
+            value for value in allowed_values
+            if isinstance(value, str) and value in _SCHEMA_PUBLIC_VALUES
+        }))
+        self.schema_missing_fields = tuple(sorted({
+            value for value in missing_fields
+            if isinstance(value, str) and value in _SCHEMA_PUBLIC_FIELDS
+        }))
+        if type(unexpected_field_count) is int and 0 <= unexpected_field_count <= 10_000:
+            self.schema_unexpected_field_count = unexpected_field_count
+        self.schema_safe_unexpected_fields = tuple(sorted({
+            value for value in safe_unexpected_fields
+            if isinstance(value, str) and value in _SCHEMA_PUBLIC_FIELDS
+        }))
         return self
 
 
@@ -124,6 +171,7 @@ MODEL_VALIDATION_DETAILS = frozenset(
         "relative_time",
         "mixed_future_use",
         "other_schema_violation",
+        "repair_semantic_drift",
     )
 )
 MODEL_EVIDENCE_CHECKS = frozenset((
@@ -142,6 +190,72 @@ MODEL_EVIDENCE_CHECKS = frozenset((
     "candidate_evidence",
     "omitted_evidence_binding",
 ))
+
+_SCHEMA_RULES = frozenset({"type", "enum", "required", "additionalProperties", "const", "shape", "relationship"})
+_SCHEMA_VALUE_TYPES = frozenset({"null", "boolean", "number", "integer", "string", "array", "object"})
+_SCHEMA_PUBLIC_FIELDS = frozenset({
+    "protocol_version", "items", "no_memory", "candidate_id", "decision", "evidence",
+    "type", "scopes", "scope_source", "memory", "target_memory_id", "reason",
+    "title", "body", "tags", "aliases", "keywords", "status", "completed_at",
+    "due_date", "shadow_native_ids", "unit_id", "quote", "whole_unit", "role",
+    "start", "end", "sources", "update_memory_id",
+})
+_SCHEMA_PUBLIC_VALUES = frozenset({
+    "CREATE", "UPDATE", "NO_CHANGE", "DEFERRED",
+    "preference", "fact", "project", "todo", "event", "identity", "other",
+    "model", "user", "session_context", "insufficient_context",
+    "active", "completed", "cancelled",
+    "assertion", "source_excerpt", "user_confirmation",
+    "query_only", "assistant_restatement", "retrieved_memory_only", "no_future_value",
+    "quoted_or_example", "negated", "native_already_covered",
+    "target_ambiguous", "scope_ambiguous", "ownership_ambiguous", "evidence_insufficient",
+    "lookup_incomplete", "maintenance_uncertain",
+    "b3-single-pass-v1",
+})
+_SCHEMA_PATH_COMPONENT = r"(?:protocol_version|items|no_memory|candidate_id|decision|evidence|type|scopes|scope_source|memory|target_memory_id|reason|title|body|tags|aliases|keywords|status|completed_at|due_date|shadow_native_ids|unit_id|quote|whole_unit|role|start|end|sources|update_memory_id)(?:\[\d+\])?"
+_SCHEMA_PATH_RE = re.compile(rf"^(?:root|{_SCHEMA_PATH_COMPONENT}(?:\.{_SCHEMA_PATH_COMPONENT})*)$")
+
+
+def _safe_schema_path(value: str) -> bool:
+    return bool(_SCHEMA_PATH_RE.fullmatch(value))
+
+
+def safe_schema_context(error: BaseException) -> dict[str, Any]:
+    """Return only program-defined B3 schema diagnostics for persistence."""
+
+    result: dict[str, Any] = {}
+    path = getattr(error, "schema_path", None)
+    if isinstance(path, str) and _safe_schema_path(path):
+        result["schema_path"] = path
+    rule = getattr(error, "schema_rule", None)
+    if isinstance(rule, str) and rule in _SCHEMA_RULES:
+        result["schema_rule"] = rule
+    actual_type = getattr(error, "schema_actual_type", None)
+    if isinstance(actual_type, str) and actual_type in _SCHEMA_VALUE_TYPES:
+        result["actual_type"] = actual_type
+    expected_type = getattr(error, "schema_expected_type", None)
+    if isinstance(expected_type, str) and expected_type in _SCHEMA_VALUE_TYPES:
+        result["expected_type"] = expected_type
+    allowed = getattr(error, "schema_allowed_values", ())
+    if isinstance(allowed, tuple):
+        values = [value for value in allowed if value in _SCHEMA_PUBLIC_VALUES]
+        if values:
+            result["allowed_values"] = values
+    missing = getattr(error, "schema_missing_fields", ())
+    if isinstance(missing, tuple):
+        values = [value for value in missing if value in _SCHEMA_PUBLIC_FIELDS]
+        if values:
+            result["missing_fields"] = values
+    count = getattr(error, "schema_unexpected_field_count", None)
+    if type(count) is int and 0 <= count <= 10_000:
+        result["unexpected_field_count"] = count
+    unexpected = getattr(error, "schema_safe_unexpected_fields", ())
+    if isinstance(unexpected, tuple):
+        values = [value for value in unexpected if value in _SCHEMA_PUBLIC_FIELDS]
+        if values:
+            result["safe_unexpected_fields"] = values
+    return result
+
 
 _EVIDENCE_PATH_RE = re.compile(
     r"(?:coverage\[\d+\]\.(?:unit_id|memory_id)|evidence_bindings\[\d+\]\.claims\[\d+\]\.unit_id)"
@@ -1515,6 +1629,7 @@ __all__ = [
     "ModelOutputError",
     "NO_CHANGE_DECISION",
     "safe_evidence_context",
+    "safe_schema_context",
     "SCOPE_SOURCES",
     "TODO_STATUSES",
     "parse_gate",

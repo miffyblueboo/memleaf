@@ -21,9 +21,7 @@ from .claude_compatible import ClaudeCompatibleBackend
 from .gemini import GeminiBackend
 from .openai_compatible import OpenAICompatibleBackend
 from ..credentials import credential_text
-
-
-_JSON_MODE_PROVIDERS = frozenset({"openai", "deepseek"})
+from ..model_capabilities import normalize_protocol, resolve_provider_capabilities
 
 
 class ModelRouter:
@@ -106,14 +104,22 @@ class ModelRouter:
 
     def _build_api(self) -> Optional[ModelBackend]:
         config = self.config
-        provider = str(config.get("provider", "")).casefold()
-        protocol = str(config.get("protocol", "openai")).casefold()
+        provider = str(config.get("provider", "")).strip()
+        # Credential/profile identity, wire protocol and provider capability
+        # family are deliberately independent.  An alias such as
+        # "my-claude-key" can no longer override an explicit OpenAI protocol.
+        protocol = normalize_protocol(config.get("protocol"), provider=provider)
         base_url = config.get("base_url")
         model = config.get("model")
         api_key = credential_text(config.get("api_key"))
         api_key_env = config.get("api_key_env")
         if not all(isinstance(item, str) and item.strip() for item in (base_url, model)):
             return None
+        capabilities = resolve_provider_capabilities(
+            provider=provider,
+            provider_family=config.get("provider_family"),
+            base_url=base_url,
+        )
         if api_key is None:
             if not isinstance(api_key_env, str) or not api_key_env.strip():
                 return None
@@ -134,17 +140,18 @@ class ModelRouter:
             "thinking": config.get("thinking") if isinstance(config.get("thinking"), Mapping) else None,
         }
         try:
-            if protocol in ("claude", "anthropic") or "claude" in provider or "anthropic" in provider:
+            if protocol == "claude":
                 return ClaudeCompatibleBackend(**kwargs)
-            if protocol == "gemini" or "gemini" in provider:
+            if protocol == "gemini":
                 return GeminiBackend(**kwargs)
-            if protocol in ("openai", "openai-compatible", "openai_compatible") or provider in ("openai", "") or "openai" in provider:
+            if protocol == "openai":
                 return OpenAICompatibleBackend(
                     **kwargs,
-                    json_mode=provider in _JSON_MODE_PROVIDERS,
-                    provider_name=provider or "openai",
+                    capabilities=capabilities,
+                    single_pass_primary_max_tokens=config.get("single_pass_primary_max_tokens", 8192),
+                    single_pass_repair_max_tokens=config.get("single_pass_repair_max_tokens", 8192),
                 )
-        except (ModelError, ValueError, TypeError):
+        except (ModelError, TypeError):
             return None
         return None
 
