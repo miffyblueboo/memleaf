@@ -28,9 +28,19 @@ class Processor:
         self.committer = MemoryCommitter(service, writer=self.writer, audit=self.audit, journal=self.journal)
 
     def _auto_compact(self, *, model: Any = None, router: Any = None) -> dict[str, Any]:
+        """Run compaction only when an explicit maintenance caller asks for it.
+
+        Extraction no longer calls this method on its latency-critical return
+        path.  Keeping the helper preserves the maintenance API without
+        coupling memory settlement to a second model workflow.
+        """
         from .compaction import Compactor
 
         return Compactor(self.service).auto(model=model, router=router)
+
+    @staticmethod
+    def _critical_path_compaction_status() -> dict[str, str]:
+        return {"status": "not_run", "reason": "outside_extraction_critical_path"}
 
     def _attach_failure_metrics(self, error: BaseException) -> None:
         """Attach structural-only model telemetry for outer failure reporters."""
@@ -78,7 +88,7 @@ class Processor:
                 "deferred_candidates": deferred_candidates,
                 "deferred_inbox_turns": deferred_turns,
                 "model_metrics": self.model.metrics(),
-                "compaction": self._auto_compact(model=model, router=router),
+                "compaction": self._critical_path_compaction_status(),
             }
         backend = None
         requests: list[dict[str, Any]] = []
@@ -129,11 +139,11 @@ class Processor:
                 observed_scopes=observed_scopes,
                 deferred_candidates=self.audit._deferred_by_turn,
             )
-            # A processed read-only/no-op turn must not trigger maintenance
-            # writes. Explicit maintenance and no-pending-turn processing keep
-            # their existing separate authorization.
-            compaction = (self._auto_compact(model=backend) if ids or self.writer.last_metadata_merged
-                          else {"status": "not_due", "reason": "no_memory_changes"})
+            # Maintenance is deliberately outside extraction.  A successful
+            # turn is complete once its plan is durably committed; compaction
+            # can be scheduled or invoked separately without extending model
+            # latency or changing the extraction result.
+            compaction = self._critical_path_compaction_status()
             deferred_candidates, deferred_turns = self.journal._deferred_counts(
                 source=source,
                 session_id=session_id,
@@ -213,7 +223,7 @@ class Processor:
                 "deferred_candidates": 0,
                 "deferred_inbox_turns": 0,
                 "model_metrics": self.model.metrics(),
-                "compaction": self._auto_compact(model=model, router=router),
+                "compaction": self._critical_path_compaction_status(),
             }
         backend = None
         self.audit._planned_related = []
@@ -252,7 +262,7 @@ class Processor:
                 "deferred_candidates": 0,
                 "deferred_inbox_turns": 0,
                 "model_metrics": self.model.metrics(),
-                "compaction": self._auto_compact(model=backend),
+                "compaction": self._critical_path_compaction_status(),
             }
         except Exception as error:
             self._attach_failure_metrics(error)
