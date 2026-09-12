@@ -305,7 +305,7 @@ class StageB3ACommitTest(unittest.TestCase):
         self.assertTrue(restored_path.exists())
         self.assertIsNotNone(self.service.read(first.memory_id))
 
-    def test_process_no_pending_turn_can_auto_compact_when_due(self):
+    def test_process_no_pending_turn_does_not_enter_maintenance_path(self):
         self.add_memory("active", "A" * 1000)
         self.set_process(threshold=1, ratio=1.0)
         backend = QueueBackend(['{"memories": []}'])
@@ -313,10 +313,17 @@ class StageB3ACommitTest(unittest.TestCase):
         result = self.service.process(model=backend)
 
         self.assertEqual(result["processed_turns"], 0)
-        self.assertEqual(result["compaction"]["status"], "noop")
+        self.assertEqual(result["compaction"], {
+            "status": "not_run",
+            "reason": "outside_extraction_critical_path",
+        })
+        self.assertEqual(backend.calls, [])
+        # Maintenance remains available, but only through its explicit entry point.
+        maintenance = self.service.compact(model=backend)
+        self.assertEqual(maintenance["status"], "noop")
         self.assertEqual([call["purpose"] for call in backend.calls], ["compact"])
 
-    def test_process_success_survives_compaction_model_failure(self):
+    def test_process_success_does_not_enter_compaction_path(self):
         user_key = event_key("u1")
         self.service.capture("codex", "s", "t1", "user", "remember this", event_id="u1")
         self.service.capture("codex", "s", "t1", "assistant", "ack", event_id="a1")
@@ -344,12 +351,16 @@ class StageB3ACommitTest(unittest.TestCase):
             "sources": [{"event_key": user_key}],
         }
         self.set_process(threshold=1, ratio=1.0)
-        backend = QueueBackend([json.dumps(gate), json.dumps(summary), "not json"])
+        backend = QueueBackend([json.dumps(gate), json.dumps(summary)])
 
         result = self.service.process(model=backend)
 
         self.assertEqual(result["processed_turns"], 1)
-        self.assertEqual(result["compaction"]["status"], "invalid_output")
+        self.assertEqual(result["compaction"], {
+            "status": "not_run",
+            "reason": "outside_extraction_critical_path",
+        })
+        self.assertEqual([call["purpose"] for call in backend.calls], ["gate", "summarize"])
         processed = json.loads(self.service.vault.processed_state_path.read_text(encoding="utf-8"))
         self.assertEqual(processed["sessions"]["codex/s"]["watermark"], 1)
         self.assertEqual(len(self.service._read_memories_unlocked("knowledge")), 1)
@@ -391,12 +402,15 @@ class StageB3ACommitTest(unittest.TestCase):
         replacement = self.service.read(compacted["replacements"][0])
         self.assertTrue(replacement.extra["explicit_remember"])
 
-    def test_process_and_remember_do_not_call_compact_below_threshold(self):
+    def test_process_and_remember_keep_compaction_outside_critical_path(self):
         self.add_memory("small", "small")
         self.set_process(threshold=100000)
         process_backend = QueueBackend([])
         process_result = self.service.process(model=process_backend)
-        self.assertEqual(process_result["compaction"]["status"], "not_due")
+        self.assertEqual(process_result["compaction"], {
+            "status": "not_run",
+            "reason": "outside_extraction_critical_path",
+        })
         self.assertEqual(process_backend.calls, [])
 
         remembered_key = event_key("remember-small")
@@ -418,7 +432,10 @@ class StageB3ACommitTest(unittest.TestCase):
             event_id="remember-small",
             model=remember_backend,
         )
-        self.assertEqual(remember_result["compaction"]["status"], "not_due")
+        self.assertEqual(remember_result["compaction"], {
+            "status": "not_run",
+            "reason": "outside_extraction_critical_path",
+        })
         self.assertEqual([call["purpose"] for call in remember_backend.calls], ["summarize"])
 
 
