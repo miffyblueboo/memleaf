@@ -17,6 +17,11 @@ from .planning_context import PlanningContext
 from .single_pass_memory_planner import SinglePassMemoryPlanner
 from .memory_commit import MemoryCommitter
 from .extraction_budget import ExtractionWorkBudget
+from .extraction_work_state import (
+    active_background_work_id,
+    complete_turn_budget,
+    reserve_model_request,
+)
 
 
 _MAX_TURNS_PER_PROCESS = 4
@@ -201,6 +206,11 @@ class Processor:
             result.pop("scopes", None)
         return result
 
+    @staticmethod
+    def _turn_budget_id(snapshot: Any) -> str:
+        turn = snapshot.turn
+        return f"{turn.source}/{turn.session_id}/{turn.turn_key}"
+
     def process(
         self,
         *,
@@ -214,6 +224,15 @@ class Processor:
             source = safe_component(source, "source")
         if session_id is not None:
             session_id = safe_component(session_id, "session id")
+        # A background process job is the only stable work identity that can
+        # survive a detached worker death.  Synchronous callers retain the
+        # in-memory two-call budget; a restarted background worker additionally
+        # shares its persisted request ledger with the prior process.
+        background_work_id = active_background_work_id(
+            self.service.vault,
+            source=source,
+            session_id=session_id,
+        )
         now = _now_value(getattr(self.service, "clock", None))
         cleanup_hours = self.journal._cleanup_hours()
         snapshots, cleaned = self.journal._snapshot(
@@ -285,6 +304,7 @@ class Processor:
                 self.audit._planned_settled_sources = set()
                 work_budget = ExtractionWorkBudget()
                 strict_budget = False
+                durable_turn_budget_id = self._turn_budget_id(snapshot)
 
                 with self.service.vault.lock():
                     processed = _read_processed(self.service.vault.processed_state_path)
@@ -315,8 +335,19 @@ class Processor:
                     if getattr(backend, "single_pass_safe", False) is True:
                         # Start the monotonic deadline before planning-context
                         # preparation; that work consumes the same turn budget
-                        # as the provider request.
-                        turn_backend = work_budget.wrap_backend(backend)
+                        # as the provider request.  Background workers also
+                        # reserve each actual outbound request durably first.
+                        reserve_request = None
+                        if background_work_id is not None:
+                            reserve_request = lambda work_id=background_work_id, turn_id=durable_turn_budget_id: reserve_model_request(
+                                self.service.vault,
+                                work_id=work_id,
+                                turn_id=turn_id,
+                            )
+                        turn_backend = work_budget.wrap_backend(
+                            backend,
+                            reserve_request=reserve_request,
+                        )
                         strict_budget = True
                     turn_requests, turn_scopes = self.planner._collect_turn_outputs(
                         turn_backend, snapshot.turn, state, scope=scope
@@ -340,6 +371,16 @@ class Processor:
                         ref: self.audit._deferred_by_turn.get(ref, [])
                     },
                 )
+                # Once the turn's source-of-truth commit is durable, a stale
+                # conservative request reservation is no longer needed.  The
+                # cleanup is deliberately best-effort and can never negate the
+                # successful memory commit.
+                if background_work_id is not None:
+                    complete_turn_budget(
+                        self.service.vault,
+                        work_id=background_work_id,
+                        turn_id=durable_turn_budget_id,
+                    )
                 all_ids.extend(ids)
                 metadata_merged += self.writer.last_metadata_merged
         except Exception as error:
