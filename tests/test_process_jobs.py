@@ -39,6 +39,57 @@ class ProcessJobsTests(unittest.TestCase):
         self.assertNotIn(str(filename.parent), str(result))
         self.assertNotIn("return [].get", str(result))
 
+    def test_single_pass_metrics_survive_background_status_projection(self):
+        private_prompt = "PRIVATE PROMPT BODY MUST NOT PERSIST"
+        metrics = {
+            "total": {"call_count": 2, "retry_count": 1, "input_bytes": 321},
+            "stages": {
+                "single_pass": {"call_count": 2, "retry_count": 1, "input_bytes": 321},
+            },
+            "operations": {
+                "single_pass_primary": {"call_count": 1, "input_bytes": 200},
+                "single_pass_format_repair": {"call_count": 1, "retry_count": 1, "input_bytes": 121},
+            },
+            "calls": [
+                {
+                    "stage": "single_pass",
+                    "operation": "single_pass_primary",
+                    "call_index": 1,
+                    "request_duration_ms": 80,
+                    "input_bytes": 200,
+                    "retry": False,
+                    "failed": False,
+                    "invalid_output": False,
+                    "thinking_mode": "disabled",
+                    "thinking_effective": "disabled",
+                    "thinking_control": "deepseek_thinking_effort",
+                    "prompt": private_prompt,
+                },
+                {
+                    "stage": "single_pass",
+                    "operation": "single_pass_format_repair",
+                    "call_index": 2,
+                    "request_duration_ms": 40,
+                    "input_bytes": 121,
+                    "retry": True,
+                    "failed": False,
+                    "invalid_output": False,
+                    "response": private_prompt,
+                },
+            ],
+        }
+
+        safe = process_jobs._safe_model_metrics(metrics)
+
+        self.assertEqual(safe["stages"]["single_pass"]["call_count"], 2)
+        self.assertEqual(safe["operations"]["single_pass_primary"]["call_count"], 1)
+        self.assertEqual(safe["operations"]["single_pass_format_repair"]["retry_count"], 1)
+        self.assertEqual([row["stage"] for row in safe["calls"]], ["single_pass", "single_pass"])
+        self.assertEqual(safe["calls"][0]["thinking_effective"], "disabled")
+        self.assertNotIn(private_prompt, str(safe))
+        self.assertNotIn("prompt", safe["calls"][0])
+        self.assertNotIn("response", safe["calls"][1])
+
     def test_background_mcp_returns_job_and_status_is_readable(self):
         with tempfile.TemporaryDirectory() as temporary:
             service = Memleaf(Path(temporary) / "vault")
