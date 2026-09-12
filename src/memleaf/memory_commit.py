@@ -58,6 +58,70 @@ class MemoryCommitter:
             if revision_digest(current) != request["expected_revision"]:
                 raise ProcessingError("update target changed before commit; no stale overwrite")
 
+    @staticmethod
+    def _advance_processing_markers_unlocked(
+        sessions: Mapping[str, Any],
+        snapshots: list[_Snapshot],
+        *,
+        now: str,
+    ) -> None:
+        """Release only the turns committed by this mutation boundary.
+
+        A journal claim can own several contiguous complete turns with one
+        token.  Sequential per-turn commit must not mark the whole session idle
+        after the first turn, otherwise the next snapshot loses ownership and
+        cannot read the state just committed by its predecessor.  Preserve the
+        same token/owner/start metadata while any claimed turn remains; only
+        the final committed turn transitions the session to idle.
+        """
+
+        grouped: dict[str, list[_Snapshot]] = {}
+        for snapshot in snapshots:
+            grouped.setdefault(snapshot.state_key, []).append(snapshot)
+        for state_key, values in grouped.items():
+            state = sessions.get(state_key)
+            if not isinstance(state, dict):
+                raise ProcessingError("processing session disappeared")
+            marker = state.get("processing")
+            token = values[0].token
+            if not isinstance(marker, Mapping) or marker.get("token") != token:
+                raise ProcessingError("processing ownership changed")
+            if any(snapshot.token != token for snapshot in values):
+                raise ProcessingError("processing ownership changed")
+
+            committed_keys = {
+                snapshot.turn.turn_key
+                for snapshot in values
+                if isinstance(snapshot.turn.turn_key, str)
+            }
+            committed_indices = {
+                snapshot.turn.turn_index
+                for snapshot in values
+                if isinstance(snapshot.turn.turn_index, int)
+            }
+            raw_keys = marker.get("turn_keys", [])
+            raw_indices = marker.get("turn_indices", [])
+            remaining_keys = [
+                key for key in raw_keys
+                if isinstance(key, str) and key not in committed_keys
+            ] if isinstance(raw_keys, list) else []
+            remaining_indices = [
+                index for index in raw_indices
+                if isinstance(index, int) and not isinstance(index, bool)
+                and index not in committed_indices
+            ] if isinstance(raw_indices, list) else []
+
+            if remaining_keys or remaining_indices:
+                continuing = dict(marker)
+                continuing["turn_keys"] = remaining_keys
+                continuing["turn_indices"] = remaining_indices
+                state["processing"] = continuing
+            else:
+                state["processing"] = {
+                    "status": _IDLE_STATUS,
+                    "last_processed_at": now,
+                }
+            sessions[state_key] = state
 
     def _commit_success(
         self,
@@ -260,9 +324,9 @@ class MemoryCommitter:
                 if not shadow_ids:
                     continue
                 # A prior attempt may have persisted the memory but failed
-                # while applying its native shadow.  Re-apply that side
-                # effect on retry even when the memory request itself was
-                # recognized as already applied.
+                # while applying its native shadow. Re-apply that side effect
+                # on retry even when the memory request itself was recognized
+                # as already applied.
                 shadow_keys = {value.casefold() for value in shadow_ids}
                 refs = [
                     item
@@ -333,7 +397,7 @@ class MemoryCommitter:
                     entry.pop("deferred_evidence", None)
                 if deferred_values or unresolved:
                     # Keep the complete source turn available for a later
-                    # explicit-scope retry.  A missing cleanup timestamp is
+                    # explicit-scope retry. A missing cleanup timestamp is
                     # intentional: deleting the inbox would discard the
                     # unresolved candidate before it can be retried.
                     if deferred_values:
@@ -396,19 +460,14 @@ class MemoryCommitter:
                 if current_scopes:
                     state["scopes"] = current_scopes
                 sessions[snapshot.state_key] = state
-            for state_key in {snapshot.state_key for snapshot in snapshots}:
-                state = sessions.get(state_key)
-                if isinstance(state, dict):
-                    state["processing"] = {"status": _IDLE_STATUS, "last_processed_at": now}
-                    sessions[state_key] = state
+
+            self._advance_processing_markers_unlocked(sessions, snapshots, now=now)
             self.journal._write_processed_unlocked(processed)
             return [
                 memory.memory_id
                 for request, memory in zip(all_requests, written)
                 if request.get("memory_id") not in noop_memory_ids
             ]
-
-
 
     @staticmethod
     def forget_records_unlocked(service: Any, records: Iterable[Any]) -> list[str]:
@@ -439,7 +498,7 @@ class MemoryCommitter:
                 deleted.append(record.memory.memory_id)
         except Exception:
             if deleted:
-                # The Markdown files are source of truth.  Keep derived indexes
+                # The Markdown files are source of truth. Keep derived indexes
                 # synchronized after a partial filesystem mutation before the
                 # original deletion error is surfaced to the caller.
                 try:
