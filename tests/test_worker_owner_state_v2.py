@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -28,6 +29,35 @@ class WorkerOwnerStateV2Tests(unittest.TestCase):
                     }
                 },
                 "order": ["job-a"],
+                "active_job_id": "job-a",
+            }
+            path.write_text(json.dumps(original), encoding="utf-8")
+
+            with self.assertRaises(ExtractionWorkStateError):
+                active_background_work_id(
+                    service.vault,
+                    source="hermes",
+                    session_id="session",
+                )
+
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), original)
+
+    def test_broken_process_job_order_fails_closed(self):
+        with tempfile.TemporaryDirectory(prefix="memleaf-owner-state-") as tempdir:
+            service = Memleaf(Path(tempdir) / "vault")
+            path = service.vault.state_path / "process_jobs.json"
+            original = {
+                "version": 1,
+                "jobs": {
+                    "job-a": {
+                        "job_id": "job-a",
+                        "source": "hermes",
+                        "session_id": "session",
+                        "status": "running",
+                        "owner_pid": os.getpid(),
+                    }
+                },
+                "order": [],
                 "active_job_id": "job-a",
             }
             path.write_text(json.dumps(original), encoding="utf-8")
