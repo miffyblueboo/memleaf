@@ -197,6 +197,30 @@ class WorkerRestartBudgetV2Tests(unittest.TestCase):
         self.assertEqual(self.begin(300.0), 0.0)
         self.assertEqual(self.begin(299.0), 10.0)
 
+    def test_counter_only_unreleased_state_keeps_consumed_requests(self):
+        budget_path = self.vault.state_path / "extraction_request_budget.json"
+        atomic_write_json(
+            budget_path,
+            {
+                "version": 1,
+                "works": {
+                    self.job_id: {
+                        "turns": {self.turn_id: 1},
+                    }
+                },
+                "order": [self.job_id],
+            },
+            mode=0o600,
+        )
+
+        self.assertEqual(self.begin(400.0), 0.0)
+        self.assertEqual(self.reserve(), 2)
+        self.assertIsNone(self.reserve())
+        state = json.loads(budget_path.read_text(encoding="utf-8"))
+        turn_state = state["works"][self.job_id]["turns"][self.turn_id]
+        self.assertEqual(turn_state["requests"], 2)
+        self.assertEqual(turn_state["started_at_epoch"], 400.0)
+
     def test_successful_turn_commit_cleanup_allows_state_to_shrink(self):
         self.assertEqual(self.reserve(), 1)
         self.assertTrue(
