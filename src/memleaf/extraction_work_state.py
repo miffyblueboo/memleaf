@@ -6,10 +6,11 @@ it as the stable work identity and reserve each outbound single-pass request
 *before* dispatch.  A restarted worker therefore cannot reopen the two-call
 automatic budget for the same turn.
 
-The same ledger also records when a turn first entered extraction.  On worker
-restart the elapsed wall time is restored into a fresh monotonic budget, so a
-new process cannot silently receive a fresh 8/10 second window for the same
-logical work item.
+The same ledger also records when a turn first entered model-backed extraction.
+On worker restart the elapsed wall time is restored into a fresh monotonic
+budget, so a new process cannot silently receive a fresh 8/10 second window for
+the same logical work item.  Deterministic no-write turns never consult this
+model-budget ledger.
 
 This state contains only control identifiers, counters, and timestamps; never
 prompts, responses, evidence bodies, credentials, or exception text.
@@ -187,7 +188,6 @@ def active_background_work_id(
     if not isinstance(jobs, Mapping) or not isinstance(order, list):
         raise ExtractionWorkStateError("invalid process job state shape")
 
-    normalized_order: list[str] = []
     seen: set[str] = set()
     for job_id in order:
         if not _valid_identifier(job_id, maximum=200) or job_id in seen or job_id not in jobs:
@@ -195,7 +195,6 @@ def active_background_work_id(
         if not isinstance(jobs.get(job_id), Mapping):
             raise ExtractionWorkStateError("invalid process job record")
         seen.add(job_id)
-        normalized_order.append(job_id)
     if seen != set(jobs):
         raise ExtractionWorkStateError("process job state order does not cover all records")
 
@@ -225,10 +224,11 @@ def begin_turn_budget(
 ) -> float:
     """Persist/recover one logical turn start and return elapsed wall seconds.
 
-    The timestamp is written before planning/context preparation.  A restarted
-    worker therefore receives only the remainder of the original 8/10 second
-    windows.  If the wall clock moves backwards, fail closed by reporting the
-    full total budget as already consumed rather than granting extra time.
+    The timestamp is written immediately before model-backed planning/context
+    preparation. A restarted worker therefore receives only the remainder of
+    the original 8/10 second windows. If the wall clock moves backwards, fail
+    closed by reporting the full total budget as already consumed rather than
+    granting extra time.
     """
 
     if not _valid_identifier(work_id, maximum=200):
