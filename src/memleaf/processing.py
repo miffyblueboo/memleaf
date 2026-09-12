@@ -14,6 +14,7 @@ from .process_journal import ProcessJournal
 from .planning_context import PlanningContext
 from .single_pass_memory_planner import SinglePassMemoryPlanner
 from .memory_commit import MemoryCommitter
+from .extraction_budget import ExtractionWorkBudget
 
 
 class Processor:
@@ -52,6 +53,85 @@ class Processor:
         except Exception:
             # Failure reporting must never mask the original processing error.
             return
+
+    def _select_one_snapshot_per_session(
+        self,
+        snapshots: list[Any],
+        *,
+        scope: Any = None,
+    ) -> list[Any]:
+        """Bound one process call to one complete turn per claimed session.
+
+        ``ProcessJournal._snapshot`` historically claimed every contiguous
+        pending turn in a session.  Planning all of them before one batch
+        commit made later turns compare against stale pre-batch state and also
+        allowed an unbounded backlog drain.  Keep only the oldest claimed turn
+        per session for this invocation and atomically release the remaining
+        claims before any model call.
+
+        Automatic deferred retries are charged when the journal selects them.
+        If a later deferred turn is released here, undo that selection charge
+        so a turn that was never attempted does not lose its one natural retry.
+        """
+
+        selected_by_state: dict[str, Any] = {}
+        selected: list[Any] = []
+        skipped_by_state: dict[str, list[Any]] = {}
+        for snapshot in snapshots:
+            if snapshot.state_key not in selected_by_state:
+                selected_by_state[snapshot.state_key] = snapshot
+                selected.append(snapshot)
+            else:
+                skipped_by_state.setdefault(snapshot.state_key, []).append(snapshot)
+        if not skipped_by_state:
+            return selected
+
+        explicit_retry = scope is not None and scope not in ("", [])
+        with self.service.vault.lock():
+            processed = _read_processed(self.service.vault.processed_state_path)
+            sessions = processed.setdefault("sessions", {})
+            if not isinstance(sessions, dict):
+                raise ProcessingError("processed sessions are invalid")
+            for state_key, skipped in skipped_by_state.items():
+                chosen = selected_by_state[state_key]
+                state = sessions.get(state_key)
+                if not isinstance(state, dict):
+                    raise ProcessingError("processing session disappeared")
+                marker = state.get("processing")
+                if not isinstance(marker, Mapping) or marker.get("token") != chosen.token:
+                    raise ProcessingError("processing ownership changed")
+                marker = dict(marker)
+                marker["turn_keys"] = [chosen.turn.turn_key]
+                marker["turn_indices"] = [chosen.turn.turn_index]
+                state["processing"] = marker
+
+                if not explicit_retry:
+                    skipped_keys = {
+                        item.turn.turn_key
+                        for item in skipped
+                        if isinstance(item.turn.turn_key, str)
+                    }
+                    entries = state.get("processed_turns")
+                    if isinstance(entries, list):
+                        for entry in entries:
+                            if (
+                                not isinstance(entry, dict)
+                                or entry.get("turn_key") not in skipped_keys
+                                or not (
+                                    entry.get("deferred_candidates")
+                                    or entry.get("deferred_evidence")
+                                )
+                            ):
+                                continue
+                            count = entry.get("automatic_retry_count")
+                            if type(count) is int and count > 0:
+                                if count == 1:
+                                    entry.pop("automatic_retry_count", None)
+                                else:
+                                    entry["automatic_retry_count"] = count - 1
+                sessions[state_key] = state
+            self.journal._write_processed_unlocked(processed)
+        return selected
 
     def process(
         self,
@@ -92,16 +172,27 @@ class Processor:
                 "model_metrics": self.model.metrics(),
                 "compaction": self._critical_path_compaction_status(),
             }
+
+        snapshots = self._select_one_snapshot_per_session(snapshots, scope=scope)
         backend = None
-        requests: list[dict[str, Any]] = []
-        observed_scopes: dict[tuple[str, str, str], list[str]] = {}
+        all_ids: list[str] = []
+        metadata_merged = 0
         self.audit._planned_related = []
         self.audit._deferred_by_turn = {}
         self.audit._dispositions_by_turn = {}
         self.audit._evidence_by_turn = {}
         self.audit._planned_settled_sources = set()
+        current_index = 0
         try:
-            for snapshot in snapshots:
+            for current_index, snapshot in enumerate(snapshots):
+                # Every selected turn starts from durable state.  Do not carry
+                # a pre-commit overlay from a previous turn now that the prior
+                # turn has already crossed its own commit boundary.
+                self.audit._planned_related = []
+                self.audit._planned_settled_sources = set()
+                work_budget = ExtractionWorkBudget()
+                strict_budget = False
+
                 with self.service.vault.lock():
                     processed = _read_processed(self.service.vault.processed_state_path)
                     state = self.journal._state_for_snapshot_unlocked(snapshot, processed)
@@ -116,63 +207,73 @@ class Processor:
                 else:
                     if backend is None:
                         backend = self.model._resolve_backend(model=model, router=router)
+                    turn_backend = backend
+                    if getattr(backend, "single_pass_safe", False) is True:
+                        # Start the monotonic deadline before planning-context
+                        # preparation; that work now consumes the same turn
+                        # budget as the provider request.
+                        turn_backend = work_budget.wrap_backend(backend)
+                        strict_budget = True
                     turn_requests, turn_scopes = self.planner._collect_turn_outputs(
-                        backend, snapshot.turn, state, scope=scope
+                        turn_backend, snapshot.turn, state, scope=scope
                     )
-                requests.extend(turn_requests)
-                for request in turn_requests:
-                    planned = self.planner._planned_memory(request)
-                    if planned is None:
-                        continue
-                    planned_id = planned.get("memory_id")
-                    if isinstance(planned_id, str):
-                        self.audit._planned_related = [
-                            item
-                            for item in self.audit._planned_related
-                            if item.get("memory_id", "").casefold() != planned_id.casefold()
-                        ]
-                    self.audit._planned_related.append(planned)
-                observed_scopes[(snapshot.turn.source, snapshot.turn.session_id, snapshot.turn.turn_key)] = turn_scopes
-            ids = self.committer._commit_success(
-                snapshots,
-                requests,
-                now=_now_value(getattr(self.service, "clock", None)),
-                cleanup_hours=cleanup_hours,
-                observed_scopes=observed_scopes,
-                deferred_candidates=self.audit._deferred_by_turn,
-            )
-            # Maintenance is deliberately outside extraction.  A successful
-            # turn is complete once its plan is durably committed; compaction
-            # can be scheduled or invoked separately without extending model
-            # latency or changing the extraction result.
-            no_memory_changes = not ids and self.writer.last_metadata_merged == 0
-            compaction = self._critical_path_compaction_status(
-                reason="no_memory_changes" if no_memory_changes else "outside_extraction_critical_path"
-            )
-            deferred_candidates, deferred_turns = self.journal._deferred_counts(
-                source=source,
-                session_id=session_id,
-            )
-            return {
-                **self.journal._coverage_result(
-                    source,
-                    session_id,
-                    turns=[snapshot.turn for snapshot in snapshots],
-                ),
-                "processed_turns": len(snapshots),
-                "memories_written": len(ids),
-                "memory_ids": ids,
-                "metadata_merged": self.writer.last_metadata_merged,
-                "cleaned_turns": cleaned,
-                "deferred_candidates": deferred_candidates,
-                "deferred_inbox_turns": deferred_turns,
-                "model_metrics": self.model.metrics(),
-                "compaction": compaction,
-            }
+
+                if strict_budget:
+                    # A late provider/callback result was already rejected by
+                    # the wrapped backend.  This second guard prevents slow
+                    # local validation/preparation from entering the mutation
+                    # boundary after the ten-second turn deadline.
+                    work_budget.ensure_before_commit()
+
+                ref = (snapshot.turn.source, snapshot.turn.session_id, snapshot.turn.turn_key)
+                ids = self.committer._commit_success(
+                    [snapshot],
+                    turn_requests,
+                    now=_now_value(getattr(self.service, "clock", None)),
+                    cleanup_hours=cleanup_hours,
+                    observed_scopes={ref: turn_scopes},
+                    deferred_candidates={
+                        ref: self.audit._deferred_by_turn.get(ref, [])
+                    },
+                )
+                all_ids.extend(ids)
+                metadata_merged += self.writer.last_metadata_merged
         except Exception as error:
             self._attach_failure_metrics(error)
-            self.journal._mark_failed(snapshots, error)
+            # Earlier turns have already committed and their ownership marker
+            # is idle.  Only the current and still-unprocessed session claims
+            # are eligible to become failed/retryable.
+            self.journal._mark_failed(snapshots[current_index:], error)
             raise
+
+        # Maintenance is deliberately outside extraction.  A successful turn
+        # is complete once its plan is durably committed; compaction can be
+        # scheduled or invoked separately without extending model latency or
+        # changing the extraction result.
+        no_memory_changes = not all_ids and metadata_merged == 0
+        compaction = self._critical_path_compaction_status(
+            reason="no_memory_changes" if no_memory_changes else "outside_extraction_critical_path"
+        )
+        deferred_candidates, deferred_turns = self.journal._deferred_counts(
+            source=source,
+            session_id=session_id,
+        )
+        return {
+            **self.journal._coverage_result(
+                source,
+                session_id,
+                turns=[snapshot.turn for snapshot in snapshots],
+            ),
+            "processed_turns": len(snapshots),
+            "memories_written": len(all_ids),
+            "memory_ids": all_ids,
+            "metadata_merged": metadata_merged,
+            "cleaned_turns": cleaned,
+            "deferred_candidates": deferred_candidates,
+            "deferred_inbox_turns": deferred_turns,
+            "model_metrics": self.model.metrics(),
+            "compaction": compaction,
+        }
 
     def remember(
         self,
