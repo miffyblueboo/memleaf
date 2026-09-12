@@ -115,7 +115,7 @@ class ModelRouter:
         if not all(isinstance(item, str) and item.strip() for item in (base_url, model)):
             return None
         # New installer-created routes store the key directly in the local
-        # 0600 memleaf config.  Keep the old environment-name form as a
+        # 0600 memleaf config. Keep the old environment-name form as a
         # compatibility fallback for existing users, but never let an empty
         # direct value shadow a valid legacy environment configuration.
         if api_key is None:
@@ -243,6 +243,14 @@ class ModelRouter:
             except ModelError:
                 provider, model = self._identity(self.host)
                 self._diagnose(provider, model, "host_failed")
+                # Unified automatic extraction has one global request budget.
+                # Falling through inside one logical single_pass call would
+                # hide a second actual model request from the planner budget
+                # and could turn one repair into four outbound attempts. Keep
+                # the route fixed for B3; legacy/non-extraction calls retain
+                # the existing auto host->API fallback behavior.
+                if purpose == "single_pass":
+                    raise
                 if self.api is None:
                     raise ModelUnavailable("no configured model backend")
         if self.api is None:
