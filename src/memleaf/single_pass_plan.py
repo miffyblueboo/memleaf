@@ -13,6 +13,7 @@ from typing import Any
 
 from .admission import validate_bindings
 from .extraction_budget import budget_single_pass_backend
+from .extraction_capability import requires_inline_single_pass_system
 from .validation import MEMORY_TYPES, SCOPE_SOURCES, ModelOutputError, parse_strict_json
 
 
@@ -500,10 +501,19 @@ def run_single_pass_stage(
         and getattr(backend, "single_pass_safe", False) is True
         else backend
     )
+    stage_prompt = prompt
+    stage_system = SINGLE_PASS_SYSTEM
+    if requires_inline_single_pass_system(backend):
+        # CallableBackend supports legacy callback(prompt) signatures. Such a
+        # callback cannot receive a separate system argument, so carry the B3
+        # contract in the prompt itself. ModelExecutor's correction prompt is
+        # derived from this same value, preserving the rules on the one repair.
+        stage_prompt = SINGLE_PASS_SYSTEM + "\n\n" + prompt
+        stage_system = ""
     return complete(
         budgeted_backend,
-        prompt,
-        system=SINGLE_PASS_SYSTEM,
+        stage_prompt,
+        system=stage_system,
         purpose="single_pass",
         max_attempts=2,
         parser=lambda raw: parse_single_pass_output(
