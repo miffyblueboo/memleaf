@@ -8,6 +8,7 @@ specific prompt/transport details.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Any, Mapping
 
 from .llm import ModelError
@@ -30,6 +31,10 @@ class SinglePassBudgetBackend:
     ``deadline`` is absolute in the supplied monotonic clock.  Supplying it is
     what lets preparation time consume the same turn budget instead of
     starting a fresh eight-second clock only when the HTTP call begins.
+
+    ``reserve_request`` optionally persists the request ordinal before the
+    outbound call.  Background workers use it so a process restart cannot
+    reopen attempts already consumed by the same durable work item.
     """
 
     single_pass_safe = True
@@ -40,9 +45,12 @@ class SinglePassBudgetBackend:
         *,
         clock: Any = time.monotonic,
         deadline: float | None = None,
+        reserve_request: Callable[[], int | None] | None = None,
     ):
         if not hasattr(backend, "complete"):
             raise TypeError("single-pass backend must expose complete()")
+        if reserve_request is not None and not callable(reserve_request):
+            raise TypeError("reserve_request must be callable")
         self._backend = backend
         self._clock = clock
         self._started = float(clock())
@@ -52,6 +60,7 @@ class SinglePassBudgetBackend:
             else float(deadline)
         )
         self._requests = 0
+        self._reserve_request = reserve_request
 
     @property
     def provider(self) -> str:
@@ -76,6 +85,31 @@ class SinglePassBudgetBackend:
     def _remaining(self) -> float:
         return self._deadline - float(self._clock())
 
+    def _request_ordinal(self, *, purpose: str) -> int:
+        if self._requests >= MAX_MODEL_REQUESTS:
+            raise ModelError(
+                "single-pass extraction budget exhausted",
+                code="model_timeout",
+                stage=purpose or "single_pass",
+            )
+        if self._reserve_request is None:
+            return self._requests + 1
+        try:
+            ordinal = self._reserve_request()
+        except Exception as error:
+            raise ModelError(
+                "single-pass extraction request budget cannot be reserved",
+                code="model_timeout",
+                stage=purpose or "single_pass",
+            ) from error
+        if type(ordinal) is not int or not 1 <= ordinal <= MAX_MODEL_REQUESTS:
+            raise ModelError(
+                "single-pass extraction budget exhausted",
+                code="model_timeout",
+                stage=purpose or "single_pass",
+            )
+        return ordinal
+
     def complete(
         self,
         prompt: str,
@@ -85,14 +119,15 @@ class SinglePassBudgetBackend:
         temperature: float = 0.0,
     ) -> str:
         remaining = self._remaining()
-        if self._requests >= MAX_MODEL_REQUESTS or remaining <= 0:
+        if remaining <= 0:
             raise ModelError(
                 "single-pass extraction budget exhausted",
                 code="model_timeout",
                 stage=purpose or "single_pass",
             )
+        ordinal = self._request_ordinal(purpose=purpose)
         cap = min(
-            PRIMARY_REQUEST_MAX_SECONDS if self._requests == 0 else remaining,
+            PRIMARY_REQUEST_MAX_SECONDS if ordinal == 1 else remaining,
             remaining,
         )
         if cap <= 0:
@@ -101,6 +136,8 @@ class SinglePassBudgetBackend:
                 code="model_timeout",
                 stage=purpose or "single_pass",
             )
+        # Count locally only after the durable reservation succeeded.  A kill
+        # after this point still leaves the persistent ordinal consumed.
         self._requests += 1
 
         set_timeout = getattr(self._backend, "set_call_timeout", None)
@@ -173,11 +210,17 @@ class ExtractionWorkBudget:
     def remaining_total(self) -> float:
         return self._total_deadline - float(self._clock())
 
-    def wrap_backend(self, backend: Any) -> SinglePassBudgetBackend:
+    def wrap_backend(
+        self,
+        backend: Any,
+        *,
+        reserve_request: Callable[[], int | None] | None = None,
+    ) -> SinglePassBudgetBackend:
         return budget_single_pass_backend(
             backend,
             clock=self._clock,
             deadline=self._model_deadline,
+            reserve_request=reserve_request,
         )
 
     def ensure_before_commit(self) -> None:
@@ -194,10 +237,16 @@ def budget_single_pass_backend(
     *,
     clock: Any = time.monotonic,
     deadline: float | None = None,
+    reserve_request: Callable[[], int | None] | None = None,
 ) -> SinglePassBudgetBackend:
     if isinstance(backend, SinglePassBudgetBackend):
         return backend
-    return SinglePassBudgetBackend(backend, clock=clock, deadline=deadline)
+    return SinglePassBudgetBackend(
+        backend,
+        clock=clock,
+        deadline=deadline,
+        reserve_request=reserve_request,
+    )
 
 
 __all__ = [
