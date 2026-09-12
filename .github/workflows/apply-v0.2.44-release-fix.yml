@@ -1,0 +1,61 @@
+name: Apply v0.2.44 release fix
+
+on:
+  push:
+    branches: [release/v0.2.44-extraction-target-fix]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply remaining latency-target fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check .github/memleaf-v0.2.44-remaining.patch
+          git apply .github/memleaf-v0.2.44-remaining.patch
+      - name: Finalize v0.2.44 metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          replacements = {
+              Path('CHANGELOG.md'): [('## Unreleased', '## 0.2.44 — 2026-09-12')],
+              Path('README.md'): [('> **版本：0.2.43。**', '> **版本：0.2.44。**')],
+              Path('README.en.md'): [('> **Version: 0.2.43.**', '> **Version: 0.2.44.**')],
+              Path('pyproject.toml'): [('version = "0.2.43"', 'version = "0.2.44"')],
+              Path('src/memleaf/__init__.py'): [('__version__ = "0.2.43"', '__version__ = "0.2.44"')],
+              Path('src/memleaf/hermes_provider/plugin.yaml'): [('version: 0.2.43', 'version: 0.2.44')],
+          }
+          for path, pairs in replacements.items():
+              text = path.read_text(encoding='utf-8')
+              for old, new in pairs:
+                  if old not in text:
+                      raise SystemExit(f'missing release marker {old!r} in {path}')
+                  text = text.replace(old, new, 1)
+              path.write_text(text, encoding='utf-8')
+          PY
+      - name: Remove one-shot release helpers
+        shell: bash
+        run: |
+          rm .github/memleaf-v0.2.44-remaining.patch
+          rm .github/workflows/apply-v0.2.44-release-fix.yml
+      - name: Commit completed candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git diff --cached --check
+          git commit -m "fix: make 10s extraction target advisory"
+          git push origin HEAD:release/v0.2.44-extraction-target-fix
