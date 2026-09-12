@@ -13,6 +13,21 @@ from typing import Any
 from .llm import CallableBackend, ModelRouter
 
 
+def _callable_protocol_override(backend: CallableBackend) -> bool | None:
+    """Return a caller-declared protocol override for callback adapters.
+
+    Raw callbacks default to the unified B3 contract. A callback may set
+    ``single_pass_protocol = False`` when it intentionally implements the
+    legacy staged test/compatibility protocol. Product code never needs this
+    for ordinary host callbacks; the escape hatch prevents capability
+    inference from rewriting explicitly versioned compatibility fixtures.
+    """
+
+    callback = getattr(backend, "callback", None)
+    value = getattr(callback, "single_pass_protocol", None)
+    return value if isinstance(value, bool) else None
+
+
 def _direct_protocol_capable(backend: Any) -> bool:
     """Return whether one concrete backend can speak the B3 output contract."""
 
@@ -20,12 +35,19 @@ def _direct_protocol_capable(backend: Any) -> bool:
         return False
     if getattr(backend, "single_pass_safe", False) is True:
         return True
-    if getattr(backend, "single_pass_protocol", False) is True:
+    declared = getattr(backend, "single_pass_protocol", None)
+    if isinstance(declared, bool):
+        return declared
+    if isinstance(backend, CallableBackend):
+        override = _callable_protocol_override(backend)
+        if override is not None:
+            return override
+        # Raw Python callbacks are adapted by ModelExecutor into
+        # CallableBackend. They can consume memleaf's B3 prompt, but are not
+        # strict-deadline safe because caller-owned code may ignore
+        # timeout/cancellation entirely.
         return True
-    # Raw Python callbacks are adapted by ModelExecutor into CallableBackend.
-    # They can consume memleaf's B3 prompt, but they are not strict-deadline
-    # safe because caller-owned code may ignore timeout/cancellation entirely.
-    return isinstance(backend, CallableBackend)
+    return False
 
 
 def supports_single_pass_protocol(backend: Any) -> bool:
@@ -41,14 +63,11 @@ def supports_single_pass_protocol(backend: Any) -> bool:
     if backend.mode == "host":
         return _direct_protocol_capable(backend.host)
 
-    # Auto mode may fall through from host to API inside one logical complete
-    # call. Select B3 only when every route that can actually be reached speaks
-    # the same protocol. This remains weaker than ``single_pass_safe``.
-    if backend.host is not None:
-        if not _direct_protocol_capable(backend.host):
-            return False
-        return backend.api is None or _direct_protocol_capable(backend.api)
-    return _direct_protocol_capable(backend.api)
+    # B3 auto routing is fixed to the first reachable route: ModelRouter does
+    # not perform hidden host->API fallback for purpose="single_pass". Only
+    # the actually selected route therefore needs to speak the B3 contract.
+    selected = backend.host if backend.host is not None else backend.api
+    return _direct_protocol_capable(selected)
 
 
 def _direct_requires_inline_system(backend: Any) -> bool:
@@ -75,13 +94,8 @@ def requires_inline_single_pass_system(backend: Any) -> bool:
     if backend.mode == "host":
         return _direct_requires_inline_system(backend.host)
 
-    # Auto routing may execute host first and API second. If either reachable
-    # route is a legacy callback, use one self-contained prompt that survives
-    # both the prompt-only host call and any later fallback.
-    return (
-        _direct_requires_inline_system(backend.host)
-        or _direct_requires_inline_system(backend.api)
-    )
+    selected = backend.host if backend.host is not None else backend.api
+    return _direct_requires_inline_system(selected)
 
 
 __all__ = [
