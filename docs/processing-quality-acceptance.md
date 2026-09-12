@@ -2,6 +2,11 @@
 
 This document defines acceptance for automatic memory extraction without treating one validation layer as proof of another.
 
+The deterministic suite and acceptance helpers described below are maintained
+locally and are not committed or shipped. Remote CI currently validates package
+construction and installed command entry points only; the layers below are not
+automatically exercised by that workflow.
+
 ## Invariants
 
 - Markdown under `knowledge/` remains the active-memory source of truth; `history/` remains historical state.
@@ -45,9 +50,12 @@ Required checks include:
 
 Passing this layer proves only the deterministic contracts under test.
 
-### 2. Cross-platform CI and MCP/background-runtime verification
+### 2. Cross-platform local regression and MCP/background-runtime verification
 
-Run the repository's supported OS matrix and the process-job/MCP tests. Verify that detached worker status exposes the bounded metrics, reruns aggregate metrics safely, and no model call is made while the Vault write lock is held.
+Run the maintained local-only test suite on supported OSes and the
+process-job/MCP tests. Verify that detached worker status exposes the bounded
+metrics, reruns aggregate metrics safely, and no model call is made while the
+Vault write lock is held.
 
 Passing this layer proves the tested runtime paths and platforms. It does not prove that a real model will always extract every business fact.
 

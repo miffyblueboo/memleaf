@@ -42,9 +42,8 @@ configure MCP/hooks but must report `processing_status=model_route_required`
 and require an explicit memleaf model-route setup before automatic extraction is
 considered ready. This keeps DeepSeek and other custom Codex providers untouched.
 
-`tests/test_host_runtime_contract.py` is the host-neutral regression contract.
-A future host should satisfy that contract without adding another copy of the
-memory lifecycle.
+A future host should satisfy the host-neutral runtime contract without adding
+another copy of the memory lifecycle.
 
 ## Current integration model
 
@@ -85,20 +84,14 @@ The only maintained provider implementation is:
 
 - `src/memleaf/hermes_provider/__init__.py`
 
-All installers and provider tests must use this packaged source directly; do
-not add a second checked-in Python implementation under `integrations/`.
+All installers and provider integrations must use this packaged source directly;
+do not add a second checked-in Python implementation under `integrations/`.
 
-## Required Windows regression gate
+## Windows verification boundary
 
-Do not consider Windows support verified from package installation alone.
-
-`tests/test_hermes_stdio_transport.py` must run on Windows and exercise the
-real installed `memleaf-mcp` subprocess through the provider's `_MCPClient`.
-It verifies `stats`, `scope_catalog`, both visible-turn capture calls, and
-the resulting inbox file.
-
-Windows CI currently runs this acceptance test on Python 3.11, 3.12, and 3.13.
-Linux continues to run the full test suite.
+Remote CI builds the package on Linux and smoke-checks the installed commands;
+it does not run the local-only Windows regression suite. Do not report Windows
+support as verified by CI alone.
 
 ## 0.1.6 upgrade invariant
 
@@ -118,8 +111,8 @@ exists but is malformed or contains an invalid Vault value, fail closed instead
 of falling through to another path. This prevents an upgrade from appearing to
 "lose" memories merely because Hermes was silently repointed to a fresh Vault.
 
-`tests/test_upgrade_preserves_vault.py` is part of the Windows acceptance
-matrix and must remain covered.
+The upgrade invariant should remain covered by the local-only regression suite;
+remote CI does not execute that suite.
 
 ## Other Windows invariants
 
@@ -135,9 +128,9 @@ matrix and must remain covered.
 ## Release workflow
 
 A release commit on `main` must start with `release: v<version>`.
-CI must pass Linux tests, Windows acceptance, and packaging before GitHub Release
-creation. The separate `Publish to PyPI` workflow then publishes with PyPI
-Trusted Publishing / OIDC.
+CI's package build and installed-command smoke checks must pass before GitHub
+Release creation. The separate `Publish to PyPI` workflow then publishes with
+PyPI Trusted Publishing / OIDC.
 
 The CI release step is idempotent. If the tag's GitHub Release already exists,
 it resolves that tag to a commit and fails unless the commit equals the current
@@ -157,13 +150,12 @@ Release documentation policy:
 - Do not add per-version `RELEASE_NOTES_*.md` files to the repository.
 - GitHub Release notes are generated from the matching `CHANGELOG.md` section.
 - Keep `README.md` and `README.en.md` on the current public version only.
-- Keep `RELEASE_CHECKLIST.md` as the reusable release SOP.
 
 Before the next release, update the version in package metadata, both provider
-manifests, version-sensitive tests, CHANGELOG, and both READMEs. The release
-commit subject must be exactly `release: v<version>`; CI reads the version from
-`pyproject.toml`, validates that subject, extracts the matching CHANGELOG
-section, creates the GitHub Release, and then the separate OIDC workflow
-publishes to PyPI.
+manifests, the local-only version-sensitive test suite, CHANGELOG, and both
+READMEs. The release commit subject must be exactly `release: v<version>`.
+CI reads the version from `pyproject.toml`, validates that subject, extracts
+the matching CHANGELOG section, creates the GitHub Release, and then the
+separate OIDC workflow publishes to PyPI.
 
 PyPI versions are immutable. Never attempt to overwrite a published version.

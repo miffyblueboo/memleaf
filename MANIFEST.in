@@ -4,9 +4,8 @@ include install.sh
 include install.ps1
 include README.md
 include README.en.md
-include RELEASE_CHECKLIST.md
-include IMPLEMENTATION_PLAN.md
-recursive-include tests *.py
 recursive-include examples *.md *.ndjson *.py
+recursive-exclude examples *_acceptance.py
+prune tests
 
 include docs/*.md

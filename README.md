@@ -432,17 +432,9 @@ history:
 - 选择 API/云端模型后，模型处理输入会离开本机并发送给该提供方；
 - `context()` 或无宿主绑定的客户端只能获得单页边界，不能宣称具备跨轮硬预算。
 
-## 开发与验证
+## 开发与构建
 
-要求 Python 3.11+。本地运行测试：
-
-```bash
-PYTHONPATH=src python3.11 -m unittest discover -s tests -p 'test_*.py' -v
-python3.11 -m compileall -q src tests examples
-git diff --check
-```
-
-GitHub Actions 覆盖 Linux 与 Windows 的 Python 3.11、3.12、3.13 测试，并验证 wheel/source distribution 构建、源码包测试和 Windows PowerShell 安装器语法。构建发行包需要 `build`：
+要求 Python 3.11+。GitHub Actions 在 Python 3.12 上构建 wheel 和 source distribution，并对安装后的包、命令入口和版本信息做冒烟检查。构建发行包需要 `build`：
 
 ```bash
 python -m pip install build

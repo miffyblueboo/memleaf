@@ -434,17 +434,9 @@ Directories are normally created with mode `0700`, and files are stored as plain
 - If an API or cloud model is selected, model-processing input leaves the machine and is sent to that provider.
 - `context()` and clients without a host-bound retrieval turn only have per-page limits; they cannot claim cross-turn hard budgets.
 
-## Development and verification
+## Development and builds
 
-Python 3.11+ is required. Run locally:
-
-```bash
-PYTHONPATH=src python3.11 -m unittest discover -s tests -p 'test_*.py' -v
-python3.11 -m compileall -q src tests examples
-git diff --check
-```
-
-GitHub Actions covers Python 3.11, 3.12, and 3.13 on Linux and Windows, plus wheel/source-distribution builds, source-archive tests, and PowerShell installer syntax validation. Build packages with:
+Python 3.11+ is required. GitHub Actions builds the wheel and source distribution on Python 3.12, then smoke-checks the installed package, CLI entry points, and version commands. Build packages with:
 
 ```bash
 python -m pip install build

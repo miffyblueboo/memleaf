@@ -122,11 +122,15 @@ the preview. There is deliberately no apply-preview command.
 
 ## Verification boundaries
 
+The regression suite and acceptance helpers referenced here are maintained
+locally and are not included in this repository or its source distribution.
+Remote CI validates package construction and installed command entry points only.
+
 Deterministic backends test schema and filesystem behavior, not hosted-model
-accuracy. tests/semantic_fixtures.py adapts prescribed old Gate judgments to the
-quote protocol for update/history/maintenance tests. It does not run in product
-code and is not proof those judgments are semantically sound. New adversarial
-protocol tests choose their quotations explicitly. No model score or absolute
+accuracy. The local-only `tests/semantic_fixtures.py` adapts prescribed old Gate
+judgments to the quote protocol for update/history/maintenance tests. It does
+not run in product code and is not proof those judgments are semantically sound.
+New adversarial protocol tests choose their quotations explicitly. No model score or absolute
 "all languages/all scenarios" accuracy claim is made.
 
 Before release, separately inspect live Model Route behavior on held-out real
@@ -142,20 +146,23 @@ that acceptance.
 Windows processing-owner liveness is queried through a process handle with
 SYNCHRONIZE access, never by sending a signal. Shared-Vault writes use a
 native byte-range lock between processes, not only a Python thread mutex.
-Native child-process tests run on Linux, macOS and Windows.
+The local-only Python suite is intended to run on all three OS families; remote
+CI does not exercise it. Native child-process tests cover Linux, macOS and
+Windows when run locally.
 
-The full Python suite runs on all three OS families. Only the `install.sh`
-shell-harness class is POSIX-only; Windows retains installation, upgrade,
-PowerShell syntax, host lifecycle and native Codex acceptance. Test launchers
-use native `.cmd` wrappers on Windows. Byte-preservation assertions compare
-actual before/after bytes, including CRLF. POSIX mode-bit checks are conditional:
-Windows file privacy follows the Vault directory's inherited ACLs, and Unix
-`0600` must not be interpreted as proof of a Windows owner-only DACL.
+Only the `install.sh` shell-harness class is POSIX-only; local Windows checks
+cover installation, upgrade, PowerShell syntax, host lifecycle and native Codex
+acceptance. Test launchers use native `.cmd` wrappers on Windows.
+Byte-preservation assertions compare actual before/after bytes, including CRLF.
+POSIX mode-bit checks are conditional: Windows file privacy follows the Vault
+directory's inherited ACLs, and Unix `0600` must not be interpreted as proof of a
+Windows owner-only DACL.
 
-Real-model acceptance requires an explicit model route in repository Actions:
-secret `MEMLEAF_LIVE_MODEL_TOKEN` and variables `MEMLEAF_LIVE_BASE_URL` and
-`MEMLEAF_LIVE_MODEL`. Missing configuration is a blocked acceptance result,
-not a passing semantic test. Never publish based only on deterministic mocks.
+Real-model acceptance requires an explicitly configured model route using
+`MEMLEAF_LIVE_MODEL_TOKEN`, `MEMLEAF_LIVE_BASE_URL`, and `MEMLEAF_LIVE_MODEL`.
+Live acceptance tooling is maintained locally and is not run by remote CI.
+Missing configuration is a blocked acceptance result, not a passing semantic
+test. Never publish based only on deterministic mocks.
 
 ## Capture policy
 

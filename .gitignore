@@ -31,3 +31,11 @@ htmlcov/
 # Local acceptance evidence and private-vault cleanup notes
 HERMES_MCP_R3_ACCEPTANCE.md
 MEMORY_CLEANUP_CANDIDATES.md
+
+# Local-only tests, acceptance helpers, and planning artifacts
+/tests/
+/examples/live_core_lifecycle_acceptance.py
+/examples/live_processing_acceptance.py
+/IMPLEMENTATION_PLAN.md
+/RELEASE_CHECKLIST.md
+/docs/archive/V2_IMPLEMENTATION_PLAN.md
