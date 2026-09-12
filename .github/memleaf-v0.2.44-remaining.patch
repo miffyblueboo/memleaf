@@ -1,0 +1,307 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 6750573666355ccd68980080db94a306cf5678a1..7275ea3172a12970a18c9886f8de7e2ebefcea70 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,6 +1,13 @@
+ # Changelog
+ 
+ All notable changes to memleaf are documented here.
++
++## Unreleased
++
++- Correct the extraction latency policy: ten seconds is an advisory performance target, not a cancellation or commit deadline. Remove the fixed six-second primary cap and eight-second shared window; single-pass HTTP requests now honor `llm.request_timeout`, including the one bounded format repair.
++- Accept valid, Core-checked results after the target and recover frozen background plans without expiring them by old wall-clock timestamps. Keep durable request counts, damaged-state handling, revision/ownership validation and normal transport errors intact.
++- Add structural per-turn extraction timing to synchronous results and background job result/error summaries. Track planning/commit time, slow attempts and failed attempts separately; a fast failure is not counted as successful target achievement. No prompt, response, credential or memory body is added to these metrics.
++- Keep tests local-only and leave the hosted build/smoke CI policy unchanged. Real-provider latency and quality acceptance remain separate; removing premature cancellation is not a measured ten-second performance claim.
+ 
+ ## 0.2.43 — 2026-09-12
+ 
+diff --git a/README.en.md b/README.en.md
+index bfc98417cb42a29ef6099c0477f568a3cba81606..f9788a863b35de2e82a28fc0043cf0cd88c403e8 100644
+--- a/README.en.md
++++ b/README.en.md
+@@ -63,6 +63,8 @@
+ Hermes uses a native MemoryProvider for lifecycle handling and obtains the Scope Map through MCP; its retrieval gate is a Soft Gate and cannot promise to block every answer that skipped retrieval.
+ 
+ ## Memory admission and maintenance
++
++**Ten seconds is an extraction performance target, not a failure deadline.** HTTP requests honor `llm.request_timeout` (120 seconds by default). A valid, Core-checked response is not discarded just because processing exceeds ten seconds. Single-pass planning, bounded repair and per-turn commits remain; completion and latency are measured separately. See [extraction latency and timeouts](docs/extraction-latency.md).
+ 
+ memleaf does not save every sentence. When a complete visible user + assistant turn is processed, the model first evaluates whether it has concrete future reuse value:
+ 
+diff --git a/README.md b/README.md
+index 12220a1736d64c09e961db5ec40acb9e2f8264a9..6a3d53140d5da5d88494a05879871e3ffabb14ab 100644
+--- a/README.md
++++ b/README.md
+@@ -65,6 +65,8 @@
+ Hermes 使用原生 MemoryProvider 维护生命周期，并通过 MCP 获取 Scope Map；Hermes 的检索门控是 Soft Gate，不能宣称阻止所有未检索回答。
+ 
+ ## 记忆提炼规则
++
++**10 秒是自动提炼的性能目标，不是失败阈值。** HTTP 请求遵循 `llm.request_timeout`（默认 120 秒）；正常返回且通过 Core 校验的结果不会仅因超过 10 秒而丢弃。模型单次请求、有限修复和逐轮提交保留，耗时与是否完成分别统计。详见 [提炼耗时与超时](docs/extraction-latency.md)。
+ 
+ memleaf 不把每句话都保存为记忆。处理一轮完整的 user + assistant 可见文本时，模型先判断是否存在明确的未来复用价值：
+ 
+diff --git a/docs/extraction-latency.md b/docs/extraction-latency.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..46c204583ad6140503cd3bf92e503421b486a14a
+--- /dev/null
++++ b/docs/extraction-latency.md
+@@ -0,0 +1,50 @@
++# 提炼耗时与请求超时
++
++## 性能目标与失败条件分开
++
++日常自动提炼以 10 秒内完成为性能目标，但到第 10 秒不会主动报失败，也不会丢弃已正常返回并通过 Core 校验的结果。超过目标说明本次处理偏慢，不说明记忆无效或没有需要保存的信息。
++
++v0.2.42 / v0.2.43 的固定 6 秒首请求、8 秒准备加模型窗口、10 秒提交前拒绝属于错误的目标实现，当前修正移除了这些时间闸门。修正本身不代表真实模型的 P50/P95 已达标。
++
++HTTP 请求使用已有配置：
++
++```yaml
++llm:
++  request_timeout: 120
++```
++
++这个参数仍按现有规则校验（1～240 秒，可用小数），并传到 HTTP transport。single-pass 不再静默把它缩短为 6 秒。第二次结构修复请求使用相同的配置，不再只分到原来 8 秒窗口的剩余时间。请求超时是 transport 的等待限制，不是整个后台任务的端到端完成保证；host/Python callback 仍由其宿主负责请求超时与取消。
++
++真正的请求超时、网络故障、无效模型输出、目标版本冲突、写入失败仍然是失败或未完成，不能伪装为 `NO_CHANGE`。相应 inbox、journal 和恢复锚点保留，是否提交仍由 Core 校验决定。
++
++## 保留的调用与提交约束
++
++普通 B3 自动提炼仍以一次结构化模型调用为正常路径，格式/结构修复最多一次。固定安全路由保留实际 outbound 请求计数和持久化预占，不增加隐藏 host-to-API fallback。并未恢复 Gate → Summary → Review 多阶段主路径。
++
++每轮仍先读取持久状态、规划、校验、提交，再处理下一轮；一轮超过目标不会占用下一轮的“时间许可”。compaction 仍不在普通提炼的关键路径上。
++
++旧 `extraction_request_budget.json` 中的 `started_at_epoch` 可以兼容读取，但不再作为请求或提交的过期时间。已消耗的 `requests` 不清零，损坏的计数账本也不会被当作空文件重建。FrozenTurn 的恢复不需要重新申请模型时间窗口；现有内容摘要、版本、所有权和写入校验保持不变。
++
++这不是一个自动重放所有历史失败任务的迁移。旧 inbox 不会被清空；需要通过正常处理/重试入口继续处理，不能删除正确性状态来强行重新获取请求额度。
++
++## 只记录结构化耗时
++
++处理结果新增 `extraction_metrics`，后台 `process_status` 的 result/error 和尝试汇总保留同样的数字字段：
++
++| 字段 | 含义 |
++| --- | --- |
++| `target_duration_ms` | 固定观测目标 10000 毫秒，不参与失败判断 |
++| `turn_count` | 本次测量的 turn 尝试数量 |
++| `failed_turn_count` | 抛出处理异常的 turn 尝试数量 |
++| `over_target_turn_count` | 耗时超过目标的 turn 尝试数量，可能成功也可能失败 |
++| `successful_within_target_count` | 无处理异常且在目标内结算的尝试数量 |
++| `total_duration_ms` | 被测 turn 尝试的耗时之和 |
++| `max_turn_duration_ms` | 最慢一次 turn 尝试耗时 |
++| `planning_duration_ms` | 读取状态、准备上下文、模型调用和本地计划校验耗时 |
++| `commit_duration_ms` | 从进入提交阶段到提交和预算清理返回的耗时 |
++
++每轮计时从选中该 turn 后、读取其处理状态前开始。它不包括排队、worker 启动及 `process()` 开头的整批 inbox claim 扫描；不能把该指标冒充用户可见端到端耗时。跨 worker 重启会产生新的尝试，旧进程的 wall-clock 起点不再限制新进程执行。
++
++“无处理异常”包括合法 `NO_CHANGE` 和正常返回的部分处理；语义完整性仍由既有 `coverage_status`、deferred 数量、`memories_written` 和任务状态判断。因此耗时统计不替代提炼质量验收。快速失败不计入 `successful_within_target_count`。
++
++`model_metrics` 继续分别提供模型请求耗时、调用/修复次数和输入输出长度等信息。以上结构化统计不新增正文、prompt、response 或凭证存储。
+diff --git a/src/memleaf/process_jobs.py b/src/memleaf/process_jobs.py
+index f884176c9e2600cdf76a6d2ee3f924eecd9c09fd..25f56d1dfdbf35498e3f652ce0c79790acbea959 100644
+--- a/src/memleaf/process_jobs.py
++++ b/src/memleaf/process_jobs.py
+@@ -21,6 +21,7 @@
+ from typing import Any, Mapping
+ 
+ from .locking import atomic_write_json, read_json
++from .extraction_budget import aggregate_extraction_metrics
+ from .service import Memleaf
+ from .vault import Vault, safe_component
+ 
+@@ -396,6 +397,9 @@
+     model_metrics = _safe_model_metrics(value.get("model_metrics"))
+     if model_metrics:
+         result["model_metrics"] = model_metrics
++    extraction_metrics = value.get("extraction_metrics")
++    if isinstance(extraction_metrics, Mapping):
++        result["extraction_metrics"] = aggregate_extraction_metrics([extraction_metrics])
+     for key in ("coverage_status", "external_evidence_status"):
+         if isinstance(value.get(key), str):
+             result[key] = value[key][:80]
+@@ -483,6 +487,7 @@
+     if ids:
+         aggregate["memory_ids"] = ids
+     metric_values: list[Mapping[str, Any]] = []
++    extraction_values: list[Mapping[str, Any]] = []
+     for attempt in attempts:
+         if not isinstance(attempt, Mapping):
+             continue
+@@ -493,6 +498,11 @@
+             value = container.get("model_metrics")
+             if isinstance(value, Mapping):
+                 metric_values.append(value)
++            extraction = container.get("extraction_metrics")
++            if isinstance(extraction, Mapping):
++                extraction_values.append(extraction)
++    if extraction_values:
++        aggregate["extraction_metrics"] = aggregate_extraction_metrics(extraction_values)
+     metrics = _aggregate_model_metrics(metric_values)
+     if metrics:
+         aggregate["model_metrics"] = metrics
+@@ -529,6 +539,9 @@
+     model_metrics = _safe_model_metrics(getattr(error, "model_metrics", None))
+     if model_metrics:
+         result["model_metrics"] = model_metrics
++    extraction_metrics = getattr(error, "extraction_metrics", None)
++    if isinstance(extraction_metrics, Mapping):
++        result["extraction_metrics"] = aggregate_extraction_metrics([extraction_metrics])
+     return result
+ 
+ 
+diff --git a/src/memleaf/processing.py b/src/memleaf/processing.py
+index cbc4a540bf33c8d6c74a4dec6b5ca292ac4530a0..d8375d8cf22a7c6f339f7d83cf77454ad2b6dfc1 100644
+--- a/src/memleaf/processing.py
++++ b/src/memleaf/processing.py
+@@ -16,10 +16,9 @@
+ from .planning_context import PlanningContext
+ from .single_pass_memory_planner import SinglePassMemoryPlanner
+ from .memory_commit import MemoryCommitter
+-from .extraction_budget import ExtractionWorkBudget
++from .extraction_budget import ExtractionTiming, aggregate_extraction_metrics, budget_single_pass_backend
+ from .extraction_work_state import (
+     active_background_work_id,
+-    begin_turn_budget,
+     complete_turn_budget,
+     reserve_model_request,
+ )
+@@ -32,6 +31,7 @@
+ class Processor:
+     def __init__(self, service: Any):
+         self.service = service
++        self._extraction_timings: list[dict[str, int]] = []
+         self.writer = MemoryWriter(service)
+         self.audit = TurnAudit()
+         self.model = ModelExecutor(service)
+@@ -62,6 +62,8 @@
+ 
+         try:
+             setattr(error, "model_metrics", self.model.metrics())
++            if self._extraction_timings:
++                setattr(error, "extraction_metrics", aggregate_extraction_metrics(self._extraction_timings))
+         except Exception:
+             return
+ 
+@@ -193,6 +195,7 @@
+         router: Any = None,
+         scope: Any = None,
+     ) -> dict[str, Any]:
++        self._extraction_timings = []
+         if source is not None:
+             source = safe_component(source, "source")
+         if session_id is not None:
+@@ -226,6 +229,7 @@
+                 "deferred_candidates": deferred_candidates,
+                 "deferred_inbox_turns": deferred_turns,
+                 "pending_inbox_turns": 0,
++                "extraction_metrics": aggregate_extraction_metrics(()),
+                 "model_metrics": self.model.metrics(),
+                 "compaction": self._critical_path_compaction_status(),
+             }
+@@ -259,13 +263,13 @@
+         self.audit._evidence_by_turn = {}
+         self.audit._planned_settled_sources = set()
+         current_index = 0
++        turn_timing: ExtractionTiming | None = None
+         try:
+             for current_index, snapshot in enumerate(snapshots):
+                 self.audit._planned_related = []
+                 self.audit._planned_settled_sources = set()
+                 durable_turn_budget_id = self._turn_budget_id(snapshot)
+-                work_budget: ExtractionWorkBudget | None = None
+-                strict_budget = False
++                turn_timing = ExtractionTiming()
+ 
+                 with self.service.vault.lock():
+                     processed = _read_processed(self.service.vault.processed_state_path)
+@@ -282,14 +286,6 @@
+                     self.audit._dispositions_by_turn[ref] = restored["candidate_dispositions"]
+                     self.audit._evidence_by_turn[ref] = restored["evidence_dispositions"]
+                     self.audit._deferred_by_turn[ref] = restored["deferred_candidates"]
+-                    if background_work_id is not None:
+-                        elapsed = begin_turn_budget(
+-                            self.service.vault,
+-                            work_id=background_work_id,
+-                            turn_id=durable_turn_budget_id,
+-                        )
+-                        work_budget = ExtractionWorkBudget(elapsed_seconds=elapsed)
+-                        strict_budget = True
+                 elif self._turn_writes_disabled(snapshot.turn):
+                     turn_requests, turn_scopes = [], []
+                 else:
+@@ -297,34 +293,22 @@
+                         backend = self.model._resolve_backend(model=model, router=router)
+                     turn_backend = backend
+                     if getattr(backend, "single_pass_safe", False) is True:
+-                        elapsed = 0.0
+                         reserve_request = None
+                         if background_work_id is not None:
+-                            elapsed = begin_turn_budget(
+-                                self.service.vault,
+-                                work_id=background_work_id,
+-                                turn_id=durable_turn_budget_id,
+-                            )
+                             reserve_request = lambda work_id=background_work_id, turn_id=durable_turn_budget_id: reserve_model_request(
+                                 self.service.vault,
+                                 work_id=work_id,
+                                 turn_id=turn_id,
+                             )
+-                        work_budget = ExtractionWorkBudget(elapsed_seconds=elapsed)
+-                        turn_backend = work_budget.wrap_backend(
++                        turn_backend = budget_single_pass_backend(
+                             backend,
+                             reserve_request=reserve_request,
+                         )
+-                        strict_budget = True
+                     turn_requests, turn_scopes = self.planner._collect_turn_outputs(
+                         turn_backend, snapshot.turn, state, scope=scope
+                     )
+ 
+-                if strict_budget:
+-                    if work_budget is None:
+-                        raise ProcessingError("missing extraction work budget")
+-                    work_budget.ensure_before_commit()
+-
++                turn_timing.begin_commit()
+                 ref = (snapshot.turn.source, snapshot.turn.session_id, snapshot.turn.turn_key)
+                 ids = self.committer._commit_success(
+                     [snapshot],
+@@ -344,7 +328,11 @@
+                     )
+                 all_ids.extend(ids)
+                 metadata_merged += self.writer.last_metadata_merged
++                self._extraction_timings.append(turn_timing.finish())
++                turn_timing = None
+         except Exception as error:
++            if turn_timing is not None:
++                self._extraction_timings.append(turn_timing.finish(failed=True))
+             self._attach_failure_metrics(error)
+             self.journal._mark_failed(snapshots[current_index:], error)
+             raise
+@@ -371,6 +359,7 @@
+             "deferred_candidates": deferred_candidates,
+             "deferred_inbox_turns": deferred_turns,
+             "pending_inbox_turns": pending_inbox_turns,
++            "extraction_metrics": aggregate_extraction_metrics(self._extraction_timings),
+             "model_metrics": self.model.metrics(),
+             "compaction": compaction,
+         }
+diff --git a/src/memleaf/single_pass_plan.py b/src/memleaf/single_pass_plan.py
+index af50edfaf7f5f48979e46862e65e096bb688e787..068958ec73a19c249fb8d174c43e4a69d3f1668b 100644
+--- a/src/memleaf/single_pass_plan.py
++++ b/src/memleaf/single_pass_plan.py
+@@ -491,10 +491,9 @@
+     if not callable(complete):
+         raise TypeError("model executor does not support JSON stages")
+     local_rows = list(local_by_key.values())
+-    # Strict transport budgeting is separate from B3 protocol capability.
+-    # Processor normally pre-wraps safe production routes with the turn's
+-    # shared deadline. Direct/test callers still receive the default budget
+-    # only when the backend explicitly advertises ``single_pass_safe``.
++    # Count requests separately from protocol capability. The wrapper does
++    # not override llm.request_timeout or reject results after the 10s target.
++    # Processor normally pre-wraps safe routes with durable request accounting.
+     budgeted_backend = (
+         budget_single_pass_backend(backend)
+         if hasattr(backend, "complete")
