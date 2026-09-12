@@ -1,8 +1,9 @@
 """Latency and outbound-request budget for unified memory extraction.
 
-The budget is deliberately attached to one logical single-pass stage instead
-of to an HTTP adapter.  That keeps the product invariant (at most two actual
-model requests) independent from provider-specific prompt/transport details.
+The budget is deliberately attached to one logical single-pass turn instead
+of to an HTTP adapter.  That keeps the product invariants (at most two actual
+model requests and a bounded end-to-end turn) independent from provider-
+specific prompt/transport details.
 """
 from __future__ import annotations
 
@@ -21,21 +22,35 @@ PRIMARY_REQUEST_MAX_SECONDS = 6.0
 class SinglePassBudgetBackend:
     """Wrap one safe backend with the extraction request/time budget.
 
-    `single_pass_safe` routes are already constrained so one `complete()` maps
-    to one provider request (no host->API fallback).  The wrapper therefore
-    makes the two-call limit a true outbound-request limit for the production
-    B3 route, not merely a parser-attempt count.
+    ``single_pass_safe`` routes are already constrained so one ``complete()``
+    maps to one provider request (no host->API fallback).  The wrapper
+    therefore makes the two-call limit a true outbound-request limit for the
+    production B3 route, not merely a parser-attempt count.
+
+    ``deadline`` is absolute in the supplied monotonic clock.  Supplying it is
+    what lets preparation time consume the same turn budget instead of
+    starting a fresh eight-second clock only when the HTTP call begins.
     """
 
     single_pass_safe = True
 
-    def __init__(self, backend: Any, *, clock: Any = time.monotonic):
+    def __init__(
+        self,
+        backend: Any,
+        *,
+        clock: Any = time.monotonic,
+        deadline: float | None = None,
+    ):
         if not hasattr(backend, "complete"):
             raise TypeError("single-pass backend must expose complete()")
         self._backend = backend
         self._clock = clock
         self._started = float(clock())
-        self._deadline = self._started + MODEL_TIME_BUDGET_SECONDS
+        self._deadline = (
+            self._started + MODEL_TIME_BUDGET_SECONDS
+            if deadline is None
+            else float(deadline)
+        )
         self._requests = 0
 
     @property
@@ -128,10 +143,61 @@ class SinglePassBudgetBackend:
         return dict(value) if isinstance(value, Mapping) else {}
 
 
-def budget_single_pass_backend(backend: Any) -> SinglePassBudgetBackend:
+class ExtractionWorkBudget:
+    """One monotonic budget beginning before preparation for a visible turn.
+
+    The first eight seconds are available to preparation plus model work.  The
+    remaining two seconds are reserved for deterministic validation/commit.
+    If the ten-second total deadline has already elapsed, the turn is not
+    allowed to enter the mutation boundary.
+    """
+
+    def __init__(self, *, clock: Any = time.monotonic):
+        self._clock = clock
+        self._started = float(clock())
+        self._model_deadline = self._started + MODEL_TIME_BUDGET_SECONDS
+        self._total_deadline = self._started + TARGET_TOTAL_SECONDS
+
+    @property
+    def started(self) -> float:
+        return self._started
+
+    @property
+    def model_deadline(self) -> float:
+        return self._model_deadline
+
+    @property
+    def total_deadline(self) -> float:
+        return self._total_deadline
+
+    def remaining_total(self) -> float:
+        return self._total_deadline - float(self._clock())
+
+    def wrap_backend(self, backend: Any) -> SinglePassBudgetBackend:
+        return budget_single_pass_backend(
+            backend,
+            clock=self._clock,
+            deadline=self._model_deadline,
+        )
+
+    def ensure_before_commit(self) -> None:
+        if self.remaining_total() <= 0:
+            raise ModelError(
+                "single-pass extraction exceeded total deadline before commit",
+                code="model_timeout",
+                stage="single_pass",
+            )
+
+
+def budget_single_pass_backend(
+    backend: Any,
+    *,
+    clock: Any = time.monotonic,
+    deadline: float | None = None,
+) -> SinglePassBudgetBackend:
     if isinstance(backend, SinglePassBudgetBackend):
         return backend
-    return SinglePassBudgetBackend(backend)
+    return SinglePassBudgetBackend(backend, clock=clock, deadline=deadline)
 
 
 __all__ = [
@@ -139,6 +205,7 @@ __all__ = [
     "MODEL_TIME_BUDGET_SECONDS",
     "PRIMARY_REQUEST_MAX_SECONDS",
     "TARGET_TOTAL_SECONDS",
+    "ExtractionWorkBudget",
     "SinglePassBudgetBackend",
     "budget_single_pass_backend",
 ]
