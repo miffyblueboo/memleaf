@@ -14,6 +14,7 @@ from typing import Any, Iterable, Mapping, Optional
 
 from .admission import analyze_turn_evidence, partition_evidence_units, summary_evidence
 from .evidence_policy import retain_tool_evidence
+from .extraction_capability import supports_single_pass_protocol
 from .memory_planner import (
     MemoryPlanner,
     _explicit_project_scope_authorizations,
@@ -261,11 +262,11 @@ class SinglePassMemoryPlanner(MemoryPlanner):
         explicit_candidate: Optional[Mapping[str, Any]] = None,
         scope: Any = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        # Explicit remember is already a single summarize call. Host/custom
-        # callbacks are caller-owned and stay on the proven P3 route. B3 is
-        # activated only for a fixed built-in API route that advertises the
-        # capability explicitly.
-        if explicit or getattr(backend, "single_pass_safe", False) is not True:
+        # Explicit remember already has a proven one-call summarize contract.
+        # Ordinary extraction uses B3 whenever the backend can speak the
+        # protocol. Strict deadline/outbound-request safety is a separate
+        # capability enforced by Processor only for ``single_pass_safe``.
+        if explicit or not supports_single_pass_protocol(backend):
             return super()._collect_turn_outputs(
                 backend,
                 turn,
