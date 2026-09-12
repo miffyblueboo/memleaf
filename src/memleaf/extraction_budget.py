@@ -189,10 +189,11 @@ class ExtractionWorkBudget:
     If the ten-second total deadline has already elapsed, the turn is not
     allowed to enter the mutation boundary.
 
-    ``elapsed_seconds`` restores time already consumed by the same durable
+    ``elapsed_seconds`` restores wall time already consumed by the same durable
     background work item before a worker restart.  The persisted ledger uses a
-    wall clock only to measure that cross-process age; once restored, all new
-    deadline checks remain monotonic inside the current process.
+    wall clock only to derive that cross-process elapsed interval; after this
+    object is constructed, every new deadline check uses the supplied monotonic
+    clock in the current process.
     """
 
     def __init__(
