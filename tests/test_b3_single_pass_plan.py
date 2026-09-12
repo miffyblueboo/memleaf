@@ -284,9 +284,9 @@ class SinglePassPlanTests(unittest.TestCase):
                 validate_memory=validator,
             )
 
-    def test_memory_allows_native_shadow_and_scope_operations(self):
+    def test_memory_keeps_native_shadow_compatibility_but_rejects_scope_operations(self):
         evidence = [unit("u1", "New current state.")]
-        raw = json.dumps({
+        compatible = json.dumps({
             "protocol_version": PROTOCOL_VERSION,
             "items": [{
                 "candidate_id": "c1",
@@ -299,20 +299,45 @@ class SinglePassPlanTests(unittest.TestCase):
                     "title": "Current state",
                     "body": "New current state.",
                     "shadow_native_ids": ["native-1"],
-                    "scope_operations": [],
                 },
             }],
             "no_memory": [],
         })
         result = parse_single_pass_output(
-            raw,
+            compatible,
             evidence_units=evidence,
             local_memories=[],
             lookup_complete=True,
             validate_memory=validator,
         )
         self.assertEqual(result["items"][0]["memory"]["shadow_native_ids"], ["native-1"])
-        self.assertEqual(result["items"][0]["memory"]["scope_operations"], [])
+
+        maintenance_operation = json.dumps({
+            "protocol_version": PROTOCOL_VERSION,
+            "items": [{
+                "candidate_id": "c1",
+                "decision": "CREATE",
+                "type": "fact",
+                "scopes": ["global"],
+                "scope_source": "model",
+                "evidence": [claim("u1", "New current state.")],
+                "memory": {
+                    "title": "Current state",
+                    "body": "New current state.",
+                    "scope_operations": [],
+                },
+            }],
+            "no_memory": [],
+        })
+        with self.assertRaises(ModelOutputError) as caught:
+            parse_single_pass_output(
+                maintenance_operation,
+                evidence_units=evidence,
+                local_memories=[],
+                lookup_complete=True,
+                validate_memory=validator,
+            )
+        self.assertEqual(caught.exception.validation_detail, "unknown_fields")
 
     def test_evidence_coverage_must_be_complete_and_disjoint(self):
         evidence = [unit("u1", "A."), unit("u2", "B.")]
