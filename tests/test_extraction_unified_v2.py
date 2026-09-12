@@ -60,6 +60,7 @@ class _SequentialSinglePassBackend:
 
     def __init__(self):
         self.calls = []
+        self.local_catalog_sizes = []
 
     @staticmethod
     def _payload(prompt):
@@ -74,6 +75,7 @@ class _SequentialSinglePassBackend:
         evidence = [{"unit_id": user["unit_id"], "whole_unit": True, "role": "assertion"}]
         no_memory = [{"unit_id": assistant["unit_id"], "reason": "assistant_restatement"}]
         local = payload["local_memory_catalog"]
+        self.local_catalog_sizes.append(len(local))
         if not local:
             item = {
                 "candidate_id": "database-engine",
@@ -196,8 +198,8 @@ class UnifiedExtractionV2Tests(unittest.TestCase):
             work.ensure_before_commit()
         self.assertEqual(caught.exception.code, "model_timeout")
 
-    def test_process_commits_one_turn_per_session_and_next_call_sees_it(self):
-        with tempfile.TemporaryDirectory(prefix="memleaf-single-turn-") as tempdir:
+    def test_process_commits_each_turn_before_planning_next_turn(self):
+        with tempfile.TemporaryDirectory(prefix="memleaf-sequential-turn-") as tempdir:
             service = Memleaf(Path(tempdir) / "vault")
             backend = _SequentialSinglePassBackend()
             service.capture(
@@ -217,18 +219,14 @@ class UnifiedExtractionV2Tests(unittest.TestCase):
                 "Noted.", event_id="a2",
             )
 
-            first = service.process(source="hermes", session_id="session", model=backend)
-            self.assertEqual(first["processed_turns"], 1)
-            self.assertEqual(first["memories_written"], 1)
-            self.assertEqual(backend.calls, ["single_pass"])
-            active = [record.memory for record in service._read_memories_unlocked("knowledge")]
-            self.assertEqual(len(active), 1)
-            self.assertIn("SQLite", active[0].body)
+            result = service.process(source="hermes", session_id="session", model=backend)
 
-            second = service.process(source="hermes", session_id="session", model=backend)
-            self.assertEqual(second["processed_turns"], 1)
-            self.assertEqual(second["memories_written"], 1)
+            self.assertEqual(result["processed_turns"], 2)
+            self.assertEqual(result["memories_written"], 2)
             self.assertEqual(backend.calls, ["single_pass", "single_pass"])
+            # The second model request must be built from the first turn's
+            # durable commit, not from an in-memory planned overlay.
+            self.assertEqual(backend.local_catalog_sizes, [0, 1])
             active = [record.memory for record in service._read_memories_unlocked("knowledge")]
             self.assertEqual(len(active), 1)
             self.assertIn("PostgreSQL", active[0].body)
