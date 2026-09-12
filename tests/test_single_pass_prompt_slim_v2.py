@@ -29,6 +29,8 @@ class SinglePassPromptSlimV2Tests(unittest.TestCase):
             self.assertIn(required, SINGLE_PASS_SYSTEM)
         self.assertIn("native memory is never an UPDATE/NO_CHANGE target", SINGLE_PASS_SYSTEM)
         self.assertIn("cover all current_evidence", SINGLE_PASS_SYSTEM)
+        self.assertNotIn("scope_operations", SINGLE_PASS_SYSTEM)
+        self.assertNotIn("shadow_native_ids", SINGLE_PASS_SYSTEM)
 
     def test_dynamic_prompt_contains_each_body_once_and_no_hidden_reasoning_request(self):
         unit = EvidenceUnit(
