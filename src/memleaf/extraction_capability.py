@@ -63,11 +63,16 @@ def supports_single_pass_protocol(backend: Any) -> bool:
     if backend.mode == "host":
         return _direct_protocol_capable(backend.host)
 
-    # B3 auto routing is fixed to the first reachable route: ModelRouter does
-    # not perform hidden host->API fallback for purpose="single_pass". Only
-    # the actually selected route therefore needs to speak the B3 contract.
-    selected = backend.host if backend.host is not None else backend.api
-    return _direct_protocol_capable(selected)
+    # Auto mode can expose both routes over its lifetime. Even though the
+    # single-pass call itself is pinned against hidden host->API fallback, B3
+    # capability remains fail-closed unless every configured reachable route
+    # speaks the same protocol. This prevents a later routing-policy change or
+    # route selection from silently changing the output contract.
+    if backend.host is not None:
+        if not _direct_protocol_capable(backend.host):
+            return False
+        return backend.api is None or _direct_protocol_capable(backend.api)
+    return _direct_protocol_capable(backend.api)
 
 
 def _direct_requires_inline_system(backend: Any) -> bool:
@@ -94,8 +99,13 @@ def requires_inline_single_pass_system(backend: Any) -> bool:
     if backend.mode == "host":
         return _direct_requires_inline_system(backend.host)
 
-    selected = backend.host if backend.host is not None else backend.api
-    return _direct_requires_inline_system(selected)
+    # Keep the prompt self-contained whenever either configured auto route is
+    # a prompt-only callback. Capability gating above ensures both routes speak
+    # B3 before automatic extraction chooses this protocol.
+    return (
+        _direct_requires_inline_system(backend.host)
+        or _direct_requires_inline_system(backend.api)
+    )
 
 
 __all__ = [
