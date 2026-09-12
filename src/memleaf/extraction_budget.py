@@ -1,41 +1,29 @@
-"""Latency and outbound-request budget for unified memory extraction.
+"""Outbound-request accounting and advisory extraction latency metrics.
 
-The budget is deliberately attached to one logical single-pass turn instead
-of to an HTTP adapter.  That keeps the product invariants (at most two actual
-model requests and a bounded end-to-end turn) independent from provider-
-specific prompt/transport details.
+Ten seconds is a performance target, not permission to cancel useful work or
+discard a valid memory. The transport owns the configured request timeout;
+this module only limits request count and observes complete-turn latency.
 """
 from __future__ import annotations
 
-import math
 import time
 from collections.abc import Callable
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from .llm import ModelError
 
 
 MAX_MODEL_REQUESTS = 2
 TARGET_TOTAL_SECONDS = 10.0
-MODEL_TIME_BUDGET_SECONDS = 8.0
-PRIMARY_REQUEST_MAX_SECONDS = 6.0
 
 
 class SinglePassBudgetBackend:
-    """Wrap one safe backend with the extraction request/time budget.
+    """Limit one logical B3 turn to two actual provider requests.
 
-    ``single_pass_safe`` routes are already constrained so one ``complete()``
-    maps to one provider request (no host->API fallback).  The wrapper
-    therefore makes the two-call limit a true outbound-request limit for the
-    production B3 route, not merely a parser-attempt count.
-
-    ``deadline`` is absolute in the supplied monotonic clock.  Supplying it is
-    what lets preparation time consume the same turn budget instead of
-    starting a fresh eight-second clock only when the HTTP call begins.
-
-    ``reserve_request`` optionally persists the request ordinal before the
-    outbound call.  Background workers use it so a process restart cannot
-    reopen attempts already consumed by the same durable work item.
+    ``single_pass_safe`` routes map one complete() call to one request, without
+    hidden host-to-API fallback. The optional durable reservation preserves
+    consumed attempts across worker restarts. Neither the first request nor
+    its repair overrides the transport's configured ``llm.request_timeout``.
     """
 
     single_pass_safe = True
@@ -44,8 +32,6 @@ class SinglePassBudgetBackend:
         self,
         backend: Any,
         *,
-        clock: Any = time.monotonic,
-        deadline: float | None = None,
         reserve_request: Callable[[], int | None] | None = None,
     ):
         if not hasattr(backend, "complete"):
@@ -53,13 +39,6 @@ class SinglePassBudgetBackend:
         if reserve_request is not None and not callable(reserve_request):
             raise TypeError("reserve_request must be callable")
         self._backend = backend
-        self._clock = clock
-        self._started = float(clock())
-        self._deadline = (
-            self._started + MODEL_TIME_BUDGET_SECONDS
-            if deadline is None
-            else float(deadline)
-        )
         self._requests = 0
         self._reserve_request = reserve_request
 
@@ -82,9 +61,6 @@ class SinglePassBudgetBackend:
     @property
     def request_count(self) -> int:
         return self._requests
-
-    def _remaining(self) -> float:
-        return self._deadline - float(self._clock())
 
     def _request_ordinal(self, *, purpose: str) -> int:
         if self._requests >= MAX_MODEL_REQUESTS:
@@ -119,55 +95,16 @@ class SinglePassBudgetBackend:
         purpose: str = "",
         temperature: float = 0.0,
     ) -> str:
-        remaining = self._remaining()
-        if remaining <= 0:
-            raise ModelError(
-                "single-pass extraction budget exhausted",
-                code="model_timeout",
-                stage=purpose or "single_pass",
-            )
-        ordinal = self._request_ordinal(purpose=purpose)
-        cap = min(
-            PRIMARY_REQUEST_MAX_SECONDS if ordinal == 1 else remaining,
-            remaining,
-        )
-        if cap <= 0:
-            raise ModelError(
-                "single-pass extraction budget exhausted",
-                code="model_timeout",
-                stage=purpose or "single_pass",
-            )
-        # Count locally only after the durable reservation succeeded. A kill
-        # after this point still leaves the persistent ordinal consumed.
+        self._request_ordinal(purpose=purpose)
+        # Count only after durable reservation succeeds. A kill from this point
+        # onward still consumes that attempt, without imposing a wall deadline.
         self._requests += 1
-
-        set_timeout = getattr(self._backend, "set_call_timeout", None)
-        clear_timeout = getattr(self._backend, "clear_call_timeout", None)
-        if callable(set_timeout):
-            set_timeout(cap)
-        try:
-            value = self._backend.complete(
-                prompt,
-                system=system,
-                purpose=purpose,
-                temperature=temperature,
-            )
-        finally:
-            if callable(clear_timeout):
-                try:
-                    clear_timeout()
-                except Exception:
-                    pass
-
-        # A callback/custom transport may ignore the timeout hook. Such a late
-        # result must never become writable merely because it eventually returned.
-        if self._remaining() < 0:
-            raise ModelError(
-                "single-pass extraction result arrived after deadline",
-                code="model_timeout",
-                stage=purpose or "single_pass",
-            )
-        return value
+        return self._backend.complete(
+            prompt,
+            system=system,
+            purpose=purpose,
+            temperature=temperature,
+        )
 
     def consume_call_metrics(self) -> dict[str, Any]:
         consume = getattr(self._backend, "consume_call_metrics", None)
@@ -180,101 +117,83 @@ class SinglePassBudgetBackend:
         return dict(value) if isinstance(value, Mapping) else {}
 
 
-class ExtractionWorkBudget:
-    """One monotonic budget beginning before preparation for a visible turn.
+class ExtractionTiming:
+    """Observe one processing attempt; never authorize or reject a write.
 
-    The first eight seconds are available to preparation plus model work. The
-    remaining two seconds are reserved for deterministic validation/commit.
-    If the ten-second total deadline has already elapsed, the turn is not
-    allowed to enter the mutation boundary.
-
-    ``elapsed_seconds`` restores wall time already consumed by the same durable
-    background work item before a worker restart. The persisted ledger uses a
-    wall clock only to derive that cross-process elapsed interval; after this
-    object is constructed, every new deadline check uses the supplied monotonic
-    clock in the current process.
+    This monotonic timer includes local planning/context, model work, validation
+    and commit. A worker restart begins a new measured attempt; persisted wall
+    timestamps from older releases are not latency-based write restrictions.
     """
 
-    def __init__(
-        self,
-        *,
-        clock: Any = time.monotonic,
-        elapsed_seconds: float = 0.0,
-    ):
-        if (
-            isinstance(elapsed_seconds, bool)
-            or not isinstance(elapsed_seconds, (int, float))
-            or not math.isfinite(float(elapsed_seconds))
-            or float(elapsed_seconds) < 0
-        ):
-            raise ValueError("elapsed_seconds must be a finite non-negative number")
-        self._clock = clock
-        current = float(clock())
-        elapsed = float(elapsed_seconds)
-        self._started = current - elapsed
-        self._model_deadline = current + (MODEL_TIME_BUDGET_SECONDS - elapsed)
-        self._total_deadline = current + (TARGET_TOTAL_SECONDS - elapsed)
+    def __init__(self, *, clock: Any = None):
+        self._clock = time.monotonic if clock is None else clock
+        self._started = self._clock()
+        self._commit_started: float | None = None
 
-    @property
-    def started(self) -> float:
-        return self._started
+    def begin_commit(self) -> None:
+        self._commit_started = self._clock()
 
-    @property
-    def model_deadline(self) -> float:
-        return self._model_deadline
+    def finish(self, *, failed: bool = False) -> dict[str, int]:
+        ended = self._clock()
+        seconds = max(0.0, ended - self._started)
+        commit_started = self._commit_started
+        planning_end = ended if commit_started is None else commit_started
+        return {
+            "target_duration_ms": int(TARGET_TOTAL_SECONDS * 1000),
+            "turn_count": 1,
+            "failed_turn_count": int(failed),
+            "over_target_turn_count": int(seconds > TARGET_TOTAL_SECONDS),
+            "successful_within_target_count": int(not failed and seconds <= TARGET_TOTAL_SECONDS),
+            "total_duration_ms": int(seconds * 1000),
+            "max_turn_duration_ms": int(seconds * 1000),
+            "planning_duration_ms": int(max(0.0, planning_end - self._started) * 1000),
+            "commit_duration_ms": int(max(0.0, ended - planning_end) * 1000),
+        }
 
-    @property
-    def total_deadline(self) -> float:
-        return self._total_deadline
 
-    def remaining_total(self) -> float:
-        return self._total_deadline - float(self._clock())
+def aggregate_extraction_metrics(values: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """Sum allowlisted numeric metrics; never copy arbitrary content to status."""
 
-    def wrap_backend(
-        self,
-        backend: Any,
-        *,
-        reserve_request: Callable[[], int | None] | None = None,
-    ) -> SinglePassBudgetBackend:
-        return budget_single_pass_backend(
-            backend,
-            clock=self._clock,
-            deadline=self._model_deadline,
-            reserve_request=reserve_request,
-        )
-
-    def ensure_before_commit(self) -> None:
-        if self.remaining_total() <= 0:
-            raise ModelError(
-                "single-pass extraction exceeded total deadline before commit",
-                code="model_timeout",
-                stage="single_pass",
-            )
+    summed = (
+        "turn_count", "failed_turn_count", "over_target_turn_count",
+        "successful_within_target_count", "total_duration_ms",
+        "planning_duration_ms", "commit_duration_ms",
+    )
+    result = {key: 0 for key in summed}
+    result["target_duration_ms"] = int(TARGET_TOTAL_SECONDS * 1000)
+    result["max_turn_duration_ms"] = 0
+    for value in values:
+        if not isinstance(value, Mapping):
+            continue
+        for key in (*summed, "max_turn_duration_ms"):
+            item = value.get(key)
+            if type(item) is not int or item < 0:
+                continue
+            if key == "max_turn_duration_ms":
+                result[key] = max(result[key], item)
+            else:
+                result[key] += item
+    return result
 
 
 def budget_single_pass_backend(
     backend: Any,
     *,
-    clock: Any = time.monotonic,
-    deadline: float | None = None,
     reserve_request: Callable[[], int | None] | None = None,
 ) -> SinglePassBudgetBackend:
     if isinstance(backend, SinglePassBudgetBackend):
         return backend
     return SinglePassBudgetBackend(
         backend,
-        clock=clock,
-        deadline=deadline,
         reserve_request=reserve_request,
     )
 
 
 __all__ = [
     "MAX_MODEL_REQUESTS",
-    "MODEL_TIME_BUDGET_SECONDS",
-    "PRIMARY_REQUEST_MAX_SECONDS",
     "TARGET_TOTAL_SECONDS",
-    "ExtractionWorkBudget",
+    "ExtractionTiming",
+    "aggregate_extraction_metrics",
     "SinglePassBudgetBackend",
     "budget_single_pass_backend",
 ]

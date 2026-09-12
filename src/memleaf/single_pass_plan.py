@@ -491,10 +491,9 @@ def run_single_pass_stage(
     if not callable(complete):
         raise TypeError("model executor does not support JSON stages")
     local_rows = list(local_by_key.values())
-    # Strict transport budgeting is separate from B3 protocol capability.
-    # Processor normally pre-wraps safe production routes with the turn's
-    # shared deadline. Direct/test callers still receive the default budget
-    # only when the backend explicitly advertises ``single_pass_safe``.
+    # Count requests separately from protocol capability. The wrapper does
+    # not override llm.request_timeout or reject results after the 10s target.
+    # Processor normally pre-wraps safe routes with durable request accounting.
     budgeted_backend = (
         budget_single_pass_backend(backend)
         if hasattr(backend, "complete")

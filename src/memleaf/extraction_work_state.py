@@ -1,4 +1,4 @@
-"""Durable request/time-budget state for one background extraction work item.
+"""Durable request-count state for one background extraction work item.
 
 A detached worker can die after a provider request but before memleaf records a
 normal model failure.  The process-job ID survives that worker restart, so use
@@ -6,11 +6,10 @@ it as the stable work identity and reserve each outbound single-pass request
 *before* dispatch.  A restarted worker therefore cannot reopen the two-call
 automatic budget for the same turn.
 
-The same ledger also records when a turn first entered model-backed extraction.
-On worker restart the elapsed wall time is restored into a fresh monotonic
-budget, so a new process cannot silently receive a fresh 8/10 second window for
-the same logical work item.  Deterministic no-write turns never consult this
-model-budget ledger.
+Older releases also recorded a wall-clock start. Those timestamps are accepted
+for compatibility but never used to shorten requests or forbid a later commit.
+Request counters, not elapsed time, remain authoritative across restarts.
+Deterministic no-write turns never consult this model-request ledger.
 
 This state contains only control identifiers, counters, and timestamps; never
 prompts, responses, evidence bodies, credentials, or exception text.
@@ -19,11 +18,9 @@ from __future__ import annotations
 
 import math
 import os
-import time
 from pathlib import Path
 from typing import Any, Mapping
 
-from .extraction_budget import TARGET_TOTAL_SECONDS
 from .locking import atomic_write_json, read_json
 
 
@@ -73,8 +70,8 @@ def _normalize_turn_state(value: Any) -> dict[str, Any]:
 
     Earlier builds on this development branch persisted ``turns[turn_id]`` as
     an integer request count.  Treat that as the same consumed request count
-    with no historical wall-clock start.  The next explicit begin call records
-    the first durable start timestamp; no request ordinal is reset.
+    with no historical wall-clock start. Existing timestamps are preserved for
+    compatibility only; no request ordinal is reset and no expiry is inferred.
     """
 
     if type(value) is int and 0 <= value <= 2:
@@ -215,59 +212,6 @@ def active_background_work_id(
     return active_id
 
 
-def begin_turn_budget(
-    vault: Any,
-    *,
-    work_id: str,
-    turn_id: str,
-    wall_clock: Any = time.time,
-) -> float:
-    """Persist/recover one logical turn start and return elapsed wall seconds.
-
-    The timestamp is written immediately before model-backed planning/context
-    preparation. A restarted worker therefore receives only the remainder of
-    the original 8/10 second windows. If the wall clock moves backwards, fail
-    closed by reporting the full total budget as already consumed rather than
-    granting extra time.
-    """
-
-    if not _valid_identifier(work_id, maximum=200):
-        raise ExtractionWorkStateError("invalid extraction work id")
-    if not _valid_identifier(turn_id, maximum=800):
-        raise ExtractionWorkStateError("invalid extraction turn id")
-    now = wall_clock()
-    if not _valid_epoch(now):
-        raise ExtractionWorkStateError("invalid extraction wall clock")
-    now_value = float(now)
-    with vault.lock():
-        state = _read_budget_state_unlocked(vault)
-        work = _work_unlocked(state, work_id=work_id)
-        turns = work["turns"]
-        turn_state = turns.get(turn_id)
-        changed = False
-        if turn_state is None:
-            if len(turns) >= _MAX_TURNS_PER_WORK:
-                raise ExtractionWorkStateError("extraction work turn budget is full")
-            turn_state = {"requests": 0, "started_at_epoch": now_value}
-            turns[turn_id] = turn_state
-            changed = True
-        else:
-            turn_state = _normalize_turn_state(turn_state)
-            turns[turn_id] = turn_state
-            if turn_state["started_at_epoch"] is None:
-                turn_state["started_at_epoch"] = now_value
-                changed = True
-        if changed:
-            atomic_write_json(_budget_path(vault), state, mode=0o600)
-        started = turn_state["started_at_epoch"]
-    if not _valid_epoch(started):
-        raise ExtractionWorkStateError("invalid extraction work start time")
-    started_value = float(started)
-    if now_value < started_value:
-        return TARGET_TOTAL_SECONDS
-    return now_value - started_value
-
-
 def reserve_model_request(vault: Any, *, work_id: str, turn_id: str) -> int | None:
     """Atomically reserve the next provider request and return ordinal 1/2.
 
@@ -288,8 +232,8 @@ def reserve_model_request(vault: Any, *, work_id: str, turn_id: str) -> int | No
         if turn_state is None:
             if len(turns) >= _MAX_TURNS_PER_WORK:
                 raise ExtractionWorkStateError("extraction work turn budget is full")
-            # Compatibility fallback for direct callers that reserve before an
-            # explicit begin. Production processing calls begin first.
+            # Keep the existing on-disk shape. A timestamp is not required for
+            # request accounting and must not become a hidden expiry again.
             turn_state = {"requests": 0, "started_at_epoch": None}
             turns[turn_id] = turn_state
         else:
@@ -331,7 +275,6 @@ def complete_turn_budget(vault: Any, *, work_id: str, turn_id: str) -> bool:
 __all__ = [
     "ExtractionWorkStateError",
     "active_background_work_id",
-    "begin_turn_budget",
     "complete_turn_budget",
     "reserve_model_request",
 ]

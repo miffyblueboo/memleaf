@@ -2,6 +2,13 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.44 — 2026-09-12
+
+- Correct the extraction latency policy: ten seconds is an advisory performance target, not a cancellation or commit deadline. Remove the fixed six-second primary cap and eight-second shared window; single-pass HTTP requests now honor `llm.request_timeout`, including the one bounded format repair.
+- Accept valid, Core-checked results after the target and recover frozen background plans without expiring them by old wall-clock timestamps. Keep durable request counts, damaged-state handling, revision/ownership validation and normal transport errors intact.
+- Add structural per-turn extraction timing to synchronous results and background job result/error summaries. Track planning/commit time, slow attempts and failed attempts separately; a fast failure is not counted as successful target achievement. No prompt, response, credential or memory body is added to these metrics.
+- Keep tests local-only and leave the hosted build/smoke CI policy unchanged. Real-provider latency and quality acceptance remain separate; removing premature cancellation is not a measured ten-second performance claim.
+
 ## 0.2.43 — 2026-09-12
 
 - Keep regression tests, live-acceptance helpers, and implementation/release plans in local checkouts rather than the Git tree or source distribution.

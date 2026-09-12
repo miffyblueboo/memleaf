@@ -4,7 +4,7 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.43.**
+> **Version: 0.2.44.**
 > Automatic extraction now uses only the current turn's visible user input and final assistant reply. Raw tool output, attachments, web/file/terminal payloads and legacy tool-evidence bodies are not new source evidence; existing or retrieved memory remains comparison context rather than source authority. Background processing is persisted as a local job and can be checked through the read-only `process_status` MCP tool; failed work remains retryable and fail closed. The release also tightens source/date grounding, target reconciliation, duplicate/no-op handling and semantic review before writes. Markdown remains the sole source of truth with no SQLite runtime dependency. Acceptance covers deterministic regression suites and synthetic inputs; it does not claim real-mail or customer-business acceptance.
 > **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.
 
@@ -63,6 +63,8 @@ Current limits:
 Hermes uses a native MemoryProvider for lifecycle handling and obtains the Scope Map through MCP; its retrieval gate is a Soft Gate and cannot promise to block every answer that skipped retrieval.
 
 ## Memory admission and maintenance
+
+**Ten seconds is an extraction performance target, not a failure deadline.** HTTP requests honor `llm.request_timeout` (120 seconds by default). A valid, Core-checked response is not discarded just because processing exceeds ten seconds. Single-pass planning, bounded repair and per-turn commits remain; completion and latency are measured separately. See [extraction latency and timeouts](docs/extraction-latency.md).
 
 memleaf does not save every sentence. When a complete visible user + assistant turn is processed, the model first evaluates whether it has concrete future reuse value:
 
