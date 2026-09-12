@@ -351,9 +351,18 @@ def freeze_model_route(backend: Any) -> Any:
 
 
 def limit_model_requests(backend: Any, maximum: int) -> Any:
-    """Return a wrapper that refuses dispatches beyond ``maximum``."""
+    """Cap dispatches only for the auto-router view that was explicitly pinned.
+
+    Direct/fixed backends keep their established parser retry semantics. In
+    particular, explicit remember historically permits the validator's bounded
+    third schema attempt; replacing that with a synthetic transport error would
+    change the public failure contract. The cap exists only to ensure that an
+    auto router cannot multiply requests through route fallback.
+    """
 
     if isinstance(backend, _RequestLimitedBackend):
+        return backend
+    if not isinstance(backend, _FixedRouteBackend):
         return backend
     return _RequestLimitedBackend(backend, maximum)
 
