@@ -4,7 +4,7 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **版本：0.2.42。**
+> **版本：0.2.43。**
 > 记忆只从用户与 Agent 的可见对话提炼。Agent 已在回复中整理的事实、项目进展和明确待办可作为来源；邮件、附件、网页和终端等工具原文不进入记忆提炼。模型负责保留原话中的不确定性，现有记忆仅用于比较、去重和更新。Markdown 仍是唯一事实源。
 > **当前版本支持 Hermes 和 Codex。** Antigravity（反重力）不检测、不安装、不配置。
 

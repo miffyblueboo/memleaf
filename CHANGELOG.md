@@ -2,6 +2,11 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.43 — 2026-09-12
+
+- Keep regression tests, live-acceptance helpers, and implementation/release plans in local checkouts rather than the Git tree or source distribution.
+- Narrow hosted CI to package build and installed-command smoke checks while retaining the existing release metadata checks and GitHub/PyPI publication workflow.
+
 ## 0.2.42 — 2026-09-12
 
 - Rework ordinary automatic extraction around the unified `b3-single-pass-v1` planner. The current visible user/assistant turn is the only new-fact evidence; existing local/native memories remain comparison context. One structured model stage decides CREATE / UPDATE / NO_CHANGE / DEFERRED, with deterministic Core validation and at most one bounded format/structure repair.
