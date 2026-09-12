@@ -40,7 +40,7 @@ _DEFER_REASONS = frozenset({
 })
 _MEMORY_FIELDS = frozenset({
     "title", "body", "tags", "aliases", "keywords", "status", "completed_at", "due_date",
-    "shadow_native_ids", "scope_operations",
+    "shadow_native_ids",
 })
 _LOCAL_FIELDS = (
     "memory_id", "title", "body", "type", "scopes", "status", "completed_at", "due_date"
@@ -60,7 +60,7 @@ DECIDE
 CREATE/UPDATE/NO_CHANGE require lookup_complete=true. CREATE only if no supplied local memory represents the durable information. UPDATE one supplied local memory for the same evolving future use when current evidence proves a change. NO_CHANGE when it adds no semantic change. DEFERRED when a durable candidate exists but a safe terminal decision cannot be made. UPDATE/NO_CHANGE targets come only from local_memory_catalog and each target may be used once.
 
 WRITE
-CREATE supplies type, scopes, evidence and memory; memory requires title+body. UPDATE supplies target_memory_id, evidence and memory; memory requires body and may omit unchanged title. Core inherits UPDATE type/scopes; only explicit current-evidence Scope correction may add UPDATE scopes. Optional memory fields: tags, aliases, keywords, status, completed_at, due_date, shadow_native_ids, scope_operations. Emit todo state/date only when needed; shadow only supplied native IDs actually superseded; scope_operations only under the existing Scope contract. Omit empty/unneeded metadata. Omission is not retraction/completion; preserve still-valid target content. Never put type, scopes, scope_source, sources or update_memory_id inside memory.
+CREATE supplies type, scopes, evidence and memory; memory requires title+body. UPDATE supplies target_memory_id, evidence and memory; memory requires body and may omit unchanged title. Core inherits UPDATE type/scopes; only explicit current-evidence Scope correction may add UPDATE scopes. Optional memory fields: tags, aliases, keywords, status, completed_at, due_date. Emit todo state/date only when needed. Omit empty/unneeded metadata. Omission is not retraction/completion; preserve still-valid target content. Never put type, scopes, scope_source, sources or update_memory_id inside memory.
 
 EVIDENCE
 Each item cites exact current_evidence with {unit_id,quote,role}, {unit_id,whole_unit:true,role}, or exact offsets; role is assertion, source_excerpt or user_confirmation. Every evidence unit is either claimed by >=1 item or appears once in no_memory, never both. Use only supplied no_memory_reasons/defer_reasons.
