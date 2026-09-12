@@ -51,4 +51,40 @@ def supports_single_pass_protocol(backend: Any) -> bool:
     return _direct_protocol_capable(backend.api)
 
 
-__all__ = ["supports_single_pass_protocol"]
+def _direct_requires_inline_system(backend: Any) -> bool:
+    """Return whether a concrete callback may receive only the prompt value.
+
+    CallableBackend intentionally supports legacy ``callback(prompt)``
+    signatures. In that mode its ``system`` argument cannot reach the caller,
+    so B3 must inline the system contract into the prompt rather than silently
+    dropping the planner rules. This says nothing about latency safety.
+    """
+
+    return isinstance(backend, CallableBackend)
+
+
+def requires_inline_single_pass_system(backend: Any) -> bool:
+    """Keep B3 instructions visible across prompt-only callback routes."""
+
+    if _direct_requires_inline_system(backend):
+        return True
+    if not isinstance(backend, ModelRouter):
+        return False
+    if backend.mode == "api":
+        return _direct_requires_inline_system(backend.api)
+    if backend.mode == "host":
+        return _direct_requires_inline_system(backend.host)
+
+    # Auto routing may execute host first and API second. If either reachable
+    # route is a legacy callback, use one self-contained prompt that survives
+    # both the prompt-only host call and any later fallback.
+    return (
+        _direct_requires_inline_system(backend.host)
+        or _direct_requires_inline_system(backend.api)
+    )
+
+
+__all__ = [
+    "requires_inline_single_pass_system",
+    "supports_single_pass_protocol",
+]
