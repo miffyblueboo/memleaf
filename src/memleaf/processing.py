@@ -16,7 +16,7 @@ from .process_journal import ProcessJournal
 from .planning_context import PlanningContext
 from .single_pass_memory_planner import SinglePassMemoryPlanner
 from .memory_commit import MemoryCommitter
-from .extraction_budget import ExtractionWorkBudget
+from .extraction_budget import budget_single_pass_backend
 from .extraction_work_state import (
     active_background_work_id,
     begin_turn_budget,
@@ -264,8 +264,6 @@ class Processor:
                 self.audit._planned_related = []
                 self.audit._planned_settled_sources = set()
                 durable_turn_budget_id = self._turn_budget_id(snapshot)
-                work_budget: ExtractionWorkBudget | None = None
-                strict_budget = False
 
                 with self.service.vault.lock():
                     processed = _read_processed(self.service.vault.processed_state_path)
@@ -282,14 +280,9 @@ class Processor:
                     self.audit._dispositions_by_turn[ref] = restored["candidate_dispositions"]
                     self.audit._evidence_by_turn[ref] = restored["evidence_dispositions"]
                     self.audit._deferred_by_turn[ref] = restored["deferred_candidates"]
-                    if background_work_id is not None:
-                        elapsed = begin_turn_budget(
-                            self.service.vault,
-                            work_id=background_work_id,
-                            turn_id=durable_turn_budget_id,
-                        )
-                        work_budget = ExtractionWorkBudget(elapsed_seconds=elapsed)
-                        strict_budget = True
+                    # Replaying a frozen plan makes no model request. Its age
+                    # is not a reason to discard already validated work; the
+                    # committer still verifies ownership, revisions and state.
                 elif self._turn_writes_disabled(snapshot.turn):
                     turn_requests, turn_scopes = [], []
                 else:
@@ -297,10 +290,9 @@ class Processor:
                         backend = self.model._resolve_backend(model=model, router=router)
                     turn_backend = backend
                     if getattr(backend, "single_pass_safe", False) is True:
-                        elapsed = 0.0
                         reserve_request = None
                         if background_work_id is not None:
-                            elapsed = begin_turn_budget(
+                            begin_turn_budget(
                                 self.service.vault,
                                 work_id=background_work_id,
                                 turn_id=durable_turn_budget_id,
@@ -310,20 +302,13 @@ class Processor:
                                 work_id=work_id,
                                 turn_id=turn_id,
                             )
-                        work_budget = ExtractionWorkBudget(elapsed_seconds=elapsed)
-                        turn_backend = work_budget.wrap_backend(
+                        turn_backend = budget_single_pass_backend(
                             backend,
                             reserve_request=reserve_request,
                         )
-                        strict_budget = True
                     turn_requests, turn_scopes = self.planner._collect_turn_outputs(
                         turn_backend, snapshot.turn, state, scope=scope
                     )
-
-                if strict_budget:
-                    if work_budget is None:
-                        raise ProcessingError("missing extraction work budget")
-                    work_budget.ensure_before_commit()
 
                 ref = (snapshot.turn.source, snapshot.turn.session_id, snapshot.turn.turn_key)
                 ids = self.committer._commit_success(

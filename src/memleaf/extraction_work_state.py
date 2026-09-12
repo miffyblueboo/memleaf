@@ -1,4 +1,4 @@
-"""Durable request/time-budget state for one background extraction work item.
+"""Durable request-budget state for one background extraction work item.
 
 A detached worker can die after a provider request but before memleaf records a
 normal model failure.  The process-job ID survives that worker restart, so use
@@ -7,10 +7,9 @@ it as the stable work identity and reserve each outbound single-pass request
 automatic budget for the same turn.
 
 The same ledger also records when a turn first entered model-backed extraction.
-On worker restart the elapsed wall time is restored into a fresh monotonic
-budget, so a new process cannot silently receive a fresh 8/10 second window for
-the same logical work item.  Deterministic no-write turns never consult this
-model-budget ledger.
+These timestamps are retained for compatibility and elapsed-time inspection,
+not as an expiry rule: missing a latency target cannot invalidate a turn.
+Deterministic no-write turns never consult this model-budget ledger.
 
 This state contains only control identifiers, counters, and timestamps; never
 prompts, responses, evidence bodies, credentials, or exception text.
@@ -23,7 +22,6 @@ import time
 from pathlib import Path
 from typing import Any, Mapping
 
-from .extraction_budget import TARGET_TOTAL_SECONDS
 from .locking import atomic_write_json, read_json
 
 
@@ -225,10 +223,10 @@ def begin_turn_budget(
     """Persist/recover one logical turn start and return elapsed wall seconds.
 
     The timestamp is written immediately before model-backed planning/context
-    preparation. A restarted worker therefore receives only the remainder of
-    the original 8/10 second windows. If the wall clock moves backwards, fail
-    closed by reporting the full total budget as already consumed rather than
-    granting extra time.
+    preparation. Elapsed time is informational; only consumed request counts
+    restrict a restarted worker. A clock rollback cannot produce a reliable
+    negative duration, so clamp that observation to zero without changing the
+    persisted timestamp or granting additional requests.
     """
 
     if not _valid_identifier(work_id, maximum=200):
@@ -263,9 +261,7 @@ def begin_turn_budget(
     if not _valid_epoch(started):
         raise ExtractionWorkStateError("invalid extraction work start time")
     started_value = float(started)
-    if now_value < started_value:
-        return TARGET_TOTAL_SECONDS
-    return now_value - started_value
+    return max(0.0, now_value - started_value)
 
 
 def reserve_model_request(vault: Any, *, work_id: str, turn_id: str) -> int | None:

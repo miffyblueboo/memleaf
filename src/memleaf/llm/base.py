@@ -268,7 +268,7 @@ class HTTPModelBackend:
         return dict(value) if isinstance(value, Mapping) else {}
 
     def set_call_timeout(self, seconds: Any) -> None:
-        """Set a thread-local one-call timeout cap used by extraction budgets."""
+        """Set an explicitly requested thread-local one-call transport timeout cap."""
 
         if isinstance(seconds, bool):
             raise ValueError("call timeout must be positive")

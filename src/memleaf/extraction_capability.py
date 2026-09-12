@@ -1,10 +1,10 @@
 """Capability checks for unified automatic extraction.
 
-Protocol compatibility and hard latency safety are intentionally separate.
-A backend may understand the B3 single-pass contract without being able to
-honor transport-level cancellation/deadlines. Automatic extraction can use
-one semantic protocol in both cases, while Processor applies the strict
-8/10-second budget only to ``single_pass_safe`` transports.
+Protocol compatibility and transport guarantees are intentionally separate.
+A backend may understand B3 without exposing or enforcing a request timeout.
+Fixed ``single_pass_safe`` routes support durable outbound-request counting;
+transport timeout remains backend-owned. No capability implies a ten-second
+failure deadline.
 """
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def _direct_protocol_capable(backend: Any) -> bool:
 
 
 def supports_single_pass_protocol(backend: Any) -> bool:
-    """Return B3 protocol capability without claiming strict transport SLA."""
+    """Return B3 protocol capability without claiming transport cancellation."""
 
     if _direct_protocol_capable(backend):
         return True
