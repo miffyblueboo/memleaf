@@ -57,6 +57,7 @@ _MODEL_METRIC_STAGES = frozenset({
     "semantic_review",
     "coordination",
     "target_reconciliation",
+    "single_pass",
     "other",
 })
 _MODEL_METRIC_OPERATIONS = frozenset(
