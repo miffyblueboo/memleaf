@@ -541,6 +541,11 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 "session_id": turn.session_id,
                 "turn_index": turn.turn_index,
             },
+            evidence_timestamps={
+                event["event_key"]: event.get("timestamp")
+                for event in events
+                if isinstance(event.get("event_key"), str)
+            },
         )
 
         fallback_scopes, fallback_scope_source = self._fallback_scopes(scope_background)

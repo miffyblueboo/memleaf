@@ -683,16 +683,19 @@ def _add_external_due_dates(result: set[str], content: Any) -> None:
         result.add(parsed.isoformat())
 
 
-def _summary_calendar_tokens(content: Any) -> tuple[tuple[str, str | None], ...]:
-    """Return source-neutral calendar literals and canonical full dates.
+def _summary_calendar_tokens(content: Any) -> tuple[tuple[str, str | None, str | None], ...]:
+    """Return source-neutral calendar literals, canonical dates and month/day.
 
     A ``None`` canonical value is intentional for yearless or invalid text;
-    callers must not fill its year from a retrieval timestamp.
+    callers must not fill its year from a retrieval timestamp.  The third item
+    is the yearless ``MM-DD`` identity of a token that carries no year, so a
+    faithful restatement of the same month and day can be recognized without
+    ever granting that token a year.
     """
 
     if not isinstance(content, str):
         return ()
-    tokens: list[tuple[str, str | None]] = []
+    tokens: list[tuple[str, str | None, str | None]] = []
     seen: set[str] = set()
     for raw in _ISO_CALENDAR_DATE_RE.findall(content):
         if raw in seen:
@@ -702,27 +705,25 @@ def _summary_calendar_tokens(content: Any) -> tuple[tuple[str, str | None], ...]
             canonical = datetime.strptime(raw, "%Y-%m-%d").date().isoformat()
         except ValueError:
             canonical = None
-        tokens.append((raw, canonical))
+        tokens.append((raw, canonical, None))
     for match in _SUMMARY_CHINESE_CALENDAR_DATE_RE.finditer(content):
         raw = match.group("raw")
         if raw in seen:
             continue
         seen.add(raw)
         year = match.group("year")
+        month = int(match.group("month"))
+        day = int(match.group("day"))
         try:
             canonical = (
-                datetime(
-                    int(year),
-                    int(match.group("month")),
-                    int(match.group("day")),
-                    tzinfo=timezone.utc,
-                ).date().isoformat()
+                datetime(year and int(year), month, day, tzinfo=timezone.utc).date().isoformat()
                 if year
                 else None
             )
         except ValueError:
             canonical = None
-        tokens.append((raw, canonical))
+        monthday = f"{month:02d}-{day:02d}" if 1 <= month <= 12 and 1 <= day <= 31 else None
+        tokens.append((raw, canonical, monthday))
     return tuple(tokens)
 
 
@@ -738,7 +739,9 @@ def _summary_date_grounding_violations(
     ``grounded_dates`` is the canonical date set from the current admitted
     evidence. ``source_texts`` must contain only the current candidate's
     admitted evidence projection text.  A source date without a year may be
-    retained verbatim, but it never authorizes a year to be inferred.
+    retained verbatim, but it never authorizes a year to be inferred; the same
+    month and day restated in another surface form is still that source date,
+    because the guard forbids inventing a year, not rewording a suffix.
     ``preserved_texts`` must contain only the selected update target's existing
     title/body/due-date text.  Existing target literals may be retained
     verbatim; dates from unrelated memories are never accepted.
@@ -761,33 +764,45 @@ def _summary_date_grounding_violations(
             allowed_dates.add(value)
 
     source_tokens: set[str] = set()
+    source_monthdays: set[str] = set()
     source_values = (source_texts,) if isinstance(source_texts, str) else source_texts
     for text in source_values:
-        for raw, canonical in _summary_calendar_tokens(text):
+        for raw, canonical, monthday in _summary_calendar_tokens(text):
             source_tokens.add(raw)
+            if monthday is not None and canonical is None:
+                source_monthdays.add(monthday)
             if canonical is not None:
                 allowed_dates.add(canonical)
 
     preserved_tokens: set[str] = set()
+    preserved_monthdays: set[str] = set()
     preserved_values = (preserved_texts,) if isinstance(preserved_texts, str) else preserved_texts
     for text in preserved_values:
-        for raw, canonical in _summary_calendar_tokens(text):
+        for raw, canonical, monthday in _summary_calendar_tokens(text):
             preserved_tokens.add(raw)
+            if monthday is not None and canonical is None:
+                preserved_monthdays.add(monthday)
             if canonical is not None:
                 allowed_dates.add(canonical)
 
+    yearless_monthdays = source_monthdays | preserved_monthdays
     violations: list[str] = []
     seen: set[str] = set()
     for field in ("title", "body"):
-        for raw, canonical in _summary_calendar_tokens(summary.get(field)):
+        for raw, canonical, monthday in _summary_calendar_tokens(summary.get(field)):
             if raw in source_tokens or raw in preserved_tokens:
                 continue
             value = canonical or raw
             if value in seen:
                 continue
-            if canonical is None or canonical not in allowed_dates:
-                seen.add(value)
-                violations.append(value)
+            if canonical is not None and canonical in allowed_dates:
+                continue
+            if canonical is None and monthday is not None and monthday in yearless_monthdays:
+                # Same month and day as a yearless source date: the wording
+                # changed, the date did not, and no year was invented.
+                continue
+            seen.add(value)
+            violations.append(value)
     return tuple(violations)
 
 

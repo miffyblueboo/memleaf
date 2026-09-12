@@ -24,6 +24,9 @@ class SinglePassBudgetBackend:
     hidden host-to-API fallback. The optional durable reservation preserves
     consumed attempts across worker restarts. Neither the first request nor
     its repair overrides the transport's configured ``llm.request_timeout``.
+    The second request is spent on whichever bounded follow-up the planner
+    actually needs -- a structural repair or a same-target reconciliation --
+    so a collision between two admitted items can never extend the turn.
     """
 
     def __init__(

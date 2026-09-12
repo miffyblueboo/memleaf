@@ -315,17 +315,36 @@ class PlanningContext:
         selected: list[dict[str, Any]] = []
         used = 2
         complete = True
-        for value in values:
-            if len(selected) >= _RELATED_MAX_ITEMS:
+
+        def _drop(item: Mapping[str, Any]) -> None:
+            """Record one related record that could not be projected verbatim.
+
+            ``complete`` answers one question only: can Core still prove that no
+            **local** record was withheld, so that an absent UPDATE target and a
+            create-safe lookup remain provable?  Native sources are read-only
+            host files that are never an UPDATE or NO_CHANGE target and are only
+            ever referenced through ``shadow_native_ids``, so clipping one must
+            not make the whole lookup unprovable.  Treating a long host memory
+            file as a failed proof would block every automatic extraction with no
+            way for the user to recover except shrinking a file they own.
+            """
+
+            nonlocal complete
+            if item.get("native") is not True:
                 complete = False
+
+        for index, value in enumerate(values):
+            if len(selected) >= _RELATED_MAX_ITEMS:
+                for item in values[index:]:
+                    _drop(item)
                 break
             body = value.get("body")
             if isinstance(body, str) and len(body) > _RELATED_MAX_BODY_CHARS:
                 value["body"] = body[: _RELATED_MAX_BODY_CHARS - 1].rstrip() + "…"
-                complete = False
+                _drop(value)
             size = cls._related_payload_size(value)
             if size < 0:
-                complete = False
+                _drop(value)
                 continue
             additional = size + (1 if selected else 0)
             if used + additional > _RELATED_MAX_CHARS:
@@ -334,7 +353,7 @@ class PlanningContext:
                     isinstance(memory_id, str)
                     and memory_id.casefold() in priority
                 ):
-                    complete = False
+                    _drop(value)
                     continue
                 minimal = {
                     key: value[key]
@@ -343,15 +362,13 @@ class PlanningContext:
                 }
                 size = cls._related_payload_size(minimal)
                 if size < 0 or used + size + (1 if selected else 0) > _RELATED_MAX_CHARS:
-                    complete = False
+                    _drop(value)
                     continue
                 value = minimal
                 additional = size + (1 if selected else 0)
-                complete = False
+                _drop(value)
             selected.append(value)
             used += additional
-        if len(selected) != len(values):
-            complete = False
         return selected, complete
 
     @classmethod
