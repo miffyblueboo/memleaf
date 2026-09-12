@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
 from typing import Any, Callable, Mapping, Optional
@@ -46,6 +47,7 @@ class ModelRouter:
         self.api = self._coerce_api(api) if api is not None else self._build_api()
         self.diagnostics: list[dict[str, str]] = []
         self._call_metrics_local = threading.local()
+        self._call_timeout_local = threading.local()
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any], **kwargs: Any) -> "ModelRouter":
@@ -164,8 +166,34 @@ class ModelRouter:
             return "unknown", "unknown"
         return str(getattr(backend, "provider", "unknown")), str(getattr(backend, "model", "unknown"))
 
+    def set_call_timeout(self, seconds: Any) -> None:
+        """Store a thread-local timeout cap for the next routed transport call."""
+
+        if isinstance(seconds, bool):
+            raise ValueError("call timeout must be positive")
+        try:
+            parsed = float(seconds)
+        except (TypeError, ValueError):
+            raise ValueError("call timeout must be positive") from None
+        if not math.isfinite(parsed) or parsed <= 0:
+            raise ValueError("call timeout must be positive")
+        self._call_timeout_local.value = parsed
+
+    def clear_call_timeout(self) -> None:
+        self._call_timeout_local.value = None
+
     def _call(self, backend: ModelBackend, prompt: str, *, system: str, purpose: str, temperature: float) -> str:
         self._call_metrics_local.value = {}
+        timeout_override = getattr(self._call_timeout_local, "value", None)
+        set_timeout = getattr(backend, "set_call_timeout", None)
+        clear_timeout = getattr(backend, "clear_call_timeout", None)
+        if (
+            isinstance(timeout_override, (int, float))
+            and not isinstance(timeout_override, bool)
+            and timeout_override > 0
+            and callable(set_timeout)
+        ):
+            set_timeout(timeout_override)
         try:
             value = backend.complete(prompt, system=system, purpose=purpose, temperature=temperature)
         except ModelError as error:
@@ -174,6 +202,11 @@ class ModelRouter:
         except Exception as error:
             raise ModelError("model backend failed", stage=purpose) from error
         finally:
+            if callable(clear_timeout):
+                try:
+                    clear_timeout()
+                except Exception:
+                    pass
             consume = getattr(backend, "consume_call_metrics", None)
             if callable(consume):
                 try:
