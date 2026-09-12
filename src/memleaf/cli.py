@@ -22,6 +22,7 @@ from .adapters.base import (
 from .adapters.hermes import HermesAdapter
 from .credentials import credential_text
 from .config import load_config
+from .model_capabilities import resolve_provider_capabilities
 from .model_discovery import ModelCandidate, discover_models, manual_candidate, write_model_config
 from .vault import Vault
 
@@ -531,6 +532,11 @@ def _existing_memleaf_route(path: Path) -> ModelCandidate | None:
     if key is None:
         return None
     try:
+        capabilities = resolve_provider_capabilities(
+            provider=llm.get("provider"),
+            provider_family=llm.get("provider_family"),
+            base_url=llm.get("base_url"),
+        )
         return ModelCandidate(
             source="memleaf",
             provider=str(llm.get("provider", "")),
@@ -540,6 +546,8 @@ def _existing_memleaf_route(path: Path) -> ModelCandidate | None:
             api_key=key,
             context_window=int(llm.get("context_window", 200000)),
             source_detail="existing memleaf route",
+            provider_family=capabilities.provider_family,
+            provider_family_source=capabilities.source,
         )
     except (TypeError, ValueError):
         return None
@@ -547,13 +555,17 @@ def _existing_memleaf_route(path: Path) -> ModelCandidate | None:
 
 def _prompt_for_model() -> ModelCandidate:
     print("memleaf: no complete callable chat model was found; configure one for processing.", file=sys.stderr)
-    provider = input("Provider (openai/claude/gemini): ").strip()
+    provider = input("Provider / credential profile name: ").strip()
+    provider_family = input(
+        "Provider family (openai/deepseek/anthropic/gemini/generic, blank=auto): "
+    ).strip()
     protocol = input("Protocol (openai/claude/gemini): ").strip()
     base_url = input("Base URL: ").strip()
     model = input("Model: ").strip()
     api_key = getpass.getpass("API key (input hidden): ")
     return manual_candidate(
         provider=provider,
+        provider_family=provider_family,
         protocol=protocol,
         base_url=base_url,
         model=model,

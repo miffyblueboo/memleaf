@@ -146,6 +146,7 @@ class ModelBackend(Protocol):
     parallel_safe: bool
     structured_batch_safe: bool
     single_pass_safe: bool
+    single_pass_protocol: bool
 
     def complete(
         self,
@@ -167,7 +168,6 @@ class CallableBackend:
     parallel_safe = False
     structured_batch_safe = False
     single_pass_safe = False
-
     def __init__(self, callback: Callable[..., str], *, model: str = "host"):
         if not callable(callback):
             raise TypeError("model callback must be callable")
@@ -231,7 +231,10 @@ class HTTPModelBackend:
     provider = "api"
     parallel_safe = False
     structured_batch_safe = True
-    single_pass_safe = True
+    # Protocol compatibility is provider-specific.  Generic HTTP transports
+    # must not authorize B3 merely because one complete() maps to one request.
+    single_pass_safe = False
+    single_pass_protocol = False
 
     def __init__(
         self,

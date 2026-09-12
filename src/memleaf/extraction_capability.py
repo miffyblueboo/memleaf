@@ -32,20 +32,20 @@ def _direct_protocol_capable(backend: Any) -> bool:
 
     if backend is None:
         return False
-    if getattr(backend, "single_pass_safe", False) is True:
-        return True
-    declared = getattr(backend, "single_pass_protocol", None)
-    if isinstance(declared, bool):
-        return declared
+    # Raw Python callbacks are adapted by ModelExecutor into CallableBackend.
+    # Preserve their established prompt-level B3 compatibility without
+    # claiming any transport boundary inside caller-owned code.  An explicit
+    # callback override can still opt out.
     if isinstance(backend, CallableBackend):
         override = _callable_protocol_override(backend)
         if override is not None:
             return override
-        # Raw Python callbacks are adapted by ModelExecutor into
-        # CallableBackend. They can consume memleaf's B3 prompt, but are not
-        # transport-timeout safe because caller-owned code may ignore
-        # timeout/cancellation entirely.
         return True
+    # Protocol support is independent of request-boundary safety.  A backend
+    # must not gain B3 merely because complete() happens to be bounded.
+    declared = getattr(backend, "single_pass_protocol", None)
+    if isinstance(declared, bool):
+        return declared
     return False
 
 

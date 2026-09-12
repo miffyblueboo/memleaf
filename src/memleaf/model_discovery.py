@@ -26,6 +26,10 @@ from .adapters.base import CommandRunner, adapter_environment, adapter_home, run
 from .adapters.hermes import HermesAdapter
 from .config import DEFAULT_REQUEST_TIMEOUT, load_config, save_config
 from .credentials import credential_text, is_redacted_credential
+from .model_capabilities import (
+    CAPABILITY_SOURCES, PROVIDER_FAMILIES, normalize_protocol,
+    resolve_provider_capabilities,
+)
 
 
 _DEFAULT_CONTEXT_WINDOW = 200_000
@@ -92,6 +96,8 @@ class ModelCandidate:
     api_key: str = field(repr=False)
     context_window: int = _DEFAULT_CONTEXT_WINDOW
     source_detail: str = ""
+    provider_family: str = ""
+    provider_family_source: str = "unknown"
 
     def __post_init__(self) -> None:
         for name in ("source", "provider", "protocol", "base_url", "model", "api_key"):
@@ -100,6 +106,10 @@ class ModelCandidate:
                 raise ValueError(f"model candidate {name} is required")
         if self.protocol not in {"openai", "claude", "gemini"}:
             raise ValueError("unsupported model candidate protocol")
+        if self.provider_family and self.provider_family not in PROVIDER_FAMILIES:
+            raise ValueError("unsupported model candidate provider family")
+        if self.provider_family_source not in CAPABILITY_SOURCES:
+            raise ValueError("unsupported model candidate capability source")
         if type(self.context_window) is not int or self.context_window <= 0:
             raise ValueError("invalid model candidate context window")
 
@@ -109,6 +119,8 @@ class ModelCandidate:
         return {
             "source": self.source,
             "provider": self.provider,
+            "provider_family": self.provider_family,
+            "provider_family_source": self.provider_family_source,
             "protocol": self.protocol,
             "base_url": self.base_url,
             "model": self.model,
@@ -124,6 +136,7 @@ class ModelCandidate:
         return {
             "mode": "api",
             "provider": self.provider,
+            "provider_family": self.provider_family,
             "protocol": self.protocol,
             "base_url": self.base_url,
             "api_key": self.api_key,
@@ -228,21 +241,10 @@ def _context_window(value: Any) -> int:
 
 
 def _protocol(provider: Any, value: Any = None) -> str | None:
-    explicit = (_safe_text(value) or "").casefold().replace("-", "_")
-    if explicit in {"anthropic", "anthropic_messages", "claude"}:
-        return "claude"
-    if explicit in {"gemini", "google", "generate_content"}:
-        return "gemini"
-    if explicit in {"openai", "openai_compatible", "chat_completions", "chat"}:
-        return "openai"
-    name = (_safe_text(provider) or "").casefold()
-    if "anthropic" in name or "claude" in name:
-        return "claude"
-    if "gemini" in name or "google" in name:
-        return "gemini"
-    if name:
-        return "openai"
-    return None
+    try:
+        return normalize_protocol(value, provider=provider)
+    except ValueError:
+        return None
 
 
 def _models_from(value: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
@@ -377,6 +379,7 @@ def _candidate(
     source: str,
     provider: Any,
     protocol: Any,
+    provider_family: Any = None,
     base_url: Any,
     model: Any,
     item: Mapping[str, Any],
@@ -395,6 +398,12 @@ def _candidate(
         return None, "non-chat model"
     if url is None:
         return None, "invalid or missing base URL"
+    try:
+        capabilities = resolve_provider_capabilities(
+            provider=provider_text, provider_family=provider_family, base_url=url
+        )
+    except ValueError:
+        return None, "unsupported provider family"
     key, key_source = _candidate_key(item, provider=provider_text, env=env, dotenv=dotenv, extra_env=extra_env)
     if key is None:
         return None, (
@@ -414,6 +423,8 @@ def _candidate(
                 item.get("context_window", item.get("context_length", item.get("max_context")))
             ),
             source_detail=source_detail or key_source,
+            provider_family=capabilities.provider_family,
+            provider_family_source=capabilities.source,
         )
     except ValueError:
         return None, "invalid model route"
@@ -508,6 +519,7 @@ def discover_hermes(
             source="hermes",
             provider=provider,
             protocol=protocol,
+            provider_family=model_item.get("provider_family", model_config.get("provider_family")),
             base_url=base_url,
             model=model_id,
             item=item,
@@ -541,6 +553,7 @@ def discover_hermes(
                 source="hermes_custom",
                 provider=provider,
                 protocol=item.get("protocol", item.get("api_mode")),
+                provider_family=item.get("provider_family"),
                 base_url=item.get("base_url", item.get("endpoint")),
                 model=model_id,
                 item=item,
@@ -633,6 +646,7 @@ def manual_candidate(
     provider: str,
     protocol: str,
     base_url: str,
+    provider_family: str = "",
     model: str,
     api_key: str,
     context_window: int = _DEFAULT_CONTEXT_WINDOW,
@@ -643,9 +657,10 @@ def manual_candidate(
         source="manual",
         provider=provider,
         protocol=protocol,
+        provider_family=provider_family,
         base_url=base_url,
         model=model,
-        item={"api_key": api_key, "context_window": context_window},
+        item={"api_key": api_key, "context_window": context_window, "provider_family": provider_family},
         env={},
         source_detail="user supplied",
     )

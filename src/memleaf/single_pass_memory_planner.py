@@ -31,6 +31,7 @@ from .process_common import (
 from .single_pass_plan import run_single_pass_stage
 from .turn_plan import dedup_digest, revision_digest
 from .validation import ModelOutputError, parse_summarize_output
+from .llm import ModelUnavailable
 
 
 class SinglePassMemoryPlanner(MemoryPlanner):
@@ -266,7 +267,7 @@ class SinglePassMemoryPlanner(MemoryPlanner):
         # Ordinary extraction uses B3 whenever the backend can speak the
         # protocol. Strict deadline/outbound-request safety is a separate
         # capability enforced by Processor only for ``single_pass_safe``.
-        if explicit or not supports_single_pass_protocol(backend):
+        if explicit:
             return super()._collect_turn_outputs(
                 backend,
                 turn,
@@ -274,6 +275,14 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 explicit=explicit,
                 explicit_candidate=explicit_candidate,
                 scope=scope,
+            )
+        if not supports_single_pass_protocol(backend):
+            # Automatic extraction has one explicit B3 protocol.  Capability
+            # insufficiency is a routing error, never permission to hide a
+            # fallback into the legacy multi-stage semantic pipeline.
+            raise ModelUnavailable(
+                "configured model route does not support B3 single-pass extraction",
+                stage="single_pass",
             )
 
         authorized_project_scopes = _explicit_project_scope_authorizations(scope)
