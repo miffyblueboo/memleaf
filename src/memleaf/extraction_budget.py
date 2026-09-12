@@ -137,8 +137,6 @@ class SinglePassBudgetBackend:
                 code="model_timeout",
                 stage=purpose or "single_pass",
             )
-        # Count locally only after the durable reservation succeeded.  A kill
-        # after this point still leaves the persistent ordinal consumed.
         self._requests += 1
 
         set_timeout = getattr(self._backend, "set_call_timeout", None)
@@ -159,9 +157,6 @@ class SinglePassBudgetBackend:
                 except Exception:
                     pass
 
-        # A callback/custom transport may ignore the timeout hook.  Such a
-        # late result must never become writable merely because it eventually
-        # returned.
         if self._remaining() < 0:
             raise ModelError(
                 "single-pass extraction result arrived after deadline",
