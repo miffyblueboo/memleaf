@@ -6,8 +6,11 @@ import unittest
 from pathlib import Path
 
 from memleaf import Memleaf
+from memleaf.admission import EvidenceUnit
+from memleaf.extraction_budget import SinglePassBudgetBackend
 from memleaf.extraction_capability import supports_single_pass_protocol
 from memleaf.llm import CallableBackend, ModelRouter
+from memleaf.single_pass_plan import run_single_pass_stage
 
 
 class _SafeApi:
@@ -30,6 +33,26 @@ class _IncompatibleBackend:
     def complete(self, prompt, *, system="", purpose="", temperature=0.0):
         del prompt, system, purpose, temperature
         return "{}"
+
+
+class _CaptureExecutor:
+    def __init__(self):
+        self.backend = None
+
+    def _complete_json_stage(
+        self,
+        backend,
+        prompt,
+        *,
+        system,
+        purpose,
+        parser,
+        diagnostic_context=None,
+        max_attempts=None,
+    ):
+        del prompt, system, purpose, parser, diagnostic_context, max_attempts
+        self.backend = backend
+        return {"protocol_version": "b3-single-pass-v1", "items": [], "no_memory": []}
 
 
 class SinglePassProtocolCapabilityV2Tests(unittest.TestCase):
@@ -58,6 +81,34 @@ class SinglePassProtocolCapabilityV2Tests(unittest.TestCase):
             api=_IncompatibleBackend(),
         )
         self.assertFalse(supports_single_pass_protocol(bad))
+
+    def test_protocol_only_backend_is_not_silently_promoted_to_strict_budget(self):
+        unit = EvidenceUnit(
+            "unit-1",
+            "event-1",
+            "user_assertion",
+            "Alpha uses PostgreSQL.",
+            source_role="user",
+        )
+        protocol_only = CallableBackend(lambda prompt, **kwargs: "{}")
+        executor = _CaptureExecutor()
+        run_single_pass_stage(
+            executor,
+            protocol_only,
+            evidence_units=[unit],
+            validate_memory=lambda *args: {},
+        )
+        self.assertIs(executor.backend, protocol_only)
+
+        strict = _SafeApi()
+        executor = _CaptureExecutor()
+        run_single_pass_stage(
+            executor,
+            strict,
+            evidence_units=[unit],
+            validate_memory=lambda *args: {},
+        )
+        self.assertIsInstance(executor.backend, SinglePassBudgetBackend)
 
     def test_raw_host_callback_runs_ordinary_extraction_through_b3(self):
         calls = []
