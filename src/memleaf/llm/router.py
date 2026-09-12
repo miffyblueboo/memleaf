@@ -259,3 +259,58 @@ class ModelRouter:
         return self._call(self.api, prompt, system=system, purpose=purpose, temperature=temperature)
 
     __call__ = complete
+
+
+class _FixedRouteBackend:
+    """A view of one auto router pinned to its first reachable route.
+
+    Explicit remember has a global two-request budget too. Pinning the route
+    prevents one parser attempt from expanding into host+API requests while
+    preserving the original router's metrics and diagnostics.
+    """
+
+    def __init__(self, router: ModelRouter, selected: ModelBackend):
+        self._router = router
+        self._selected = selected
+        self.provider, self.model = router._identity(selected)
+        self.parallel_safe = getattr(selected, "parallel_safe", False) is True
+        self.structured_batch_safe = getattr(selected, "structured_batch_safe", False) is True
+        self.single_pass_safe = False
+
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str = "",
+        purpose: str = "",
+        temperature: float = 0.0,
+    ) -> str:
+        try:
+            return self._router._call(
+                self._selected,
+                prompt,
+                system=system,
+                purpose=purpose,
+                temperature=temperature,
+            )
+        except ModelError:
+            provider, model = self._router._identity(self._selected)
+            self._router._diagnose(provider, model, "fixed_route_failed")
+            raise
+
+    def consume_call_metrics(self) -> dict[str, Any]:
+        return self._router.consume_call_metrics()
+
+
+def freeze_model_route(backend: Any) -> Any:
+    """Pin an auto ModelRouter without changing fixed host/api backends."""
+
+    if not isinstance(backend, ModelRouter) or backend.mode != "auto":
+        return backend
+    selected = backend.host if backend.host is not None else backend.api
+    if selected is None:
+        return backend
+    return _FixedRouteBackend(backend, selected)
+
+
+__all__ = ["ModelRouter", "freeze_model_route"]
