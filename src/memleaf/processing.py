@@ -32,7 +32,7 @@ class Processor:
         """Run compaction only when an explicit maintenance caller asks for it.
 
         Extraction no longer calls this method on its latency-critical return
-        path.  Keeping the helper preserves the maintenance API without
+        path. Keeping the helper preserves the maintenance API without
         coupling memory settlement to a second model workflow.
         """
         from .compaction import Compactor
@@ -53,85 +53,6 @@ class Processor:
         except Exception:
             # Failure reporting must never mask the original processing error.
             return
-
-    def _select_one_snapshot_per_session(
-        self,
-        snapshots: list[Any],
-        *,
-        scope: Any = None,
-    ) -> list[Any]:
-        """Bound one process call to one complete turn per claimed session.
-
-        ``ProcessJournal._snapshot`` historically claimed every contiguous
-        pending turn in a session.  Planning all of them before one batch
-        commit made later turns compare against stale pre-batch state and also
-        allowed an unbounded backlog drain.  Keep only the oldest claimed turn
-        per session for this invocation and atomically release the remaining
-        claims before any model call.
-
-        Automatic deferred retries are charged when the journal selects them.
-        If a later deferred turn is released here, undo that selection charge
-        so a turn that was never attempted does not lose its one natural retry.
-        """
-
-        selected_by_state: dict[str, Any] = {}
-        selected: list[Any] = []
-        skipped_by_state: dict[str, list[Any]] = {}
-        for snapshot in snapshots:
-            if snapshot.state_key not in selected_by_state:
-                selected_by_state[snapshot.state_key] = snapshot
-                selected.append(snapshot)
-            else:
-                skipped_by_state.setdefault(snapshot.state_key, []).append(snapshot)
-        if not skipped_by_state:
-            return selected
-
-        explicit_retry = scope is not None and scope not in ("", [])
-        with self.service.vault.lock():
-            processed = _read_processed(self.service.vault.processed_state_path)
-            sessions = processed.setdefault("sessions", {})
-            if not isinstance(sessions, dict):
-                raise ProcessingError("processed sessions are invalid")
-            for state_key, skipped in skipped_by_state.items():
-                chosen = selected_by_state[state_key]
-                state = sessions.get(state_key)
-                if not isinstance(state, dict):
-                    raise ProcessingError("processing session disappeared")
-                marker = state.get("processing")
-                if not isinstance(marker, Mapping) or marker.get("token") != chosen.token:
-                    raise ProcessingError("processing ownership changed")
-                marker = dict(marker)
-                marker["turn_keys"] = [chosen.turn.turn_key]
-                marker["turn_indices"] = [chosen.turn.turn_index]
-                state["processing"] = marker
-
-                if not explicit_retry:
-                    skipped_keys = {
-                        item.turn.turn_key
-                        for item in skipped
-                        if isinstance(item.turn.turn_key, str)
-                    }
-                    entries = state.get("processed_turns")
-                    if isinstance(entries, list):
-                        for entry in entries:
-                            if (
-                                not isinstance(entry, dict)
-                                or entry.get("turn_key") not in skipped_keys
-                                or not (
-                                    entry.get("deferred_candidates")
-                                    or entry.get("deferred_evidence")
-                                )
-                            ):
-                                continue
-                            count = entry.get("automatic_retry_count")
-                            if type(count) is int and count > 0:
-                                if count == 1:
-                                    entry.pop("automatic_retry_count", None)
-                                else:
-                                    entry["automatic_retry_count"] = count - 1
-                sessions[state_key] = state
-            self.journal._write_processed_unlocked(processed)
-        return selected
 
     def process(
         self,
@@ -173,7 +94,6 @@ class Processor:
                 "compaction": self._critical_path_compaction_status(),
             }
 
-        snapshots = self._select_one_snapshot_per_session(snapshots, scope=scope)
         backend = None
         all_ids: list[str] = []
         metadata_merged = 0
@@ -185,9 +105,10 @@ class Processor:
         current_index = 0
         try:
             for current_index, snapshot in enumerate(snapshots):
-                # Every selected turn starts from durable state.  Do not carry
-                # a pre-commit overlay from a previous turn now that the prior
-                # turn has already crossed its own commit boundary.
+                # Every complete turn crosses its own durable commit boundary
+                # before the next turn is planned.  The next iteration reads
+                # the just-committed Markdown/journal state instead of relying
+                # on a pre-commit overlay from the earlier batch design.
                 self.audit._planned_related = []
                 self.audit._planned_settled_sources = set()
                 work_budget = ExtractionWorkBudget()
@@ -210,8 +131,8 @@ class Processor:
                     turn_backend = backend
                     if getattr(backend, "single_pass_safe", False) is True:
                         # Start the monotonic deadline before planning-context
-                        # preparation; that work now consumes the same turn
-                        # budget as the provider request.
+                        # preparation; that work consumes the same turn budget
+                        # as the provider request.
                         turn_backend = work_budget.wrap_backend(backend)
                         strict_budget = True
                     turn_requests, turn_scopes = self.planner._collect_turn_outputs(
@@ -219,9 +140,9 @@ class Processor:
                     )
 
                 if strict_budget:
-                    # A late provider/callback result was already rejected by
-                    # the wrapped backend.  This second guard prevents slow
-                    # local validation/preparation from entering the mutation
+                    # A late provider/callback result is already rejected by
+                    # the wrapped backend. This second guard prevents slow
+                    # local preparation/validation from entering the mutation
                     # boundary after the ten-second turn deadline.
                     work_budget.ensure_before_commit()
 
@@ -240,13 +161,13 @@ class Processor:
                 metadata_merged += self.writer.last_metadata_merged
         except Exception as error:
             self._attach_failure_metrics(error)
-            # Earlier turns have already committed and their ownership marker
-            # is idle.  Only the current and still-unprocessed session claims
-            # are eligible to become failed/retryable.
+            # Earlier turns already crossed their own commit boundary. Keep
+            # the current/later ownership markers failed so retry can resume
+            # from durable state without replaying a completed turn.
             self.journal._mark_failed(snapshots[current_index:], error)
             raise
 
-        # Maintenance is deliberately outside extraction.  A successful turn
+        # Maintenance is deliberately outside extraction. A successful turn
         # is complete once its plan is durably committed; compaction can be
         # scheduled or invoked separately without extending model latency or
         # changing the extraction result.
