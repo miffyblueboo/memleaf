@@ -207,7 +207,7 @@ class B3SinglePassMemoryPlannerTests(unittest.TestCase):
         self.assertEqual(requests[0]["summary"]["update_memory_id"], "m-old")
         self.assertIn("project:New", scopes)
 
-    def test_create_passes_native_shadow_and_scope_operations_through_core_parser(self):
+    def test_create_keeps_native_shadow_compatibility_without_scope_maintenance(self):
         native_id = "native-1"
         related = [{
             "native": True,
@@ -235,7 +235,6 @@ class B3SinglePassMemoryPlannerTests(unittest.TestCase):
                         "title": "Current state",
                         "body": "legacy state is replaced",
                         "shadow_native_ids": [native_id],
-                        "scope_operations": [],
                     },
                 }],
                 "no_memory": [{"unit_id": assistant_uid, "reason": "assistant_restatement"}],
@@ -244,7 +243,7 @@ class B3SinglePassMemoryPlannerTests(unittest.TestCase):
         requests, _ = planner._collect_turn_outputs(SAFE_BACKEND, turn("legacy state is replaced"), {})
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(requests[0]["summary"]["shadow_native_ids"], [native_id])
-        self.assertEqual(requests[0]["summary"]["scope_operations"], [])
+        self.assertNotIn("scope_operations", requests[0]["summary"])
         self.assertEqual(requests[0]["native_refs"], [{"source_id": "source-1", "native_id": native_id}])
 
     def test_no_change_and_query_make_no_requests(self):
