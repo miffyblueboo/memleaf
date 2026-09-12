@@ -2,6 +2,16 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.42 — 2026-09-12
+
+- Rework ordinary automatic extraction around the unified `b3-single-pass-v1` planner. The current visible user/assistant turn is the only new-fact evidence; existing local/native memories remain comparison context. One structured model stage decides CREATE / UPDATE / NO_CHANGE / DEFERRED, with deterministic Core validation and at most one bounded format/structure repair.
+- Make the latency-critical `single_pass` stage non-thinking by default and use bounded structured output for supported OpenAI-compatible routes. Fixed safe API routes enforce a six-second primary request cap, an eight-second preparation-plus-model window, a ten-second total turn deadline, and rejection of late results before commit; no unmeasured P50/P95 claim is made.
+- Persist background extraction request/time budgets by process-job and turn identity so worker restarts cannot regain consumed attempts or wall time. Damaged budget/job state, invalid ownership/order, and wall-clock rollback fail closed instead of reopening a fresh extraction budget.
+- Commit automatic processing one complete turn at a time and re-read durable Markdown/journal state before planning the next turn. Frozen-turn recovery preserves already committed work without replaying model calls/history, while one process invocation drains at most four claimed turns and exposes the remaining backlog explicitly.
+- Move compaction/maintenance out of the `process()` / `remember()` extraction critical path, keep explicit no-write instructions as deterministic zero-model-call settlements, and retain structural-only model telemetry without prompt/response bodies or credentials.
+- Separate B3 protocol compatibility from strict transport deadline safety. Host/Python callbacks can use the same B3 semantic protocol without falsely claiming hard cancellation; mixed auto routes remain fail-closed, `single_pass` forbids hidden host-to-API fallback, and explicit `remember()` keeps its existing bounded validator retry semantics.
+- Preserve the product architecture: Markdown under `knowledge/` remains the active source of truth, `history/` remains historical state, permanent memory stays globally shared across agents using the same Vault, and no database, Redis, vector service, resident daemon, or local-model dependency is introduced. The release candidate passed Linux Python 3.11/3.12/3.13, Windows Python 3.11/3.12/3.13, macOS Python 3.11/3.13, native Codex Windows/macOS, wheel/sdist, installed-entry-point, and full unittest CI; real-model quality/latency acceptance remains a separate user-run step.
+
 ## 0.2.41 — 2026-09-11
 
 - Promote the B3 single-pass automatic memory planner for explicitly `single_pass_safe` API backends. Core prepares bounded local retrieval/context once, one semantic planner stage decides CREATE / UPDATE / NO_CHANGE / DEFERRED, deterministic validation remains authoritative, and model-output repair is bounded to at most one retry (`max_attempts=2`). Host/custom/host-backed providers keep the proven P3 fallback, while explicit `remember` retains its existing single-summary path.
