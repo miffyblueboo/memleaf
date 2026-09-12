@@ -23,6 +23,7 @@ from .extraction_work_state import (
     complete_turn_budget,
     reserve_model_request,
 )
+from .llm.router import freeze_model_route, limit_model_requests
 
 
 _MAX_TURNS_PER_PROCESS = 4
@@ -62,19 +63,10 @@ class Processor:
         try:
             setattr(error, "model_metrics", self.model.metrics())
         except Exception:
-            # Failure reporting must never mask the original processing error.
             return
 
     def _turn_writes_disabled(self, turn: Any) -> bool:
-        """Return only the deterministic user-authored no-write admission.
-
-        ``ProcessJournal._turn_is_read_only`` is intentionally a scheduling
-        heuristic and treats classification errors as read-only so older
-        deferred work is not retried accidentally. That fallback is not a
-        commit authorization: malformed evidence must never be silently
-        settled as NO_CHANGE. Here we apply only the explicit user memory
-        write-disable rule and let malformed input surface normally.
-        """
+        """Return only the deterministic user-authored no-write admission."""
 
         events = _event_payload(turn)
         policy_config = self.service.vault.config()
@@ -90,15 +82,7 @@ class Processor:
         *,
         scope: Any = None,
     ) -> tuple[list[Any], int]:
-        """Bound backlog drain and release claims that this invocation skips.
-
-        ``ProcessJournal`` takes a durable ownership marker before returning
-        snapshots. Older implementations then drained every contiguous turn,
-        so one hook could spend an unbounded amount of model time. Keep the
-        first small batch and atomically shrink/release the already-written
-        ownership markers before any model call. Deferred retry counters are
-        restored for skipped turns because no retry was actually attempted.
-        """
+        """Bound backlog drain and release claims this invocation skips."""
 
         if len(snapshots) <= _MAX_TURNS_PER_PROCESS:
             return snapshots, 0
@@ -187,18 +171,6 @@ class Processor:
         state: Mapping[str, Any],
         snapshot: tuple[bool, Any],
     ) -> dict[str, Any]:
-        """Keep one process invocation's pre-existing session Scope stable.
-
-        Durable memories are committed between turns and are intentionally
-        visible to the next turn. Session Scope, however, is routing context
-        rather than the permanent-memory source of truth. Historically all
-        contiguous turns in one process call observed the same pre-batch
-        Scope, with the final observed Scope persisted at batch commit. Keep
-        that contract while moving memory writes to per-turn commit, so an
-        explicit project switch in a later queued turn is not filtered by an
-        earlier turn's newly persisted session Scope.
-        """
-
         result = dict(state)
         present, value = snapshot
         if present:
@@ -225,10 +197,6 @@ class Processor:
             source = safe_component(source, "source")
         if session_id is not None:
             session_id = safe_component(session_id, "session id")
-        # A background process job is the only stable work identity that can
-        # survive a detached worker death. Synchronous callers retain the
-        # in-memory two-call budget; a restarted background worker additionally
-        # shares its persisted request/time ledger with the prior process.
         background_work_id = active_background_work_id(
             self.service.vault,
             source=source,
@@ -271,10 +239,6 @@ class Processor:
             self.journal._mark_failed(snapshots, error)
             raise
 
-        # Freeze only the pre-invocation session Scope. Permanent memories and
-        # processed journal state are deliberately re-read after every turn.
-        # This preserves the old multi-turn routing contract without restoring
-        # the old pre-commit memory overlay.
         scope_baseline: dict[str, tuple[bool, Any]] = {}
         with self.service.vault.lock():
             initial_processed = _read_processed(self.service.vault.processed_state_path)
@@ -297,10 +261,6 @@ class Processor:
         current_index = 0
         try:
             for current_index, snapshot in enumerate(snapshots):
-                # Every complete turn crosses its own durable commit boundary
-                # before the next turn is planned. The next iteration reads
-                # just-committed Markdown/journal state; only session routing
-                # Scope stays fixed to the invocation baseline above.
                 self.audit._planned_related = []
                 self.audit._planned_settled_sources = set()
                 durable_turn_budget_id = self._turn_budget_id(snapshot)
@@ -329,16 +289,8 @@ class Processor:
                             turn_id=durable_turn_budget_id,
                         )
                         work_budget = ExtractionWorkBudget(elapsed_seconds=elapsed)
-                        # A frozen plan can finish without another model call,
-                        # but the same background work item still cannot cross
-                        # its original total wall deadline after restart.
                         strict_budget = True
                 elif self._turn_writes_disabled(snapshot.turn):
-                    # An explicit user instruction not to mutate memory is a
-                    # deterministic admission decision, not a semantic model
-                    # question. It must not depend on model-request budget
-                    # state at all: settle with zero outbound requests and
-                    # advance the journal normally.
                     turn_requests, turn_scopes = [], []
                 else:
                     if backend is None:
@@ -348,10 +300,6 @@ class Processor:
                         elapsed = 0.0
                         reserve_request = None
                         if background_work_id is not None:
-                            # Start/recover the durable wall clock immediately
-                            # before planning-context preparation.  State lookup
-                            # above is deterministic local bookkeeping and does
-                            # not reopen model time after a worker restart.
                             elapsed = begin_turn_budget(
                                 self.service.vault,
                                 work_id=background_work_id,
@@ -375,11 +323,6 @@ class Processor:
                 if strict_budget:
                     if work_budget is None:
                         raise ProcessingError("missing extraction work budget")
-                    # A late provider/callback result is already rejected by
-                    # the wrapped backend. This second guard prevents slow
-                    # local preparation/validation (and a restarted worker
-                    # restoring an old frozen plan) from entering mutation
-                    # after the ten-second logical-turn deadline.
                     work_budget.ensure_before_commit()
 
                 ref = (snapshot.turn.source, snapshot.turn.session_id, snapshot.turn.turn_key)
@@ -393,10 +336,6 @@ class Processor:
                         ref: self.audit._deferred_by_turn.get(ref, [])
                     },
                 )
-                # Once the turn's source-of-truth commit is durable, a stale
-                # conservative request/time reservation is no longer needed.
-                # Cleanup is deliberately best-effort and can never negate the
-                # successful memory commit.
                 if background_work_id is not None:
                     complete_turn_budget(
                         self.service.vault,
@@ -407,16 +346,9 @@ class Processor:
                 metadata_merged += self.writer.last_metadata_merged
         except Exception as error:
             self._attach_failure_metrics(error)
-            # Earlier turns already crossed their own commit boundary. Keep
-            # the current/later ownership markers failed so retry can resume
-            # from durable state without replaying a completed turn.
             self.journal._mark_failed(snapshots[current_index:], error)
             raise
 
-        # Maintenance is deliberately outside extraction. A successful turn
-        # is complete once its plan is durably committed; compaction can be
-        # scheduled or invoked separately without extending model latency or
-        # changing the extraction result.
         no_memory_changes = not all_ids and metadata_merged == 0
         compaction = self._critical_path_compaction_status(
             reason="no_memory_changes" if no_memory_changes else "outside_extraction_critical_path"
@@ -513,6 +445,10 @@ class Processor:
                 requests, turn_scopes = restored["requests"], restored["scopes"]
             else:
                 backend = self.model._resolve_backend(model=model, router=router)
+                # Explicit remember has the same global request discipline as
+                # automatic extraction: no hidden host->API fallback and no
+                # more than two actual model dispatches (primary + one repair).
+                backend = limit_model_requests(freeze_model_route(backend), 2)
                 requests, turn_scopes = self.planner._collect_turn_outputs(
                     backend, turn, state, explicit=True,
                     explicit_candidate=candidate, scope=normalized_scopes,
