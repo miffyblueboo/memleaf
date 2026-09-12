@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from memleaf import Memleaf
 from memleaf.extraction_budget import ExtractionWorkBudget, SinglePassBudgetBackend
@@ -168,6 +169,29 @@ class WorkerRestartBudgetV2Tests(unittest.TestCase):
 
         self.assertEqual(backend.calls, 0)
         self.assertEqual(self.reserve(), 1)
+
+    def test_processor_restores_background_deadline_before_outbound(self):
+        self.service.capture(
+            "hermes", "session", "turn-1", "user", "Remember Alpha uses PostgreSQL.",
+            event_id="worker-budget-user",
+        )
+        self.service.capture(
+            "hermes", "session", "turn-1", "assistant", "Noted.",
+            event_id="worker-budget-assistant",
+        )
+        backend = _Backend()
+
+        with patch("memleaf.processing.begin_turn_budget", return_value=11.0):
+            with self.assertRaises(ModelError) as caught:
+                self.service.process(
+                    source="hermes",
+                    session_id="session",
+                    model=backend,
+                )
+
+        self.assertEqual(caught.exception.code, "model_timeout")
+        self.assertEqual(backend.calls, 0)
+        self.assertEqual(backend.timeout_caps, [])
 
     def test_wall_clock_rollback_fails_closed(self):
         self.assertEqual(self.begin(300.0), 0.0)
