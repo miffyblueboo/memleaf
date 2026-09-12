@@ -490,12 +490,15 @@ def run_single_pass_stage(
     if not callable(complete):
         raise TypeError("model executor does not support JSON stages")
     local_rows = list(local_by_key.values())
-    # Test/inspection executors sometimes pass an opaque sentinel because they
-    # never execute the backend. Production backends expose complete() and are
-    # wrapped so the existing two parser attempts become a true two-request
-    # outbound budget with a shared eight-second model deadline.
+    # Strict transport budgeting is separate from B3 protocol capability.
+    # Processor normally pre-wraps safe production routes with the turn's
+    # shared deadline. Direct/test callers still receive the default budget
+    # only when the backend explicitly advertises ``single_pass_safe``.
     budgeted_backend = (
-        budget_single_pass_backend(backend) if hasattr(backend, "complete") else backend
+        budget_single_pass_backend(backend)
+        if hasattr(backend, "complete")
+        and getattr(backend, "single_pass_safe", False) is True
+        else backend
     )
     return complete(
         budgeted_backend,
