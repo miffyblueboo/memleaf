@@ -36,13 +36,23 @@ _LEGACY_PROVIDER_PROTOCOL = {
     "google": "gemini",
 }
 
+# Exact protocol identities, including the canonical ``api_mode`` literals a
+# Hermes configuration actually stores (``chat_completions`` and
+# ``anthropic_messages``).  These are host-contract literals, not fuzzy
+# guesses: substring and model-name matching stay removed so a custom alias can
+# never authorize a protocol it does not name.
 _PROTOCOL_ALIASES = {
     "openai": "openai",
     "openai-compatible": "openai",
     "openai_compatible": "openai",
+    "chat_completions": "openai",
+    "chat": "openai",
     "claude": "claude",
     "anthropic": "claude",
+    "anthropic_messages": "claude",
     "gemini": "gemini",
+    "google": "gemini",
+    "generate_content": "gemini",
 }
 
 

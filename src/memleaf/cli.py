@@ -77,6 +77,14 @@ def build_parser() -> argparse.ArgumentParser:
             "this installation (current), or retain a version-matched configured runtime (existing)"
         ),
     )
+    install.add_argument(
+        "--no-model-discovery",
+        action="store_true",
+        help=(
+            "Hermes only: skip host model discovery; an existing memleaf route is "
+            "still preserved and the install continues either way"
+        ),
+    )
     install.add_argument("--json", action="store_true", help="emit one JSON result")
     audit = commands.add_parser("audit", help="inspect an existing Vault without changing it")
     audit.add_argument("--vault", type=Path, default=None)
@@ -232,6 +240,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 install_kwargs = {"vault_path": args.vault}
                 if args.mcp_runtime != "auto":
                     install_kwargs["mcp_runtime"] = args.mcp_runtime
+                if args.no_model_discovery:
+                    install_kwargs["skip_model_discovery"] = True
                 output = install_hermes(**install_kwargs)
         elif args.command in {"audit", "process"}:
             from .inspection import audit_vault, existing_root, preview_process
@@ -302,8 +312,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print("Restart Hermes to use memleaf.")
             elif output.get("user_action_required"):
                 print(f"Codex action required: {output.get('user_action')}")
-            if output.get("model", {}).get("status") == "not_configured":
-                print("Configure a memleaf model route before using automatic processing.")
+            if output.get("processing_status") == "model_route_required":
+                print(
+                    "Automatic memory extraction needs a memleaf model route before it can run. "
+                    "Set llm.provider/family/protocol/base_url/model/key in the Vault config.yaml, "
+                    "or rerun `memleaf init` from an interactive terminal."
+                )
         else:
             _print_install_failure(output, host=args.host)
         return 0 if output.get("status") in {"configured", "already_configured"} else 2

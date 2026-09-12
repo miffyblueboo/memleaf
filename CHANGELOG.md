@@ -2,6 +2,13 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.46 — 2026-09-12
+
+- Restore the host protocol literals that v0.2.45 dropped from the API-route protocol table. `anthropic_messages`, `chat_completions`, `chat`, `google` and `generate_content` resolve again. v0.2.45 replaced the previous tolerant mapping with an exact table that omitted every canonical Hermes `api_mode` value, so a Hermes custom provider that used to resolve to a protocol began resolving to none and was reported as `missing provider, base URL, protocol, or model`. Substring and model-name matching stay removed: only exact host-contract literals are accepted, and an unknown protocol still fails closed.
+- Stop `memleaf install --host hermes` from aborting when model-route discovery finds nothing. Installation now continues and reports `processing_status: model_route_required` with an explicit user action, matching the Codex installer policy. Previously the install returned `stage: model_route` before touching the provider, which left the core package upgraded while the Hermes provider stayed on its previous version. The provider and MCP surface do not need a model route for capture or retrieval, so a missing route is a deferred configuration step rather than an installation failure.
+- Add `install --no-model-discovery` so an upgrade can skip host model discovery while still preserving an existing memleaf route, matching the `init` flag that already existed. Discovery remains enabled by default, so an installation that already succeeds is unaffected.
+- Verification for this release used synthetic Hermes-shaped routes, a temporary Vault and mocked host calls only: 18 focused tests cover the restored protocol literals, rejection of still-unknown protocols, discovery of a Hermes-shaped custom provider, the degraded-install decision, the new CLI flag, and an end-to-end assertion that `install_hermes` walks past a failed model route. No real provider call was made and no production Vault, Hermes configuration or session was read or written. A real Windows Hermes install and a real macOS Hermes install remain unverified by this release, and the manual model-route configuration step is still required on a host whose credentials the host CLI only reports masked.
+
 ## 0.2.45 — 2026-09-12
 
 - Repair the `b3-single-pass-v1` automatic extraction contract so model output is constrained by the same CREATE / UPDATE / NO_CHANGE / DEFERRED fields, evidence shapes, no-memory/defer reasons, target rules and lookup-completeness checks that Core validates. Pure ASCII decision-case differences are normalized locally; unknown decisions and missing semantic fields still fail closed.

@@ -15,7 +15,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
-from typing import Any
+from typing import Any, Mapping
 
 from . import __version__
 from .adapters.base import (
@@ -754,10 +754,33 @@ def _failure_result(
     return result
 
 
+def _model_route_outcome(model: Any) -> tuple[bool, str, str | None]:
+    """Decide how one host installation reports its model route.
+
+    A missing model route must never block installing the host integration.
+    The provider/MCP surface still serves capture and retrieval without one,
+    so installation continues and reports ``model_route_required`` until a
+    route is configured.  This is the documented Codex policy, and applying it
+    to Hermes keeps the two hosts consistent instead of aborting the install
+    and leaving core and provider versions out of step.
+    """
+
+    if isinstance(model, Mapping) and model.get("status") in {"configured", "already_configured"}:
+        return True, "ready", None
+    return (
+        False,
+        "model_route_required",
+        "Configure an independent memleaf Model Route for this Vault before relying on "
+        "automatic memory extraction. Host model/provider settings are intentionally "
+        "not used or modified.",
+    )
+
+
 def install_hermes(
     *,
     vault_path: Path | None = None,
     mcp_runtime: str = "auto",
+    skip_model_discovery: bool = False,
 ) -> dict[str, Any]:
     """Install memleaf for Hermes with runtime preflight and host rollback.
 
@@ -870,18 +893,14 @@ def install_hermes(
         home=home,
         dry_run=False,
         non_interactive=not sys.stdin.isatty(),
-        skip_discovery=False,
+        skip_discovery=skip_model_discovery,
     )
-    if model.get("status") == "failure":
-        return _failure_result(
-            stage="model_route",
-            reason="model route is not configured",
-            core_version=core_version,
-            vault=vault.root,
-            vault_source=vault_source,
-            model=model,
-            mcp_runtime=runtime_details,
-        )
+    # A missing route degrades the installation instead of aborting it: the
+    # Hermes provider and MCP surface do not need a model route, and stopping
+    # here used to leave core and provider versions out of step.
+    model_ready, processing_status, model_action = _model_route_outcome(model)
+    # ``model_ready`` is reported through ``processing_status`` below; the host
+    # integration itself is configured either way.
 
     provider_target = hermes_home / "plugins" / "memleaf"
     provider_config = hermes_home / "memleaf.json"
@@ -1079,6 +1098,9 @@ def install_hermes(
         "model": model,
         "native_sources": native_registration,
         "capture": capture_policy_status(vault.config()),
+        "processing_status": processing_status,
+        "user_action_required": bool(model_action),
+        "user_action": model_action,
     }
 
 
