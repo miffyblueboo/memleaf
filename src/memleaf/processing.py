@@ -19,6 +19,7 @@ from .memory_commit import MemoryCommitter
 from .extraction_budget import ExtractionWorkBudget
 from .extraction_work_state import (
     active_background_work_id,
+    begin_turn_budget,
     complete_turn_budget,
     reserve_model_request,
 )
@@ -92,10 +93,10 @@ class Processor:
         """Bound backlog drain and release claims that this invocation skips.
 
         ``ProcessJournal`` takes a durable ownership marker before returning
-        snapshots.  Older implementations then drained every contiguous turn,
-        so one hook could spend an unbounded amount of model time.  Keep the
+        snapshots. Older implementations then drained every contiguous turn,
+        so one hook could spend an unbounded amount of model time. Keep the
         first small batch and atomically shrink/release the already-written
-        ownership markers before any model call.  Deferred retry counters are
+        ownership markers before any model call. Deferred retry counters are
         restored for skipped turns because no retry was actually attempted.
         """
 
@@ -225,9 +226,9 @@ class Processor:
         if session_id is not None:
             session_id = safe_component(session_id, "session id")
         # A background process job is the only stable work identity that can
-        # survive a detached worker death.  Synchronous callers retain the
+        # survive a detached worker death. Synchronous callers retain the
         # in-memory two-call budget; a restarted background worker additionally
-        # shares its persisted request ledger with the prior process.
+        # shares its persisted request/time ledger with the prior process.
         background_work_id = active_background_work_id(
             self.service.vault,
             source=source,
@@ -302,9 +303,23 @@ class Processor:
                 # Scope stays fixed to the invocation baseline above.
                 self.audit._planned_related = []
                 self.audit._planned_settled_sources = set()
-                work_budget = ExtractionWorkBudget()
-                strict_budget = False
                 durable_turn_budget_id = self._turn_budget_id(snapshot)
+                durable_elapsed = 0.0
+                if background_work_id is not None:
+                    # Persist the logical turn start before any durable-state
+                    # read or planning-context preparation. If this worker is
+                    # killed, the replacement process restores the elapsed wall
+                    # time into a fresh monotonic budget instead of starting a
+                    # new 8/10 second window.
+                    durable_elapsed = begin_turn_budget(
+                        self.service.vault,
+                        work_id=background_work_id,
+                        turn_id=durable_turn_budget_id,
+                    )
+                work_budget = ExtractionWorkBudget(
+                    elapsed_seconds=durable_elapsed,
+                )
+                strict_budget = False
 
                 with self.service.vault.lock():
                     processed = _read_processed(self.service.vault.processed_state_path)
@@ -321,6 +336,10 @@ class Processor:
                     self.audit._dispositions_by_turn[ref] = restored["candidate_dispositions"]
                     self.audit._evidence_by_turn[ref] = restored["evidence_dispositions"]
                     self.audit._deferred_by_turn[ref] = restored["deferred_candidates"]
+                    # A frozen plan can finish without another model call, but
+                    # the same background work item still cannot cross its
+                    # original total wall deadline after a worker restart.
+                    strict_budget = background_work_id is not None
                 elif self._turn_writes_disabled(snapshot.turn):
                     # An explicit user instruction not to mutate memory is a
                     # deterministic admission decision, not a semantic model
@@ -333,10 +352,10 @@ class Processor:
                         backend = self.model._resolve_backend(model=model, router=router)
                     turn_backend = backend
                     if getattr(backend, "single_pass_safe", False) is True:
-                        # Start the monotonic deadline before planning-context
-                        # preparation; that work consumes the same turn budget
-                        # as the provider request.  Background workers also
-                        # reserve each actual outbound request durably first.
+                        # The monotonic budget already includes local preparation
+                        # since the turn-loop boundary above. Background workers
+                        # additionally restore prior-process wall time and reserve
+                        # each actual outbound request durably first.
                         reserve_request = None
                         if background_work_id is not None:
                             reserve_request = lambda work_id=background_work_id, turn_id=durable_turn_budget_id: reserve_model_request(
@@ -356,8 +375,9 @@ class Processor:
                 if strict_budget:
                     # A late provider/callback result is already rejected by
                     # the wrapped backend. This second guard prevents slow
-                    # local preparation/validation from entering the mutation
-                    # boundary after the ten-second turn deadline.
+                    # local preparation/validation (and a restarted worker
+                    # restoring an old frozen plan) from entering mutation
+                    # after the ten-second logical-turn deadline.
                     work_budget.ensure_before_commit()
 
                 ref = (snapshot.turn.source, snapshot.turn.session_id, snapshot.turn.turn_key)
@@ -372,8 +392,8 @@ class Processor:
                     },
                 )
                 # Once the turn's source-of-truth commit is durable, a stale
-                # conservative request reservation is no longer needed.  The
-                # cleanup is deliberately best-effort and can never negate the
+                # conservative request/time reservation is no longer needed.
+                # Cleanup is deliberately best-effort and can never negate the
                 # successful memory commit.
                 if background_work_id is not None:
                     complete_turn_budget(
