@@ -39,8 +39,10 @@ class Processor:
         return Compactor(self.service).auto(model=model, router=router)
 
     @staticmethod
-    def _critical_path_compaction_status() -> dict[str, str]:
-        return {"status": "not_run", "reason": "outside_extraction_critical_path"}
+    def _critical_path_compaction_status(
+        *, reason: str = "outside_extraction_critical_path"
+    ) -> dict[str, str]:
+        return {"status": "not_run", "reason": reason}
 
     def _attach_failure_metrics(self, error: BaseException) -> None:
         """Attach structural-only model telemetry for outer failure reporters."""
@@ -143,7 +145,10 @@ class Processor:
             # turn is complete once its plan is durably committed; compaction
             # can be scheduled or invoked separately without extending model
             # latency or changing the extraction result.
-            compaction = self._critical_path_compaction_status()
+            no_memory_changes = not ids and self.writer.last_metadata_merged == 0
+            compaction = self._critical_path_compaction_status(
+                reason="no_memory_changes" if no_memory_changes else "outside_extraction_critical_path"
+            )
             deferred_candidates, deferred_turns = self.journal._deferred_counts(
                 source=source,
                 session_id=session_id,
