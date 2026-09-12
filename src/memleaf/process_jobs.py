@@ -328,8 +328,8 @@ def _safe_result(value: Any) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key in (
         "processed_turns", "memories_written", "metadata_merged", "cleaned_turns",
-        "deferred_candidates", "deferred_inbox_turns", "unresolved_evidence_count",
-        "retryable_deferred_turns",
+        "deferred_candidates", "deferred_inbox_turns", "pending_inbox_turns",
+        "unresolved_evidence_count", "retryable_deferred_turns",
     ):
         item = value.get(key)
         if type(item) is int and item >= 0:
@@ -377,7 +377,10 @@ def _safe_result(value: Any) -> dict[str, Any]:
 def _result_status(result: Mapping[str, Any]) -> str:
     deferred = any(
         type(result.get(key)) is int and result.get(key, 0) > 0
-        for key in ("deferred_candidates", "deferred_inbox_turns", "unresolved_evidence_count")
+        for key in (
+            "deferred_candidates", "deferred_inbox_turns", "pending_inbox_turns",
+            "unresolved_evidence_count",
+        )
     )
     if result.get("coverage_status") in {"partial", "deferred", "unavailable"}:
         deferred = True
@@ -392,8 +395,8 @@ def _aggregate_attempt_results(attempts: list[Any]) -> dict[str, Any]:
     aggregate: dict[str, Any] = {}
     numeric = (
         "processed_turns", "memories_written", "metadata_merged", "cleaned_turns",
-        "deferred_candidates", "deferred_inbox_turns", "unresolved_evidence_count",
-        "retryable_deferred_turns",
+        "deferred_candidates", "deferred_inbox_turns", "pending_inbox_turns",
+        "unresolved_evidence_count", "retryable_deferred_turns",
     )
     for key in numeric:
         total = 0
