@@ -254,6 +254,7 @@ class HTTPModelBackend:
         self.timeout = normalize_request_timeout(timeout)
         self._opener = opener or urllib.request.urlopen
         self._call_metrics_local = threading.local()
+        self._call_timeout_local = threading.local()
         # The built-in stateless urllib transport can be used concurrently.
         # An injected opener is caller-owned and therefore defaults to serial.
         self.parallel_safe = opener is None
@@ -265,6 +266,28 @@ class HTTPModelBackend:
         value = getattr(self._call_metrics_local, "value", {})
         self._call_metrics_local.value = {}
         return dict(value) if isinstance(value, Mapping) else {}
+
+    def set_call_timeout(self, seconds: Any) -> None:
+        """Set a thread-local one-call timeout cap used by extraction budgets."""
+
+        if isinstance(seconds, bool):
+            raise ValueError("call timeout must be positive")
+        try:
+            parsed = float(seconds)
+        except (TypeError, ValueError):
+            raise ValueError("call timeout must be positive") from None
+        if not math.isfinite(parsed) or parsed <= 0:
+            raise ValueError("call timeout must be positive")
+        self._call_timeout_local.value = parsed
+
+    def clear_call_timeout(self) -> None:
+        self._call_timeout_local.value = None
+
+    def _effective_timeout(self) -> float:
+        override = getattr(self._call_timeout_local, "value", None)
+        if isinstance(override, (int, float)) and not isinstance(override, bool) and override > 0:
+            return min(float(self.timeout), float(override))
+        return float(self.timeout)
 
     @staticmethod
     def _is_timeout_reason(value: Any) -> bool:
@@ -287,7 +310,7 @@ class HTTPModelBackend:
             method="POST",
         )
         try:
-            response = self._opener(request, timeout=self.timeout)
+            response = self._opener(request, timeout=self._effective_timeout())
             try:
                 raw = response.read()
             finally:
