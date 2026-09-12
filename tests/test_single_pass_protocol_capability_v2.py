@@ -9,7 +9,7 @@ from memleaf import Memleaf
 from memleaf.admission import EvidenceUnit
 from memleaf.extraction_budget import SinglePassBudgetBackend
 from memleaf.extraction_capability import supports_single_pass_protocol
-from memleaf.llm import CallableBackend, ModelRouter
+from memleaf.llm import CallableBackend, ModelError, ModelRouter
 from memleaf.single_pass_plan import run_single_pass_stage
 
 
@@ -18,7 +18,6 @@ class _SafeApi:
     model = "test"
     single_pass_safe = True
     parallel_safe = True
-
     structured_batch_safe = True
 
     def complete(self, prompt, *, system="", purpose="", temperature=0.0):
@@ -82,6 +81,28 @@ class SinglePassProtocolCapabilityV2Tests(unittest.TestCase):
             api=_IncompatibleBackend(),
         )
         self.assertFalse(supports_single_pass_protocol(bad))
+
+    def test_auto_router_does_not_hide_api_fallback_inside_single_pass_call(self):
+        calls = {"host": 0, "api": 0}
+
+        def host(prompt, **kwargs):
+            del prompt, kwargs
+            calls["host"] += 1
+            raise ModelError("host failed")
+
+        def api(prompt, **kwargs):
+            del prompt, kwargs
+            calls["api"] += 1
+            return "{}"
+
+        router = ModelRouter(mode="auto", host=host, api=api)
+        with self.assertRaises(ModelError):
+            router.complete("b3", purpose="single_pass")
+        self.assertEqual(calls, {"host": 1, "api": 0})
+
+        # Compatibility behavior for older/non-extraction stages stays intact.
+        self.assertEqual(router.complete("legacy", purpose="gate"), "{}")
+        self.assertEqual(calls, {"host": 2, "api": 1})
 
     def test_protocol_only_backend_is_not_silently_promoted_to_strict_budget(self):
         unit = EvidenceUnit(
