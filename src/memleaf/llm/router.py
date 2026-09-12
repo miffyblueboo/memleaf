@@ -114,10 +114,6 @@ class ModelRouter:
         api_key_env = config.get("api_key_env")
         if not all(isinstance(item, str) and item.strip() for item in (base_url, model)):
             return None
-        # New installer-created routes store the key directly in the local
-        # 0600 memleaf config. Keep the old environment-name form as a
-        # compatibility fallback for existing users, but never let an empty
-        # direct value shadow a valid legacy environment configuration.
         if api_key is None:
             if not isinstance(api_key_env, str) or not api_key_env.strip():
                 return None
@@ -167,8 +163,6 @@ class ModelRouter:
         return str(getattr(backend, "provider", "unknown")), str(getattr(backend, "model", "unknown"))
 
     def set_call_timeout(self, seconds: Any) -> None:
-        """Store a thread-local timeout cap for the next routed transport call."""
-
         if isinstance(seconds, bool):
             raise ValueError("call timeout must be positive")
         try:
@@ -243,12 +237,6 @@ class ModelRouter:
             except ModelError:
                 provider, model = self._identity(self.host)
                 self._diagnose(provider, model, "host_failed")
-                # Unified automatic extraction has one global request budget.
-                # Falling through inside one logical single_pass call would
-                # hide a second actual model request from the planner budget
-                # and could turn one repair into four outbound attempts. Keep
-                # the route fixed for B3; legacy/non-extraction calls retain
-                # the existing auto host->API fallback behavior.
                 if purpose == "single_pass":
                     raise
                 if self.api is None:
@@ -262,12 +250,7 @@ class ModelRouter:
 
 
 class _FixedRouteBackend:
-    """A view of one auto router pinned to its first reachable route.
-
-    Explicit remember has a global two-request budget too. Pinning the route
-    prevents one parser attempt from expanding into host+API requests while
-    preserving the original router's metrics and diagnostics.
-    """
+    """A view of one auto router pinned to its first reachable route."""
 
     def __init__(self, router: ModelRouter, selected: ModelBackend):
         self._router = router
@@ -302,6 +285,60 @@ class _FixedRouteBackend:
         return self._router.consume_call_metrics()
 
 
+class _RequestLimitedBackend:
+    """Bound actual backend dispatches without changing parser semantics."""
+
+    def __init__(self, backend: Any, maximum: int):
+        if not hasattr(backend, "complete"):
+            raise TypeError("limited backend must expose complete()")
+        if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1:
+            raise ValueError("maximum must be a positive integer")
+        self._backend = backend
+        self._maximum = maximum
+        self._requests = 0
+        self.provider = str(getattr(backend, "provider", "unknown"))
+        self.model = str(getattr(backend, "model", "unknown"))
+        self.parallel_safe = False
+        self.structured_batch_safe = False
+        self.single_pass_safe = False
+
+    @property
+    def request_count(self) -> int:
+        return self._requests
+
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str = "",
+        purpose: str = "",
+        temperature: float = 0.0,
+    ) -> str:
+        if self._requests >= self._maximum:
+            raise ModelError(
+                "model request budget exhausted",
+                code="model_timeout",
+                stage=purpose,
+            )
+        self._requests += 1
+        return self._backend.complete(
+            prompt,
+            system=system,
+            purpose=purpose,
+            temperature=temperature,
+        )
+
+    def consume_call_metrics(self) -> dict[str, Any]:
+        consume = getattr(self._backend, "consume_call_metrics", None)
+        if not callable(consume):
+            return {}
+        try:
+            value = consume()
+        except Exception:
+            return {}
+        return dict(value) if isinstance(value, Mapping) else {}
+
+
 def freeze_model_route(backend: Any) -> Any:
     """Pin an auto ModelRouter without changing fixed host/api backends."""
 
@@ -313,4 +350,16 @@ def freeze_model_route(backend: Any) -> Any:
     return _FixedRouteBackend(backend, selected)
 
 
-__all__ = ["ModelRouter", "freeze_model_route"]
+def limit_model_requests(backend: Any, maximum: int) -> Any:
+    """Return a wrapper that refuses dispatches beyond ``maximum``."""
+
+    if isinstance(backend, _RequestLimitedBackend):
+        return backend
+    return _RequestLimitedBackend(backend, maximum)
+
+
+__all__ = [
+    "ModelRouter",
+    "freeze_model_route",
+    "limit_model_requests",
+]
