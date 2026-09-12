@@ -754,7 +754,46 @@ def _failure_result(
     return result
 
 
-def _model_route_outcome(model: Any) -> tuple[bool, str, str | None]:
+_MODEL_ROUTE_REQUIRED_ACTION = (
+    "Configure an independent memleaf Model Route for this Vault before relying on "
+    "automatic memory extraction. Host model/provider settings are intentionally "
+    "not used or modified."
+)
+
+_MODEL_ROUTE_INCOMPATIBLE_ACTION = (
+    "This Vault's model route cannot run automatic memory extraction. The Claude and "
+    "Gemini adapters implement no verified structured-output boundary, so the "
+    "single-pass protocol stays fail-closed for them; v0.2.x automatic extraction "
+    "requires an OpenAI-compatible route (set llm.protocol to openai). Capture, "
+    "retrieval, and explicit remember/forget keep working unchanged."
+)
+
+
+def _route_can_extract(vault: Any) -> bool:
+    """Ask the production router whether this Vault's route can speak B3.
+
+    This deliberately reuses the same decision the extraction path makes instead
+    of restating the capability rules: the installer must never advertise
+    ``ready`` for a route whose adapter leaves ``single_pass_protocol`` False.
+    No request is sent and no service is probed.
+    """
+
+    try:
+        from .extraction_capability import supports_single_pass_protocol
+        from .llm import ModelRouter
+
+        router = ModelRouter.from_config(vault.config())
+    except Exception:
+        return False
+    try:
+        return bool(supports_single_pass_protocol(router))
+    except Exception:
+        return False
+
+
+def _model_route_outcome(
+    model: Any, *, can_extract: bool | None = None
+) -> tuple[bool, str, str | None]:
     """Decide how one host installation reports its model route.
 
     A missing model route must never block installing the host integration.
@@ -763,17 +802,17 @@ def _model_route_outcome(model: Any) -> tuple[bool, str, str | None]:
     route is configured.  This is the documented Codex policy, and applying it
     to Hermes keeps the two hosts consistent instead of aborting the install
     and leaving core and provider versions out of step.
+
+    ``can_extract`` carries the resolved capability of a *configured* route.  A
+    route can be present and still be unable to run automatic extraction, so
+    reporting plain ``ready`` for it would be a false promise.
     """
 
-    if isinstance(model, Mapping) and model.get("status") in {"configured", "already_configured"}:
-        return True, "ready", None
-    return (
-        False,
-        "model_route_required",
-        "Configure an independent memleaf Model Route for this Vault before relying on "
-        "automatic memory extraction. Host model/provider settings are intentionally "
-        "not used or modified.",
-    )
+    if not (isinstance(model, Mapping) and model.get("status") in {"configured", "already_configured"}):
+        return False, "model_route_required", _MODEL_ROUTE_REQUIRED_ACTION
+    if can_extract is False:
+        return False, "model_route_incompatible", _MODEL_ROUTE_INCOMPATIBLE_ACTION
+    return True, "ready", None
 
 
 def install_hermes(
@@ -897,8 +936,12 @@ def install_hermes(
     )
     # A missing route degrades the installation instead of aborting it: the
     # Hermes provider and MCP surface do not need a model route, and stopping
-    # here used to leave core and provider versions out of step.
-    model_ready, processing_status, model_action = _model_route_outcome(model)
+    # here used to leave core and provider versions out of step.  A *present*
+    # route that cannot speak B3 is reported separately, because advertising
+    # ``ready`` for it would promise extraction that can never run.
+    model_ready, processing_status, model_action = _model_route_outcome(
+        model, can_extract=_route_can_extract(vault)
+    )
     # ``model_ready`` is reported through ``processing_status`` below; the host
     # integration itself is configured either way.
 

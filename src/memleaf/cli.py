@@ -312,12 +312,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print("Restart Hermes to use memleaf.")
             elif output.get("user_action_required"):
                 print(f"Codex action required: {output.get('user_action')}")
-            if output.get("processing_status") == "model_route_required":
+            processing = output.get("processing_status")
+            if processing == "model_route_required":
                 print(
                     "Automatic memory extraction needs a memleaf model route before it can run. "
                     "Set llm.provider/family/protocol/base_url/model/key in the Vault config.yaml, "
                     "or rerun `memleaf init` from an interactive terminal."
                 )
+            elif processing == "model_route_incompatible":
+                print("Automatic memory extraction cannot run on this route.")
+                if output.get("user_action"):
+                    print(f"  {output['user_action']}")
         else:
             _print_install_failure(output, host=args.host)
         return 0 if output.get("status") in {"configured", "already_configured"} else 2

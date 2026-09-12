@@ -2,6 +2,27 @@
 
 from __future__ import annotations
 
+from .validation import SOURCE_FIELDS
+
+_SOURCE_FIELDS_TEXT = ", ".join(SOURCE_FIELDS)
+
+# The model is never asked to guess the ``sources`` entry shape: this sentence
+# is generated from the validator's own field list, so the instruction and the
+# enforced contract stay in step.
+_SOURCES_CONTRACT = (
+    "sources is a non-empty array of objects, never an array of bare strings. Each "
+    f"object may contain only these keys: {_SOURCE_FIELDS_TEXT}. Every value is a "
+    "string, except evidence_event_ids, which is a non-empty array of strings. Write "
+    '[{"event_key":"<admitted event key>"}], not ["<admitted event key>"]. Use only '
+    "event keys admitted for the current turn."
+)
+
+SOURCES_SHAPE_CORRECTION = (
+    "Previous output violated: source_shape. "
+    + _SOURCES_CONTRACT
+    + " Keep every other field of the summary unchanged."
+)
+
 
 GATE_SYSTEM = """You are memleaf's strict, source-neutral memory admission Gate. Return exactly one strict JSON object with top-level fields candidates, coverage, and evidence_bindings.
 
@@ -72,6 +93,9 @@ Semantic completeness is required: keep the smallest complete confirmed content 
 
 OUTPUT CONTRACT
 A normal summary requires title, body, tags, type, scopes, and sources. Optional existing-schema fields are memory_id, update_memory_id, aliases, keywords, scope_source, evidence_event_ids, shadow_native_ids, scope_operations, status, completed_at, and due_date. Use only admitted current event keys in sources/evidence references. Copy the Gate candidate's type and scopes exactly; if scope_source is present, it must match the Gate value.
+
+SOURCES SHAPE
+""" + _SOURCES_CONTRACT + """
 
 TODO AND DATES
 Evidence events may include an ISO-8601 UTC timestamp. For a new todo, include status and due_date; use due_date=null when no deadline is established. For an updated todo, include current status. completed requires completed_at grounded in the admitted event timestamp. Do not invent dates. Preserve only date meaning supported by admitted Evidence; an admitted visible-message timestamp may anchor a supported relative date. Core normalizes supported relative calendar dates to YYYY-MM-DD and validates grounding; recurring schedules may remain recurring.

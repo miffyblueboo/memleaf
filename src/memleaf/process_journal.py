@@ -16,14 +16,70 @@ from .inbox import InboxEvent, InboxTurn, parse_inbox
 from .locking import atomic_write_json, atomic_write_text
 from .turn_plan import turn_identity_key
 from .redaction import redact_text
-from .vault import safe_component
+from .vault import Vault, safe_component
 from .process_common import ProcessingError, _FAILED_STATUS, _LEGACY_PROCESSING_GRACE_SECONDS, _MAX_SESSION_LINEAGE_DEPTH, _PROCESSING_LEASE_SECONDS, _PROCESSING_STATUS, _Snapshot, _as_int, _event_payload, _failure_metadata, _now_value, _parse_time, _read_processed, _safe_evidence_check, _safe_evidence_diagnostics, _safe_scope_background, _session_key
+
+
+def processing_health(vault_path: Path | str) -> dict[str, Any]:
+    """Report whether automatic extraction is keeping up, and why not.
+
+    Strictly read-only: the Vault is opened without ``create`` and nothing is
+    written.  Failures were previously visible only inside
+    ``_state/processed.json``, so a Vault whose every turn failed extraction
+    still looked idle from the outside and the user had no way to notice.
+    """
+
+    vault = Vault(vault_path, create=False)
+    processed = _read_processed(vault.processed_state_path)
+    sessions = processed.get("sessions")
+    failures: list[dict[str, Any]] = []
+    running = 0
+    idle = 0
+    failed_turns = 0
+    last_processed: str | None = None
+    if isinstance(sessions, Mapping):
+        for key, state in sessions.items():
+            if not isinstance(state, Mapping):
+                continue
+            marker = state.get("processing")
+            marker = marker if isinstance(marker, Mapping) else {}
+            observed = marker.get("last_processed_at")
+            if isinstance(observed, str) and (last_processed is None or observed > last_processed):
+                last_processed = observed
+            status = marker.get("status")
+            if status == _FAILED_STATUS:
+                turn_indices = marker.get("turn_indices")
+                count = len(turn_indices) if isinstance(turn_indices, list) else 0
+                failed_turns += count
+                failures.append(
+                    {
+                        "session_id": key,
+                        "failure_code": marker.get("failure_code"),
+                        "failure_stage": marker.get("failure_stage"),
+                        "attempt_count": marker.get("attempt_count"),
+                        "turn_count": count,
+                    }
+                )
+            elif status == _PROCESSING_STATUS:
+                running += 1
+            else:
+                idle += 1
+    failures.sort(key=lambda item: str(item.get("session_id")))
+    return {
+        "status": "failed" if failures else ("running" if running else "idle"),
+        "failed_sessions": len(failures),
+        "failed_turns": failed_turns,
+        "running_sessions": running,
+        "idle_sessions": idle,
+        "last_processed_at": last_processed,
+        "retryable": bool(failures or running),
+        "failures": failures,
+    }
 
 
 class ProcessJournal:
     def __init__(self, service: Any):
         self.service = service
-
     def _write_processed_unlocked(self, processed: Mapping[str, Any]) -> None:
         atomic_write_json(self.service.vault.processed_state_path, dict(processed))
 

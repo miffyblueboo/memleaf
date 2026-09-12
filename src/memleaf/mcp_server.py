@@ -286,8 +286,14 @@ _TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "process_status",
-        "description": "Read the status of an accepted background process job.",
-        "inputSchema": _object_schema({"job_id": {"type": "string"}}, required=["job_id"]),
+        "description": (
+            "Read the status of an accepted background process job, or, when job_id is "
+            "omitted, the Vault's automatic-extraction health: failed and running "
+            "sessions, the failure code and stage, and whether the work is still "
+            "retryable. Failed extraction is never silent; check this when expected "
+            "memories do not appear."
+        ),
+        "inputSchema": _object_schema({"job_id": {"type": "string"}}),
     },
     {
         "name": "remember",
@@ -930,9 +936,15 @@ def _invoke_tool(
                 else:
                     value = service.process(**args)
         elif name == "process_status":
-            from .process_jobs import status
+            job_id = args.get("job_id")
+            if isinstance(job_id, str) and job_id:
+                from .process_jobs import status
 
-            value = status(service.vault.root, job_id=args.get("job_id", ""))
+                value = status(service.vault.root, job_id=job_id)
+            else:
+                from .process_journal import processing_health
+
+                value = processing_health(service.vault.root)
         elif name == "remember":
             value = service.remember(**args)
         elif name == "forget_memory":

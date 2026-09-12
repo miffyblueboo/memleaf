@@ -26,6 +26,19 @@ def _is_cjk_char(value: str) -> bool:
     )
 
 
+def _cjk_span_bar(part: str) -> int:
+    """Return the contiguous-span bar for one CJK component.
+
+    The bar is a fraction of the component but never longer than the component
+    itself.  A two-character term could otherwise never reach it, which turned
+    every compound query carrying a short CJK word plus an ASCII token into an
+    unsatisfiable one: the compound branch requires a strong CJK match as soon
+    as an ASCII component is present.
+    """
+
+    return min(len(part), max(3, (len(part) * 35 + 99) // 100))
+
+
 def _query_parts(query: str | Iterable[str]) -> tuple[str, list[str], set[str]]:
     """Return the normalized query and its lexical components.
 
@@ -44,6 +57,13 @@ def _query_parts(query: str | Iterable[str]) -> tuple[str, list[str], set[str]]:
     explicit: set[str] = set()
     for raw_part, part in zip(raw_parts, normalized_raw_parts):
         if any(_is_cjk_char(char) for char in part):
+            continue
+        # Only a component that can satisfy the strong-match bar used below may
+        # become a *requirement*.  Splitting a punctuated identifier such as
+        # ``vX.Y.Z`` yields the one-character fragments ``Y`` and ``Z``; making
+        # those mandatory would demand a match that the same bar refuses to
+        # grant, so the compound query could never match anything at all.
+        if len(part) < 3 and not any(char.isdigit() for char in raw_part):
             continue
         if any(char.isdigit() for char in raw_part) or raw_part.isalpha() and raw_part.isupper():
             explicit.add(part)
@@ -123,7 +143,7 @@ def candidate_matches_query(memory: Memory, query: str | Iterable[str]) -> bool:
             return True
         if not any(_is_cjk_char(char) for char in part):
             return False
-        minimum = max(3, (len(part) * 35 + 99) // 100)
+        minimum = _cjk_span_bar(part)
         return max((_longest_common_substring(part, value) for value in values), default=0) >= minimum
 
     has_cjk_part = any(any(_is_cjk_char(char) for char in part) for part in parts)
@@ -142,7 +162,7 @@ def candidate_matches_query(memory: Memory, query: str | Iterable[str]) -> bool:
     for part in parts:
         if any(_is_cjk_char(char) for char in part):
             longest = max((_longest_common_substring(part, value) for value in values), default=0)
-            minimum = max(3, (len(part) * 35 + 99) // 100)
+            minimum = _cjk_span_bar(part)
             if longest >= minimum:
                 strong_match = True
                 strong_cjk_match = True

@@ -410,7 +410,11 @@ _RELATIVE_DAY_OFFSETS = {
     "昨天": -1,
     "昨日": -1,
 }
-_SOURCE_FIELDS = frozenset(("event_key", "session_id", "turn_id", "conversation_title", "evidence_event_ids"))
+# The single authority for the ``sources`` entry shape.  ``prompts.py`` builds
+# its output contract from this tuple, so the instruction the model receives and
+# the shape this validator enforces cannot drift apart the way the B3 protocol
+# string once did.
+SOURCE_FIELDS = ("event_key", "session_id", "turn_id", "conversation_title", "evidence_event_ids")
 _COMPACT_FIELDS = frozenset(
     (
         "title",
@@ -1274,9 +1278,22 @@ def _source_items(value: Any) -> list[dict[str, Any]]:
         raise ModelOutputError("sources must be a non-empty list", validation_detail="source_shape")
     result: list[dict[str, Any]] = []
     for source in value:
+        if isinstance(source, str):
+            # A bare admitted event key is unambiguous: under this contract a
+            # bare string cannot denote any other field.  Normalize it to the
+            # object form instead of failing the whole summary; the event-key
+            # authority check below still applies unchanged.
+            result.append(
+                {
+                    "event_key": _string(
+                        source, "source event_key", validation_detail="source_shape"
+                    )
+                }
+            )
+            continue
         if not isinstance(source, Mapping):
             raise ModelOutputError("each source must be an object", validation_detail="source_shape")
-        if set(source) - set(_SOURCE_FIELDS):
+        if set(source) - set(SOURCE_FIELDS):
             raise ModelOutputError("source contains unknown fields", validation_detail="unknown_fields")
         item = {}
         for key, child in source.items():
