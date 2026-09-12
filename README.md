@@ -4,7 +4,7 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **版本：0.2.43。**
+> **版本：0.2.44。**
 > 记忆只从用户与 Agent 的可见对话提炼。Agent 已在回复中整理的事实、项目进展和明确待办可作为来源；邮件、附件、网页和终端等工具原文不进入记忆提炼。模型负责保留原话中的不确定性，现有记忆仅用于比较、去重和更新。Markdown 仍是唯一事实源。
 > **当前版本支持 Hermes 和 Codex。** Antigravity（反重力）不检测、不安装、不配置。
 
@@ -65,6 +65,8 @@ memleaf 不会把整个 Vault 或整段历史对话自动塞进模型上下文�
 Hermes 使用原生 MemoryProvider 维护生命周期，并通过 MCP 获取 Scope Map；Hermes 的检索门控是 Soft Gate，不能宣称阻止所有未检索回答。
 
 ## 记忆提炼规则
+
+**10 秒是自动提炼的性能目标，不是失败阈值。** HTTP 请求遵循 `llm.request_timeout`（默认 120 秒）；正常返回且通过 Core 校验的结果不会仅因超过 10 秒而丢弃。模型单次请求、有限修复和逐轮提交保留，耗时与是否完成分别统计。详见 [提炼耗时与超时](docs/extraction-latency.md)。
 
 memleaf 不把每句话都保存为记忆。处理一轮完整的 user + assistant 可见文本时，模型先判断是否存在明确的未来复用价值：
 

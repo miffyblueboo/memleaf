@@ -16,10 +16,9 @@ from .process_journal import ProcessJournal
 from .planning_context import PlanningContext
 from .single_pass_memory_planner import SinglePassMemoryPlanner
 from .memory_commit import MemoryCommitter
-from .extraction_budget import ExtractionWorkBudget
+from .extraction_budget import ExtractionTiming, aggregate_extraction_metrics, budget_single_pass_backend
 from .extraction_work_state import (
     active_background_work_id,
-    begin_turn_budget,
     complete_turn_budget,
     reserve_model_request,
 )
@@ -32,6 +31,7 @@ _MAX_TURNS_PER_PROCESS = 4
 class Processor:
     def __init__(self, service: Any):
         self.service = service
+        self._extraction_timings: list[dict[str, int]] = []
         self.writer = MemoryWriter(service)
         self.audit = TurnAudit()
         self.model = ModelExecutor(service)
@@ -62,6 +62,8 @@ class Processor:
 
         try:
             setattr(error, "model_metrics", self.model.metrics())
+            if self._extraction_timings:
+                setattr(error, "extraction_metrics", aggregate_extraction_metrics(self._extraction_timings))
         except Exception:
             return
 
@@ -193,6 +195,7 @@ class Processor:
         router: Any = None,
         scope: Any = None,
     ) -> dict[str, Any]:
+        self._extraction_timings = []
         if source is not None:
             source = safe_component(source, "source")
         if session_id is not None:
@@ -226,6 +229,7 @@ class Processor:
                 "deferred_candidates": deferred_candidates,
                 "deferred_inbox_turns": deferred_turns,
                 "pending_inbox_turns": 0,
+                "extraction_metrics": aggregate_extraction_metrics(()),
                 "model_metrics": self.model.metrics(),
                 "compaction": self._critical_path_compaction_status(),
             }
@@ -259,13 +263,13 @@ class Processor:
         self.audit._evidence_by_turn = {}
         self.audit._planned_settled_sources = set()
         current_index = 0
+        turn_timing: ExtractionTiming | None = None
         try:
             for current_index, snapshot in enumerate(snapshots):
                 self.audit._planned_related = []
                 self.audit._planned_settled_sources = set()
                 durable_turn_budget_id = self._turn_budget_id(snapshot)
-                work_budget: ExtractionWorkBudget | None = None
-                strict_budget = False
+                turn_timing = ExtractionTiming()
 
                 with self.service.vault.lock():
                     processed = _read_processed(self.service.vault.processed_state_path)
@@ -282,14 +286,6 @@ class Processor:
                     self.audit._dispositions_by_turn[ref] = restored["candidate_dispositions"]
                     self.audit._evidence_by_turn[ref] = restored["evidence_dispositions"]
                     self.audit._deferred_by_turn[ref] = restored["deferred_candidates"]
-                    if background_work_id is not None:
-                        elapsed = begin_turn_budget(
-                            self.service.vault,
-                            work_id=background_work_id,
-                            turn_id=durable_turn_budget_id,
-                        )
-                        work_budget = ExtractionWorkBudget(elapsed_seconds=elapsed)
-                        strict_budget = True
                 elif self._turn_writes_disabled(snapshot.turn):
                     turn_requests, turn_scopes = [], []
                 else:
@@ -297,34 +293,22 @@ class Processor:
                         backend = self.model._resolve_backend(model=model, router=router)
                     turn_backend = backend
                     if getattr(backend, "single_pass_safe", False) is True:
-                        elapsed = 0.0
                         reserve_request = None
                         if background_work_id is not None:
-                            elapsed = begin_turn_budget(
-                                self.service.vault,
-                                work_id=background_work_id,
-                                turn_id=durable_turn_budget_id,
-                            )
                             reserve_request = lambda work_id=background_work_id, turn_id=durable_turn_budget_id: reserve_model_request(
                                 self.service.vault,
                                 work_id=work_id,
                                 turn_id=turn_id,
                             )
-                        work_budget = ExtractionWorkBudget(elapsed_seconds=elapsed)
-                        turn_backend = work_budget.wrap_backend(
+                        turn_backend = budget_single_pass_backend(
                             backend,
                             reserve_request=reserve_request,
                         )
-                        strict_budget = True
                     turn_requests, turn_scopes = self.planner._collect_turn_outputs(
                         turn_backend, snapshot.turn, state, scope=scope
                     )
 
-                if strict_budget:
-                    if work_budget is None:
-                        raise ProcessingError("missing extraction work budget")
-                    work_budget.ensure_before_commit()
-
+                turn_timing.begin_commit()
                 ref = (snapshot.turn.source, snapshot.turn.session_id, snapshot.turn.turn_key)
                 ids = self.committer._commit_success(
                     [snapshot],
@@ -344,7 +328,11 @@ class Processor:
                     )
                 all_ids.extend(ids)
                 metadata_merged += self.writer.last_metadata_merged
+                self._extraction_timings.append(turn_timing.finish())
+                turn_timing = None
         except Exception as error:
+            if turn_timing is not None:
+                self._extraction_timings.append(turn_timing.finish(failed=True))
             self._attach_failure_metrics(error)
             self.journal._mark_failed(snapshots[current_index:], error)
             raise
@@ -371,6 +359,7 @@ class Processor:
             "deferred_candidates": deferred_candidates,
             "deferred_inbox_turns": deferred_turns,
             "pending_inbox_turns": pending_inbox_turns,
+            "extraction_metrics": aggregate_extraction_metrics(self._extraction_timings),
             "model_metrics": self.model.metrics(),
             "compaction": compaction,
         }

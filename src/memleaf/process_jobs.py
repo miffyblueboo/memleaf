@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .locking import atomic_write_json, read_json
+from .extraction_budget import aggregate_extraction_metrics
 from .service import Memleaf
 from .vault import Vault, safe_component
 
@@ -396,6 +397,9 @@ def _safe_result(value: Any) -> dict[str, Any]:
     model_metrics = _safe_model_metrics(value.get("model_metrics"))
     if model_metrics:
         result["model_metrics"] = model_metrics
+    extraction_metrics = value.get("extraction_metrics")
+    if isinstance(extraction_metrics, Mapping):
+        result["extraction_metrics"] = aggregate_extraction_metrics([extraction_metrics])
     for key in ("coverage_status", "external_evidence_status"):
         if isinstance(value.get(key), str):
             result[key] = value[key][:80]
@@ -483,6 +487,7 @@ def _aggregate_attempt_results(attempts: list[Any]) -> dict[str, Any]:
     if ids:
         aggregate["memory_ids"] = ids
     metric_values: list[Mapping[str, Any]] = []
+    extraction_values: list[Mapping[str, Any]] = []
     for attempt in attempts:
         if not isinstance(attempt, Mapping):
             continue
@@ -493,6 +498,11 @@ def _aggregate_attempt_results(attempts: list[Any]) -> dict[str, Any]:
             value = container.get("model_metrics")
             if isinstance(value, Mapping):
                 metric_values.append(value)
+            extraction = container.get("extraction_metrics")
+            if isinstance(extraction, Mapping):
+                extraction_values.append(extraction)
+    if extraction_values:
+        aggregate["extraction_metrics"] = aggregate_extraction_metrics(extraction_values)
     metrics = _aggregate_model_metrics(metric_values)
     if metrics:
         aggregate["model_metrics"] = metrics
@@ -529,6 +539,9 @@ def _safe_error(error: BaseException) -> dict[str, Any]:
     model_metrics = _safe_model_metrics(getattr(error, "model_metrics", None))
     if model_metrics:
         result["model_metrics"] = model_metrics
+    extraction_metrics = getattr(error, "extraction_metrics", None)
+    if isinstance(extraction_metrics, Mapping):
+        result["extraction_metrics"] = aggregate_extraction_metrics([extraction_metrics])
     return result
 
 
