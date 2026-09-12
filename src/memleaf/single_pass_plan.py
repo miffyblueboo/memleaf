@@ -45,6 +45,29 @@ _DEFER_REASONS = frozenset({
     "lookup_incomplete",
     "maintenance_uncertain",
 })
+# A rejected proposal is a candidate-local problem, not a turn-local one.
+# v0.2.26 established that "invalid proposals receive bounded model correction,
+# then explicit candidate-local deferral; valid siblings proceed", and v0.2.34
+# required that candidate-local deferral and idempotent partial retries be
+# preserved.  Only details that describe the candidate itself are listed here:
+# anything unrecognised, and every transport or invariant failure, still fails
+# the whole turn closed.
+_B3_DEFERRABLE_DETAILS = {
+    "scope_not_grounded": "scope_ambiguous",
+    "scope_drift": "scope_ambiguous",
+    "invalid_scope": "scope_ambiguous",
+    "invalid_scope_source": "scope_ambiguous",
+    "invalid_update_target": "target_ambiguous",
+    "duplicate_update_target": "target_ambiguous",
+    "invalid_due_date": "maintenance_uncertain",
+    "due_date_not_grounded": "maintenance_uncertain",
+    "relative_time": "maintenance_uncertain",
+    "todo_fields": "maintenance_uncertain",
+    "invalid_type": "maintenance_uncertain",
+    "source_shape": "maintenance_uncertain",
+    "invalid_evidence": "evidence_insufficient",
+}
+_DETAIL_TEXT_RE = re.compile(r"^[a-z_]{1,48}$")
 _MEMORY_FIELDS = frozenset({
     "title", "body", "tags", "aliases", "keywords", "status", "completed_at", "due_date",
     "shadow_native_ids",
@@ -409,6 +432,7 @@ def parse_single_pass_output(
     validate_memory: MemoryValidator,
     target_rows: list[dict[str, Any]] | None = None,
     normalizations: list[str] | None = None,
+    deferrals: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if not callable(validate_memory):
         raise TypeError("validate_memory must be callable")
@@ -717,30 +741,54 @@ def parse_single_pass_output(
     for item, target_record in prepared:
         candidate_id = item["candidate_id"]
         decision = item["decision"]
+        evidence = [dict(claim) for claim in bindings[candidate_id]]
         normalized: dict[str, Any] = {
             "candidate_id": candidate_id,
             "decision": decision,
-            "evidence": [dict(claim) for claim in bindings[candidate_id]],
+            "evidence": evidence,
         }
-        if decision == "CREATE":
-            validated = validate_memory(
-                candidate_id, decision, None, None, item["memory"], normalized["evidence"], item,
-            )
-            normalized.update({
-                "type": item["type"], "scopes": list(item["scopes"]), "memory": dict(validated),
-            })
-        elif decision == "UPDATE":
-            target_id = item["target_memory_id"]
-            validated = validate_memory(
-                candidate_id, decision, target_id, target_record,
-                item["memory"], normalized["evidence"], item,
-            )
-            normalized["target_memory_id"] = target_id
-            normalized["memory"] = dict(validated)
-        elif decision == "NO_CHANGE":
-            normalized["target_memory_id"] = item["target_memory_id"]
-        else:
-            normalized["reason"] = item["reason"]
+        try:
+            if decision == "CREATE":
+                validated = validate_memory(
+                    candidate_id, decision, None, None, item["memory"], evidence, item,
+                )
+                normalized.update({
+                    "type": item["type"], "scopes": list(item["scopes"]), "memory": dict(validated),
+                })
+            elif decision == "UPDATE":
+                target_id = item["target_memory_id"]
+                validated = validate_memory(
+                    candidate_id, decision, target_id, target_record,
+                    item["memory"], evidence, item,
+                )
+                normalized["target_memory_id"] = target_id
+                normalized["memory"] = dict(validated)
+            elif decision == "NO_CHANGE":
+                normalized["target_memory_id"] = item["target_memory_id"]
+            else:
+                normalized["reason"] = item["reason"]
+        except ModelOutputError as error:
+            detail = getattr(error, "validation_detail", None)
+            reason = _B3_DEFERRABLE_DETAILS.get(detail) if isinstance(detail, str) else None
+            if reason is None:
+                raise
+            # The proposal is unsafe to write, but its siblings are unaffected.
+            # Defer this one candidate so the turn keeps every verdict it can
+            # justify, and record the cause instead of failing silently.
+            normalized = {
+                "candidate_id": candidate_id,
+                "decision": "DEFERRED",
+                "reason": reason,
+                "evidence": evidence,
+            }
+            if deferrals is not None:
+                deferrals.append({
+                    "candidate_id": candidate_id,
+                    "reason": reason,
+                    "detail": (
+                        detail if _DETAIL_TEXT_RE.fullmatch(detail) else "unrecognised_detail"
+                    ),
+                })
         normalized_items.append(normalized)
     return {"protocol_version": PROTOCOL_VERSION, "items": normalized_items, "no_memory": normalized_no_memory}
 
@@ -1060,10 +1108,12 @@ def run_single_pass_stage(
     primary_system = "" if inline_system else SINGLE_PASS_SYSTEM
     target_rows: list[dict[str, Any]] = []
     normalizations: list[str] = []
+    deferrals: list[dict[str, Any]] = []
 
     def parse(raw: str) -> dict[str, Any]:
         target_rows.clear()
         normalizations.clear()
+        deferrals.clear()
         return parse_single_pass_output(
             raw,
             evidence_units=source_units,
@@ -1072,6 +1122,7 @@ def run_single_pass_stage(
             validate_memory=validate_memory,
             target_rows=target_rows,
             normalizations=normalizations,
+            deferrals=deferrals,
         )
 
     def finalize(parsed: dict[str, Any]) -> dict[str, Any]:
@@ -1084,12 +1135,6 @@ def run_single_pass_stage(
         and an unresolvable group is deferred instead of guessed.
         """
 
-        grouped: dict[str, list[str]] = {}
-        for row in target_rows:
-            grouped.setdefault(str(row["target"]), []).append(str(row["candidate_id"]))
-        collisions = {key: ids for key, ids in grouped.items() if len(ids) > 1}
-        if not collisions:
-            return parsed
         items = parsed.get("items")
         if not isinstance(items, list) or not items:
             return parsed
@@ -1098,6 +1143,22 @@ def run_single_pass_stage(
             for index, row in enumerate(items)
             if isinstance(row, Mapping)
         }
+        terminal_ids = {
+            str(row.get("candidate_id"))
+            for row in items
+            if isinstance(row, Mapping) and row.get("decision") in {"UPDATE", "NO_CHANGE"}
+        }
+        grouped: dict[str, list[str]] = {}
+        for row in target_rows:
+            candidate_id = str(row["candidate_id"])
+            if candidate_id not in terminal_ids:
+                # A candidate Core deferred writes nothing, so it cannot
+                # collide with a terminal disposition for the same memory.
+                continue
+            grouped.setdefault(str(row["target"]), []).append(candidate_id)
+        collisions = {key: ids for key, ids in grouped.items() if len(ids) > 1}
+        if not collisions:
+            return parsed
 
         def union_evidence(members: Sequence[Mapping[str, Any]]) -> list[Any]:
             merged: list[Any] = []
@@ -1273,6 +1334,8 @@ def run_single_pass_stage(
             event(repair_context, "parse_accepted_count")
             if normalizations:
                 event(repair_context, "b3_normalization_count", len(normalizations))
+            if deferrals:
+                event(repair_context, "b3_candidate_deferred_count", len(deferrals))
         writer = getattr(model_executor, "_write_model_diagnostic", None)
         if callable(writer):
             try:
@@ -1289,6 +1352,8 @@ def run_single_pass_stage(
         event(primary_context, "parse_accepted_count")
         if normalizations:
             event(primary_context, "b3_normalization_count", len(normalizations))
+        if deferrals:
+            event(primary_context, "b3_candidate_deferred_count", len(deferrals))
     writer = getattr(model_executor, "_write_model_diagnostic", None)
     if callable(writer):
         try:
