@@ -4,6 +4,15 @@ on:
   push:
   pull_request:
 
+# Keep one current run per event type and head branch. The workflow is
+# intentionally triggered by both push and pull_request, but rapid development
+# should not leave dozens of obsolete matrix runs ahead of the current head.
+# Including event_name avoids a push run cancelling the PR check for the same
+# commit while still cancelling superseded push/PR runs independently.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

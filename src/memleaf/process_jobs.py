@@ -57,6 +57,7 @@ _MODEL_METRIC_STAGES = frozenset({
     "semantic_review",
     "coordination",
     "target_reconciliation",
+    "single_pass",
     "other",
 })
 _MODEL_METRIC_OPERATIONS = frozenset(
@@ -78,6 +79,10 @@ _THINKING_CONTROLS = frozenset({
 })
 
 
+class ProcessJobStateError(RuntimeError):
+    """The durable process-job ownership ledger cannot be trusted safely."""
+
+
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -90,27 +95,79 @@ def _empty_state() -> dict[str, Any]:
     return {"version": _VERSION, "jobs": {}, "order": [], "active_job_id": None}
 
 
+def _valid_job_id(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= 200
+        and "\x00" not in value
+        and "\n" not in value
+        and "\r" not in value
+    )
+
+
 def _valid_state(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or value.get("version") != _VERSION:
-        return _empty_state()
+    """Validate the persisted ownership/retry ledger without repairing it.
+
+    This state is authorization-like runtime data: silently treating malformed
+    JSON, a wrong version, or a broken order as an empty queue would reopen
+    ownership and retry decisions.  Missing state is handled separately by
+    :func:`_read_state`; an existing invalid state fails closed and is left
+    untouched for inspection/recovery.
+    """
+
+    if not isinstance(value, Mapping) or value.get("version") != _VERSION:
+        raise ProcessJobStateError("invalid process job state version")
     jobs = value.get("jobs")
     order = value.get("order")
-    if not isinstance(jobs, dict) or not isinstance(order, list):
-        return _empty_state()
-    order = [item for item in order if isinstance(item, str)]
-    return {"version": _VERSION, "jobs": jobs, "order": order,
-            "active_job_id": value.get("active_job_id")}
+    active_job_id = value.get("active_job_id")
+    if not isinstance(jobs, Mapping) or not isinstance(order, list):
+        raise ProcessJobStateError("invalid process job state shape")
+
+    normalized_jobs: dict[str, dict[str, Any]] = {}
+    for job_id, raw in jobs.items():
+        if not _valid_job_id(job_id) or not isinstance(raw, Mapping):
+            raise ProcessJobStateError("invalid process job record")
+        normalized_jobs[job_id] = dict(raw)
+
+    normalized_order: list[str] = []
+    seen: set[str] = set()
+    for job_id in order:
+        if not _valid_job_id(job_id) or job_id in seen or job_id not in normalized_jobs:
+            raise ProcessJobStateError("invalid process job order")
+        seen.add(job_id)
+        normalized_order.append(job_id)
+    if seen != set(normalized_jobs):
+        raise ProcessJobStateError("process job order does not cover all records")
+
+    if active_job_id is not None and (
+        not _valid_job_id(active_job_id) or active_job_id not in normalized_jobs
+    ):
+        raise ProcessJobStateError("invalid active process job")
+
+    return {
+        "version": _VERSION,
+        "jobs": normalized_jobs,
+        "order": normalized_order,
+        "active_job_id": active_job_id,
+    }
 
 
 def _read_state(vault: Vault) -> dict[str, Any]:
-    try:
-        return _valid_state(read_json(_state_path(vault)))
-    except (OSError, UnicodeError, TypeError, ValueError):
+    path = _state_path(vault)
+    if not path.exists():
         return _empty_state()
+    if path.is_symlink() or not path.is_file():
+        raise ProcessJobStateError("unsafe process job state path")
+    try:
+        value = read_json(path)
+    except (OSError, UnicodeError, TypeError, ValueError) as error:
+        raise ProcessJobStateError("cannot read process job state") from error
+    return _valid_state(value)
 
 
 def _write_state(vault: Vault, state: Mapping[str, Any]) -> None:
-    atomic_write_json(_state_path(vault), dict(state), mode=0o600)
+    validated = _valid_state(state)
+    atomic_write_json(_state_path(vault), validated, mode=0o600)
 
 
 def _pid_alive(pid: Any) -> bool | None:
@@ -327,8 +384,8 @@ def _safe_result(value: Any) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key in (
         "processed_turns", "memories_written", "metadata_merged", "cleaned_turns",
-        "deferred_candidates", "deferred_inbox_turns", "unresolved_evidence_count",
-        "retryable_deferred_turns",
+        "deferred_candidates", "deferred_inbox_turns", "pending_inbox_turns",
+        "unresolved_evidence_count", "retryable_deferred_turns",
     ):
         item = value.get(key)
         if type(item) is int and item >= 0:
@@ -376,7 +433,10 @@ def _safe_result(value: Any) -> dict[str, Any]:
 def _result_status(result: Mapping[str, Any]) -> str:
     deferred = any(
         type(result.get(key)) is int and result.get(key, 0) > 0
-        for key in ("deferred_candidates", "deferred_inbox_turns", "unresolved_evidence_count")
+        for key in (
+            "deferred_candidates", "deferred_inbox_turns", "pending_inbox_turns",
+            "unresolved_evidence_count",
+        )
     )
     if result.get("coverage_status") in {"partial", "deferred", "unavailable"}:
         deferred = True
@@ -404,6 +464,14 @@ def _aggregate_attempt_results(attempts: list[Any]) -> dict[str, Any]:
                 seen = True
         if seen:
             aggregate[key] = total
+    # Backlog is a current gauge, not cumulative work. If a requested rerun
+    # drains the remaining turns, the final status must report zero rather
+    # than summing every intermediate pending count.
+    for attempt in reversed(attempts):
+        value = attempt.get("result", {}).get("pending_inbox_turns") if isinstance(attempt, Mapping) else None
+        if type(value) is int and value >= 0:
+            aggregate["pending_inbox_turns"] = value
+            break
     ids: list[str] = []
     for attempt in attempts:
         values = attempt.get("result", {}).get("memory_ids") if isinstance(attempt, Mapping) else None

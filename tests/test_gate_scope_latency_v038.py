@@ -110,13 +110,16 @@ class V038ScopeGateLatencyTests(unittest.TestCase):
         self.assertIn("done-1", prompt)
         self.assertNotIn("Complete turn events", prompt)
 
-    def test_thinking_defaults_to_low_and_config_is_strict(self):
+    def test_thinking_defaults_are_low_except_latency_critical_single_pass(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "config.yaml"
             config = load_config(path, vault=Path(temporary) / "vault")
             self.assertEqual(config["llm"]["thinking"], DEFAULT_THINKING)
             self.assertEqual(DEFAULT_THINKING, {
-                "gate": "low", "summarize": "low", "compact": "low"
+                "gate": "low",
+                "summarize": "low",
+                "compact": "low",
+                "single_pass": "disabled",
             })
             config["llm"]["thinking"]["gate"] = "high"
             save_config(path, config)

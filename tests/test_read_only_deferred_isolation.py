@@ -123,7 +123,9 @@ class ReadOnlyDeferredIsolationTests(unittest.TestCase):
         self.assertEqual(result["processed_turns"], 1)
         self.assertEqual(result["memories_written"], 0)
         self.assertEqual(result["retryable_deferred_turns"], 1)
-        self.assertEqual(len(backend.calls), 1)
+        # Explicit user no-write is a deterministic admission outcome: no
+        # semantic model call is needed for the new read-only turn.
+        self.assertEqual(len(backend.calls), 0)
         self.assertNotIn("automatic_retry_count", self._processed_entries(self.core)[0])
 
     def test_new_assertion_keeps_older_automatic_retry(self) -> None:
@@ -145,7 +147,7 @@ class ReadOnlyDeferredIsolationTests(unittest.TestCase):
         result = self.core.process(model=backend)
 
         self.assertEqual(result["processed_turns"], 1)
-        self.assertEqual(len(backend.calls), 1)
+        self.assertEqual(len(backend.calls), 0)
         self.assertNotIn("automatic_retry_count", self._processed_entries(self.core)[0])
 
     def test_no_new_turn_keeps_older_automatic_retry(self) -> None:
@@ -166,7 +168,9 @@ class ReadOnlyDeferredIsolationTests(unittest.TestCase):
         result = self.core.process(scope="project:Orion", model=backend)
 
         self.assertEqual(result["processed_turns"], 2)
-        self.assertEqual(len(backend.calls), 2)
+        # The explicit scope retries the older deferred assertion once; the
+        # new no-write query itself still requires zero model calls.
+        self.assertEqual(len(backend.calls), 1)
         self.assertNotIn("automatic_retry_count", self._processed_entries(self.core)[0])
 
     def test_metadata_policy_hides_legacy_external_body_for_query_classification(self) -> None:
@@ -182,7 +186,7 @@ class ReadOnlyDeferredIsolationTests(unittest.TestCase):
         result = self.core.process(model=backend)
 
         self.assertEqual(result["processed_turns"], 1)
-        self.assertEqual(len(backend.calls), 1)
+        self.assertEqual(len(backend.calls), 0)
         self.assertNotIn("automatic_retry_count", self._processed_entries(self.core)[0])
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
 from typing import Any, Callable, Mapping, Optional
@@ -46,6 +47,7 @@ class ModelRouter:
         self.api = self._coerce_api(api) if api is not None else self._build_api()
         self.diagnostics: list[dict[str, str]] = []
         self._call_metrics_local = threading.local()
+        self._call_timeout_local = threading.local()
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any], **kwargs: Any) -> "ModelRouter":
@@ -112,10 +114,6 @@ class ModelRouter:
         api_key_env = config.get("api_key_env")
         if not all(isinstance(item, str) and item.strip() for item in (base_url, model)):
             return None
-        # New installer-created routes store the key directly in the local
-        # 0600 memleaf config.  Keep the old environment-name form as a
-        # compatibility fallback for existing users, but never let an empty
-        # direct value shadow a valid legacy environment configuration.
         if api_key is None:
             if not isinstance(api_key_env, str) or not api_key_env.strip():
                 return None
@@ -164,8 +162,32 @@ class ModelRouter:
             return "unknown", "unknown"
         return str(getattr(backend, "provider", "unknown")), str(getattr(backend, "model", "unknown"))
 
+    def set_call_timeout(self, seconds: Any) -> None:
+        if isinstance(seconds, bool):
+            raise ValueError("call timeout must be positive")
+        try:
+            parsed = float(seconds)
+        except (TypeError, ValueError):
+            raise ValueError("call timeout must be positive") from None
+        if not math.isfinite(parsed) or parsed <= 0:
+            raise ValueError("call timeout must be positive")
+        self._call_timeout_local.value = parsed
+
+    def clear_call_timeout(self) -> None:
+        self._call_timeout_local.value = None
+
     def _call(self, backend: ModelBackend, prompt: str, *, system: str, purpose: str, temperature: float) -> str:
         self._call_metrics_local.value = {}
+        timeout_override = getattr(self._call_timeout_local, "value", None)
+        set_timeout = getattr(backend, "set_call_timeout", None)
+        clear_timeout = getattr(backend, "clear_call_timeout", None)
+        if (
+            isinstance(timeout_override, (int, float))
+            and not isinstance(timeout_override, bool)
+            and timeout_override > 0
+            and callable(set_timeout)
+        ):
+            set_timeout(timeout_override)
         try:
             value = backend.complete(prompt, system=system, purpose=purpose, temperature=temperature)
         except ModelError as error:
@@ -174,6 +196,11 @@ class ModelRouter:
         except Exception as error:
             raise ModelError("model backend failed", stage=purpose) from error
         finally:
+            if callable(clear_timeout):
+                try:
+                    clear_timeout()
+                except Exception:
+                    pass
             consume = getattr(backend, "consume_call_metrics", None)
             if callable(consume):
                 try:
@@ -210,6 +237,8 @@ class ModelRouter:
             except ModelError:
                 provider, model = self._identity(self.host)
                 self._diagnose(provider, model, "host_failed")
+                if purpose == "single_pass":
+                    raise
                 if self.api is None:
                     raise ModelUnavailable("no configured model backend")
         if self.api is None:
@@ -218,3 +247,128 @@ class ModelRouter:
         return self._call(self.api, prompt, system=system, purpose=purpose, temperature=temperature)
 
     __call__ = complete
+
+
+class _FixedRouteBackend:
+    """A view of one auto router pinned to its first reachable route."""
+
+    def __init__(self, router: ModelRouter, selected: ModelBackend):
+        self._router = router
+        self._selected = selected
+        self.provider, self.model = router._identity(selected)
+        self.parallel_safe = getattr(selected, "parallel_safe", False) is True
+        self.structured_batch_safe = getattr(selected, "structured_batch_safe", False) is True
+        self.single_pass_safe = False
+
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str = "",
+        purpose: str = "",
+        temperature: float = 0.0,
+    ) -> str:
+        try:
+            return self._router._call(
+                self._selected,
+                prompt,
+                system=system,
+                purpose=purpose,
+                temperature=temperature,
+            )
+        except ModelError:
+            provider, model = self._router._identity(self._selected)
+            self._router._diagnose(provider, model, "fixed_route_failed")
+            raise
+
+    def consume_call_metrics(self) -> dict[str, Any]:
+        return self._router.consume_call_metrics()
+
+
+class _RequestLimitedBackend:
+    """Bound actual backend dispatches without changing parser semantics."""
+
+    def __init__(self, backend: Any, maximum: int):
+        if not hasattr(backend, "complete"):
+            raise TypeError("limited backend must expose complete()")
+        if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1:
+            raise ValueError("maximum must be a positive integer")
+        self._backend = backend
+        self._maximum = maximum
+        self._requests = 0
+        self.provider = str(getattr(backend, "provider", "unknown"))
+        self.model = str(getattr(backend, "model", "unknown"))
+        self.parallel_safe = False
+        self.structured_batch_safe = False
+        self.single_pass_safe = False
+
+    @property
+    def request_count(self) -> int:
+        return self._requests
+
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str = "",
+        purpose: str = "",
+        temperature: float = 0.0,
+    ) -> str:
+        if self._requests >= self._maximum:
+            raise ModelError(
+                "model request budget exhausted",
+                code="model_timeout",
+                stage=purpose,
+            )
+        self._requests += 1
+        return self._backend.complete(
+            prompt,
+            system=system,
+            purpose=purpose,
+            temperature=temperature,
+        )
+
+    def consume_call_metrics(self) -> dict[str, Any]:
+        consume = getattr(self._backend, "consume_call_metrics", None)
+        if not callable(consume):
+            return {}
+        try:
+            value = consume()
+        except Exception:
+            return {}
+        return dict(value) if isinstance(value, Mapping) else {}
+
+
+def freeze_model_route(backend: Any) -> Any:
+    """Pin an auto ModelRouter without changing fixed host/api backends."""
+
+    if not isinstance(backend, ModelRouter) or backend.mode != "auto":
+        return backend
+    selected = backend.host if backend.host is not None else backend.api
+    if selected is None:
+        return backend
+    return _FixedRouteBackend(backend, selected)
+
+
+def limit_model_requests(backend: Any, maximum: int) -> Any:
+    """Cap dispatches only for the auto-router view that was explicitly pinned.
+
+    Direct/fixed backends keep their established parser retry semantics. In
+    particular, explicit remember historically permits the validator's bounded
+    third schema attempt; replacing that with a synthetic transport error would
+    change the public failure contract. The cap exists only to ensure that an
+    auto router cannot multiply requests through route fallback.
+    """
+
+    if isinstance(backend, _RequestLimitedBackend):
+        return backend
+    if not isinstance(backend, _FixedRouteBackend):
+        return backend
+    return _RequestLimitedBackend(backend, maximum)
+
+
+__all__ = [
+    "ModelRouter",
+    "freeze_model_route",
+    "limit_model_requests",
+]

@@ -8,6 +8,9 @@ from .base import DEFAULT_REQUEST_TIMEOUT, HTTPModelBackend, ModelError
 from .thinking import openai_chat_controls, requested_thinking_mode
 
 
+SINGLE_PASS_MAX_TOKENS = 1800
+
+
 class OpenAICompatibleBackend(HTTPModelBackend):
     provider = "openai"
 
@@ -123,8 +126,15 @@ class OpenAICompatibleBackend(HTTPModelBackend):
         if not omit_temperature:
             payload["temperature"] = temperature
         payload.update(controls)
-        if self.json_mode and purpose in {"gate", "summarize", "compact"}:
+        if self.json_mode and purpose in {"gate", "summarize", "compact", "single_pass"}:
             payload["response_format"] = {"type": "json_object"}
+        # The production unified extraction route is currently DeepSeek.  Keep
+        # the single-pass response bounded so a malformed/overlong generation
+        # cannot consume the whole latency budget.  Do not send this legacy
+        # Chat-Completions field to unrelated providers that may require a
+        # different token-limit parameter.
+        if purpose == "single_pass" and self.provider_name == "deepseek":
+            payload["max_tokens"] = SINGLE_PASS_MAX_TOKENS
         value = self._post_json(
             self.base_url + "/chat/completions",
             payload,

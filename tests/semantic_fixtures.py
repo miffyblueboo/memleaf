@@ -19,7 +19,7 @@ _CREATE_REVIEW_MARKER = 'CREATE_SEMANTIC_REVIEW\n'
 def _update_review_response(prompt, purpose):
     """Answer the product's final semantic review for legacy fixtures.
 
-    This is a test-only compatibility response.  It runs before the authored
+    This is a test-only compatibility response. It runs before the authored
     fake backend so the old response queue and call accounting remain intact.
     """
 
@@ -70,7 +70,11 @@ def bind_response(raw, prompt, purpose):
 
 
 def semantic_fixture(cls):
-    """Add schema fields to authored model responses, not to captured input."""
+    """Add schema fields to authored staged-model responses, not captured input."""
+    # These deterministic fixtures intentionally model the pre-B3 Gate /
+    # Summarize protocol. Explicitly declare that rather than relying on
+    # product capability inference. This marker is test-only.
+    cls.single_pass_protocol = False
     original = cls.complete
     @functools.wraps(original)
     def complete(self, prompt, *, purpose='', **kwargs):
@@ -84,20 +88,28 @@ def semantic_fixture(cls):
 
 
 def semantic_function(original):
-    """Callable-backend form of semantic_fixture (for router retry fixtures)."""
+    """Callable-backend form of the versioned legacy staged-model fixture."""
     @functools.wraps(original)
     def callback(prompt, **kwargs):
         review = _update_review_response(prompt, kwargs.get('purpose', ''))
         if review is not None:
             return review
         return bind_response(original(prompt, **kwargs), prompt, kwargs.get('purpose', ''))
+    # ModelExecutor wraps raw functions in CallableBackend. Tell the generic
+    # capability layer that this specific deterministic fixture expects the
+    # legacy staged protocol; ordinary product callbacks still default to B3.
+    callback.single_pass_protocol = False
     return callback
 
 
 def deferred_target_response(prompt, **kwargs):
     """A deliberate model ambiguity judgment, never used by production code."""
     units = json.JSONDecoder().raw_decode(prompt.split(_MARKER, 1)[1])[0]
-    return json.dumps({"candidates": [], "evidence_bindings": [], "coverage": [
-        {"unit_id": u["unit_id"], "decision": "DEFERRED" if u["source_role"] == "user" else "NO_CHANGE",
-         "reason": "target_ambiguous" if u["source_role"] == "user" else "assistant_restatement"}
+    return json.dumps({'candidates': [], 'evidence_bindings': [], 'coverage': [
+        {'unit_id': u['unit_id'], 'decision': 'DEFERRED' if u['source_role'] == 'user' else 'NO_CHANGE',
+         'reason': 'target_ambiguous' if u['source_role'] == 'user' else 'assistant_restatement'}
         for u in units]}, ensure_ascii=False)
+
+
+# This helper also emits the old Gate envelope directly.
+deferred_target_response.single_pass_protocol = False

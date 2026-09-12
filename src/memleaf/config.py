@@ -19,9 +19,13 @@ MAX_REQUEST_TIMEOUT = 240
 DEFAULT_MODEL_CONCURRENCY = 3
 MIN_MODEL_CONCURRENCY = 1
 MAX_MODEL_CONCURRENCY = 8
-THINKING_PURPOSES = ("gate", "summarize", "compact")
+THINKING_PURPOSES = ("gate", "summarize", "compact", "single_pass")
 THINKING_MODES = frozenset({"default", "disabled", "low", "high", "max"})
 DEFAULT_THINKING = {purpose: "low" for purpose in THINKING_PURPOSES}
+# Unified extraction is latency-sensitive and keeps deterministic validation in
+# Core.  Make the single-pass path non-thinking by default without changing
+# the established policy for maintenance/legacy stages.
+DEFAULT_THINKING["single_pass"] = "disabled"
 
 
 def _normalize_request_timeout(value: Any) -> int | float:

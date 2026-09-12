@@ -66,8 +66,8 @@ class LongRunHygieneTests(unittest.TestCase):
         path = self.service.vault.memory_path(legacy.memory_id, "knowledge")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(legacy.to_markdown(), encoding="utf-8")
-        result = self.service.process()
-        self.assertEqual(result["compaction"]["retention"]["provenance_rewritten"], 1)
+        result = self.service.compact()
+        self.assertEqual(result["retention"]["provenance_rewritten"], 1)
         current = self.service.read(legacy.memory_id)
         self.assertEqual(len(current.sources), MAX_MEMORY_SOURCES)
         self.assertEqual(current.extra["source_count"], 80)
@@ -85,8 +85,8 @@ class LongRunHygieneTests(unittest.TestCase):
             created=old,
             updated=old,
         )
-        result = self.service.process()
-        self.assertEqual(result["compaction"]["retention"]["closed_todos_retired"], 1)
+        result = self.service.compact()
+        self.assertEqual(result["retention"]["closed_todos_retired"], 1)
         self.assertIsNone(self.service.read(todo.memory_id))
         listed = self.service.list_todos(status="completed")
         self.assertEqual(listed["status"], "found")
@@ -113,8 +113,8 @@ class LongRunHygieneTests(unittest.TestCase):
                 archived_at=archived.isoformat(timespec="seconds").replace("+00:00", "Z"),
                 updated=archived.isoformat(timespec="seconds").replace("+00:00", "Z"),
             )
-        result = self.service.process()
-        self.assertEqual(result["compaction"]["retention"]["history_pruned"], 3)
+        result = self.service.compact()
+        self.assertEqual(result["retention"]["history_pruned"], 3)
         self.assertEqual(len(self.service._read_memories_unlocked("history")), 3)
 
     def test_compaction_cannot_change_canonical_memory_type(self):
