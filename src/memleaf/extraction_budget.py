@@ -137,6 +137,8 @@ class SinglePassBudgetBackend:
                 code="model_timeout",
                 stage=purpose or "single_pass",
             )
+        # Count locally only after the durable reservation succeeded. A kill
+        # after this point still leaves the persistent ordinal consumed.
         self._requests += 1
 
         set_timeout = getattr(self._backend, "set_call_timeout", None)
@@ -157,6 +159,8 @@ class SinglePassBudgetBackend:
                 except Exception:
                     pass
 
+        # A callback/custom transport may ignore the timeout hook. Such a late
+        # result must never become writable merely because it eventually returned.
         if self._remaining() < 0:
             raise ModelError(
                 "single-pass extraction result arrived after deadline",
@@ -179,13 +183,13 @@ class SinglePassBudgetBackend:
 class ExtractionWorkBudget:
     """One monotonic budget beginning before preparation for a visible turn.
 
-    The first eight seconds are available to preparation plus model work.  The
+    The first eight seconds are available to preparation plus model work. The
     remaining two seconds are reserved for deterministic validation/commit.
     If the ten-second total deadline has already elapsed, the turn is not
     allowed to enter the mutation boundary.
 
     ``elapsed_seconds`` restores wall time already consumed by the same durable
-    background work item before a worker restart.  The persisted ledger uses a
+    background work item before a worker restart. The persisted ledger uses a
     wall clock only to derive that cross-process elapsed interval; after this
     object is constructed, every new deadline check uses the supplied monotonic
     clock in the current process.
