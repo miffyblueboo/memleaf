@@ -2,12 +2,14 @@
 from __future__ import annotations
 import hashlib
 from typing import Any, Mapping
+from .admission import analyze_turn_evidence, memory_writes_disabled
+from .evidence_policy import retain_tool_evidence
 from .index import event_key
 from .memory_writer import MemoryWriter
 from .turn_plan import FrozenTurn, turn_plan_key
 from .scope_state import ScopeError, normalize_scopes
 from .vault import safe_component
-from .process_common import ProcessingError, _now_value, _read_processed
+from .process_common import ProcessingError, _event_payload, _now_value, _read_processed
 from .turn_audit import TurnAudit
 from .model_execution import ModelExecutor
 from .process_journal import ProcessJournal
@@ -53,6 +55,25 @@ class Processor:
         except Exception:
             # Failure reporting must never mask the original processing error.
             return
+
+    def _turn_writes_disabled(self, turn: Any) -> bool:
+        """Return only the deterministic user-authored no-write admission.
+
+        ``ProcessJournal._turn_is_read_only`` is intentionally a scheduling
+        heuristic and treats classification errors as read-only so older
+        deferred work is not retried accidentally.  That fallback is not a
+        commit authorization: malformed evidence must never be silently
+        settled as NO_CHANGE.  Here we apply only the explicit user memory
+        write-disable rule and let malformed input surface normally.
+        """
+
+        events = _event_payload(turn)
+        policy_config = self.service.vault.config()
+        for event in events:
+            event["tool_evidence"] = retain_tool_evidence(
+                event["tool_evidence"], policy_config
+            )
+        return memory_writes_disabled(analyze_turn_evidence(events))
 
     @staticmethod
     def _scope_snapshot(state: Mapping[str, Any]) -> tuple[bool, Any]:
@@ -180,7 +201,7 @@ class Processor:
                     self.audit._dispositions_by_turn[ref] = restored["candidate_dispositions"]
                     self.audit._evidence_by_turn[ref] = restored["evidence_dispositions"]
                     self.audit._deferred_by_turn[ref] = restored["deferred_candidates"]
-                elif self.journal._turn_is_read_only(snapshot.turn):
+                elif self._turn_writes_disabled(snapshot.turn):
                     # An explicit user instruction not to mutate memory is a
                     # deterministic admission decision, not a semantic model
                     # question. Settle the turn with zero outbound requests;
