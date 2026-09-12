@@ -180,6 +180,13 @@ class Processor:
                     self.audit._dispositions_by_turn[ref] = restored["candidate_dispositions"]
                     self.audit._evidence_by_turn[ref] = restored["evidence_dispositions"]
                     self.audit._deferred_by_turn[ref] = restored["deferred_candidates"]
+                elif self.journal._turn_is_read_only(snapshot.turn):
+                    # An explicit user instruction not to mutate memory is a
+                    # deterministic admission decision, not a semantic model
+                    # question. Settle the turn with zero outbound requests;
+                    # the commit boundary still advances the journal so the
+                    # same read-only turn is not reconsidered later.
+                    turn_requests, turn_scopes = [], []
                 else:
                     if backend is None:
                         backend = self.model._resolve_backend(model=model, router=router)
