@@ -7,9 +7,10 @@ import unittest
 from pathlib import Path
 
 from memleaf import Memleaf
-from memleaf.extraction_budget import SinglePassBudgetBackend
+from memleaf.extraction_budget import ExtractionWorkBudget, SinglePassBudgetBackend
 from memleaf.extraction_work_state import (
     active_background_work_id,
+    begin_turn_budget,
     complete_turn_budget,
     reserve_model_request,
 )
@@ -74,6 +75,14 @@ class WorkerRestartBudgetV2Tests(unittest.TestCase):
             turn_id=self.turn_id,
         )
 
+    def begin(self, now):
+        return begin_turn_budget(
+            self.vault,
+            work_id=self.job_id,
+            turn_id=self.turn_id,
+            wall_clock=lambda: now,
+        )
+
     def test_active_worker_identity_is_stable_process_job_id(self):
         self.assertEqual(
             active_background_work_id(
@@ -119,9 +128,50 @@ class WorkerRestartBudgetV2Tests(unittest.TestCase):
         self.assertEqual(backend.calls, 2)
         self.assertEqual(len(backend.timeout_caps), 2)
         self.assertLessEqual(backend.timeout_caps[0], 6.0)
-        # The restarted wrapper knows from the durable ordinal that this is
-        # request #2, so it does not incorrectly apply the primary-call cap.
+        # Without a restored wall budget this direct wrapper knows only the
+        # durable ordinal; production processing additionally restores elapsed
+        # wall time before constructing its wrapper.
         self.assertGreater(backend.timeout_caps[1], 6.0)
+
+    def test_restart_restores_elapsed_wall_time_into_monotonic_budget(self):
+        backend = _Backend()
+        self.assertEqual(self.begin(100.0), 0.0)
+        first_budget = ExtractionWorkBudget(clock=lambda: 50.0, elapsed_seconds=0.0)
+        first_budget.wrap_backend(backend, reserve_request=self.reserve).complete(
+            "primary", purpose="single_pass"
+        )
+
+        elapsed = self.begin(105.0)
+        self.assertEqual(elapsed, 5.0)
+        second_budget = ExtractionWorkBudget(clock=lambda: 80.0, elapsed_seconds=elapsed)
+        second_budget.wrap_backend(backend, reserve_request=self.reserve).complete(
+            "repair", purpose="single_pass"
+        )
+
+        self.assertEqual(backend.calls, 2)
+        # Five seconds were already consumed by the prior worker, leaving only
+        # three seconds of the shared eight-second model window.
+        self.assertLessEqual(backend.timeout_caps[-1], 3.0)
+        self.assertGreater(backend.timeout_caps[-1], 0.0)
+
+    def test_expired_restarted_work_cannot_dispatch_or_commit(self):
+        backend = _Backend()
+        self.assertEqual(self.begin(200.0), 0.0)
+        elapsed = self.begin(210.5)
+        budget = ExtractionWorkBudget(clock=lambda: 10.0, elapsed_seconds=elapsed)
+        wrapped = budget.wrap_backend(backend, reserve_request=self.reserve)
+
+        with self.assertRaises(ModelError):
+            wrapped.complete("late", purpose="single_pass")
+        with self.assertRaises(ModelError):
+            budget.ensure_before_commit()
+
+        self.assertEqual(backend.calls, 0)
+        self.assertEqual(self.reserve(), 1)
+
+    def test_wall_clock_rollback_fails_closed(self):
+        self.assertEqual(self.begin(300.0), 0.0)
+        self.assertEqual(self.begin(299.0), 10.0)
 
     def test_successful_turn_commit_cleanup_allows_state_to_shrink(self):
         self.assertEqual(self.reserve(), 1)
