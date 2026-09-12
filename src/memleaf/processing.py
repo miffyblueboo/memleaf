@@ -54,6 +54,42 @@ class Processor:
             # Failure reporting must never mask the original processing error.
             return
 
+    @staticmethod
+    def _scope_snapshot(state: Mapping[str, Any]) -> tuple[bool, Any]:
+        if "scopes" not in state:
+            return False, None
+        value = state.get("scopes")
+        if isinstance(value, list):
+            return True, list(value)
+        if isinstance(value, tuple):
+            return True, list(value)
+        return True, value
+
+    @staticmethod
+    def _restore_scope_snapshot(
+        state: Mapping[str, Any],
+        snapshot: tuple[bool, Any],
+    ) -> dict[str, Any]:
+        """Keep one process invocation's pre-existing session Scope stable.
+
+        Durable memories are committed between turns and are intentionally
+        visible to the next turn. Session Scope, however, is routing context
+        rather than the permanent-memory source of truth. Historically all
+        contiguous turns in one process call observed the same pre-batch
+        Scope, with the final observed Scope persisted at batch commit. Keep
+        that contract while moving memory writes to per-turn commit, so an
+        explicit project switch in a later queued turn is not filtered by an
+        earlier turn's newly persisted session Scope.
+        """
+
+        result = dict(state)
+        present, value = snapshot
+        if present:
+            result["scopes"] = list(value) if isinstance(value, list) else value
+        else:
+            result.pop("scopes", None)
+        return result
+
     def process(
         self,
         *,
@@ -94,6 +130,21 @@ class Processor:
                 "compaction": self._critical_path_compaction_status(),
             }
 
+        # Freeze only the pre-invocation session Scope. Permanent memories and
+        # processed journal state are deliberately re-read after every turn.
+        # This preserves the old multi-turn routing contract without restoring
+        # the old pre-commit memory overlay.
+        scope_baseline: dict[str, tuple[bool, Any]] = {}
+        with self.service.vault.lock():
+            initial_processed = _read_processed(self.service.vault.processed_state_path)
+            for snapshot in snapshots:
+                if snapshot.state_key in scope_baseline:
+                    continue
+                initial_state = self.journal._state_for_snapshot_unlocked(
+                    snapshot, initial_processed
+                )
+                scope_baseline[snapshot.state_key] = self._scope_snapshot(initial_state)
+
         backend = None
         all_ids: list[str] = []
         metadata_merged = 0
@@ -106,9 +157,9 @@ class Processor:
         try:
             for current_index, snapshot in enumerate(snapshots):
                 # Every complete turn crosses its own durable commit boundary
-                # before the next turn is planned.  The next iteration reads
-                # the just-committed Markdown/journal state instead of relying
-                # on a pre-commit overlay from the earlier batch design.
+                # before the next turn is planned. The next iteration reads
+                # just-committed Markdown/journal state; only session routing
+                # Scope stays fixed to the invocation baseline above.
                 self.audit._planned_related = []
                 self.audit._planned_settled_sources = set()
                 work_budget = ExtractionWorkBudget()
@@ -117,6 +168,10 @@ class Processor:
                 with self.service.vault.lock():
                     processed = _read_processed(self.service.vault.processed_state_path)
                     state = self.journal._state_for_snapshot_unlocked(snapshot, processed)
+                state = self._restore_scope_snapshot(
+                    state,
+                    scope_baseline.get(snapshot.state_key, (False, None)),
+                )
                 stored_plan = processed.get("pending_turn_plans", {}).get(turn_plan_key(snapshot.turn))
                 if stored_plan is not None:
                     restored = FrozenTurn.restore(stored_plan, snapshot.turn)
