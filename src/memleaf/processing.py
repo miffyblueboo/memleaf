@@ -304,21 +304,7 @@ class Processor:
                 self.audit._planned_related = []
                 self.audit._planned_settled_sources = set()
                 durable_turn_budget_id = self._turn_budget_id(snapshot)
-                durable_elapsed = 0.0
-                if background_work_id is not None:
-                    # Persist the logical turn start before any durable-state
-                    # read or planning-context preparation. If this worker is
-                    # killed, the replacement process restores the elapsed wall
-                    # time into a fresh monotonic budget instead of starting a
-                    # new 8/10 second window.
-                    durable_elapsed = begin_turn_budget(
-                        self.service.vault,
-                        work_id=background_work_id,
-                        turn_id=durable_turn_budget_id,
-                    )
-                work_budget = ExtractionWorkBudget(
-                    elapsed_seconds=durable_elapsed,
-                )
+                work_budget: ExtractionWorkBudget | None = None
                 strict_budget = False
 
                 with self.service.vault.lock():
@@ -336,33 +322,47 @@ class Processor:
                     self.audit._dispositions_by_turn[ref] = restored["candidate_dispositions"]
                     self.audit._evidence_by_turn[ref] = restored["evidence_dispositions"]
                     self.audit._deferred_by_turn[ref] = restored["deferred_candidates"]
-                    # A frozen plan can finish without another model call, but
-                    # the same background work item still cannot cross its
-                    # original total wall deadline after a worker restart.
-                    strict_budget = background_work_id is not None
+                    if background_work_id is not None:
+                        elapsed = begin_turn_budget(
+                            self.service.vault,
+                            work_id=background_work_id,
+                            turn_id=durable_turn_budget_id,
+                        )
+                        work_budget = ExtractionWorkBudget(elapsed_seconds=elapsed)
+                        # A frozen plan can finish without another model call,
+                        # but the same background work item still cannot cross
+                        # its original total wall deadline after restart.
+                        strict_budget = True
                 elif self._turn_writes_disabled(snapshot.turn):
                     # An explicit user instruction not to mutate memory is a
                     # deterministic admission decision, not a semantic model
-                    # question. Settle the turn with zero outbound requests;
-                    # the commit boundary still advances the journal so the
-                    # same read-only turn is not reconsidered later.
+                    # question. It must not depend on model-request budget
+                    # state at all: settle with zero outbound requests and
+                    # advance the journal normally.
                     turn_requests, turn_scopes = [], []
                 else:
                     if backend is None:
                         backend = self.model._resolve_backend(model=model, router=router)
                     turn_backend = backend
                     if getattr(backend, "single_pass_safe", False) is True:
-                        # The monotonic budget already includes local preparation
-                        # since the turn-loop boundary above. Background workers
-                        # additionally restore prior-process wall time and reserve
-                        # each actual outbound request durably first.
+                        elapsed = 0.0
                         reserve_request = None
                         if background_work_id is not None:
+                            # Start/recover the durable wall clock immediately
+                            # before planning-context preparation.  State lookup
+                            # above is deterministic local bookkeeping and does
+                            # not reopen model time after a worker restart.
+                            elapsed = begin_turn_budget(
+                                self.service.vault,
+                                work_id=background_work_id,
+                                turn_id=durable_turn_budget_id,
+                            )
                             reserve_request = lambda work_id=background_work_id, turn_id=durable_turn_budget_id: reserve_model_request(
                                 self.service.vault,
                                 work_id=work_id,
                                 turn_id=turn_id,
                             )
+                        work_budget = ExtractionWorkBudget(elapsed_seconds=elapsed)
                         turn_backend = work_budget.wrap_backend(
                             backend,
                             reserve_request=reserve_request,
@@ -373,6 +373,8 @@ class Processor:
                     )
 
                 if strict_budget:
+                    if work_budget is None:
+                        raise ProcessingError("missing extraction work budget")
                     # A late provider/callback result is already rejected by
                     # the wrapped backend. This second guard prevents slow
                     # local preparation/validation (and a restarted worker
