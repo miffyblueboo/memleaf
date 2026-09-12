@@ -243,7 +243,10 @@ class B3SinglePassMemoryPlannerTests(unittest.TestCase):
         requests, _ = planner._collect_turn_outputs(SAFE_BACKEND, turn("legacy state is replaced"), {})
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(requests[0]["summary"]["shadow_native_ids"], [native_id])
-        self.assertNotIn("scope_operations", requests[0]["summary"])
+        # scope_operations is forbidden in the model-owned B3 memory object,
+        # but Core may canonicalize the writer-facing summary with an empty
+        # maintenance list after successful validation.
+        self.assertEqual(requests[0]["summary"]["scope_operations"], [])
         self.assertEqual(requests[0]["native_refs"], [{"source_id": "source-1", "native_id": native_id}])
 
     def test_no_change_and_query_make_no_requests(self):
