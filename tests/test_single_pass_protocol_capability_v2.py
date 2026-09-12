@@ -18,6 +18,7 @@ class _SafeApi:
     model = "test"
     single_pass_safe = True
     parallel_safe = True
+
     structured_batch_safe = True
 
     def complete(self, prompt, *, system="", purpose="", temperature=0.0):
@@ -110,13 +111,12 @@ class SinglePassProtocolCapabilityV2Tests(unittest.TestCase):
         )
         self.assertIsInstance(executor.backend, SinglePassBudgetBackend)
 
-    def test_raw_host_callback_runs_ordinary_extraction_through_b3(self):
+    def test_prompt_only_host_callback_receives_inline_b3_contract(self):
         calls = []
 
-        def host(prompt, *, system="", purpose="", temperature=0.0):
-            del temperature
-            calls.append({"prompt": prompt, "system": system, "purpose": purpose})
-            self.assertEqual(purpose, "single_pass")
+        def host(prompt):
+            calls.append(prompt)
+            self.assertIn("You are memleaf's single-pass memory planner.", prompt)
             self.assertIn("B3_INPUT\n", prompt)
             payload = json.loads(
                 prompt.split("B3_INPUT\n", 1)[1].split(
@@ -159,7 +159,6 @@ class SinglePassProtocolCapabilityV2Tests(unittest.TestCase):
         self.assertEqual(result["processed_turns"], 1)
         self.assertEqual(result["memories_written"], 0)
         self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0]["purpose"], "single_pass")
 
 
 if __name__ == "__main__":
