@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from memleaf.process_jobs import _result_status, _safe_result
+from memleaf.process_jobs import _aggregate_attempt_results, _result_status, _safe_result
 
 
 class ProcessJobsBacklogV2Tests(unittest.TestCase):
@@ -34,6 +34,17 @@ class ProcessJobsBacklogV2Tests(unittest.TestCase):
 
         self.assertEqual(safe["pending_inbox_turns"], 0)
         self.assertEqual(_result_status(safe), "succeeded")
+
+    def test_aggregate_uses_latest_backlog_gauge_not_sum(self):
+        attempts = [
+            {"result": {"processed_turns": 4, "pending_inbox_turns": 3}},
+            {"result": {"processed_turns": 3, "pending_inbox_turns": 0}},
+        ]
+
+        aggregate = _aggregate_attempt_results(attempts)
+
+        self.assertEqual(aggregate["processed_turns"], 7)
+        self.assertEqual(aggregate["pending_inbox_turns"], 0)
 
 
 if __name__ == "__main__":
