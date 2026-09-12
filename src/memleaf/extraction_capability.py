@@ -1,10 +1,9 @@
 """Capability checks for unified automatic extraction.
 
-Protocol compatibility and hard latency safety are intentionally separate.
-A backend may understand the B3 single-pass contract without being able to
-honor transport-level cancellation/deadlines. Automatic extraction can use
-one semantic protocol in both cases, while Processor applies the strict
-8/10-second budget only to ``single_pass_safe`` transports.
+Protocol compatibility and transport request accounting are separate.
+A backend may understand the B3 contract without exposing a bounded transport.
+``single_pass_safe`` identifies routes suitable for outbound-request counting;
+HTTP requests use the configured timeout, not the advisory ten-second target.
 """
 from __future__ import annotations
 
@@ -44,14 +43,14 @@ def _direct_protocol_capable(backend: Any) -> bool:
             return override
         # Raw Python callbacks are adapted by ModelExecutor into
         # CallableBackend. They can consume memleaf's B3 prompt, but are not
-        # strict-deadline safe because caller-owned code may ignore
+        # transport-timeout safe because caller-owned code may ignore
         # timeout/cancellation entirely.
         return True
     return False
 
 
 def supports_single_pass_protocol(backend: Any) -> bool:
-    """Return B3 protocol capability without claiming strict transport SLA."""
+    """Return B3 protocol capability without claiming transport guarantees."""
 
     if _direct_protocol_capable(backend):
         return True
