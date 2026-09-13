@@ -393,7 +393,21 @@ class PlanningContext:
 
 
     def _scope_records_unlocked(self, scope: Any) -> tuple[list[Any], bool]:
-        """Read and rank active records once for a scoped fallback."""
+        """Read and rank active records once for a scoped fallback.
+
+        ``ambiguous`` answers a question about *scope identity*: does this turn
+        name more than one specific scope, so that the fallback cannot tell
+        which one owns it?  It deliberately does not count how many memories the
+        scope holds.  A scope carrying many memories is ordinary, and a session
+        naming one project owns its turns unambiguously.
+
+        Counting records instead made the fallback declare itself ambiguous
+        whenever a scope was populated, which marked the lookup unprovable and
+        deferred every CREATE in a project-scoped session -- while a
+        ``global``-only session, where the fallback never runs, was unaffected.
+        The catalog ceiling is what bounds how much context is safe to supply;
+        ambiguity is not.
+        """
 
         active_records = self.service._read_memories_unlocked("knowledge")
         scoped = filter_by_scope(
@@ -415,7 +429,13 @@ class PlanningContext:
             ),
             reverse=True,
         )
-        return records, len(records) > 1
+        requested = [scope] if isinstance(scope, str) else list(scope or [])
+        specific = {
+            value
+            for value in requested
+            if isinstance(value, str) and value not in {"", "global", "unscoped"}
+        }
+        return records, len(specific) > 1
 
 
     @classmethod
