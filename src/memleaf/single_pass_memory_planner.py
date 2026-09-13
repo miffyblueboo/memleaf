@@ -34,6 +34,25 @@ from .validation import ModelOutputError, parse_summarize_output
 from .llm import ModelUnavailable
 
 
+def _drop_ungrounded_project_scopes(scopes: Iterable[Any]) -> list[str]:
+    """Return the scopes that assert no unproven project ownership.
+
+    A project scope is a claimed affiliation and Core refuses one the evidence
+    does not name.  The memory carrying it is usually grounded in full; only the
+    affiliation is unproven, so the claim is dropped rather than the memory.
+    Measured on a real turn, discarding the candidate instead lost
+    "在弄个记账的小玩意儿，跑在 N100，不上云" entirely because the model had
+    named the project "记账小玩意儿" while the user wrote "记账的小玩意儿".
+    """
+
+    kept = [
+        scope
+        for scope in scopes
+        if not (isinstance(scope, str) and scope.startswith("project:"))
+    ]
+    return kept or ["global"]
+
+
 class SinglePassMemoryPlanner(MemoryPlanner):
     """One semantic model call for an ordinary automatic turn."""
 
@@ -430,10 +449,24 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 validation_scope_registry,
                 authorized_project_scopes,
             ):
-                raise ModelOutputError(
-                    "B3 project scope is not grounded by claimed source",
-                    validation_detail="scope_not_grounded",
-                )
+                # The memory itself is grounded; only the ownership claim is
+                # not.  Discarding the whole candidate over an unproven project
+                # name loses source-backed content the user stated, so the
+                # claim is dropped and the memory is kept unscoped instead.
+                # Nothing is fabricated either way: no ownership is asserted.
+                kept = _drop_ungrounded_project_scopes(scopes)
+                dropped = kept != list(scopes)
+                scopes = kept
+                scope_source = self._derived_scope_source(scopes, scope_background, scope)
+                candidate["scopes"] = scopes
+                candidate["scope_source"] = scope_source
+                if dropped:
+                    event = getattr(self.model, "_record_metric_event", None)
+                    if callable(event):
+                        event(
+                            {"stage": "single_pass", "operation": "single_pass_primary"},
+                            "b3_ungrounded_scope_dropped_count",
+                        )
             if (
                 decision == "UPDATE"
                 and target_memory is not None

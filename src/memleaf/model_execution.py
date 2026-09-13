@@ -51,6 +51,12 @@ _COVERAGE_DIAGNOSTIC_FIELDS = frozenset({"explanation"})
 _METRIC_EVENT_FIELDS = frozenset({
     "repair_attempted_count", "repair_rejected_semantic_drift_count",
     "parse_accepted_count", "decision_case_normalization_count",
+    # Normalization, deferral and scope fallback are all outcomes a turn can
+    # reach without failing, so they must actually surface in the metrics.  The
+    # first two were emitted but silently dropped here, which made the
+    # "visible rather than silent" claim in their release notes untrue.
+    "b3_normalization_count", "b3_candidate_deferred_count",
+    "b3_ungrounded_scope_dropped_count",
 })
 _THINKING_OBSERVATION_SOURCES = frozenset({
     "request_parameter", "reasoning_tokens", "reasoning_content", "unavailable",
@@ -82,6 +88,9 @@ def _metric_bucket() -> dict[str, Any]:
         "repair_rejected_semantic_drift_count": 0,
         "parse_accepted_count": 0,
         "decision_case_normalization_count": 0,
+        "b3_normalization_count": 0,
+        "b3_candidate_deferred_count": 0,
+        "b3_ungrounded_scope_dropped_count": 0,
         "_first_started": None,
         "_last_finished": None,
     }

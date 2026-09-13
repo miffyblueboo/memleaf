@@ -129,7 +129,7 @@ Extract every independently useful long-term memory. Keep independently retrieva
 SCOPES
 Legal values: global | domain:<name> | portfolio:<name> | project:<name> | unscoped. scopes is a nonempty array; at most one project:<name> per memory; unscoped must be the only value, and Core then records insufficient_context.
 When a candidate concerns one distinct project the user is working on -- a type=project memory, or the work, decisions, state or deadlines that belong to that project -- scope it to that project as project:<name>, using the name the evidence itself uses. The project does not need to be registered first; scope_registry only lists what already exists.
-Ground the name in this candidate's own cited evidence, or in a project scope explicitly supplied for this turn. A product, platform, system, vendor, notification source, comparison or implementation context is not ownership by name alone.
+Ground the name in this candidate's own cited evidence, or in a project scope explicitly supplied for this turn. Never edit, translate or combine the evidence's words into a name that does not appear there, and choose the shortest term that does appear and names the project: the thing described as "记账的小玩意儿" is project:记账, not project:记账小玩意儿 and not project:记账的小玩意儿. An ungrounded name is rejected and its memory is deferred instead of written. A product, platform, system, vendor, notification source, comparison or implementation context is not ownership by name alone.
 Use global only for a fact that no single project owns: a standing personal preference, a machine-wide or tool-wide rule, or an environment fact. Never invent, translate or borrow a project name.
 
 DATES
