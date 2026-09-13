@@ -104,7 +104,7 @@ def _enum_text(values: Iterable[str]) -> str:
 B3_COMPACT_CONTRACT = f"""B3 STRICT OUTPUT CONTRACT
 Root exactly: {{protocol_version,items,no_memory}}; protocol_version={PROTOCOL_VERSION}. No extra fields at any level.
 Decision exactly one of: {_enum_text(_DECISIONS)}. candidate_id: nonempty string, case-insensitively unique.
-CREATE exactly requires candidate_id,decision,evidence,type,scopes,memory; optional scope_source. type={_enum_text(MEMORY_TYPES)}; scopes=nonempty string[]. memory requires title+body.
+CREATE exactly requires candidate_id,decision,evidence,type,scopes,memory; optional scope_source. type={_enum_text(MEMORY_TYPES)}; scopes=nonempty string[]; see SCOPES. memory requires title+body.
 UPDATE exactly requires candidate_id,decision,evidence,target_memory_id,memory; optional scopes and scope_source; scope_source requires scopes. memory requires body; title optional.
 NO_CHANGE exactly requires candidate_id,decision,evidence,target_memory_id.
 DEFERRED exactly requires candidate_id,decision,evidence,reason; reason={_enum_text(_DEFER_REASONS)}.
@@ -124,6 +124,12 @@ Only current_evidence may establish new facts or changes. local_memory_catalog a
 
 TASK
 Extract every independently useful long-term memory. Keep independently retrievable/updateable topics separate and preserve entity, condition, polarity, uncertainty, ownership, state and meaning-critical numbers/codes. CREATE only when no supplied local memory represents the durable information; UPDATE only when current evidence proves a change to one supplied local memory; NO_CHANGE only when it adds no semantic change; DEFERRED for a durable candidate that cannot safely reach a terminal decision. Project ownership and platform/system names are separate judgments. Do not turn every negation into no_memory and do not use NO_CHANGE to hide ambiguity.
+
+SCOPES
+Legal values: global | domain:<name> | portfolio:<name> | project:<name> | unscoped. scopes is a nonempty array; at most one project:<name> per memory; unscoped must be the only value, and Core then records insufficient_context.
+When a candidate concerns one distinct project the user is working on -- a type=project memory, or the work, decisions, state or deadlines that belong to that project -- scope it to that project as project:<name>, using the name the evidence itself uses. The project does not need to be registered first; scope_registry only lists what already exists.
+Ground the name in this candidate's own cited evidence, or in a project scope explicitly supplied for this turn. A product, platform, system, vendor, notification source, comparison or implementation context is not ownership by name alone.
+Use global only for a fact that no single project owns: a standing personal preference, a machine-wide or tool-wide rule, or an environment fact. Never invent, translate or borrow a project name.
 
 DATES
 An evidence unit may carry an ISO-8601 UTC timestamp. Use it ONLY to resolve a relative, partial or yearless date that the unit's own text expresses; never borrow another unit's timestamp and never guess a missing year. The timestamp is an anchor, not content: never write its own date into a memory, and add no date the evidence text does not state. A date literal in a memory must appear in that memory's cited evidence, either verbatim or as the same month and day. Write due_date as YYYY-MM-DD. A todo declares status, and due_date only when its own evidence establishes a deadline: otherwise omit due_date, or set it to null when the deadline itself is still unresolved. Any memory carrying a date that no admitted evidence grounds is rejected and costs the whole turn, so defer instead of approximating.
