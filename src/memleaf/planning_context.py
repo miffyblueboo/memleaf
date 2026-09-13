@@ -11,7 +11,7 @@ from .native_index import NativeIndexer
 from .retrieval import candidate_matches_query, filter_by_scope, normalize_term
 from .scope_state import project_scopes_for_domains
 from .scope_maintenance import ScopeMaintenanceError, scope_registry_projection
-from .process_common import ProcessingError, _RELATED_MAX_BODY_CHARS, _RELATED_MAX_CHARS, _RELATED_MAX_ITEMS, _SCOPE_CORRECTION_MARKER_RE, _SCOPE_DIRECTORY_MAX_CHARS, _SCOPE_DIRECTORY_MAX_ITEMS, _SCOPE_DIRECTORY_MAX_TITLE_CHARS, _TARGET_NOT_RELATED, _TARGET_SAME_USE, _TARGET_UNKNOWN, _invoke_native, _merge_related, _native_result, _safe_scope_background, _session_key
+from .process_common import ProcessingError, _RELATED_MAX_BODY_CHARS, _RELATED_MAX_CHARS, _SCOPE_CORRECTION_MARKER_RE, _SCOPE_DIRECTORY_MAX_CHARS, _SCOPE_DIRECTORY_MAX_ITEMS, _SCOPE_DIRECTORY_MAX_TITLE_CHARS, _TARGET_NOT_RELATED, _TARGET_SAME_USE, _TARGET_UNKNOWN, _invoke_native, _merge_related, _native_result, _safe_scope_background, _session_key
 
 
 class PlanningContext:
@@ -317,31 +317,35 @@ class PlanningContext:
         complete = True
 
         def _drop(item: Mapping[str, Any]) -> None:
-            """Record one related record that could not be projected verbatim.
+            """Record one related record that was withheld from the projection.
 
             ``complete`` answers one question only: can Core still prove that no
             **local** record was withheld, so that an absent UPDATE target and a
-            create-safe lookup remain provable?  Native sources are read-only
-            host files that are never an UPDATE or NO_CHANGE target and are only
-            ever referenced through ``shadow_native_ids``, so clipping one must
-            not make the whole lookup unprovable.  Treating a long host memory
-            file as a failed proof would block every automatic extraction with no
-            way for the user to recover except shrinking a file they own.
+            create-safe lookup remain provable?
+
+            Only a withheld record counts.  A body trimmed to fit is still
+            projected -- its identity, type and scopes are all present, so it can
+            still be targeted and still rules out a duplicate CREATE -- and
+            marking that as an unprovable lookup would make ordinary Vault growth
+            fail turns.
+
+            Native sources are read-only host files that are never an UPDATE or
+            NO_CHANGE target and are only ever referenced through
+            ``shadow_native_ids``, so clipping one must not make the whole lookup
+            unprovable either.  Treating a long host memory file as a failed
+            proof would block every automatic extraction with no way for the user
+            to recover except shrinking a file they own.
             """
 
             nonlocal complete
             if item.get("native") is not True:
                 complete = False
 
-        for index, value in enumerate(values):
-            if len(selected) >= _RELATED_MAX_ITEMS:
-                for item in values[index:]:
-                    _drop(item)
-                break
+        for value in values:
             body = value.get("body")
             if isinstance(body, str) and len(body) > _RELATED_MAX_BODY_CHARS:
+                # Trimmed, not withheld: the record keeps its identity.
                 value["body"] = body[: _RELATED_MAX_BODY_CHARS - 1].rstrip() + "…"
-                _drop(value)
             size = cls._related_payload_size(value)
             if size < 0:
                 _drop(value)
@@ -364,9 +368,10 @@ class PlanningContext:
                 if size < 0 or used + size + (1 if selected else 0) > _RELATED_MAX_CHARS:
                     _drop(value)
                     continue
+                # A priority target kept in reduced form is still projected, so
+                # its identity is not withheld and the proof survives.
                 value = minimal
                 additional = size + (1 if selected else 0)
-                _drop(value)
             selected.append(value)
             used += additional
         return selected, complete

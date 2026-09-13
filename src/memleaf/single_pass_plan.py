@@ -490,6 +490,7 @@ def parse_single_pass_output(
     used_targets: set[str] = set()
     binding_rows: list[dict[str, Any]] = []
     prepared: list[tuple[dict[str, Any], Mapping[str, Any] | None]] = []
+    forced_defer: dict[str, str] = {}
 
     for item_index, raw_item in enumerate(items):
         item_path = f"items[{item_index}]"
@@ -549,11 +550,14 @@ def parse_single_pass_output(
                 path=item_path, rule="relationship", actual=raw_item,
                 expected_type="object", missing_fields=("scopes",),
             )
-        if decision in {"CREATE", "UPDATE", "NO_CHANGE"} and not lookup_complete:
-            raise ModelOutputError(
-                "incomplete B3 lookup cannot authorize a terminal decision",
-                validation_detail="other_schema_violation",
-            )
+        if decision == "CREATE" and not lookup_complete:
+            # Only a CREATE claims novelty, and only a complete lookup can prove
+            # it.  The candidate cannot be written, but nothing else in the turn
+            # depends on this proof, so it is deferred with the protocol's own
+            # reason instead of discarding every other verdict.  UPDATE and
+            # NO_CHANGE name a target that is in the supplied catalog by
+            # construction, so they stay provable without it.
+            forced_defer[candidate_key] = "lookup_incomplete"
         candidate_ids.add(candidate_key)
         claims = raw_item.get("evidence")
         if isinstance(claims, Mapping):
@@ -742,6 +746,21 @@ def parse_single_pass_output(
         candidate_id = item["candidate_id"]
         decision = item["decision"]
         evidence = [dict(claim) for claim in bindings[candidate_id]]
+        forced = forced_defer.get(candidate_id.casefold())
+        if forced is not None:
+            normalized_items.append({
+                "candidate_id": candidate_id,
+                "decision": "DEFERRED",
+                "reason": forced,
+                "evidence": evidence,
+            })
+            if deferrals is not None:
+                deferrals.append({
+                    "candidate_id": candidate_id,
+                    "reason": forced,
+                    "detail": forced,
+                })
+            continue
         normalized: dict[str, Any] = {
             "candidate_id": candidate_id,
             "decision": decision,

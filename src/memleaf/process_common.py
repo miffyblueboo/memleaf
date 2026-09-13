@@ -259,13 +259,30 @@ _DIAGNOSTIC_SUMMARY_ALLOWED = frozenset(
 )
 
 
-_RELATED_MAX_ITEMS = 6
+# The comparison catalog is the only part of the B3 prompt that grows with the
+# Vault, so it needs a ceiling -- but the ceiling must be a safety net for the
+# prompt's own hard limit, never a constraint that decides whether a turn may
+# write.
+#
+# It used to be six items, which contradicted the retrieval design outright: a
+# Vault whose memories all carry one scope (``global``, the common personal
+# case, and the only scope in an empty registry) correctly resolves that scope
+# to the whole library, and six rows then hid most of it.  Withholding a local
+# record is also what marks the lookup unprovable, so a small item cap turned
+# ordinary growth into failing turns.
+#
+# The ceiling is now derived from the prompt budget instead of chosen as a round
+# number.  ``MAX_PROMPT_BYTES`` is 192 KiB; a catalog row measures about 1.6
+# UTF-8 bytes per character in practice, so 40000 characters is roughly 64 KiB,
+# leaving well over 100 KiB for the contract, the current evidence and the
+# native catalog.  That admits roughly 180 memories at the observed row size --
+# far beyond the point where compaction is meant to bring the active set down.
+_RELATED_MAX_CHARS = 40000
 
 
+# A single pathological body must not consume the whole catalog budget.  This
+# only ever fires on a memory far longer than an atomic fact.
 _RELATED_MAX_BODY_CHARS = 1600
-
-
-_RELATED_MAX_CHARS = 6000
 
 
 _SCOPE_DIRECTORY_MAX_ITEMS = 8

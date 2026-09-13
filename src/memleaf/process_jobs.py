@@ -23,6 +23,7 @@ from typing import Any, Mapping
 from .locking import atomic_write_json, read_json
 from .extraction_budget import aggregate_extraction_metrics
 from .service import Memleaf
+from .subprocess_flags import hidden_popen_kwargs
 from .vault import Vault, safe_component
 
 
@@ -554,7 +555,10 @@ def _launch(vault: Vault, job_id: str) -> subprocess.Popen[Any]:
         "close_fds": True,
     }
     if os.name == "nt":
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+        # A windowless child, not a detached one: see subprocess_flags.  The
+        # detached flag a previous release used opened a stray console window
+        # on the user's desktop for every captured turn.
+        kwargs.update(hidden_popen_kwargs())
     else:
         kwargs["start_new_session"] = True
     return subprocess.Popen(command, **kwargs)

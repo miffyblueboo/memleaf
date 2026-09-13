@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from ..locking import VaultLock, atomic_write_json, read_json
+from ..subprocess_flags import hidden_popen_kwargs
 
 
 @dataclass(frozen=True)
@@ -453,6 +454,7 @@ def _subprocess_runner(
         "errors": "strict",
         "env": dict(env),
     }
+    options.update(hidden_popen_kwargs())
     if input_text is not None:
         options["input"] = input_text
     return subprocess.run(list(argv), **options)

@@ -42,6 +42,7 @@ from .hermes_runtime import (
 )
 from .locking import atomic_write_json
 from .native_registration import ensure_hermes_native_sources
+from .subprocess_flags import hidden_popen_kwargs
 from .vault import Vault
 
 
@@ -357,6 +358,7 @@ def _run(
         "errors": "strict",
         "check": False,
     }
+    options.update(hidden_popen_kwargs())
     if timeout is not None:
         options["timeout"] = timeout
     return subprocess.run(command, **options)
