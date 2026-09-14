@@ -16,6 +16,7 @@ from .llm import MODEL_ERROR_CODES, MODEL_VALIDATION_REASONS, ModelUnavailable
 from .locking import read_json
 from .models import Memory, utc_now
 from .retrieval import candidate_matches_query, normalize_term
+from .scope_state import project_scope_matches_text
 from .validation import MODEL_EVIDENCE_CHECKS, MODEL_VALIDATION_DETAILS, ModelOutputError, parse_strict_json, normalize_relative_calendar_text, safe_evidence_context, safe_schema_context
 
 _PROCESSING_LEASE_SECONDS = 3600
@@ -71,6 +72,26 @@ _SUMMARY_CHINESE_CALENDAR_DATE_RE = re.compile(
     r"(?<![A-Za-z\d])"
     r"(?P<raw>(?:(?P<year>\d{4})\s*年\s*)?(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*日?)"
     r"(?![A-Za-z\d])"
+)
+
+_SLASH_CALENDAR_DATE_RE = re.compile(
+    r"(?<![\d./-])(?:(?P<year>\d{4})/)?(?P<month>\d{1,2})/(?P<day>\d{1,2})(?![\d/-]|\.\d)"
+)
+_DEADLINE_PREFIX_RE = re.compile(
+    r"(?:截止(?:日期|时间)?|截至(?:日期|时间)?|不晚于|不得晚于|\bdeadline\b|\bdue(?:\s+date)?\b|\bby\b|\bbefore\b)"
+    r"\s*(?:为|是|[:：])?\s*$",
+    re.IGNORECASE,
+)
+_DEADLINE_SUFFIX_RE = re.compile(
+    r"^\s*(?:(?:[01]?\d|2[0-3]):[0-5]\d\s*)?(?:前|之前|为止|截止|截至|不晚于|不得晚于|before\b|deadline\b|due\b)",
+    re.IGNORECASE,
+)
+_EXPLICIT_PROJECT_LABEL_RE = re.compile(
+    r"(?<![A-Za-z0-9_])project\s*:\s*(?P<colon>[^\s,，;；。！？:：]{1,64})"
+    r"|(?<![A-Za-z0-9_])project\s+(?P<english>[^\s,，;；。！？:：]{1,64})\s*[:：—–-]"
+    r"|(?:^|[\s(（\[{,，])项目\s*[:：]\s*(?P<chinese>[^\s,，;；。！？:：]{1,64})"
+    r"|(?:^|[\s(（\[{,，])(?P<suffix>[^\s,，;；。！？:：]{1,64})\s*项目\s*[:：]",
+    re.IGNORECASE,
 )
 
 
@@ -139,6 +160,71 @@ def _project_scope_occurrences(
             continue
         selected.append(occurrence)
     return selected
+
+
+def _explicit_project_scope_labels(
+    texts: Iterable[Any],
+    scope_registry: Mapping[str, Any] | None,
+) -> list[str]:
+    """Find project scopes explicitly written as project labels in candidate text.
+
+    A registered project name appearing as an ordinary noun is insufficient;
+    this recognizes only explicit forms such as ``project:Alpha`` or
+    ``Alpha 项目``. It supports a conservative global-scope guard without
+    treating a platform, product, or vendor mention as ownership.
+    """
+
+    rows = [text for text in texts if isinstance(text, str) and text.strip()]
+    if not rows:
+        return []
+    registry = scope_registry if isinstance(scope_registry, Mapping) else {}
+    try:
+        matches = {
+            scope
+            for text in rows
+            for scope in project_scope_matches_text(text, {"scopes": registry})
+        }
+    except (TypeError, ValueError):
+        return []
+    labeled: set[str] = set()
+    for scope in matches:
+        node = registry.get(scope)
+        terms = [scope.partition(":")[2]]
+        if isinstance(node, Mapping) and isinstance(node.get("aliases"), list):
+            terms.extend(value for value in node["aliases"] if isinstance(value, str))
+        for text in rows:
+            for raw_term in terms:
+                term = re.sub(r"\\\s+", r"\\s+", re.escape(raw_term.strip()))
+                if not term:
+                    continue
+                patterns = (
+                    rf"(?<![A-Za-z0-9_])project\s*:\s*{term}(?![A-Za-z0-9_])",
+                    rf"(?<![A-Za-z0-9_])project\s+{term}(?![A-Za-z0-9_])",
+                    rf"(?:^|[\s(（\[,，:：])项目\s*[:：]?\s*{term}(?=$|[\s，。,:：\-—])",
+                    rf"(?:^|[\s(（\[,，:：]){term}\s*(?:项目|project)(?=$|[\s，。,:：\-—])",
+                )
+                if any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns):
+                    labeled.add(scope)
+                    break
+            if scope in labeled:
+                break
+    for text in rows:
+        for match in _EXPLICIT_PROJECT_LABEL_RE.finditer(text):
+            raw_name = next((value for value in match.groupdict().values() if value), "")
+            if not raw_name:
+                continue
+            try:
+                resolved = project_scope_matches_text(raw_name, {"scopes": registry})
+            except (TypeError, ValueError):
+                resolved = []
+            if len(resolved) == 1:
+                labeled.add(resolved[0])
+            else:
+                # An explicit but unregistered project label is still enough
+                # to reject a silent global attribution; the candidate is
+                # deferred because Core must not invent the project's scope.
+                labeled.add("project-label:" + raw_name.casefold())
+    return sorted(labeled, key=str.casefold)
 
 
 def _automatic_read_only_query(events: Iterable[Mapping[str, Any]]) -> bool:
@@ -864,6 +950,72 @@ def _grounded_due_dates(
             except ValueError:
                 continue
             result.add(parsed.isoformat())
+    return result
+
+
+def _grounded_deadline_dates(
+    evidence_events: Iterable[Mapping[str, Any]],
+) -> set[str]:
+    """Return only dates explicitly tied to a deadline in this evidence set.
+
+    Relative dates use the cited event's own timestamp. Yearless calendar dates
+    use that same timestamp only when one is available. No other turn content
+    or retrieval timestamp participates.
+    """
+
+    result: set[str] = set()
+    for event in evidence_events:
+        if not isinstance(event, Mapping) or event.get("role") not in {"user", "assistant"}:
+            continue
+        content = event.get("content")
+        if not isinstance(content, str) or not content:
+            continue
+        timestamp = _parse_time(event.get("timestamp"))
+        text = normalize_relative_calendar_text(content, timestamp) if timestamp is not None else content
+        if text is None:
+            text = content
+        tokens: list[tuple[int, int, str]] = []
+
+        for match in _ISO_CALENDAR_DATE_RE.finditer(text):
+            try:
+                canonical = datetime.strptime(match.group(1), "%Y-%m-%d").date().isoformat()
+            except ValueError:
+                continue
+            tokens.append((match.start(), match.end(), canonical))
+
+        for match in _SUMMARY_CHINESE_CALENDAR_DATE_RE.finditer(text):
+            try:
+                year = int(match.group("year")) if match.group("year") else (
+                    timestamp.year if timestamp is not None else None
+                )
+                if year is None:
+                    continue
+                canonical = datetime(
+                    year, int(match.group("month")), int(match.group("day")), tzinfo=timezone.utc
+                ).date().isoformat()
+            except ValueError:
+                continue
+            tokens.append((match.start(), match.end(), canonical))
+
+        for match in _SLASH_CALENDAR_DATE_RE.finditer(text):
+            try:
+                year = int(match.group("year")) if match.group("year") else (
+                    timestamp.year if timestamp is not None else None
+                )
+                if year is None:
+                    continue
+                canonical = datetime(
+                    year, int(match.group("month")), int(match.group("day")), tzinfo=timezone.utc
+                ).date().isoformat()
+            except ValueError:
+                continue
+            tokens.append((match.start(), match.end(), canonical))
+
+        for start, end, canonical in tokens:
+            prefix = text[max(0, start - 32):start]
+            suffix = text[end:end + 24]
+            if _DEADLINE_PREFIX_RE.search(prefix) or _DEADLINE_SUFFIX_RE.search(suffix):
+                result.add(canonical)
     return result
 
 

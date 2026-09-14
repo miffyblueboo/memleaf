@@ -24,6 +24,8 @@ from .process_common import (
     ProcessingError,
     _automatic_create_conflicts,
     _event_payload,
+    _explicit_project_scope_labels,
+    _grounded_deadline_dates,
     _grounded_due_dates,
     _normalize_summary_dates,
     _summary_date_grounding_violations,
@@ -58,7 +60,7 @@ def _claim_date_evidence(
     by_unit: Mapping[str, Any],
     events: Iterable[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Project dates from this candidate's exact validated quotes only."""
+    """Project dates from this candidate's canonical validated exact quotes only."""
 
     event_by_key = {
         event.get("event_key"): event
@@ -73,7 +75,7 @@ def _claim_date_evidence(
         unit_id = claim.get("unit_id")
         quote = claim.get("quote")
         unit = by_unit.get(unit_id) if isinstance(unit_id, str) else None
-        if not isinstance(quote, str) or unit is None:
+        if not isinstance(quote, str) or not quote or unit is None:
             continue
         event = event_by_key.get(getattr(unit, "event_key", None))
         if event is None or getattr(unit, "source_role", None) not in {"user", "assistant"}:
@@ -83,12 +85,55 @@ def _claim_date_evidence(
             continue
         seen.add(identity)
         result.append({
+            "unit_id": unit_id,
             "event_key": getattr(unit, "event_key", None),
             "role": getattr(unit, "source_role", None),
             "timestamp": event.get("timestamp"),
             "content": quote,
         })
     return result
+
+
+def _fill_unambiguous_todo_deadline(
+    memory_type: Any,
+    summary: Mapping[str, Any],
+    deadline_dates: Iterable[str],
+) -> tuple[dict[str, Any], bool]:
+    """Fill an omitted todo date only when candidate evidence proves one deadline."""
+
+    normalized = dict(summary)
+    dates = {value for value in deadline_dates if isinstance(value, str)}
+    if memory_type != "todo" or normalized.get("due_date") is not None:
+        return normalized, False
+    if len(dates) == 1:
+        normalized["due_date"] = next(iter(dates))
+        return normalized, False
+    return normalized, len(dates) > 1
+
+
+def _global_scope_conflicts_with_candidate_evidence(
+    scopes: Iterable[Any],
+    candidate_evidence: Iterable[Mapping[str, Any]],
+    by_unit: Mapping[str, Any],
+    scope_registry: Mapping[str, Any] | None,
+) -> bool:
+    """Detect a global choice contradicted by one explicit project label."""
+
+    scope_values = {value.casefold() for value in scopes if isinstance(value, str)}
+    if "global" not in scope_values or any(value.startswith("project:") for value in scope_values):
+        return False
+    texts: list[str] = []
+    for event in candidate_evidence:
+        if not isinstance(event, Mapping):
+            continue
+        unit = by_unit.get(event.get("unit_id"))
+        section_path = getattr(unit, "section_path", ())
+        if isinstance(section_path, (list, tuple)):
+            texts.extend(value for value in section_path if isinstance(value, str))
+        content = event.get("content")
+        if isinstance(content, str):
+            texts.append(content)
+    return len(_explicit_project_scope_labels(texts, scope_registry)) == 1
 
 
 class SinglePassMemoryPlanner(MemoryPlanner):
@@ -388,6 +433,7 @@ class SinglePassMemoryPlanner(MemoryPlanner):
         no_memory_by_unit: dict[str, str] = {}
         observed_scopes: list[str] = []
         requests: list[dict[str, Any]] = []
+        ambiguous_todo_deadlines: set[str] = set()
 
         if not planning_units:
             self._finalize_evidence_audit(
@@ -481,6 +527,18 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             }
             if decision == "UPDATE" and isinstance(target_id, str):
                 candidate["update_memory_id"] = target_id
+
+            candidate_evidence = _claim_date_evidence(claims, by_unit, events)
+            if _global_scope_conflicts_with_candidate_evidence(
+                scopes, candidate_evidence, by_unit, validation_scope_registry
+            ):
+                # The evidence explicitly labels one project, but Core cannot
+                # safely rewrite the model's chosen scope. Defer only this
+                # candidate rather than persist it globally.
+                raise ModelOutputError(
+                    "global scope conflicts with an explicit project label",
+                    validation_detail="scope_not_grounded",
+                )
             if decision in {"CREATE", "UPDATE"} and not _model_project_scope_is_source_grounded(
                 candidate,
                 planning_units,
@@ -538,8 +596,10 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 event["event_key"] for event in admitted_events
                 if isinstance(event, Mapping) and isinstance(event.get("event_key"), str)
             ))
-            candidate_date_evidence = _claim_date_evidence(claims, by_unit, events)
+            candidate_date_evidence = candidate_evidence
             grounded_dates = _grounded_due_dates(turn, evidence_events=candidate_date_evidence)
+            deadline_dates = _grounded_deadline_dates(candidate_date_evidence)
+            grounded_dates.update(deadline_dates)
             summary = dict(proposed)
             if decision == "UPDATE" and target_memory is not None:
                 summary.setdefault("title", target_memory.title)
@@ -551,6 +611,11 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 summary["update_memory_id"] = target_memory.memory_id
             else:
                 summary.setdefault("tags", [])
+            summary, deadline_is_ambiguous = _fill_unambiguous_todo_deadline(
+                memory_type, summary, deadline_dates
+            )
+            if deadline_is_ambiguous:
+                ambiguous_todo_deadlines.add(candidate_id)
             summary["type"] = memory_type
             summary["scopes"] = scopes
             if isinstance(scope_source, str) and scope_source:
@@ -574,7 +639,7 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 expected_target_type=target_memory.type if target_memory is not None else None,
                 expected_scopes=scopes,
                 expected_scope_source=scope_source if isinstance(scope_source, str) else None,
-                allowed_due_dates=grounded_dates,
+                allowed_due_dates=(deadline_dates or grounded_dates),
                 allow_no_change=False,
                 allow_update_target=target_memory is not None,
             )
@@ -618,6 +683,15 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 if isinstance(event.get("event_key"), str)
             },
         )
+
+        if ambiguous_todo_deadlines:
+            metric = getattr(self.model, "_record_metric_event", None)
+            if callable(metric):
+                for _ in ambiguous_todo_deadlines:
+                    metric(
+                        {"stage": "single_pass", "operation": "single_pass_primary"},
+                        "b3_due_date_ambiguous_count",
+                    )
 
         fallback_scopes, fallback_scope_source = self._fallback_scopes(scope_background)
         for row in result["items"]:

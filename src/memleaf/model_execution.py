@@ -56,7 +56,7 @@ _METRIC_EVENT_FIELDS = frozenset({
     # first two were emitted but silently dropped here, which made the
     # "visible rather than silent" claim in their release notes untrue.
     "b3_normalization_count", "b3_candidate_deferred_count",
-    "b3_ungrounded_scope_dropped_count",
+    "b3_ungrounded_scope_dropped_count", "b3_due_date_ambiguous_count",
 })
 _THINKING_OBSERVATION_SOURCES = frozenset({
     "request_parameter", "reasoning_tokens", "reasoning_content", "unavailable",
@@ -91,6 +91,7 @@ def _metric_bucket() -> dict[str, Any]:
         "b3_normalization_count": 0,
         "b3_candidate_deferred_count": 0,
         "b3_ungrounded_scope_dropped_count": 0,
+        "b3_due_date_ambiguous_count": 0,
         "_first_started": None,
         "_last_finished": None,
     }
@@ -515,6 +516,7 @@ class ModelExecutor:
             "repair_rejected_semantic_drift_count": int(bucket.get("repair_rejected_semantic_drift_count", 0)),
             "parse_accepted_count": int(bucket.get("parse_accepted_count", 0)),
             "decision_case_normalization_count": int(bucket.get("decision_case_normalization_count", 0)),
+            "b3_due_date_ambiguous_count": int(bucket.get("b3_due_date_ambiguous_count", 0)),
         }
         for field in _PROVIDER_METRIC_FIELDS:
             result[field] = int(bucket.get(field, 0))

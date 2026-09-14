@@ -364,6 +364,9 @@ _ISO_CALENDAR_DATE = re.compile(
     r"(?<![A-Za-z\d./-])\d{4}-(?:0?[1-9]|1[0-2])-(?:0?[1-9]|[12]\d|3[01])"
     r"(?![A-Za-z\d./-])"
 )
+_ISO_DATE_FOLLOWED_BY_CLOCK = re.compile(
+    r"(?P<date>\d{4}-\d{2}-\d{2})(?=(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?(?!\d))"
+)
 _EMPTY_ISO_DATE_PARENTHESIS = re.compile(
     r"(?P<date>\d{4}-(?:0?[1-9]|1[0-2])-(?:0?[1-9]|[12]\d|3[01]))"
     r"[ \t]*(?:\([ \t]*[)）]|（[ \t]*[)）])"
@@ -605,6 +608,18 @@ def _normalize_relative_calendar_text(
     normalized = _RELATIVE_CALENDAR_EXPRESSION.sub(replace_token, text)
     if relative_replaced:
         normalized = _collapse_duplicate_calendar_dates(normalized)
+    # A relative date can be adjacent to a clock in compact source text (for
+    # example, "today10:30"). Keep the date and time as separate values after
+    # normalization, while leaving already-spaced dates unchanged.
+    def separate_date_from_clock(match: re.Match[str]) -> str:
+        value = match.group("date")
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            return match.group(0)
+        return value + " "
+
+    normalized = _ISO_DATE_FOLLOWED_BY_CLOCK.sub(separate_date_from_clock, normalized)
     normalized = _strip_empty_iso_date_parenthesis(normalized)
     return normalized, safe
 

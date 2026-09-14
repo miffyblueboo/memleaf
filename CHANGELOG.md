@@ -2,6 +2,14 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.55 — 2026-09-14
+
+- Classify memory candidates by future reuse with a shorter B3 instruction: point-in-time counts and snapshots without a trend, threshold, obligation, decision or later comparison are `no_future_value`, while future-use facts remain eligible. Project ownership now has a conservative Core guard: an explicit single-project label cannot silently persist as `global`, but ordinary platform, product and vendor mentions still do not establish ownership. Self-contained memories refer to the conversation person as the user rather than as an owner. The B3 system prompt shrinks from 6395 to 5686 UTF-8 bytes.
+- Preserve candidate-local date authority while improving structured todo deadlines. A legal `whole_unit` claim continues through the existing binding validator as one canonical full-text quote; no second evidence path was added. Core fills `due_date` only when that candidate's own admitted user/assistant evidence establishes one unambiguous deadline, never from sibling evidence, and exposes ambiguous deadline counts in total, stage and operation metrics instead of guessing.
+- Normalize compact date-time text without corrupting adjacent content: a resolved ISO date next to a valid clock gains one separating space, existing spacing remains unchanged, and non-date words such as `本周日报` remain ordinary text. Deadline recognition uses boundary-safe English cues, accepts slash dates before sentence punctuation, and rejects word-suffix and decimal false positives.
+
+Verification for this release used eight local synthetic regression tests with no model call and no production Vault write. They cover whole-unit/exact-quote equivalence, candidate date isolation, date-time boundaries, future-value protocol outcomes, explicit-project/global conflicts, platform-only mentions, unique and ambiguous todo deadlines, deadline word boundaries and metric visibility. Python 3.11 compilation and imports pass, as does `git diff --check`. The repository intentionally ignores `/tests/`, so these local tests are not part of the source distribution; real-model adherence and a newly installed Hermes replay remain post-release runtime acceptance.
+
 ## 0.2.54 — 2026-09-14
 
 - Judge automatic memories by future reuse rather than speaker identity. Visible assistant final reports may establish facts learned from external sources, while transient tool failures, one-time fallbacks and routine checks with no issue or follow-up are `no_future_value`. The B3 system prompt and compact contract were rewritten rather than extended: together they shrink from 9469 to 9331 bytes, and the normal path still uses one model request.
