@@ -10,9 +10,13 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any, Iterable, Mapping, Optional
 
-from .admission import analyze_turn_evidence, partition_evidence_units, summary_evidence
+from .admission import (
+    _whole_unit_is_safe, analyze_turn_evidence, partition_evidence_units,
+    summary_evidence,
+)
 from .evidence_policy import retain_tool_evidence
 from .extraction_capability import supports_single_pass_protocol
 from .memory_planner import (
@@ -33,26 +37,8 @@ from .process_common import (
 from .single_pass_plan import run_single_pass_stage
 from .turn_plan import dedup_digest, revision_digest
 from .validation import ModelOutputError, parse_summarize_output
+from .evidence_syntax import _assistant_intent_only
 from .llm import ModelUnavailable
-
-
-def _drop_ungrounded_project_scopes(scopes: Iterable[Any]) -> list[str]:
-    """Return the scopes that assert no unproven project ownership.
-
-    A project scope is a claimed affiliation and Core refuses one the evidence
-    does not name.  The memory carrying it is usually grounded in full; only the
-    affiliation is unproven, so the claim is dropped rather than the memory.
-    Measured on a real turn, discarding the candidate instead lost
-    "在弄个记账的小玩意儿，跑在 N100，不上云" entirely because the model had
-    named the project "记账小玩意儿" while the user wrote "记账的小玩意儿".
-    """
-
-    kept = [
-        scope
-        for scope in scopes
-        if not (isinstance(scope, str) and scope.startswith("project:"))
-    ]
-    return kept or ["global"]
 
 
 def _claim_date_evidence(
@@ -133,7 +119,11 @@ def _global_scope_conflicts_with_candidate_evidence(
         content = event.get("content")
         if isinstance(content, str):
             texts.append(content)
-    return len(_explicit_project_scope_labels(texts, scope_registry)) == 1
+    # Any explicit project label makes a global answer unsafe.  This also
+    # catches candidates that combine two independently named projects; Core
+    # cannot decide whether that is a cross-project rule or an accidental
+    # merge, so the candidate is deferred for semantic separation.
+    return bool(_explicit_project_scope_labels(texts, scope_registry))
 
 
 class SinglePassMemoryPlanner(MemoryPlanner):
@@ -496,6 +486,20 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             if not unit_ids or not event_keys:
                 raise ModelOutputError("B3 memory has no admitted evidence", validation_detail="invalid_evidence")
 
+            # An assistant's unaccepted offer/question/forward commitment is
+            # not user intent.  Keep final reports eligible, but block a
+            # candidate whose entire bound evidence is this speech act.
+            if claims and all(
+                getattr(by_unit.get(claim.get("unit_id")), "source_role", None) == "assistant"
+                and _assistant_intent_only(claim.get("quote", ""))
+                for claim in claims
+                if isinstance(claim, Mapping)
+            ):
+                raise ModelOutputError(
+                    "assistant offer cannot establish user intent",
+                    validation_detail="assistant_intent",
+                )
+
             target_memory = self.inputs._active_memory_by_id(target_id) if target_id else None
             if decision == "UPDATE":
                 if target_memory is None:
@@ -539,30 +543,33 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                     "global scope conflicts with an explicit project label",
                     validation_detail="scope_not_grounded",
                 )
+            # Scope grounding must use each candidate's exact admitted claims,
+            # including their section context, rather than the complete sibling
+            # units in the batch.  An unproven project scope is deferred; it is
+            # never silently rewritten as global or unscoped.
+            candidate_scope_units = tuple(
+                replace(
+                    by_unit[claim["unit_id"]],
+                    text=claim["quote"],
+                    start=0,
+                    end=len(claim["quote"]),
+                )
+                for claim in claims
+                if isinstance(claim, Mapping)
+                and isinstance(claim.get("unit_id"), str)
+                and claim["unit_id"] in by_unit
+                and isinstance(claim.get("quote"), str)
+            )
             if decision in {"CREATE", "UPDATE"} and not _model_project_scope_is_source_grounded(
                 candidate,
-                planning_units,
+                candidate_scope_units,
                 validation_scope_registry,
                 authorized_project_scopes,
             ):
-                # The memory itself is grounded; only the ownership claim is
-                # not.  Discarding the whole candidate over an unproven project
-                # name loses source-backed content the user stated, so the
-                # claim is dropped and the memory is kept unscoped instead.
-                # Nothing is fabricated either way: no ownership is asserted.
-                kept = _drop_ungrounded_project_scopes(scopes)
-                dropped = kept != list(scopes)
-                scopes = kept
-                scope_source = self._derived_scope_source(scopes, scope_background, scope)
-                candidate["scopes"] = scopes
-                candidate["scope_source"] = scope_source
-                if dropped:
-                    event = getattr(self.model, "_record_metric_event", None)
-                    if callable(event):
-                        event(
-                            {"stage": "single_pass", "operation": "single_pass_primary"},
-                            "b3_ungrounded_scope_dropped_count",
-                        )
+                raise ModelOutputError(
+                    "project scope is not grounded by this candidate's evidence",
+                    validation_detail="scope_not_grounded",
+                )
             if (
                 decision == "UPDATE"
                 and target_memory is not None
@@ -639,7 +646,9 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 expected_target_type=target_memory.type if target_memory is not None else None,
                 expected_scopes=scopes,
                 expected_scope_source=scope_source if isinstance(scope_source, str) else None,
-                allowed_due_dates=(deadline_dates or grounded_dates),
+                # A todo due_date is stronger than an ordinary occurrence
+                # date: only a unique deadline cue may authorize it.
+                allowed_due_dates=deadline_dates,
                 allow_no_change=False,
                 allow_update_target=target_memory is not None,
             )
@@ -693,6 +702,13 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                         "b3_due_date_ambiguous_count",
                     )
 
+        raw_defer_details = result.get("_defer_details") if isinstance(result, Mapping) else None
+        defer_details = (
+            {key: value for key, value in raw_defer_details.items()
+             if isinstance(key, str) and isinstance(value, str)}
+            if isinstance(raw_defer_details, Mapping)
+            else {}
+        )
         fallback_scopes, fallback_scope_source = self._fallback_scopes(scope_background)
         for row in result["items"]:
             candidate_id = row["candidate_id"]
@@ -713,6 +729,7 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                         "scope_required",
                         scopes=summary["scopes"],
                         scope_source=summary.get("scope_source"),
+                        validation_detail="scope_not_grounded",
                     )
                     continue
                 if decision == "CREATE" and _automatic_create_conflicts(
@@ -820,6 +837,7 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                     row["reason"],
                     scopes=candidate["scopes"],
                     scope_source=candidate["scope_source"],
+                    validation_detail=defer_details.get(candidate_id),
                 )
 
         for row in result["no_memory"]:

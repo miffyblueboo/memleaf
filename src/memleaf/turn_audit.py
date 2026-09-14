@@ -5,6 +5,24 @@ from .inbox import InboxTurn
 from .process_common import _Snapshot, _UNSET
 
 
+_SAFE_VALIDATION_DETAILS = frozenset({
+    "assistant_intent",
+    "due_date_not_grounded",
+    "duplicate_update_target",
+    "invalid_due_date",
+    "invalid_evidence",
+    "relative_time",
+    "scope_drift",
+    "scope_not_grounded",
+    "target_relevance_unproven",
+    "whole_unit_too_broad",
+})
+
+
+def _safe_validation_detail(value: Any) -> str | None:
+    return value if isinstance(value, str) and value in _SAFE_VALIDATION_DETAILS else None
+
+
 class TurnAudit:
     def __init__(self):
         self._planned_related = []
@@ -20,6 +38,7 @@ class TurnAudit:
         *,
         reason: str | None = None,
         memory_id: str | None = None,
+        validation_detail: str | None = None,
     ) -> None:
         """Record a compact, candidate-level processing outcome.
 
@@ -43,6 +62,9 @@ class TurnAudit:
             value["reason"] = reason
         if isinstance(memory_id, str) and memory_id:
             value["memory_id"] = memory_id
+        detail = _safe_validation_detail(validation_detail)
+        if detail is not None:
+            value["validation_detail"] = detail
         values = self._dispositions_by_turn.setdefault(turn_ref, [])
         candidate_key = candidate_id.casefold()
         for index, previous in enumerate(values):
@@ -63,6 +85,7 @@ class TurnAudit:
         *,
         reason: str | None = None,
         memory_id: str | None = None,
+        validation_detail: str | None = None,
     ) -> None:
         turn = request.get("turn")
         if not isinstance(turn, InboxTurn):
@@ -71,6 +94,7 @@ class TurnAudit:
             self._record_disposition(
                 (turn.source, turn.session_id, turn.turn_key), member, disposition,
                 reason=reason, memory_id=memory_id,
+                validation_detail=validation_detail,
             )
 
 
@@ -100,6 +124,7 @@ class TurnAudit:
         *,
         scopes: Optional[Iterable[str]] = None,
         scope_source: Any = _UNSET,
+        validation_detail: str | None = None,
     ) -> None:
         self._record_disposition(
             turn_ref,
@@ -113,16 +138,19 @@ class TurnAudit:
                 if isinstance(candidate.get("duplicate_memory_id"), str)
                 else None
             ),
+            validation_detail=validation_detail,
         )
-        self._deferred_by_turn[turn_ref].append(
-            {
-                "candidate_id": str(candidate["candidate_id"]),
-                "scopes": list(scopes if scopes is not None else candidate["scopes"]),
-                "scope_source": (
-                    candidate.get("scope_source")
-                    if scope_source is _UNSET
-                    else scope_source
-                ),
-                "reason": reason,
-            }
-        )
+        row = {
+            "candidate_id": str(candidate["candidate_id"]),
+            "scopes": list(scopes if scopes is not None else candidate["scopes"]),
+            "scope_source": (
+                candidate.get("scope_source")
+                if scope_source is _UNSET
+                else scope_source
+            ),
+            "reason": reason,
+        }
+        detail = _safe_validation_detail(validation_detail)
+        if detail is not None:
+            row["validation_detail"] = detail
+        self._deferred_by_turn[turn_ref].append(row)

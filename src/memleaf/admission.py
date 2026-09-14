@@ -16,11 +16,13 @@ from typing import Any, Iterable, Mapping
 from .validation import ModelOutputError, parse_strict_json
 from .evidence_syntax import (
     _BULLET, _CLOSED_TASK, _EXAMPLE, _EXTERNAL_OWNER, _HEADING, _NEGATIVE_TASK,
-    _POLITE, _QUERY_START, _QUERY_WORD, _READ_ONLY_CONTROL, _clauses, _query,
+    _POLITE, _QUERY_START, _QUERY_WORD, _READ_ONLY_CONTROL, _assistant_intent_only,
+    _clauses, _query,
 )
 from .evidence_structure import (
     MAX_EXTERNAL_UNIT_BYTES, _EXTERNAL_MARKER, _external_blocks,
-    _has_external_structure, _structured_external_blocks,
+    _has_external_structure, _has_markdown_structure, _markdown_blocks,
+    _structured_external_blocks, _whole_unit_is_safe,
 )
 
 
@@ -173,9 +175,14 @@ def analyze_turn_evidence(events: Iterable[Mapping[str, Any]]) -> tuple[Evidence
     def inventory(key: str, role: str, text: str, meta: Mapping[str, Any] | None = None) -> None:
         meta = meta or {}
         if role == "assistant":
-            # Preserve the complete visible reply so headings, qualifications,
-            # project names and findings stay together in one model input.
-            fragments = [(0, len(text), text, "plain", ())] if text.strip() else []
+            # Keep an unstructured short reply intact, but account for explicit
+            # Markdown blocks independently so one long report cannot authorize
+            # unrelated sibling facts through a whole-unit claim.
+            fragments = (
+                _markdown_blocks(text)
+                if text.strip() and _has_markdown_structure(text)
+                else ([(0, len(text), text, "plain", ())] if text.strip() else [])
+            )
         elif role == "external":
             # A tool result is one physical source record.  Splitting it on
             # punctuation made JSON/document bodies look like thousands of
@@ -251,7 +258,9 @@ def _canonical_text(text: str) -> str:
 
 
 def validate_bindings(value: Any, units: Iterable[EvidenceUnit],
-                      candidates: Iterable[Mapping[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+                      candidates: Iterable[Mapping[str, Any]], *,
+                      allow_broad_whole_unit_candidates: Iterable[str] = (),
+                      ) -> dict[str, list[dict[str, Any]]]:
     """Validate model judgments against exact immutable source fragments.
 
     Matching a quotation proves provenance, not the truth of a proposition.
@@ -260,6 +269,11 @@ def validate_bindings(value: Any, units: Iterable[EvidenceUnit],
     """
     by_unit = {u.unit_id: u for u in units}
     by_candidate = {c["candidate_id"]: c for c in candidates}
+    allowed_broad_candidates = {
+        value.casefold()
+        for value in allow_broad_whole_unit_candidates
+        if isinstance(value, str) and value
+    }
     if not isinstance(value, list):
         raise ModelOutputError("evidence_bindings must be a list", validation_detail="invalid_evidence",
                                evidence_check="binding_shape")
@@ -299,6 +313,16 @@ def validate_bindings(value: Any, units: Iterable[EvidenceUnit],
                 if claim["whole_unit"] is not True:
                     raise ModelOutputError("whole_unit must be true", validation_detail="invalid_evidence",
                                            evidence_check="binding_shape")
+                if (
+                    cid.casefold() not in allowed_broad_candidates
+                    and unit.source_role == "assistant"
+                    and not _whole_unit_is_safe(unit.text)
+                ):
+                    raise ModelOutputError(
+                        "whole_unit is too broad for a structured assistant report",
+                        validation_detail="whole_unit_too_broad",
+                        evidence_check="invalid_span",
+                    )
                 # Explicitly selecting one supplied immutable source unit is
                 # equivalent to quoting that whole unit. Never repair a bad
                 # quote or resolve an ID outside this invocation's inventory.
@@ -422,6 +446,11 @@ def admission_reason(candidate: Mapping[str, Any], units: Iterable[EvidenceUnit]
     support = supporting_units(candidate, units)
     if not support:
         return "evidence_not_supported", ()
+    if candidate.get("_evidence_bindings") and all(
+        unit.source_role == "assistant" and _assistant_intent_only(unit.text)
+        for unit in support
+    ):
+        return "assistant_restatement", support
     if candidate.get("type") == "todo":
         # Negative or third-party facts may still be retained as facts or used
         # for a verified state update. They must not become a new active task.

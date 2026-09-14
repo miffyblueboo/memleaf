@@ -6,6 +6,9 @@ import re
 from typing import Iterable
 
 MAX_EXTERNAL_UNIT_BYTES = 32 * 1024
+# Keep whole-unit admission bounded even when a source has no explicit Markdown
+# marker.  The threshold is a structural safety limit, not a topic heuristic.
+MAX_WHOLE_UNIT_CHARS = 512
 
 def _external_blocks(text: str) -> Iterable[tuple[int, int, str, str, tuple[str, ...]]]:
     """Yield deterministic, exact source blocks for one external record.
@@ -88,6 +91,152 @@ def _external_blocks(text: str) -> Iterable[tuple[int, int, str, str, tuple[str,
         start = end
 
 _EXTERNAL_MARKER = re.compile(r"^\s*(?:#{1,6}\s+|[-*+•]\s+|\d+[.)、]\s+)")
+_MARKDOWN_HEADING = re.compile(r"^\s{0,3}(?P<marks>#{1,6})\s+(?P<label>.+?)\s*$")
+_MARKDOWN_ITEM = re.compile(r"^\s*(?:[-*+•]|\d+[.)、])\s+")
+
+
+def _has_markdown_structure(text: str) -> bool:
+    """Return whether a conversation reply has explicit block structure."""
+
+    if "\n\n" in text or "\r\n\r\n" in text:
+        return True
+    return any(
+        _MARKDOWN_HEADING.match(line) is not None
+        or _MARKDOWN_ITEM.match(line) is not None
+        for line in text.splitlines()
+    )
+
+
+def _whole_unit_is_safe(text: str) -> bool:
+    """Return whether selecting one assistant unit is structurally narrow."""
+
+    if not isinstance(text, str) or not text.strip():
+        return False
+    if len(text) > MAX_WHOLE_UNIT_CHARS:
+        return False
+    if not _has_markdown_structure(text):
+        return True
+    return sum(1 for _ in _markdown_blocks(text)) <= 1
+
+
+def _markdown_blocks(
+    text: str,
+) -> Iterable[tuple[int, int, str, str, tuple[str, ...]]]:
+    """Yield exact Markdown headings, list items and paragraphs.
+
+    The splitter is layout based only.  Every emitted span is a contiguous
+    slice of ``text``; heading labels are carried as section context for later
+    blocks so a candidate can cite independent facts without inheriting a
+    sibling's body or date.
+    """
+
+    lines: list[tuple[int, int, str]] = []
+    cursor = 0
+    for raw in text.splitlines(True):
+        line_end = cursor + len(raw)
+        body = raw[:-1] if raw.endswith("\n") else raw
+        if body.endswith("\r"):
+            body = body[:-1]
+        lines.append((cursor, line_end, body))
+        cursor = line_end
+    if cursor < len(text):
+        lines.append((cursor, len(text), text[cursor:]))
+    if not lines:
+        return
+
+    headings: list[tuple[int, str]] = []
+    item_context: list[tuple[int, str]] = []
+    current_start: int | None = None
+    current_end: int | None = None
+    current_section: tuple[str, ...] = ()
+    current_syntax = "markdown_paragraph"
+    current_kind = ""
+
+    def emit() -> tuple[int, int, str, str, tuple[str, ...]] | None:
+        if current_start is None or current_end is None or current_start >= current_end:
+            return None
+        return current_start, current_end, text[current_start:current_end], current_syntax, current_section
+
+    def flush() -> tuple[int, int, str, str, tuple[str, ...]] | None:
+        nonlocal current_start, current_end, current_section, current_syntax, current_kind
+        value = emit()
+        current_start = current_end = None
+        current_section = ()
+        current_syntax = "markdown_paragraph"
+        current_kind = ""
+        return value
+
+    for line_start, line_end, body in lines:
+        left = len(body) - len(body.lstrip())
+        right = len(body.rstrip())
+        value = body.strip()
+        if not value:
+            value = flush()
+            if value is not None:
+                yield value
+            continue
+
+        heading = _MARKDOWN_HEADING.match(body)
+        item = _MARKDOWN_ITEM.match(body)
+        if heading:
+            value_before = flush()
+            if value_before is not None:
+                yield value_before
+            item_context.clear()
+            level = len(heading.group("marks"))
+            headings = [(depth, label) for depth, label in headings if depth < level]
+            section = tuple(label for _, label in headings)
+            current_start = line_start + left
+            current_end = line_start + right
+            current_section = section
+            current_syntax = "markdown_heading"
+            current_kind = "heading"
+            # Store the heading itself as a logical structural unit, then use
+            # it as context for following siblings.
+            emitted = flush()
+            if emitted is not None:
+                yield emitted
+            headings.append((level, heading.group("label").strip()))
+            continue
+
+        if item:
+            item_indent = left
+            while item_context and item_indent <= item_context[-1][0]:
+                item_context.pop()
+            if current_kind == "item":
+                value_before = flush()
+                if value_before is not None:
+                    yield value_before
+            elif current_kind in {"heading", "paragraph"}:
+                value_before = flush()
+                if value_before is not None:
+                    yield value_before
+            current_start = line_start + left
+            current_end = line_start + right
+            current_section = tuple(label for _, label in headings) + tuple(
+                label for _, label in item_context
+            )
+            current_syntax = "markdown_item"
+            current_kind = "item"
+            item_context.append((item_indent, body[item.end():].strip()))
+            continue
+
+        # A heading is always a complete block.  A following ordinary line is
+        # therefore a paragraph under that heading, even without a blank line.
+        if current_kind == "heading":
+            value_before = flush()
+            if value_before is not None:
+                yield value_before
+        if current_start is None:
+            current_start = line_start + left
+            current_section = tuple(label for _, label in headings)
+            current_syntax = "markdown_paragraph"
+            current_kind = "paragraph"
+        current_end = line_start + right
+
+    value = flush()
+    if value is not None:
+        yield value
 
 def _has_external_structure(text: str) -> bool:
     """Recognize structural boundaries without treating every line as one."""

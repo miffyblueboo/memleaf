@@ -38,6 +38,49 @@ _CLOSED_TASK = re.compile(r"(?:已|已经).{0,4}(?:全部|均)?(?:完成|取消|
 _EXTERNAL_OWNER = re.compile(r"(?:客户|供应商|第三方)(?:自行|自己)?(?:需要|需|负责|必须|应当|要(?!求))|"
                             r"\b(?:customer|vendor|supplier|third party)\s+(?:must|needs? to|is responsible)\b", re.I)
 
+# Speech-act shape only.  This recognizes an assistant-only offer, question or
+# forward commitment without naming a domain, tool or business workflow.  A
+# factual lead such as "I can confirm ..." remains eligible as an external
+# report; the caller still validates its evidence and future value.
+_ASSISTANT_INTENT = re.compile(
+    r"^(?:would\s+you\s+like\s+me\s+to|do\s+you\s+want\s+me\s+to|shall\s+i|let\s+me|"
+    r"i\s+(?:can|could|will|would|shall|may)|"
+    r"要我|是否需要我|需要我|我(?:可以|能|会|将|来))\s*(?P<body>.+)$",
+    re.IGNORECASE,
+)
+_ASSISTANT_ASSERTIVE = re.compile(
+    r"^(?:confirm|verify|report|explain|answer|summari[sz]e|describe|state|note|"
+    r"observe|see|found|find|确认|核对|报告|说明|解释|回答|总结|描述|观察|发现|指出)",
+    re.IGNORECASE,
+)
+
+
+def _assistant_intent_only(text: str) -> bool:
+    """Recognize a standalone assistant offer/question/commitment.
+
+    The result is deliberately conservative: mixed report text and factual
+    assertions stay eligible for semantic future-value review.  Only a whole
+    candidate quote whose speech act is an unaccepted offer is blocked.
+    """
+
+    if not isinstance(text, str):
+        return False
+    value = text.strip().strip("` ")
+    value = re.sub(r"^(?:[-*+•]|\d+[.)、])\s+", "", value)
+    if not value or "\n" in value:
+        return False
+    match = _ASSISTANT_INTENT.fullmatch(value.rstrip("。.!！?？"))
+    if match is None:
+        return False
+    body = match.group("body").lstrip()
+    if _ASSISTANT_ASSERTIVE.match(body):
+        # A future-tense commitment remains an intent even when its verb is
+        # epistemic (for example, "I will verify ...").  Present capability
+        # statements such as "I can confirm ..." remain report evidence.
+        lead = value[:match.start("body")]
+        return bool(re.search(r"\b(?:will|would|shall)\b|我(?:会|将|来)", lead, re.I))
+    return True
+
 def _query(text: str) -> bool:
     text = _POLITE.sub("", text.strip())
     control = text.rstrip("。！？!?；;.! ")

@@ -15,7 +15,7 @@ from decimal import Decimal, InvalidOperation
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
-from .admission import validate_bindings
+from .admission import _whole_unit_is_safe, validate_bindings
 from .extraction_budget import budget_single_pass_backend
 from .extraction_capability import requires_inline_single_pass_system
 from .llm import ModelError
@@ -67,6 +67,8 @@ _B3_DEFERRABLE_DETAILS = {
     "invalid_type": "maintenance_uncertain",
     "source_shape": "maintenance_uncertain",
     "invalid_evidence": "evidence_insufficient",
+    "whole_unit_too_broad": "evidence_insufficient",
+    "assistant_intent": "evidence_insufficient",
 }
 _DETAIL_TEXT_RE = re.compile(r"^[a-z_]{1,48}$")
 _MEMORY_FIELDS = frozenset({
@@ -579,6 +581,8 @@ def parse_single_pass_output(
     binding_rows: list[dict[str, Any]] = []
     prepared: list[tuple[dict[str, Any], Mapping[str, Any] | None]] = []
     forced_defer: dict[str, str] = {}
+    forced_defer_details: dict[str, str] = {}
+    broad_whole_unit_candidates: set[str] = set()
     broad_whole_unit_no_change: set[str] = set()
     unit_by_id = {getattr(unit, "unit_id", None): unit for unit in source_units}
 
@@ -672,6 +676,18 @@ def parse_single_pass_output(
             # insufficient proof that one selected old memory covers this
             # candidate; ask for a narrow claim on a later bounded pass.
             broad_whole_unit_no_change.add(candidate_key)
+        if any(
+            isinstance(claim, Mapping)
+            and claim.get("whole_unit") is True
+            and getattr(unit_by_id.get(claim.get("unit_id")), "source_role", None) == "assistant"
+            and not _whole_unit_is_safe(getattr(unit_by_id.get(claim.get("unit_id")), "text", ""))
+            for claim in claims
+        ):
+            # Keep the claim available for candidate-local audit/coverage, but
+            # never let a broad structured assistant report authorize a write.
+            forced_defer[candidate_key] = "evidence_insufficient"
+            forced_defer_details[candidate_key] = "whole_unit_too_broad"
+            broad_whole_unit_candidates.add(candidate_key)
         binding_rows.append({"candidate_id": candidate_id, "claims": claims})
 
         target_record: Mapping[str, Any] | None = None
@@ -781,7 +797,12 @@ def parse_single_pass_output(
         }
         for item in prepared
     ]
-    bindings = validate_bindings(binding_rows, source_units, candidate_stubs)
+    bindings = validate_bindings(
+        binding_rows,
+        source_units,
+        candidate_stubs,
+        allow_broad_whole_unit_candidates=broad_whole_unit_candidates,
+    )
     claimed_ids = {
         claim["unit_id"]
         for claims in bindings.values()
@@ -858,7 +879,7 @@ def parse_single_pass_output(
                 deferrals.append({
                     "candidate_id": candidate_id,
                     "reason": forced,
-                    "detail": forced,
+                    "detail": forced_defer_details.get(candidate_id.casefold(), forced),
                 })
             continue
         normalized: dict[str, Any] = {
@@ -1249,6 +1270,27 @@ def run_single_pass_stage(
     normalizations: list[str] = []
     deferrals: list[dict[str, Any]] = []
 
+    def finish(parsed: dict[str, Any]) -> dict[str, Any]:
+        """Finalize the plan and attach only safe candidate defer details."""
+
+        value = finalize(parsed)
+        details: dict[str, str] = {}
+        for row in deferrals:
+            candidate_id = row.get("candidate_id") if isinstance(row, Mapping) else None
+            detail = row.get("detail") if isinstance(row, Mapping) else None
+            if (
+                isinstance(candidate_id, str)
+                and isinstance(detail, str)
+                and _DETAIL_TEXT_RE.fullmatch(detail)
+            ):
+                details[candidate_id] = detail
+        if details:
+            # Private Core metadata; never sent back to the model or stored as
+            # free-form output.  TurnAudit applies its own allowlist before
+            # persistence.
+            value["_defer_details"] = details
+        return value
+
     def parse(raw: str) -> dict[str, Any]:
         target_rows.clear()
         normalizations.clear()
@@ -1484,7 +1526,7 @@ def run_single_pass_stage(
                 )
             except Exception:
                 pass
-        return finalize(parsed)
+        return finish(parsed)
 
     event = getattr(model_executor, "_record_metric_event", None)
     if callable(event):
@@ -1502,7 +1544,7 @@ def run_single_pass_stage(
             )
         except Exception:
             pass
-    return finalize(parsed)
+    return finish(parsed)
 
 
 __all__ = [

@@ -52,6 +52,17 @@ _MODEL_METRIC_FIELDS = (
     "prompt_cache_miss_tokens",
     "reasoning_tokens",
     "cache_hit_calls",
+    # B3 structural counters are model-output diagnostics, not business data.
+    # Keep them in the same allowlisted aggregation path as call metrics so
+    # total/stage/operation views cannot silently discard candidate failures.
+    "repair_attempted_count",
+    "repair_rejected_semantic_drift_count",
+    "parse_accepted_count",
+    "decision_case_normalization_count",
+    "b3_normalization_count",
+    "b3_candidate_deferred_count",
+    "b3_ungrounded_scope_dropped_count",
+    "b3_due_date_ambiguous_count",
 )
 _MODEL_METRIC_STAGES = frozenset({
     "gate",

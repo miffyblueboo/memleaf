@@ -17,7 +17,11 @@ from .locking import read_json
 from .models import Memory, utc_now
 from .retrieval import candidate_matches_query, normalize_term
 from .scope_state import project_scope_matches_text
-from .validation import MODEL_EVIDENCE_CHECKS, MODEL_VALIDATION_DETAILS, ModelOutputError, parse_strict_json, normalize_relative_calendar_text, safe_evidence_context, safe_schema_context
+from .validation import (
+    MODEL_EVIDENCE_CHECKS, MODEL_VALIDATION_DETAILS, ModelOutputError,
+    calendar_tokens, normalize_relative_calendar_text, parse_strict_json,
+    safe_evidence_context, safe_schema_context,
+)
 
 _PROCESSING_LEASE_SECONDS = 3600
 
@@ -60,25 +64,12 @@ _DIAGNOSTIC_CANDIDATE_REQUIRED = frozenset(
 )
 
 
-_ISO_CALENDAR_DATE_RE = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)")
-
-
-_CHINESE_CALENDAR_DATE_RE = re.compile(
-    r"(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?"
-)
-
-
-_SUMMARY_CHINESE_CALENDAR_DATE_RE = re.compile(
-    r"(?<![A-Za-z\d])"
-    r"(?P<raw>(?:(?P<year>\d{4})\s*年\s*)?(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*日?)"
-    r"(?![A-Za-z\d])"
-)
-
-_SLASH_CALENDAR_DATE_RE = re.compile(
-    r"(?<![\d./-])(?:(?P<year>\d{4})/)?(?P<month>\d{1,2})/(?P<day>\d{1,2})(?![\d/-]|\.\d)"
-)
 _DEADLINE_PREFIX_RE = re.compile(
-    r"(?:截止(?:日期|时间)?|截至(?:日期|时间)?|不晚于|不得晚于|\bdeadline\b|\bdue(?:\s+date)?\b|\bby\b|\bbefore\b)"
+    r"(?:截止(?:日期|时间)?|截至(?:日期|时间)?|不晚于|不得晚于|"
+    r"计划(?:于|在|为)?|目标(?:于|在|为)?|安排(?:于|在)?|"
+    r"(?:需(?:要)?|须|必须)(?:于|在)?|赶(?:在)?|"
+    r"\b(?:scheduled|planned)\s+(?:for|on)\b|\btarget(?:ed)?(?:\s+date)?\b|"
+    r"\bdeadline\b|\bdue(?:\s+date)?\b|\bby\b|\bbefore\b)"
     r"\s*(?:为|是|[:：])?\s*$",
     re.IGNORECASE,
 )
@@ -730,16 +721,11 @@ def _normalize_summary_dates(
 
 
 def _add_explicit_iso_dates(result: set[str], content: Any) -> None:
-    """Add only valid full calendar dates present in source text."""
+    """Add only valid year-bearing calendar dates present in source text."""
 
-    if not isinstance(content, str):
-        return
-    for value in _ISO_CALENDAR_DATE_RE.findall(content):
-        try:
-            parsed = datetime.strptime(value, "%Y-%m-%d").date()
-        except ValueError:
-            continue
-        result.add(parsed.isoformat())
+    for token in calendar_tokens(content):
+        if token.has_year and token.canonical is not None:
+            result.add(token.canonical)
 
 
 def _add_user_due_dates(result: set[str], timestamp_value: Any, content: Any) -> None:
@@ -748,23 +734,12 @@ def _add_user_due_dates(result: set[str], timestamp_value: Any, content: Any) ->
     if not isinstance(content, str):
         return
     timestamp = _parse_time(timestamp_value)
-    normalized = content
-    if timestamp is not None:
-        normalized = normalize_relative_calendar_text(content, timestamp) or content
-    _add_explicit_iso_dates(result, normalized)
-    if timestamp is None:
-        return
-    for year, month, day in _CHINESE_CALENDAR_DATE_RE.findall(content):
-        try:
-            parsed = datetime(
-                int(year) if year else timestamp.year,
-                int(month),
-                int(day),
-                tzinfo=timezone.utc,
-            ).date()
-        except ValueError:
-            continue
-        result.add(parsed.isoformat())
+    normalized = normalize_relative_calendar_text(content, timestamp) if timestamp is not None else content
+    if normalized is None:
+        normalized = content
+    for token in calendar_tokens(normalized, timestamp):
+        if token.canonical is not None:
+            result.add(token.canonical)
 
 
 def _add_external_due_dates(result: set[str], content: Any) -> None:
@@ -774,16 +749,6 @@ def _add_external_due_dates(result: set[str], content: Any) -> None:
     # Never pass it to the relative-date normalizer or use it as a year for a
     # yearless date in external content.
     _add_explicit_iso_dates(result, content)
-    if not isinstance(content, str):
-        return
-    for year, month, day in _CHINESE_CALENDAR_DATE_RE.findall(content):
-        if not year:
-            continue
-        try:
-            parsed = datetime(int(year), int(month), int(day), tzinfo=timezone.utc).date()
-        except ValueError:
-            continue
-        result.add(parsed.isoformat())
 
 
 def _summary_calendar_tokens(content: Any) -> tuple[tuple[str, str | None, str | None], ...]:
@@ -796,38 +761,10 @@ def _summary_calendar_tokens(content: Any) -> tuple[tuple[str, str | None, str |
     ever granting that token a year.
     """
 
-    if not isinstance(content, str):
-        return ()
-    tokens: list[tuple[str, str | None, str | None]] = []
-    seen: set[str] = set()
-    for raw in _ISO_CALENDAR_DATE_RE.findall(content):
-        if raw in seen:
-            continue
-        seen.add(raw)
-        try:
-            canonical = datetime.strptime(raw, "%Y-%m-%d").date().isoformat()
-        except ValueError:
-            canonical = None
-        tokens.append((raw, canonical, None))
-    for match in _SUMMARY_CHINESE_CALENDAR_DATE_RE.finditer(content):
-        raw = match.group("raw")
-        if raw in seen:
-            continue
-        seen.add(raw)
-        year = match.group("year")
-        month = int(match.group("month"))
-        day = int(match.group("day"))
-        try:
-            canonical = (
-                datetime(year and int(year), month, day, tzinfo=timezone.utc).date().isoformat()
-                if year
-                else None
-            )
-        except ValueError:
-            canonical = None
-        monthday = f"{month:02d}-{day:02d}" if 1 <= month <= 12 and 1 <= day <= 31 else None
-        tokens.append((raw, canonical, monthday))
-    return tuple(tokens)
+    return tuple(
+        (token.raw, token.canonical if token.has_year else None, token.monthday)
+        for token in calendar_tokens(content)
+    )
 
 
 def _summary_date_grounding_violations(
@@ -867,22 +804,28 @@ def _summary_date_grounding_violations(
             allowed_dates.add(value)
 
     source_tokens: set[str] = set()
+    invalid_source_tokens: set[str] = set()
     source_monthdays: set[str] = set()
     source_values = (source_texts,) if isinstance(source_texts, str) else source_texts
     for text in source_values:
         for raw, canonical, monthday in _summary_calendar_tokens(text):
             source_tokens.add(raw)
+            if canonical is None and monthday is None:
+                invalid_source_tokens.add(raw)
             if monthday is not None and canonical is None:
                 source_monthdays.add(monthday)
             if canonical is not None:
                 allowed_dates.add(canonical)
 
     preserved_tokens: set[str] = set()
+    invalid_preserved_tokens: set[str] = set()
     preserved_monthdays: set[str] = set()
     preserved_values = (preserved_texts,) if isinstance(preserved_texts, str) else preserved_texts
     for text in preserved_values:
         for raw, canonical, monthday in _summary_calendar_tokens(text):
             preserved_tokens.add(raw)
+            if canonical is None and monthday is None:
+                invalid_preserved_tokens.add(raw)
             if monthday is not None and canonical is None:
                 preserved_monthdays.add(monthday)
             if canonical is not None:
@@ -893,7 +836,10 @@ def _summary_date_grounding_violations(
     seen: set[str] = set()
     for field in ("title", "body"):
         for raw, canonical, monthday in _summary_calendar_tokens(summary.get(field)):
-            if raw in source_tokens or raw in preserved_tokens:
+            if (
+                (raw in source_tokens and raw not in invalid_source_tokens)
+                or (raw in preserved_tokens and raw not in invalid_preserved_tokens)
+            ):
                 continue
             value = canonical or raw
             if value in seen:
@@ -938,18 +884,9 @@ def _grounded_due_dates(
         if timestamp is None or not isinstance(event.content, str):
             continue
         normalized = normalize_relative_calendar_text(event.content, timestamp) or event.content
-        _add_explicit_iso_dates(result, normalized)
-        for year, month, day in _CHINESE_CALENDAR_DATE_RE.findall(event.content):
-            try:
-                parsed = datetime(
-                    int(year) if year else timestamp.year,
-                    int(month),
-                    int(day),
-                    tzinfo=timezone.utc,
-                ).date()
-            except ValueError:
-                continue
-            result.add(parsed.isoformat())
+        for token in calendar_tokens(normalized, timestamp):
+            if token.canonical is not None:
+                result.add(token.canonical)
     return result
 
 
@@ -974,44 +911,11 @@ def _grounded_deadline_dates(
         text = normalize_relative_calendar_text(content, timestamp) if timestamp is not None else content
         if text is None:
             text = content
-        tokens: list[tuple[int, int, str]] = []
-
-        for match in _ISO_CALENDAR_DATE_RE.finditer(text):
-            try:
-                canonical = datetime.strptime(match.group(1), "%Y-%m-%d").date().isoformat()
-            except ValueError:
+        for token in calendar_tokens(text, timestamp):
+            canonical = token.canonical
+            if canonical is None:
                 continue
-            tokens.append((match.start(), match.end(), canonical))
-
-        for match in _SUMMARY_CHINESE_CALENDAR_DATE_RE.finditer(text):
-            try:
-                year = int(match.group("year")) if match.group("year") else (
-                    timestamp.year if timestamp is not None else None
-                )
-                if year is None:
-                    continue
-                canonical = datetime(
-                    year, int(match.group("month")), int(match.group("day")), tzinfo=timezone.utc
-                ).date().isoformat()
-            except ValueError:
-                continue
-            tokens.append((match.start(), match.end(), canonical))
-
-        for match in _SLASH_CALENDAR_DATE_RE.finditer(text):
-            try:
-                year = int(match.group("year")) if match.group("year") else (
-                    timestamp.year if timestamp is not None else None
-                )
-                if year is None:
-                    continue
-                canonical = datetime(
-                    year, int(match.group("month")), int(match.group("day")), tzinfo=timezone.utc
-                ).date().isoformat()
-            except ValueError:
-                continue
-            tokens.append((match.start(), match.end(), canonical))
-
-        for start, end, canonical in tokens:
+            start, end = token.start, token.end
             prefix = text[max(0, start - 32):start]
             suffix = text[end:end + 24]
             if _DEADLINE_PREFIX_RE.search(prefix) or _DEADLINE_SUFFIX_RE.search(suffix):

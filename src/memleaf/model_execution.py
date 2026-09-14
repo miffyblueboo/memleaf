@@ -516,6 +516,9 @@ class ModelExecutor:
             "repair_rejected_semantic_drift_count": int(bucket.get("repair_rejected_semantic_drift_count", 0)),
             "parse_accepted_count": int(bucket.get("parse_accepted_count", 0)),
             "decision_case_normalization_count": int(bucket.get("decision_case_normalization_count", 0)),
+            "b3_normalization_count": int(bucket.get("b3_normalization_count", 0)),
+            "b3_candidate_deferred_count": int(bucket.get("b3_candidate_deferred_count", 0)),
+            "b3_ungrounded_scope_dropped_count": int(bucket.get("b3_ungrounded_scope_dropped_count", 0)),
             "b3_due_date_ambiguous_count": int(bucket.get("b3_due_date_ambiguous_count", 0)),
         }
         for field in _PROVIDER_METRIC_FIELDS:

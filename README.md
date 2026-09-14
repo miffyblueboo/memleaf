@@ -4,8 +4,8 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **版本：0.2.55。**
-> 记忆只从用户与 Agent 的可见对话提炼。Agent 已在回复中整理的事实、项目进展和明确待办可作为来源；邮件、附件、网页和终端等工具原文不进入记忆提炼。模型负责保留原话中的不确定性，现有记忆仅用于比较、去重和更新。Markdown 仍是唯一事实源。
+> **版本：0.2.56。**
+> 自动提取按助手回复中的 Markdown 结构建立候选级来源，过宽的整段引用和未被用户接受的助手意图不会形成记忆；项目 Scope 只由候选自身证据确认，无法 grounding 的候选会延后而不会被改写为 `global`。日期和截止日期使用统一的边界安全解析，todo 只在候选自己的证据给出唯一明确截止日时填充。Markdown 仍是唯一事实源。
 > **当前版本支持 Hermes 和 Codex。** Antigravity（反重力）不检测、不安装、不配置。
 
 ## 项目定位

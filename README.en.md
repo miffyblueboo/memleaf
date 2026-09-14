@@ -4,8 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.55.**
-> Automatic extraction now uses only the current turn's visible user input and final assistant reply. Raw tool output, attachments, web/file/terminal payloads and legacy tool-evidence bodies are not new source evidence; existing or retrieved memory remains comparison context rather than source authority. Background processing is persisted as a local job and can be checked through the read-only `process_status` MCP tool; failed work remains retryable and fail closed. The release also tightens source/date grounding, target reconciliation, duplicate/no-op handling and semantic review before writes. Markdown remains the sole source of truth with no SQLite runtime dependency. Acceptance covers deterministic regression suites and synthetic inputs; it does not claim real-mail or customer-business acceptance.
+> **Version: 0.2.56.**
+> Automatic extraction now creates candidate-local source units from Markdown structure in assistant replies; broad whole-report citations and assistant-only intent are not allowed to create memories. Project Scope is grounded only from each candidate's own evidence, and an ungrounded candidate is deferred instead of being rewritten as `global`. Dates and deadlines use one boundary-safe parser, and a todo receives a due date only when its own evidence supplies one unambiguous deadline. Markdown remains the sole source of truth with no SQLite runtime dependency. Acceptance covers deterministic regression suites and synthetic inputs; it does not claim real-mail or customer-business acceptance.
 > **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.
 
 ## Project scope

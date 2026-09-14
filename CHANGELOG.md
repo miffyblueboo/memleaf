@@ -2,6 +2,14 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.56 — 2026-09-14
+
+- Keep assistant reports source-safe at candidate granularity. Markdown headings, paragraphs and list items become exact immutable evidence units with section context; broad whole-report `whole_unit` claims are deferred, while short unstructured replies remain intact. An assistant-only offer, question or forward commitment cannot establish user intent, but a factual report can still be admitted when its evidence and future value are independently grounded.
+- Ground project Scope from the candidate's own admitted claims, including their exact quote and section context. An explicit project label makes a `global` answer unsafe, and an ungrounded project Scope defers only that candidate instead of silently dropping the Scope or losing the source-backed memory. Candidate-level validation details are persisted through the bounded audit path.
+- Share one boundary-safe calendar-token grammar across summary grounding and todo deadline checks. Standalone ISO, Chinese and numeric dates reject identifiers, decimals and invalid values; scheduling cues such as planned, target and scheduled now authorize deadline dates, while an ambiguous candidate-local deadline is reported and never guessed.
+
+Verification for this release used 18 local synthetic regression tests with no model call and no production Vault write. Python 3.11 compilation/imports and `git diff --check` pass, and the release metadata is synchronized across the package, Hermes provider, READMEs and changelog. Real-model adherence and a newly installed Hermes replay remain post-release runtime acceptance.
+
 ## 0.2.55 — 2026-09-14
 
 - Classify memory candidates by future reuse with a shorter B3 instruction: point-in-time counts and snapshots without a trend, threshold, obligation, decision or later comparison are `no_future_value`, while future-use facts remain eligible. Project ownership now has a conservative Core guard: an explicit single-project label cannot silently persist as `global`, but ordinary platform, product and vendor mentions still do not establish ownership. Self-contained memories refer to the conversation person as the user rather than as an owner. The B3 system prompt shrinks from 6395 to 5686 UTF-8 bytes.

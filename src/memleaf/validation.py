@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
@@ -157,6 +158,8 @@ MODEL_VALIDATION_DETAILS = frozenset(
         "scope_not_grounded",
         "scope_drift",
         "invalid_evidence",
+        "whole_unit_too_broad",
+        "assistant_intent",
         "invalid_flags",
         "invalid_type",
         "invalid_duplicate_target",
@@ -367,6 +370,22 @@ _ISO_CALENDAR_DATE = re.compile(
 _ISO_DATE_FOLLOWED_BY_CLOCK = re.compile(
     r"(?P<date>\d{4}-\d{2}-\d{2})(?=(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?(?!\d))"
 )
+
+# One shared calendar-token grammar feeds summary grounding and the planner's
+# due/deadline checks.  The numeric forms require a standalone token and reject
+# continuations, decimals and ranges so identifiers are not silently dates.
+_CALENDAR_ISO_TOKEN = re.compile(
+    r"(?<![A-Za-z\d./-])(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})(?![A-Za-z\d/-]|\.\d)"
+)
+_CALENDAR_CHINESE_TOKEN = re.compile(
+    r"(?<![A-Za-z\d])(?:(?P<year>\d{4})\s*年\s*)?"
+    r"(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*日?(?![A-Za-z\d])"
+)
+_CALENDAR_NUMERIC_TOKEN = re.compile(
+    r"(?<![A-Za-z\d./-])(?:"
+    r"(?:(?P<year>\d{4})[/-])?(?P<month>\d{1,2})[/-](?P<day>\d{1,2})"
+    r")(?![A-Za-z\d/-]|\.\d)"
+)
 _EMPTY_ISO_DATE_PARENTHESIS = re.compile(
     r"(?P<date>\d{4}-(?:0?[1-9]|1[0-2])-(?:0?[1-9]|[12]\d|3[01]))"
     r"[ \t]*(?:\([ \t]*[)）]|（[ \t]*[)）])"
@@ -458,6 +477,80 @@ def _calendar_anchor_date(anchor: Any) -> date | None:
         return parsed.astimezone(timezone.utc).date()
     except (OverflowError, ValueError):
         return None
+
+
+@dataclass(frozen=True)
+class CalendarToken:
+    """A source date literal with optional candidate-local year grounding."""
+
+    raw: str
+    start: int
+    end: int
+    canonical: str | None
+    monthday: str | None
+    has_year: bool
+
+
+def calendar_tokens(content: Any, anchor: Any = None) -> tuple[CalendarToken, ...]:
+    """Extract standalone calendar literals using one shared grammar.
+
+    A yearless token receives a year only from the supplied evidence event
+    anchor.  Without an anchor it remains a month/day token and cannot
+    authorize an absolute date.  Invalid calendar values remain visible with
+    ``canonical=None`` so strict callers can reject them rather than guess.
+    """
+
+    if not isinstance(content, str) or not content:
+        return ()
+    anchor_date = _calendar_anchor_date(anchor)
+    matches: list[tuple[int, int, str, int | None, int, int, bool]] = []
+    for regex, kind in (
+        (_CALENDAR_ISO_TOKEN, "iso"),
+        (_CALENDAR_CHINESE_TOKEN, "chinese"),
+        (_CALENDAR_NUMERIC_TOKEN, "numeric"),
+    ):
+        for match in regex.finditer(content):
+            year = match.group("year")
+            matches.append((
+                match.start(), match.end(), kind,
+                int(year) if year else None,
+                int(match.group("month")), int(match.group("day")), bool(year),
+            ))
+
+    # Longest match wins when grammars overlap; normally the boundary guards
+    # make this unnecessary, but the explicit check keeps the API deterministic.
+    selected: list[tuple[int, int, str, int | None, int, int, bool]] = []
+    for candidate in sorted(matches, key=lambda row: (row[0], -(row[1] - row[0]))):
+        if any(candidate[0] < end and start < candidate[1] for start, end, *_ in selected):
+            continue
+        selected.append(candidate)
+
+    result: list[CalendarToken] = []
+    for start, end, _kind, raw_year, month, day, has_year in selected:
+        year = raw_year if has_year else (anchor_date.year if anchor_date is not None else None)
+        canonical: str | None = None
+        try:
+            if year is not None:
+                canonical = date(year, month, day).isoformat()
+        except (TypeError, ValueError):
+            canonical = None
+        monthday: str | None = None
+        if not has_year:
+            try:
+                # Use a leap-safe fixed year only to determine whether a
+                # yearless month/day token is calendar-shaped.  When an
+                # evidence anchor exists, an impossible day in that anchor
+                # year is invalid rather than a resolvable month/day.
+                date(2000, month, day)
+                if anchor_date is None or canonical is not None:
+                    monthday = f"{month:02d}-{day:02d}"
+            except (TypeError, ValueError):
+                monthday = None
+        result.append(CalendarToken(
+            raw=content[start:end], start=start, end=end,
+            canonical=canonical, monthday=monthday, has_year=has_year,
+        ))
+    return tuple(result)
 
 
 def _resolve_relative_date(token: str, anchor: date) -> str | None:
