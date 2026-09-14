@@ -2,6 +2,14 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.54 — 2026-09-14
+
+- Judge automatic memories by future reuse rather than speaker identity. Visible assistant final reports may establish facts learned from external sources, while transient tool failures, one-time fallbacks and routine checks with no issue or follow-up are `no_future_value`. The B3 system prompt and compact contract were rewritten rather than extended: together they shrink from 9469 to 9331 bytes, and the normal path still uses one model request.
+- Reject an unrelated `NO_CHANGE` target before it can enter durable audit state. B3 previously verified only that the selected ID existed in the local catalog; it now compares the candidate's exact cited span with the target title/body using source-neutral lexical anchors. An unproven relation defers only that candidate as `target_ambiguous`, without adding a model call or failing valid siblings. Long multi-topic whole-unit claims are likewise too broad to authorize `NO_CHANGE`.
+- Keep dates candidate-local and stop treating `本周日报` as `本周日` plus `报`. Date grounding now uses the candidate's exact validated quote and matching event timestamp instead of the whole assistant reply, so one mail item's date cannot authorize another memory. The relative-date tokenizer preserves `本周日报` and `下周日报`, while the existing `本周日` and `下周日` conversions remain intact.
+
+Verification for this release used a temporary focused regression module and no model call or production Vault write. Nine tests pass for unrelated and related `NO_CHANGE` targets, Chinese subjects, identifiers and numeric codes, long whole-unit deferral, assistant-reported future-use todos, execution-noise disposition, candidate-local date grounding, and the `本周日报`/`本周日` boundary. The three changed modules compile under Python 3.11, `git diff --check` passes, and no real-model adherence or installed-Hermes replay is claimed.
+
 ## 0.2.53 — 2026-09-13
 
 - Keep the memory when only the project name is unproven. A real turn was lost in full because of one word: the user wrote "在弄个记账的小玩意儿，就扔家里那台 N100 上跑，没打算上云", the model named the project `project:记账小玩意儿` -- the user's phrase with 的 removed -- and Core refuses a project scope whose name is not in the candidate's own evidence. That refusal discarded the whole candidate, so the N100 deployment and the no-cloud decision went with the unproven name, leaving three evidence units unresolved and nothing written. The memory was grounded; only the affiliation was not. The claim is now dropped and the memory kept with `global`, which asserts no ownership and loses no source-backed content. The refusal itself is unchanged: Core still never records a project it cannot ground.

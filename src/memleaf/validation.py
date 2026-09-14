@@ -344,7 +344,7 @@ _RELATIVE_DATE_TOKEN = (
     r"(?<![A-Za-z])(?:today|tomorrow|yesterday)(?![A-Za-z])"
     r"|(?<![A-Za-z])(?:this|next|last)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?![A-Za-z])"
     r"|(?:本|这|下|上)(?:个)?(?:周|星期|礼拜)\s*"
-    r"(?:(?:星期|礼拜)\s*)?(?:一|二|三|四|五|六|日|天|末|[1-7])"
+    r"(?:(?:星期|礼拜)\s*)?(?:一|二|三|四|五|六|天|末|[1-7]|日(?!报))"
     r"|(?:今天|明天|昨天|今日|明日|昨日)"
     r")"
 )

@@ -53,6 +53,44 @@ def _drop_ungrounded_project_scopes(scopes: Iterable[Any]) -> list[str]:
     return kept or ["global"]
 
 
+def _claim_date_evidence(
+    claims: Iterable[Mapping[str, Any]],
+    by_unit: Mapping[str, Any],
+    events: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Project dates from this candidate's exact validated quotes only."""
+
+    event_by_key = {
+        event.get("event_key"): event
+        for event in events
+        if isinstance(event, Mapping) and isinstance(event.get("event_key"), str)
+    }
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for claim in claims:
+        if not isinstance(claim, Mapping):
+            continue
+        unit_id = claim.get("unit_id")
+        quote = claim.get("quote")
+        unit = by_unit.get(unit_id) if isinstance(unit_id, str) else None
+        if not isinstance(quote, str) or unit is None:
+            continue
+        event = event_by_key.get(getattr(unit, "event_key", None))
+        if event is None or getattr(unit, "source_role", None) not in {"user", "assistant"}:
+            continue
+        identity = (unit_id, quote)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append({
+            "event_key": getattr(unit, "event_key", None),
+            "role": getattr(unit, "source_role", None),
+            "timestamp": event.get("timestamp"),
+            "content": quote,
+        })
+    return result
+
+
 class SinglePassMemoryPlanner(MemoryPlanner):
     """One semantic model call for an ordinary automatic turn."""
 
@@ -500,7 +538,8 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 event["event_key"] for event in admitted_events
                 if isinstance(event, Mapping) and isinstance(event.get("event_key"), str)
             ))
-            grounded_dates = _grounded_due_dates(turn, evidence_events=admitted_events)
+            candidate_date_evidence = _claim_date_evidence(claims, by_unit, events)
+            grounded_dates = _grounded_due_dates(turn, evidence_events=candidate_date_evidence)
             summary = dict(proposed)
             if decision == "UPDATE" and target_memory is not None:
                 summary.setdefault("title", target_memory.title)
@@ -543,8 +582,7 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 parsed,
                 grounded_dates=grounded_dates,
                 source_texts=[
-                    event.get("content", "") for event in admitted_events
-                    if isinstance(event, Mapping) and event.get("role") in {"user", "assistant"}
+                    event.get("content", "") for event in candidate_date_evidence
                 ],
                 preserved_texts=(
                     target_memory.title,

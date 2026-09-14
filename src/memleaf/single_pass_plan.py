@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from copy import deepcopy
 from decimal import Decimal, InvalidOperation
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -95,6 +96,24 @@ _DECISION_OPTIONAL_FIELDS = {
 _LEGACY_REDUNDANT_ITEM_FIELDS = frozenset({"sources", "update_memory_id"})
 _LEGACY_REDUNDANT_MEMORY_FIELDS = frozenset({"type", "scopes", "scope_source", "sources", "update_memory_id"})
 _B3_REPAIR_MAX_BYTES = 64 * 1024
+_TARGET_SENTENCE_SPLIT = re.compile(r"[\r\n。！？!?；;]+")
+_TARGET_ASCII_ANCHOR = re.compile(r"[a-z0-9]+(?:[._/-][a-z0-9]+)*")
+_TARGET_CJK_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
+_TARGET_DATE_ANCHOR = re.compile(
+    r"(?<![a-z0-9])(?:\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)(?![a-z0-9])"
+)
+_TARGET_GENERIC_CJK_BIGRAMS = frozenset({
+    "用户", "我们", "他们", "自己", "要求", "需要", "应该", "可以", "如果", "因为",
+    "所以", "没有", "不是", "已经", "目前", "现在", "相关", "问题", "情况", "项目",
+    "一个", "一些", "这个", "那个", "内容", "事情", "工作", "处理", "本次", "通过",
+    "根据", "后续", "其他", "结果", "暂时", "异常", "注意", "确认", "完成", "说明",
+    "状态", "新增", "进行", "是否", "可能", "所有", "每个", "提供", "发生",
+})
+_TARGET_GENERIC_CJK_PHRASES = frozenset({
+    "用户要求", "后续需要", "需要确认", "目前没有", "没有问题", "没有异常", "无异常情况",
+    "项目相关", "相关项目", "进行处理", "重要内容", "邮件内容", "本次处理", "需要进一步",
+    "工作内容", "结果如下", "如何处理", "用户需要", "继续跟进", "确认状态", "是否需要",
+})
 
 
 def _enum_text(values: Iterable[str]) -> str:
@@ -109,7 +128,7 @@ UPDATE exactly requires candidate_id,decision,evidence,target_memory_id,memory; 
 NO_CHANGE exactly requires candidate_id,decision,evidence,target_memory_id.
 DEFERRED exactly requires candidate_id,decision,evidence,reason; reason={_enum_text(_DEFER_REASONS)}.
 Memory allowed only: title,body,tags,aliases,keywords,status,completed_at,due_date,shadow_native_ids. status={_enum_text(TODO_STATUSES)}. status,completed_at,due_date are todo-only: omit all three for every other type. A todo UPDATE must restate its current status; status=completed requires completed_at and completed_at requires status=completed. Never put type,scopes,scope_source,sources,update_memory_id in memory.
-Evidence is a NONEMPTY ARRAY of claims, never one bare claim object. Each claim is exactly one of: {{unit_id,quote,role}} OR {{unit_id,whole_unit:true,role}} OR {{unit_id,start,end,quote,role}}. role={_enum_text(_EVIDENCE_ROLES)}. Offsets are start-inclusive/end-exclusive and text[start:end]==quote; quote-only must occur exactly once; user_confirmation must cite user evidence.
+Evidence is a NONEMPTY ARRAY of claims, never one bare claim object. Each claim is exactly one of: {{unit_id,quote,role}} OR {{unit_id,whole_unit:true,role}} OR {{unit_id,start,end,quote,role}}. role={_enum_text(_EVIDENCE_ROLES)}. Offsets are start-inclusive/end-exclusive and text[start:end]==quote; quote-only must occur exactly once; user_confirmation must cite user evidence. Prefer the shortest exact quote; for a long reply with several facts, avoid whole_unit when a specific span suffices.
 NoMemory row exactly {{unit_id,reason}}; reason={_enum_text(_NO_MEMORY_REASONS)}.
 Every current_evidence unit must be claimed by >=1 item OR appear exactly once in no_memory, never both and never omitted. One evidence unit may support multiple independent items.
 CREATE/UPDATE/NO_CHANGE require lookup_complete=true. UPDATE/NO_CHANGE target only local_memory_catalog; a target may be used once: when several changes touch one target, emit ONE UPDATE carrying their merged current state, never several items for the same target.
@@ -120,11 +139,10 @@ Return one JSON object only. No Markdown, explanation, or reasoning."""
 SINGLE_PASS_SYSTEM = f"""You are memleaf's single-pass memory planner.
 
 SOURCE
-Only current_evidence may establish new facts or changes. local_memory_catalog and native_memory_catalog are comparison context; native memory is never an UPDATE/NO_CHANGE target. Never invent source facts, ownership, dates, status, obligations, numbers, relationships or IDs.
-An assistant message is evidence of what you reported, never of what the user wants. It may organise, restate or report what the user's own evidence establishes, but it may never be the only support for a durable claim. When it states something the user's message does not establish -- your own decision, requirement, rule, plan, recommendation or added detail -- record nothing from that statement, however definite it sounds. Consequences you derived from a user preference are yours, not the user's: never record them as a requirement or as project state. Only something the user stated or accepted becomes memory.
+Use current_evidence only. User messages and assistant final reports may support facts, including facts obtained from external sources. Do not turn your own advice, plans or inferences into user intent unless accepted. Never invent facts, dates, numbers, ownership or IDs. local_memory_catalog is comparison context; native memory is never an UPDATE/NO_CHANGE target.
 
 TASK
-Extract every independently useful long-term memory. Keep independently retrievable/updateable topics separate and preserve entity, condition, polarity, uncertainty, ownership, state and meaning-critical numbers/codes. CREATE only when no supplied local memory represents the durable information; UPDATE only when current evidence proves a change to one supplied local memory; NO_CHANGE only when it adds no semantic change; DEFERRED for a durable candidate that cannot safely reach a terminal decision. Project ownership and platform/system names are separate judgments. Do not turn every negation into no_memory and do not use NO_CHANGE to hide ambiguity.
+Keep independently retrievable facts useful for future answers, actions, commitments, status tracking or avoiding repeated research. Prefer stable facts, decisions, open work and deadlines; skip transient tool/execution failures, one-time fallbacks and routine checks with no issue or follow-up (no_future_value). Preserve future-use facts in final reports and keep independent topics separate. Preserve entity, condition, polarity, uncertainty, ownership, state and meaning-critical numbers/codes. CREATE only if no local memory represents the information; UPDATE only for a proven change to one target; NO_CHANGE only for the same future-use item with no semantic change; DEFERRED for an unsafe terminal decision. Scope ownership separately from platform/system names. Do not use NO_CHANGE to hide ambiguity.
 
 SCOPES
 Legal values: global | domain:<name> | portfolio:<name> | project:<name> | unscoped. scopes is a nonempty array; at most one project:<name> per memory; unscoped must be the only value, and Core then records insufficient_context.
@@ -420,6 +438,71 @@ def _canonical_target(raw: Any, local_by_key: Mapping[str, Mapping[str, Any]]) -
     return target["memory_id"], target
 
 
+def _target_anchor_sets(text: str) -> tuple[set[str], set[str]]:
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    without_dates = _TARGET_DATE_ANCHOR.sub(" ", normalized)
+    ascii_anchors = {
+        token for token in _TARGET_ASCII_ANCHOR.findall(without_dates)
+        if len(token) >= 3 or (token.isdigit() and len(token) >= 2)
+    }
+    cjk_anchors: set[str] = set()
+    for run in _TARGET_CJK_RUN.findall(normalized):
+        cjk_anchors.update(
+            run[index:index + 2]
+            for index in range(len(run) - 1)
+            if run[index:index + 2] not in _TARGET_GENERIC_CJK_BIGRAMS
+        )
+    return ascii_anchors, cjk_anchors
+
+
+def _target_is_same_future_use(
+    target: Mapping[str, Any], claims: Iterable[Mapping[str, Any]],
+) -> bool:
+    """Check a NO_CHANGE target against this candidate's exact cited text."""
+
+    target_units = [
+        part.strip()
+        for value in (target.get("title"), target.get("body"))
+        if isinstance(value, str)
+        for part in _TARGET_SENTENCE_SPLIT.split(value)
+        if part.strip()
+    ]
+    for claim in claims:
+        quote = claim.get("quote")
+        if not isinstance(quote, str) or not quote.strip():
+            continue
+        for quote_unit in (part.strip() for part in _TARGET_SENTENCE_SPLIT.split(quote) if part.strip()):
+            quote_ascii, quote_cjk = _target_anchor_sets(quote_unit)
+            for target_unit in target_units:
+                target_ascii, target_cjk = _target_anchor_sets(target_unit)
+                shared_ascii = quote_ascii & target_ascii
+                shared_cjk = quote_cjk & target_cjk
+                shared_numbers = {token for token in shared_ascii if token.isdigit()}
+                shared_identifiers = {token for token in shared_ascii if not token.isdigit()}
+                strong_identifiers = {
+                    token for token in shared_identifiers
+                    if len(token) >= 6 or any(char.isdigit() for char in token)
+                }
+                if len(strong_identifiers) >= 2 or (
+                    strong_identifiers and (shared_cjk or len(shared_identifiers) >= 2)
+                ):
+                    return True
+                if any(len(token) >= 5 for token in shared_numbers) and (
+                    shared_cjk or shared_identifiers
+                ):
+                    return True
+                if len(shared_cjk) < 2:
+                    continue
+                overlap = len(shared_cjk) / min(len(quote_cjk), len(target_cjk))
+                compact = "".join(
+                    char for char in unicodedata.normalize("NFKC", quote_unit).casefold()
+                    if char.isalnum()
+                )
+                if overlap >= 0.28 and compact not in _TARGET_GENERIC_CJK_PHRASES:
+                    return True
+    return False
+
+
 MemoryValidator = Callable[
     [str, str, str | None, Mapping[str, Any] | None, Mapping[str, Any], list[dict[str, Any]], Mapping[str, Any]],
     Mapping[str, Any],
@@ -498,6 +581,8 @@ def parse_single_pass_output(
     binding_rows: list[dict[str, Any]] = []
     prepared: list[tuple[dict[str, Any], Mapping[str, Any] | None]] = []
     forced_defer: dict[str, str] = {}
+    broad_whole_unit_no_change: set[str] = set()
+    unit_by_id = {getattr(unit, "unit_id", None): unit for unit in source_units}
 
     for item_index, raw_item in enumerate(items):
         item_path = f"items[{item_index}]"
@@ -579,6 +664,16 @@ def parse_single_pass_output(
                 path=f"{item_path}.evidence", rule="type", actual=claims,
                 expected_type="array",
             )
+        if decision == "NO_CHANGE" and any(
+            isinstance(claim, Mapping)
+            and claim.get("whole_unit") is True
+            and len(getattr(unit_by_id.get(claim.get("unit_id")), "text", "")) > 512
+            for claim in claims
+        ):
+            # A whole long reply can contain many independent topics. It is
+            # insufficient proof that one selected old memory covers this
+            # candidate; ask for a narrow claim on a later bounded pass.
+            broad_whole_unit_no_change.add(candidate_key)
         binding_rows.append({"candidate_id": candidate_id, "claims": claims})
 
         target_record: Mapping[str, Any] | None = None
@@ -790,7 +885,27 @@ def parse_single_pass_output(
                 normalized["target_memory_id"] = target_id
                 normalized["memory"] = dict(validated)
             elif decision == "NO_CHANGE":
-                normalized["target_memory_id"] = item["target_memory_id"]
+                if (
+                    candidate_id.casefold() in broad_whole_unit_no_change
+                    or not isinstance(target_record, Mapping)
+                    or not _target_is_same_future_use(
+                        target_record, evidence
+                    )
+                ):
+                    normalized = {
+                        "candidate_id": candidate_id,
+                        "decision": "DEFERRED",
+                        "reason": "target_ambiguous",
+                        "evidence": evidence,
+                    }
+                    if deferrals is not None:
+                        deferrals.append({
+                            "candidate_id": candidate_id,
+                            "reason": "target_ambiguous",
+                            "detail": "target_relevance_unproven",
+                        })
+                else:
+                    normalized["target_memory_id"] = item["target_memory_id"]
             else:
                 normalized["reason"] = item["reason"]
         except ModelOutputError as error:
