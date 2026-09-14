@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from dataclasses import replace
 from typing import Any, Iterable, Mapping, Optional
 
 from .admission import (
@@ -22,7 +21,6 @@ from .extraction_capability import supports_single_pass_protocol
 from .memory_planner import (
     MemoryPlanner,
     _explicit_project_scope_authorizations,
-    _model_project_scope_is_source_grounded,
 )
 from .process_common import (
     ProcessingError,
@@ -543,33 +541,15 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                     "global scope conflicts with an explicit project label",
                     validation_detail="scope_not_grounded",
                 )
-            # Scope grounding must use each candidate's exact admitted claims,
-            # including their section context, rather than the complete sibling
-            # units in the batch.  An unproven project scope is deferred; it is
-            # never silently rewritten as global or unscoped.
-            candidate_scope_units = tuple(
-                replace(
-                    by_unit[claim["unit_id"]],
-                    text=claim["quote"],
-                    start=0,
-                    end=len(claim["quote"]),
-                )
-                for claim in claims
-                if isinstance(claim, Mapping)
-                and isinstance(claim.get("unit_id"), str)
-                and claim["unit_id"] in by_unit
-                and isinstance(claim.get("quote"), str)
-            )
-            if decision in {"CREATE", "UPDATE"} and not _model_project_scope_is_source_grounded(
-                candidate,
-                candidate_scope_units,
-                validation_scope_registry,
-                authorized_project_scopes,
-            ):
-                raise ModelOutputError(
-                    "project scope is not grounded by this candidate's evidence",
-                    validation_detail="scope_not_grounded",
-                )
+            # Ownership is a semantic judgement and belongs to the model, not
+            # to Core.  Core used to require the project name to occur in the
+            # candidate's evidence, which cannot work: "记录账单的项目" and
+            # "记账" are the same project and share no substring, so a literal
+            # test rejects a correct answer, and a name the model composed from
+            # the user's own words ("记账小玩意儿" for "记账的小玩意儿") was
+            # refused and cost the whole memory.  A project name is a label, not
+            # a fact, so the model's choice is kept; the guard against inventing
+            # ownership stays where it can be judged, in the contract.
             if (
                 decision == "UPDATE"
                 and target_memory is not None
