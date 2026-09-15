@@ -3,7 +3,7 @@
 A detached worker can die after a provider request but before memleaf records a
 normal model failure.  The process-job ID survives that worker restart, so use
 it as the stable work identity and reserve each outbound single-pass request
-*before* dispatch.  A restarted worker therefore cannot reopen the two-call
+*before* dispatch.  A restarted worker therefore cannot reopen the bounded
 automatic budget for the same turn.
 
 Older releases also recorded a wall-clock start. Those timestamps are accepted
@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .locking import atomic_write_json, read_json
+from .extraction_budget import MAX_MODEL_REQUESTS
 
 
 _VERSION = 1
@@ -74,13 +75,13 @@ def _normalize_turn_state(value: Any) -> dict[str, Any]:
     compatibility only; no request ordinal is reset and no expiry is inferred.
     """
 
-    if type(value) is int and 0 <= value <= 2:
+    if type(value) is int and 0 <= value <= MAX_MODEL_REQUESTS:
         return {"requests": value, "started_at_epoch": None}
     if not isinstance(value, Mapping):
         raise ExtractionWorkStateError("invalid extraction request budget counter")
     requests = value.get("requests")
     started = value.get("started_at_epoch")
-    if type(requests) is not int or not 0 <= requests <= 2:
+    if type(requests) is not int or not 0 <= requests <= MAX_MODEL_REQUESTS:
         raise ExtractionWorkStateError("invalid extraction request budget counter")
     if started is not None and not _valid_epoch(started):
         raise ExtractionWorkStateError("invalid extraction work start time")
@@ -213,9 +214,9 @@ def active_background_work_id(
 
 
 def reserve_model_request(vault: Any, *, work_id: str, turn_id: str) -> int | None:
-    """Atomically reserve the next provider request and return ordinal 1/2.
+    """Atomically reserve the next provider request and return its ordinal.
 
-    ``None`` means this stable work+turn already consumed both requests.  The
+    ``None`` means this stable work+turn already consumed the request budget.  The
     reservation happens before the outbound call, so a process kill after this
     write still consumes that attempt conservatively.
     """
@@ -240,7 +241,7 @@ def reserve_model_request(vault: Any, *, work_id: str, turn_id: str) -> int | No
             turn_state = _normalize_turn_state(turn_state)
             turns[turn_id] = turn_state
         count = turn_state["requests"]
-        if count >= 2:
+        if count >= MAX_MODEL_REQUESTS:
             return None
         ordinal = count + 1
         turn_state["requests"] = ordinal

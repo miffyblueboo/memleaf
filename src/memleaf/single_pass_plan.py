@@ -1,9 +1,7 @@
-"""Single-pass memory planning for the B3 experiment.
+"""Compile semantic topic selection and synthesis into the internal B3 plan.
 
-The model receives current admitted evidence plus bounded existing-memory
-context once and returns final CREATE/UPDATE/NO_CHANGE/DEFERRED actions. Core
-keeps ownership of source binding, target authorization, schema validation and
-writing. This module has no Vault/filesystem side effects.
+Core owns source spans, coverage, target authorization and write validation.
+Model calls and optional repairs share a durable bounded request budget.
 """
 from __future__ import annotations
 
@@ -18,10 +16,11 @@ from typing import Any
 from .admission import _whole_unit_is_safe, validate_bindings
 from .extraction_budget import budget_single_pass_backend
 from .extraction_capability import requires_inline_single_pass_system
+from .semantic_protocol import (FRAGMENT_SYSTEM, source_fragments, expand_fragments, compile_semantic, _independent_project_subjects, TOPIC_SYSTEM, compile_topics)
 from .llm import ModelError
 from .validation import (
     MEMORY_TYPES, SCOPE_SOURCES, TODO_STATUSES, ModelOutputError,
-    parse_strict_json, safe_schema_context,
+    parse_strict_json, safe_schema_context, safe_date_diagnostics,
 )
 
 
@@ -985,6 +984,8 @@ def parse_single_pass_output(
                     "detail": (
                         detail if _DETAIL_TEXT_RE.fullmatch(detail) else "unrecognised_detail"
                     ),
+                    **safe_date_diagnostics(getattr(error, "date_diagnostics", {})),
+                    "independent_owners": getattr(error, "scope_subjects", []),
                 })
         normalized_items.append(normalized)
     return {"protocol_version": PROTOCOL_VERSION, "items": normalized_items, "no_memory": normalized_no_memory}
@@ -1301,8 +1302,13 @@ def run_single_pass_stage(
         else backend
     )
     inline_system = requires_inline_single_pass_system(backend)
-    primary_prompt = SINGLE_PASS_SYSTEM + "\n\n" + prompt if inline_system else prompt
-    primary_system = "" if inline_system else SINGLE_PASS_SYSTEM
+    fragment_data = source_fragments(prompt)
+    def visible_fragment(f):
+        return {k: v for k, v in f.items() if k not in {"unit_id", "start", "end", "timestamp"}}
+    model_data = {**fragment_data, "fragments": [visible_fragment(f) for f in fragment_data["fragments"]]}
+    compact_prompt = "MEMORY_INPUT\n" + json.dumps(model_data, ensure_ascii=False, separators=(",", ":"))
+    primary_prompt = TOPIC_SYSTEM + "\n\n" + compact_prompt if inline_system else compact_prompt
+    primary_system = "" if inline_system else TOPIC_SYSTEM
     target_rows: list[dict[str, Any]] = []
     normalizations: list[str] = []
     deferrals: list[dict[str, Any]] = []
@@ -1434,6 +1440,72 @@ def run_single_pass_stage(
     def finish(parsed: dict[str, Any]) -> dict[str, Any]:
         """Finalize the plan and attach only safe candidate defer details."""
 
+        # Normal path uses two calls. A third is reserved for candidates whose
+        # final content failed Core checks, never for a whole-turn retry loop.
+        failed = [row for row in parsed["items"] if row["decision"] == "DEFERRED"]
+        eligible = {row.get("candidate_id") for row in deferrals
+                    if row.get("detail") in {"relative_time", "invalid_due_date", "due_date_not_grounded", "scope_drift", "scope_not_grounded", "assistant_intent", "value_disagreement"}}
+        failed = [row for row in failed if row["candidate_id"] in eligible]
+        if failed:
+            failed_ids = {row["candidate_id"] for row in failed}
+            unit_ids = {c["unit_id"] for row in failed for c in row["evidence"]}
+            fragments = [f for f in fragment_data["fragments"] if f["unit_id"] in unit_ids]
+            payload = {**model_data, "fragments": [visible_fragment(f) for f in fragments],
+                       "conversation_context": [{"role": u.source_role, "text": u.text} for u in source_units if u.source_role == "user"],
+                       "issues": [
+                           {**row, "problem": "The selection and synthesis disagree about lasting value. Distinguish underlying lasting facts from details of performing this interaction; neither prior verdict is authoritative."
+                            if row.get("detail") == "value_disagreement" else "One memory contains independent project subjects; split their facts by owner."
+                            if row.get("detail") == "scope_drift" else "A field contains an unsupported date or task attribution; retain supported core facts."}
+                           for row in deferrals if row.get("candidate_id") in failed_ids]}
+            repair_prompt = "MEMORY_REPAIR\n" + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            repair_system = FRAGMENT_SYSTEM + "\nCore 已拒绝这些候选。请根据证据保留核心事实，纠正违规日期或归属；不要丢弃已成立的核心内容。"
+            if inline_system:
+                repair_prompt, repair_system = repair_system + "\n\n" + repair_prompt, ""
+            repair_details, repair_targets = [], []
+            try:
+                repaired_raw = complete(
+                    budgeted_backend, repair_prompt, system=repair_system, purpose="single_pass",
+                    metric_stage="single_pass", metric_operation="single_pass_candidate_repair",
+                    retry=True, metric_context={},
+                )
+                envelope, task_bases = compile_semantic(
+                    expand_fragments(repaired_raw, fragments), protocol_version=PROTOCOL_VERSION,
+                    local_by_key=local_by_key, prefix="s",
+                )
+                repair_registry = {s: {"aliases": []} for s in fragment_data.get("topic_scopes", []) if s.startswith("project:")}
+                for row in [*local_rows, *parsed["items"], *envelope["items"]]:
+                    for scope in row.get("scopes", []):
+                        if scope.startswith("project:"):
+                            repair_registry.setdefault(scope, {"aliases": []})
+                def repaired_validator(cid, decision, target, record, memory, claims, context):
+                    subjects = _independent_project_subjects(str(memory.get("body", "")), repair_registry)
+                    if len(subjects) > 1:
+                        error = ModelOutputError("independent project subjects", validation_detail="scope_drift")
+                        error.scope_subjects = sorted(subjects)
+                        raise error
+                    if decision == "CREATE" and context.get("type") == "todo":
+                        basis = task_bases.get(cid, {})
+                        unit = next((u for u in source_units if u.unit_id == basis.get("unit_id")), None)
+                        if unit is None or unit.source_role != "user" or unit.origin != "user_assertion" or not any(
+                            c["unit_id"] == unit.unit_id and basis.get("quote", "") in c.get("quote", "") for c in claims
+                        ):
+                            raise ModelOutputError("task lacks user basis", validation_detail="assistant_intent")
+                    return validate_memory(cid, decision, target, record, memory, claims, context)
+                repaired = parse_single_pass_output(
+                    json.dumps(envelope, ensure_ascii=False),
+                    evidence_units=[u for u in source_units if u.unit_id in unit_ids],
+                    local_memories=local_rows, lookup_complete=lookup_complete,
+                    validate_memory=repaired_validator, deferrals=repair_details, target_rows=repair_targets,
+                )
+                items = [row for row in parsed["items"] if row["candidate_id"] not in failed_ids] + repaired["items"]
+                claimed = {c["unit_id"] for row in items for c in row["evidence"]}
+                no_memory = {row["unit_id"]: row for row in parsed["no_memory"] + repaired["no_memory"]
+                             if row["unit_id"] not in claimed}
+                parsed = {"protocol_version": PROTOCOL_VERSION, "items": items, "no_memory": list(no_memory.values())}
+                deferrals[:] = [r for r in deferrals if r.get("candidate_id") not in failed_ids] + repair_details
+                target_rows[:] = [r for r in target_rows if r.get("candidate_id") not in failed_ids] + repair_targets
+            except (ModelError, ModelOutputError):
+                pass
         value = finalize(parsed)
         details: dict[str, str] = {}
         for row in deferrals:
@@ -1445,6 +1517,10 @@ def run_single_pass_stage(
                 and _DETAIL_TEXT_RE.fullmatch(detail)
             ):
                 details[candidate_id] = detail
+        date_details = {row["candidate_id"]: safe_date_diagnostics(row)
+                        for row in deferrals if isinstance(row, Mapping) and row.get("dates")}
+        if date_details:
+            value["_defer_diagnostics"] = date_details
         if details:
             # Private Core metadata; never sent back to the model or stored as
             # free-form output.  TurnAudit applies its own allowlist before
@@ -1452,21 +1528,201 @@ def run_single_pass_stage(
             value["_defer_details"] = details
         return value
 
-    def parse(raw: str) -> dict[str, Any]:
+    def parse(raw: str, *, reviewed_output: bool = False) -> dict[str, Any]:
         target_rows.clear()
         normalizations.clear()
         deferrals.clear()
-        raw = review_due_dates(raw)
-        return parse_single_pass_output(
-            raw,
-            evidence_units=source_units,
-            local_memories=local_rows,
-            lookup_complete=lookup_complete,
-            validate_memory=validate_memory,
-            target_rows=target_rows,
-            normalizations=normalizations,
-            deferrals=deferrals,
-        )
+        value = parse_strict_json(raw)
+        # The old envelope remains readable for host adapters and persisted
+        # fixtures. New model requests only advertise the semantic contract.
+        if isinstance(value, Mapping) and "protocol_version" in value:
+            return parse_single_pass_output(
+                review_due_dates(raw), evidence_units=source_units,
+                local_memories=local_rows, lookup_complete=lookup_complete,
+                validate_memory=validate_memory, target_rows=target_rows,
+                normalizations=normalizations, deferrals=deferrals,
+            )
+        topic_scopes = []
+        if isinstance(value, Mapping) and "topics" in value:
+            envelope, topic_scopes = compile_topics(raw, fragment_data["fragments"], PROTOCOL_VERSION)
+            fragment_data["topic_scopes"] = topic_scopes
+            bases = {}
+        else:
+            envelope, bases = compile_semantic(
+                expand_fragments(raw, fragment_data["fragments"]), protocol_version=PROTOCOL_VERSION, local_by_key=local_by_key,
+            )
+        units = {unit.unit_id: unit for unit in source_units}
+        problems: dict[str, dict[str, Any]] = {}
+        reviewed = reviewed_output
+
+        project_registry: dict[str, Any] = {}
+        def checked(cid, decision, target, record, memory, claims, context):
+            try:
+                subjects = _independent_project_subjects(str(memory.get("body", "")), project_registry)
+                if len(subjects) > 1:
+                    error = ModelOutputError("independent project subjects require separate memories", validation_detail="scope_drift")
+                    error.scope_subjects = sorted(subjects)
+                    raise error
+                validated = validate_memory(cid, decision, target, record, memory, claims, context)
+                if decision == "CREATE" and context.get("type") == "todo":
+                    basis = bases.get(cid)
+                    unit = units.get(basis.get("unit_id")) if isinstance(basis, dict) else None
+                    quote = basis.get("quote") if isinstance(basis, dict) else None
+                    if (unit is None or unit.source_role != "user" or unit.origin != "user_assertion" or not isinstance(quote, str) or not quote.strip()
+                            or not any(c.get("unit_id") == unit.unit_id
+                                       and quote in c.get("quote", "") for c in claims)):
+                        raise ModelOutputError("todo requires admitted task evidence", validation_detail="assistant_intent")
+                    # Reports can establish assignments too; the second call
+                    # judges responsibility independently of the source framing.
+                    if not reviewed:
+                        raise ModelOutputError("new task needs ownership review", validation_detail="assistant_intent")
+                return validated
+            except ModelOutputError as error:
+                problems[cid] = {"detail": error.validation_detail,
+                                 "independent_owners": getattr(error, "scope_subjects", []),
+                                 **getattr(error, "date_diagnostics", {})}
+                writer = getattr(model_executor, "_write_model_diagnostic", None)
+                if callable(writer):
+                    try:
+                        writer(purpose="single_pass", attempt_count=2 if reviewed else 1,
+                               context=diagnostic_context, raw=None, error=error)
+                    except Exception:
+                        pass
+                raise
+
+        def validate(envelope):
+            project_registry.clear()
+            for row in fragment_data.get("scope_registry", []):
+                if isinstance(row, Mapping) and isinstance(row.get("scope"), str):
+                    project_registry[row["scope"]] = row
+            for scope in topic_scopes:
+                if scope.startswith("project:"):
+                    project_registry.setdefault(scope, {"aliases": []})
+            for row in [*local_rows, *envelope["items"]]:
+                for scope in row.get("scopes", []):
+                    if isinstance(scope, str) and scope.startswith("project:"):
+                        project_registry.setdefault(scope, {"aliases": []})
+            target_rows.clear()
+            deferrals.clear()
+            return parse_single_pass_output(
+                json.dumps(envelope, ensure_ascii=False), evidence_units=source_units,
+                local_memories=local_rows, lookup_complete=lookup_complete,
+                validate_memory=checked, target_rows=target_rows,
+                normalizations=normalizations, deferrals=deferrals,
+            )
+
+        parsed = validate(envelope)
+        if reviewed_output:
+            return parsed
+        for row in parsed["items"]:
+            if row["decision"] == "DEFERRED":
+                problems.setdefault(row["candidate_id"], {"detail": row["reason"]})
+        # Fast drafting does not establish semantic correctness. Review the
+        # proposed topics together so omissions of value and independent owners
+        # are checked even when their JSON and dates happen to be valid.
+        for row in envelope["items"]:
+            problems.setdefault(row["candidate_id"], {"detail": "semantic_review"})
+        affected = [row for row in envelope["items"] if row["candidate_id"] in problems]
+        # Selection is advisory: independently review full source coverage so
+        # an erroneous first-stage no_memory cannot hide a durable fact.
+        affected_ids = set(units)
+        review_payload = json.loads(compact_prompt.removeprefix("MEMORY_INPUT\n"))
+        repair_fragments = [f for f in fragment_data["fragments"] if f["unit_id"] in affected_ids]
+        review_payload["fragments"] = [visible_fragment(f) for f in repair_fragments]
+        if topic_scopes:
+            review_payload["topic_inventory"] = value["topics"]
+            review_payload["no_memory_candidates"] = value["no_memory"]
+        if topic_scopes:
+            for row in affected:
+                text = "\n".join(c.get("quote", "") for c in row["evidence"])
+                subjects = _independent_project_subjects(text, project_registry)
+                if len(subjects) > 1:
+                    problems[row["candidate_id"]] = {"detail": "scope_drift", "independent_owners": sorted(subjects)}
+        # Blind semantic pass: showing the previous wording anchored the
+        # reviewer on its classifications and invented auxiliary facts.
+        review_payload["issues"] = [
+            {**problems[row["candidate_id"]],
+             "fragments": [f["id"] for f in repair_fragments
+                           if any(c["unit_id"] == f["unit_id"] for c in row["evidence"])]}
+            for row in affected if problems[row["candidate_id"]]["detail"] not in {"semantic_review", "maintenance_uncertain"}
+        ]
+        review_system = FRAGMENT_SYSTEM + "\n请按完整证据独立提炼；主题清单和 no_memory_candidates 均是待复核的候选。修正 issues，保留成立的核心事实。"
+        review_prompt = "MEMORY_REVIEW\n" + json.dumps(review_payload, ensure_ascii=False, separators=(",", ":"))
+        if inline_system:
+            review_prompt, review_system = review_system + "\n\n" + review_prompt, ""
+        def unreviewed():
+            if not parsed["items"]:
+                parsed["no_memory"] = []
+                parsed["items"] = [
+                    {"candidate_id": f"unreviewed{i}", "decision": "DEFERRED", "reason": "maintenance_uncertain",
+                     "evidence": [{"unit_id": u.unit_id, "quote": u.text, "start": 0, "end": len(u.text), "role": "assertion"}]}
+                    for i, u in enumerate(source_units)
+                ]
+            # A failed mandatory review cannot authorize the unreviewed draft.
+            for row in parsed["items"]:
+                if row["decision"] in {"CREATE", "UPDATE"}:
+                    cid, claims = row["candidate_id"], row["evidence"]
+                    row.clear()
+                    row.update(candidate_id=cid, evidence=claims, decision="DEFERRED", reason="maintenance_uncertain")
+                    deferrals.append({"candidate_id": cid, "reason": "maintenance_uncertain", "detail": "semantic_review_failed"})
+            return parsed
+
+        try:
+            corrected = complete(
+                budgeted_backend, review_prompt, system=review_system,
+                purpose="single_pass", metric_stage="single_pass",
+                metric_operation="single_pass_semantic_repair", retry=True,
+                metric_context={},
+            )
+            replacement, new_bases = compile_semantic(
+                expand_fragments(corrected, repair_fragments), protocol_version=PROTOCOL_VERSION, local_by_key=local_by_key, prefix="r",
+            )
+            # A repair may split or trim its topics, but may not borrow other
+            # evidence or silently drop an affected evidence unit.
+            repair_ids = {c["unit_id"] for r in replacement["items"] for c in r["evidence"]}
+            repair_ids.update(r["unit_id"] for r in replacement["no_memory"])
+            if repair_ids != affected_ids:
+                return unreviewed()
+            kept = [row for row in envelope["items"] if row["candidate_id"] not in problems]
+            combined = {"protocol_version": PROTOCOL_VERSION,
+                        "items": kept + replacement["items"],
+                        "no_memory": replacement["no_memory"]}
+            reviewed = True
+            bases.update(new_bases)
+            old_deferrals, old_targets = list(deferrals), list(target_rows)
+            try:
+                final = validate(combined)
+                if topic_scopes:
+                    selected_units = {c["unit_id"] for row in envelope["items"] for c in row["evidence"]}
+                    retained_units = {c["unit_id"] for row in final["items"] if row["decision"] in {"CREATE", "UPDATE", "NO_CHANGE"} for c in row["evidence"]}
+                    disputed = selected_units ^ retained_units
+                    # A value disagreement is a semantic uncertainty, not an
+                    # automatic veto or permission to resurrect transient data.
+                    covered = set()
+                    for row in final["items"]:
+                        refs = {c["unit_id"] for c in row["evidence"]}
+                        if row["decision"] in {"CREATE", "UPDATE", "NO_CHANGE"} and refs & disputed:
+                            cid, claims = row["candidate_id"], row["evidence"]
+                            row.clear()
+                            row.update(candidate_id=cid, decision="DEFERRED", reason="maintenance_uncertain", evidence=claims)
+                            deferrals.append({"candidate_id":cid, "detail":"value_disagreement", "reason":"maintenance_uncertain"})
+                            covered.update(refs)
+                    existing = {c["unit_id"] for row in final["items"] for c in row["evidence"]}
+                    for index, uid in enumerate(sorted(disputed - existing)):
+                        u = units[uid]
+                        cid = f"value{index}"
+                        final["items"].append({"candidate_id":cid, "decision":"DEFERRED", "reason":"maintenance_uncertain",
+                                               "evidence":[{"unit_id":uid,"quote":u.text,"start":0,"end":len(u.text),"role":"assertion"}]})
+                        deferrals.append({"candidate_id":cid,"detail":"value_disagreement","reason":"maintenance_uncertain"})
+                        covered.add(uid)
+                    final["no_memory"] = [row for row in final["no_memory"] if row["unit_id"] not in covered]
+                return final
+            except ModelOutputError:
+                deferrals[:] = old_deferrals
+                target_rows[:] = old_targets
+                return unreviewed()
+        except (ModelError, ModelOutputError):
+            return unreviewed()
 
     def finalize(parsed: dict[str, Any]) -> dict[str, Any]:
         """Collapse items that over-reference one target into a single state.
@@ -1628,6 +1884,25 @@ def run_single_pass_stage(
         fail(error, attempt_count=1, metric_context=primary_context, raw=raw)
         if not isinstance(error, ModelOutputError):
             raise
+        if isinstance(raw, str) and '"protocol_version"' not in raw:
+            # Compact schema/coverage failures get one fresh semantic attempt;
+            # no invalid reference is guessed or promoted to a write.
+            repair_context: dict[str, Any] = {}
+            try:
+                correction_prompt = compact_prompt + "\nPrevious output failed structural validation. Re-extract independently and account for every supplied fragment ID."
+                correction_system = FRAGMENT_SYSTEM
+                if inline_system:
+                    correction_prompt, correction_system = correction_system + "\n\n" + correction_prompt, ""
+                corrected = complete(
+                    budgeted_backend, correction_prompt, system=correction_system,
+                    purpose="single_pass", metric_stage="single_pass",
+                    metric_operation="single_pass_semantic_repair", retry=True,
+                    metric_context=repair_context,
+                )
+                return finish(parse(corrected, reviewed_output=True))
+            except (ModelError, ModelOutputError) as correction_error:
+                fail(correction_error, attempt_count=2, metric_context=repair_context, raw=None)
+                raise
         repair_plan = _b3_structure_repair_plan(
             normalized_raw if isinstance(locals().get("normalized_raw"), str) else raw,
             error,

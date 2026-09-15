@@ -17,6 +17,19 @@ from .scope_state import (
 )
 
 
+def safe_date_diagnostics(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Persist bounded calendar literals, never arbitrary model/error text."""
+    fields = value.get("date_fields", [])
+    dates = value.get("dates", [])
+    if not isinstance(fields, list) or not isinstance(dates, list):
+        return {}
+    return {
+        "date_fields": [field for field in fields if isinstance(field, str) and field in {"title", "body", "due_date", "completed_at"}][:4],
+        "dates": [date for date in dates if isinstance(date, str)
+                  and re.fullmatch(r"(?:[0-9]{4}[-/.年])?[0-9]{1,2}[-/.月][0-9]{1,2}日?", date)][:16],
+    }
+
+
 class ModelOutputError(ValueError):
     """The model response is not an accepted strict JSON contract."""
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 from typing import Any, Iterable, Mapping, Optional
 from .inbox import InboxTurn
+from .validation import safe_date_diagnostics
 from .process_common import _Snapshot, _UNSET
 
 
@@ -16,6 +17,7 @@ _SAFE_VALIDATION_DETAILS = frozenset({
     "scope_not_grounded",
     "target_relevance_unproven",
     "whole_unit_too_broad",
+    "value_disagreement",
 })
 
 
@@ -65,6 +67,9 @@ class TurnAudit:
         detail = _safe_validation_detail(validation_detail)
         if detail is not None:
             value["validation_detail"] = detail
+        diagnostics = candidate.get("validation_diagnostics")
+        if isinstance(diagnostics, Mapping):
+            value["validation_diagnostics"] = safe_date_diagnostics(diagnostics)
         values = self._dispositions_by_turn.setdefault(turn_ref, [])
         candidate_key = candidate_id.casefold()
         for index, previous in enumerate(values):
@@ -153,4 +158,7 @@ class TurnAudit:
         detail = _safe_validation_detail(validation_detail)
         if detail is not None:
             row["validation_detail"] = detail
+        diagnostics = candidate.get("validation_diagnostics")
+        if isinstance(diagnostics, Mapping):
+            row["validation_diagnostics"] = safe_date_diagnostics(diagnostics)
         self._deferred_by_turn[turn_ref].append(row)

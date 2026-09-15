@@ -2,6 +2,14 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.61 — 2026-09-15
+
+- Split ordinary automatic extraction into a model-facing semantic protocol and a Core-owned B3 write protocol. Core supplies short immutable evidence-fragment IDs and binds their original spans locally; the model first selects reusable topics and then synthesizes memory content. Core compiles the result into B3 candidate IDs, decisions, evidence, targets and write fields before the existing validators and commit path run.
+- Separate retention from memory type with `reusable` and `session`. Transient execution, lookup and recovery details can settle as `no_memory`, while a durable failure, business fact or follow-up task remains eligible when its underlying meaning has future value. Coverage stays fail-closed, user tasks require explicit user assertion evidence, and a local target cannot be guessed into a CREATE or NO_CHANGE.
+- Raise the durable automatic request budget to three: topic selection and synthesis use two requests, while candidate repair or same-target coordination shares one final request. Candidate-level repair can correct date/ownership/value disagreements without rewriting valid siblings; project-subject guards and bounded date diagnostics remain Core-owned and never persist arbitrary model or error text.
+
+Verification for this release used 58 local synthetic regression tests with no model call or production Vault write (35 semantic-protocol tests and 23 existing extraction-boundary tests). Python 3.11 compilation/imports, `git diff --check` and a package wheel containing the Hermes provider resource pass. Real-provider quality, latency and a newly installed Hermes replay remain separate runtime acceptance.
+
 ## 0.2.60 — 2026-09-15
 
 - Tighten the B3 planner's output discipline without changing its protocol or write semantics. The system prompt now says not to analyze beyond the task, decide directly and return promptly, and keep each memory as brief as possible without losing essential meaning. Evidence, Scope, date grounding, candidate decisions and commit safety remain unchanged.

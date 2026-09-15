@@ -13,20 +13,20 @@ from typing import Any, Iterable, Mapping
 from .llm import ModelError
 
 
-MAX_MODEL_REQUESTS = 2
+MAX_MODEL_REQUESTS = 3
 TARGET_TOTAL_SECONDS = 10.0
 
 
 class SinglePassBudgetBackend:
-    """Limit one logical B3 turn to two actual provider requests.
+    """Limit topic selection, synthesis and optional candidate repair to three requests.
 
     ``single_pass_safe`` routes map one complete() call to one request, without
     hidden host-to-API fallback. The optional durable reservation preserves
     consumed attempts across worker restarts. Neither the first request nor
     its repair overrides the transport's configured ``llm.request_timeout``.
-    The second request is spent on whichever bounded follow-up the planner
-    actually needs -- a structural repair or a same-target reconciliation --
-    so a collision between two admitted items can never extend the turn.
+    Topic selection and synthesis use two requests. One remaining request
+    covers candidate correction or same-target reconciliation. Competing
+    follow-ups share that budget; they cannot extend it.
     """
 
     def __init__(

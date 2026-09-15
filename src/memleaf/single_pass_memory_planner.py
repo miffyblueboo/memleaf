@@ -1,9 +1,7 @@
 """Production-shaped automatic planner for the B3 single-pass experiment.
 
 This class intentionally reuses the existing MemoryPlanner request identity,
-retry ledger, Core validation and writer contracts while replacing the normal
-automatic Gate -> reconciliation -> Summary -> semantic-review chain with one
-semantic model call. Explicit remember remains delegated until its dedicated
+retry ledger, Core validation and writer contracts while compiling a compact topic-selection and synthesis protocol into B3. Explicit remember remains delegated until its dedicated
 B3 contract is validated.
 """
 from __future__ import annotations
@@ -34,8 +32,9 @@ from .process_common import (
 )
 from .single_pass_plan import run_single_pass_stage
 from .turn_plan import dedup_digest, revision_digest
-from .validation import ModelOutputError, parse_summarize_output
+from .validation import ModelOutputError, parse_summarize_output, calendar_tokens
 from .evidence_syntax import _assistant_intent_only
+from .semantic_protocol import _independent_project_subjects
 from .llm import ModelUnavailable
 
 
@@ -108,7 +107,7 @@ def _global_scope_conflicts_with_candidate_evidence(
 
 
 class SinglePassMemoryPlanner(MemoryPlanner):
-    """One semantic model call for an ordinary automatic turn."""
+    """Bounded topic selection and synthesis for an ordinary automatic turn."""
 
     @staticmethod
     def _fallback_scopes(scope_background: Any) -> tuple[list[str], str]:
@@ -511,6 +510,12 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             if decision == "UPDATE" and isinstance(target_id, str):
                 candidate["update_memory_id"] = target_id
 
+            subjects = _independent_project_subjects(str(proposed.get("body", "")), validation_scope_registry)
+            if len(subjects) > 1:
+                raise ModelOutputError(
+                    "memory combines independently owned project subjects",
+                    validation_detail="scope_drift",
+                )
             candidate_evidence = _claim_date_evidence(claims, by_unit, events)
             if _global_scope_conflicts_with_candidate_evidence(
                 scopes, candidate_evidence, by_unit, validation_scope_registry
@@ -569,6 +574,13 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             deadline_dates = _grounded_deadline_dates(candidate_date_evidence)
             grounded_dates.update(deadline_dates)
             summary = dict(proposed)
+            # The model need not calculate a calendar year. Resolve a yearless
+            # proposed deadline only against the admitted deadline set.
+            due_tokens = calendar_tokens(summary.get("due_date", ""))
+            if len(due_tokens) == 1 and not due_tokens[0].has_year:
+                matches = [date for date in deadline_dates if date[5:] == due_tokens[0].monthday]
+                if len(matches) == 1:
+                    summary["due_date"] = matches[0]
             if decision == "UPDATE" and target_memory is not None:
                 summary.setdefault("title", target_memory.title)
                 summary.setdefault("tags", list(target_memory.tags))
@@ -608,7 +620,7 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 allow_no_change=False,
                 allow_update_target=target_memory is not None,
             )
-            if _summary_date_grounding_violations(
+            date_violations = _summary_date_grounding_violations(
                 parsed,
                 grounded_dates=grounded_dates,
                 source_texts=[
@@ -619,11 +631,19 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                     target_memory.body,
                     target_memory.due_date,
                 ) if target_memory is not None else (),
-            ):
-                raise ModelOutputError(
+            )
+            if date_violations:
+                error = ModelOutputError(
                     "B3 memory contains a date absent from admitted evidence",
                     validation_detail="relative_time",
                 )
+                # Only literal calendar tokens and program-defined field names
+                # enter diagnostics; never the rejected sentence or body.
+                fields = [field for field in ("title", "body")
+                          if any((token.canonical or token.raw) in date_violations
+                                 for token in calendar_tokens(parsed.get(field, "")))]
+                error.date_diagnostics = {"date_fields": fields, "dates": list(date_violations)}
+                raise error
             validated_candidates[candidate_id] = candidate
             return parsed
 
@@ -765,6 +785,9 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 "scope_source": target_memory.scope_source if target_memory is not None else fallback_scope_source,
                 "evidence_unit_ids": unit_ids,
             }
+            diagnostics = result.get("_defer_diagnostics", {}).get(candidate_id)
+            if isinstance(diagnostics, Mapping):
+                candidate["validation_diagnostics"] = dict(diagnostics)
             if decision == "NO_CHANGE":
                 self.audit._record_disposition(
                     turn_ref,

@@ -802,6 +802,10 @@ class ModelExecutor:
             "validation_detail": validation_detail,
             **_model_output_statistics(raw, purpose),
         }
+        date_info = getattr(error, "date_diagnostics", None)
+        if isinstance(date_info, Mapping):
+            from .validation import safe_date_diagnostics
+            entry.update(safe_date_diagnostics(date_info))
         if evidence_check is not None:
             entry["evidence_check"] = evidence_check
         entry.update(_safe_evidence_diagnostics(error) if error is not None else {})
