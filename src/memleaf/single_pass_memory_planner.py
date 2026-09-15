@@ -78,23 +78,6 @@ def _claim_date_evidence(
     return result
 
 
-def _fill_unambiguous_todo_deadline(
-    memory_type: Any,
-    summary: Mapping[str, Any],
-    deadline_dates: Iterable[str],
-) -> tuple[dict[str, Any], bool]:
-    """Fill an omitted todo date only when candidate evidence proves one deadline."""
-
-    normalized = dict(summary)
-    dates = {value for value in deadline_dates if isinstance(value, str)}
-    if memory_type != "todo" or normalized.get("due_date") is not None:
-        return normalized, False
-    if len(dates) == 1:
-        normalized["due_date"] = next(iter(dates))
-        return normalized, False
-    return normalized, len(dates) > 1
-
-
 def _global_scope_conflicts_with_candidate_evidence(
     scopes: Iterable[Any],
     candidate_evidence: Iterable[Mapping[str, Any]],
@@ -421,8 +404,6 @@ class SinglePassMemoryPlanner(MemoryPlanner):
         no_memory_by_unit: dict[str, str] = {}
         observed_scopes: list[str] = []
         requests: list[dict[str, Any]] = []
-        ambiguous_todo_deadlines: set[str] = set()
-
         if not planning_units:
             self._finalize_evidence_audit(
                 turn=turn,
@@ -598,11 +579,6 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 summary["update_memory_id"] = target_memory.memory_id
             else:
                 summary.setdefault("tags", [])
-            summary, deadline_is_ambiguous = _fill_unambiguous_todo_deadline(
-                memory_type, summary, deadline_dates
-            )
-            if deadline_is_ambiguous:
-                ambiguous_todo_deadlines.add(candidate_id)
             summary["type"] = memory_type
             summary["scopes"] = scopes
             if isinstance(scope_source, str) and scope_source:
@@ -672,15 +648,6 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 if isinstance(event.get("event_key"), str)
             },
         )
-
-        if ambiguous_todo_deadlines:
-            metric = getattr(self.model, "_record_metric_event", None)
-            if callable(metric):
-                for _ in ambiguous_todo_deadlines:
-                    metric(
-                        {"stage": "single_pass", "operation": "single_pass_primary"},
-                        "b3_due_date_ambiguous_count",
-                    )
 
         raw_defer_details = result.get("_defer_details") if isinstance(result, Mapping) else None
         defer_details = (

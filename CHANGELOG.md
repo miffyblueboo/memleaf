@@ -2,6 +2,13 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.58 — 2026-09-15
+
+- Make `due_date` mean only the stated deadline of the todo action. Core no longer fills it from a candidate's other date mentions, which could describe the subject or desired outcome rather than when the action is due. The B3 contract says to omit the field unless that action deadline is explicit; any supplied date remains subject to candidate-local deadline validation.
+- Remove the Core-side inference and ambiguous-date counter emission. Date-to-action association is semantic: when the evidence does not establish an unambiguous deadline for the todo itself, omission is safer than converting a nearby date into a deadline.
+
+Verification for this release used 18 local synthetic regression tests with no model call and no production Vault write. They cover the action-deadline instruction, omission of an unsupported `due_date`, candidate-local date grounding and deadline-cue boundaries. Python 3.11 compilation and `git diff --check` pass; real-model adherence and a newly installed Hermes replay remain post-release runtime acceptance.
+
 ## 0.2.57 — 2026-09-14
 
 - Let the model decide project ownership, and stop Core deciding it by string. Core required a model-selected project name to occur literally in the candidate's evidence, which cannot work: two descriptions of one project need share no substring, so "记录账单的项目" can never match a registered `记账`, and a literal test rejects a correct answer. It also cost whole memories. The reproduced turn is "跟你分享一下，最近在弄个记账的小玩意儿，就扔家里那台 N100 上跑，没打算上云"; the model named the project `记账小玩意儿`, the user wrote `记账的小玩意儿`, the literal test failed, and the candidate was deferred -- so the N100 deployment and the no-cloud decision were lost with the name. Deferring did not recover it either: deferred candidates are replayed from the journal rather than re-attempted, so a preview of that session makes zero model calls and processes zero turns. The guard is removed; a project name is a label, not a fact, and the model judges the ownership.
