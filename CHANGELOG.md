@@ -2,6 +2,14 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.59 — 2026-09-15
+
+- Simplify the B3 planner prompt around ordinary semantic judgment. The system instruction is now under 3 KiB and avoids scenario-specific rules; it asks the model to keep only future-use information, identify the user's exact unfinished action before classifying a todo, and attach a date only when that action is explicitly due by it.
+- Keep native memories out of the model-facing catalog. Core still checks finalized CREATE candidates against native records, while the shorter request avoids presenting read-only native IDs as writable `NO_CHANGE` targets. Normalize model variants that redundantly express `no_memory` as item decisions without adding any semantic memory.
+- Review only proposed todo dates with one small focused model call. The reviewer identifies the action separately from the discussed outcome and removes only an unsupported optional `due_date`; an invalid or failed review also preserves the memory and omits the date. The call has its own metrics operation.
+
+Verification for this release used 23 focused local regression tests with no production Vault write. They cover the compact scenario-neutral prompt, native-catalog exclusion, redundant no-memory normalization, unsupported and explicit todo dates, review failure behavior, and existing evidence/date/scope boundaries. Python 3.11 compilation and `git diff --check` pass. An anonymized live-model replay completed in about 3.05 seconds with three retained memories, no deferrals, and correctly kept a feasibility assessment without promoting the desired release date to its deadline; the exact private Hermes session was not transmitted for replay.
+
 ## 0.2.58 — 2026-09-15
 
 - Make `due_date` mean only the stated deadline of the todo action. Core no longer fills it from a candidate's other date mentions, which could describe the subject or desired outcome rather than when the action is due. The B3 contract says to omit the field unless that action deadline is explicit; any supplied date remains subject to candidate-local deadline validation.

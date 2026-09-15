@@ -31,7 +31,7 @@ _PROVIDER_METRIC_FIELDS = (
     "reasoning_tokens",
     "max_output_tokens",
 )
-_METRIC_OPERATION_SUFFIXES = ("primary", "format_repair")
+_METRIC_OPERATION_SUFFIXES = ("primary", "format_repair", "due_date_review")
 _MAX_METRIC_CALLS = 256
 _THINKING_EFFECTIVE_MODES = frozenset({
     "provider_default", "unsupported", "disabled", "minimal", "low", "high", "max",
