@@ -15,22 +15,46 @@ def maintenance_input(raw: str, fragments: list[dict[str, Any]], catalog: list[d
     # Validate exact references before they become trusted input to maintenance.
     expand_fragments(raw, fragments)
     original = parse_strict_json(raw)
+    by_id = {
+        memory['memory_id'].casefold(): memory
+        for memory in catalog
+        if isinstance(memory.get('memory_id'), str)
+    }
     groups = {}
     incoming = {}
+    targeted: set[str] = set()
     for index, row in enumerate(original['memories'], 1):
         if row.get('retention') == 'session':
             continue
+        row = dict(row)
+        target_id = row.get('target')
+        record = by_id.get(target_id.casefold()) if isinstance(target_id, str) else None
+        if record is not None:
+            # An UPDATE inherits its target's type and scope.  The provisional
+            # type the model wrote must not move the candidate into another
+            # group, or the reviewer never sees the memory it is updating.
+            row['type'] = record.get('type', row.get('type', 'fact'))
+            scopes = record.get('scopes') or []
+            if len(scopes) == 1:
+                row['scope'] = scopes[0]
+            targeted.add(record['memory_id'])
         scope = row['scope']
         kind = row.get('type', 'fact')
         group = groups.setdefault((scope, kind), {'scope': scope, 'type': kind, 'existing': [], 'incoming': []})
         incoming[index] = row
         group['incoming'].append({k:v for k,v in {'id':f'd{index}', **row}.items()
-                                  if k not in {'evidence','task_basis','target','retention'}})
+                                  if k not in {'evidence','task_basis','retention'}})
+        if record is not None and record['memory_id'] not in group['existing']:
+            # The already-chosen target must stay selectable for the reviewer.
+            group['existing'].append(record['memory_id'])
     related = [m for m in catalog if len(m.get('scopes', [])) == 1 and (m['scopes'][0], m['type']) in groups]
-    for memory in related:
-        group = groups.get((memory['scopes'][0], memory['type']))
-        if group is not None:
-            group['existing'].append(memory['memory_id'])
+    known = {m['memory_id'] for m in related}
+    for memory in catalog:
+        if memory['memory_id'] in targeted and memory['memory_id'] not in known:
+            # A target whose recorded type differs from the provisional one is
+            # still part of the comparison context.
+            related.append(memory)
+            known.add(memory['memory_id'])
     # Small original snippets let the reviewer disambiguate a task or date,
     # while the long source document is no longer a second extraction job.
     snippets = [{**f, 'text': f['text'][:240]} for f in model_data['fragments']]

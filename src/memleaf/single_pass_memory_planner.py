@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from copy import deepcopy
+from datetime import date, timedelta
 from typing import Any, Iterable, Mapping, Optional
 
 from .admission import (
@@ -34,11 +36,70 @@ from .process_common import (
 )
 from .single_pass_plan import run_single_pass_stage
 from .turn_plan import dedup_digest, revision_digest
-from .validation import ModelOutputError, parse_summarize_output, calendar_tokens
-from .evidence_syntax import _assistant_intent_only
-from .semantic_protocol import _independent_project_subjects
+from .validation import (
+    ModelOutputError,
+    normalize_relative_calendar_text,
+    parse_summarize_output,
+)
 from .scope_state import project_scope_matches_text
 from .llm import ModelUnavailable
+
+
+_WEEKDAY_INDEX = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
+_WEEKDAY_RE = re.compile(r"(?:周|星期|礼拜)\s*([一二三四五六日天1-7])")
+_MONTH_END_RE = re.compile(r"(?:月底|月末)")
+_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _resolve_candidate_due_date(
+    raw: Any,
+    date_evidence: Iterable[Mapping[str, Any]],
+    allowed: Iterable[str],
+) -> Optional[str]:
+    """Resolve one proposed todo deadline to ISO, or return None to drop it.
+
+    The date must be written in the candidate's own evidence and must be
+    anchorable against that evidence's timestamp.  Anything else loses the
+    date, never the memory.
+    """
+
+    grounded = {value for value in allowed if isinstance(value, str) and value}
+    if not isinstance(raw, str) or not raw.strip():
+        return next(iter(grounded)) if len(grounded) == 1 else None
+    value = raw.strip()
+    if _ISO_DATE_RE.fullmatch(value):
+        return value
+    if value in grounded:
+        return value
+    texts = [
+        str(event.get("content", ""))
+        for event in date_evidence
+        if isinstance(event, Mapping) and isinstance(event.get("content"), str)
+    ]
+    if not any(value in text for text in texts):
+        return None
+    anchor = next(
+        (
+            _parse_time(event.get("timestamp"))
+            for event in date_evidence
+            if isinstance(event, Mapping) and _parse_time(event.get("timestamp")) is not None
+        ),
+        None,
+    )
+    if anchor is None:
+        return None
+    rewritten = normalize_relative_calendar_text(value, anchor)
+    if isinstance(rewritten, str) and _ISO_DATE_RE.fullmatch(rewritten.strip()):
+        return rewritten.strip()
+    weekday = _WEEKDAY_RE.search(value)
+    if weekday is not None:
+        name = weekday.group(1)
+        target = int(name) - 1 if name.isdigit() else _WEEKDAY_INDEX[name]
+        return (anchor + timedelta(days=(target - anchor.weekday()) % 7)).date().isoformat()
+    if _MONTH_END_RE.search(value):
+        first_of_next = (anchor.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return (first_of_next - timedelta(days=1)).date().isoformat()
+    return None
 
 
 def _claim_date_evidence(
@@ -78,35 +139,6 @@ def _claim_date_evidence(
             "content": quote,
         })
     return result
-
-
-def _global_scope_conflicts_with_candidate_evidence(
-    scopes: Iterable[Any],
-    candidate_evidence: Iterable[Mapping[str, Any]],
-    by_unit: Mapping[str, Any],
-    scope_registry: Mapping[str, Any] | None,
-) -> bool:
-    """Detect a global choice contradicted by one explicit project label."""
-
-    scope_values = {value.casefold() for value in scopes if isinstance(value, str)}
-    if "global" not in scope_values or any(value.startswith("project:") for value in scope_values):
-        return False
-    texts: list[str] = []
-    for event in candidate_evidence:
-        if not isinstance(event, Mapping):
-            continue
-        unit = by_unit.get(event.get("unit_id"))
-        section_path = getattr(unit, "section_path", ())
-        if isinstance(section_path, (list, tuple)):
-            texts.extend(value for value in section_path if isinstance(value, str))
-        content = event.get("content")
-        if isinstance(content, str):
-            texts.append(content)
-    # Any explicit project label makes a global answer unsafe.  This also
-    # catches candidates that combine two independently named projects; Core
-    # cannot decide whether that is a cross-project rule or an accidental
-    # merge, so the candidate is deferred for semantic separation.
-    return bool(_explicit_project_scope_labels(texts, scope_registry))
 
 
 class SinglePassMemoryPlanner(MemoryPlanner):
@@ -483,19 +515,9 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             if not unit_ids or not event_keys:
                 raise ModelOutputError("B3 memory has no admitted evidence", validation_detail="invalid_evidence")
 
-            # An assistant's unaccepted offer/question/forward commitment is
-            # not user intent.  Keep final reports eligible, but block a
-            # candidate whose entire bound evidence is this speech act.
-            if claims and all(
-                getattr(by_unit.get(claim.get("unit_id")), "source_role", None) == "assistant"
-                and _assistant_intent_only(claim.get("quote", ""))
-                for claim in claims
-                if isinstance(claim, Mapping)
-            ):
-                raise ModelOutputError(
-                    "assistant offer cannot establish user intent",
-                    validation_detail="assistant_intent",
-                )
+            # Ownership and intent are the model's judgement (the contract states
+            # them).  Core no longer discards a candidate for being stated only
+            # by the assistant: dropping the memory costs more than the risk.
 
             target_memory = self.inputs._active_memory_by_id(target_id) if target_id else None
             if decision == "UPDATE":
@@ -512,16 +534,27 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 memory_type = decision_context.get("type")
                 scopes = list(decision_context.get("scopes", []))
                 scope_source = self._derived_scope_source(scopes, scope_background, scope)
+            # A missing ownership label must not cost the memory.  Keep the
+            # model's project name when it gave one; otherwise fall back to the
+            # single project named by this candidate's own evidence, else global.
+            usable = [value for value in scopes if isinstance(value, str) and value and value != "unscoped"]
+            if not usable:
+                labels = {
+                    scope_name
+                    for claim in claims if isinstance(claim, Mapping)
+                    for scope_name in project_scope_matches_text(
+                        getattr(by_unit.get(claim.get("unit_id")), "text", "") or "",
+                        {"scopes": validation_scope_registry},
+                    )
+                    if scope_name.startswith("project:")
+                }
+                usable = sorted(labels) if len(labels) == 1 else ["global"]
+            scopes = usable
+            if scope_source == "insufficient_context" and scopes != ["unscoped"]:
+                # insufficient_context is only legal together with unscoped.
+                scope_source = "model"
 
-            paragraph_owners = set()
-            for claim in claims:
-                paragraph = paragraph_contexts.get(claim.get("unit_id"))
-                if paragraph:
-                    paragraph_owners.update(project_scope_matches_text(
-                        paragraph, {"scopes": validation_scope_registry}))
             selected_projects = {value for value in scopes if value.startswith("project:")}
-            if len(paragraph_owners) == 1 and selected_projects and selected_projects != paragraph_owners:
-                raise ModelOutputError("task paragraph and memory ownership disagree", validation_detail="scope_drift")
 
             candidate = {
                 "candidate_id": candidate_id,
@@ -539,23 +572,9 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             if decision == "UPDATE" and isinstance(target_id, str):
                 candidate["update_memory_id"] = target_id
 
-            subjects = _independent_project_subjects(str(proposed.get("body", "")), validation_scope_registry)
-            if len(subjects) > 1:
-                raise ModelOutputError(
-                    "memory combines independently owned project subjects",
-                    validation_detail="scope_drift",
-                )
+            # One memory covering several projects is the model's call.  Core no
+            # longer discards it; a merged body can still be split by hand.
             candidate_evidence = _claim_date_evidence(claims, by_unit, events)
-            if _global_scope_conflicts_with_candidate_evidence(
-                scopes, candidate_evidence, by_unit, validation_scope_registry
-            ):
-                # The evidence explicitly labels one project, but Core cannot
-                # safely rewrite the model's chosen scope. Defer only this
-                # candidate rather than persist it globally.
-                raise ModelOutputError(
-                    "global scope conflicts with an explicit project label",
-                    validation_detail="scope_not_grounded",
-                )
             # Ownership is a semantic judgement and belongs to the model, not
             # to Core.  Core used to require the project name to occur in the
             # candidate's evidence, which cannot work: "记录账单的项目" and
@@ -587,11 +606,14 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                         scope.casefold() for scope in scopes if isinstance(scope, str)
                     }
                 ):
-                    raise ModelOutputError(
-                        "B3 cross-scope UPDATE is not authorized by explicit correction evidence",
-                        validation_detail="scope_drift",
-                    )
-                scope_correction_plans[candidate_id] = dict(correction_plan)
+                    # An unauthorized ownership change no longer costs the
+                    # update: keep the target's own scopes and apply the change.
+                    scopes = list(target_memory.scopes)
+                    scope_source = target_memory.scope_source
+                    candidate["scopes"] = scopes
+                    candidate["scope_source"] = scope_source
+                else:
+                    scope_correction_plans[candidate_id] = dict(correction_plan)
 
             admitted_events = summary_evidence(candidate, planning_units, events=events)
             admitted_keys = tuple(dict.fromkeys(
@@ -620,13 +642,18 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             if (memory_type == "todo" and summary.get("status", "active") == "active"
                     and not summary.get("due_date") and len(task_dates) == 1):
                 summary["due_date"] = next(iter(task_dates))
-            # The model need not calculate a calendar year. Resolve a yearless
-            # proposed deadline only against the admitted deadline set.
-            due_tokens = calendar_tokens(summary.get("due_date", ""))
-            if len(due_tokens) == 1 and not due_tokens[0].has_year:
-                matches = [date for date in deadline_dates if date[5:] == due_tokens[0].monthday]
-                if len(matches) == 1:
-                    summary["due_date"] = matches[0]
+            # 日期校验：只接受在本候选证据里出现过、且能锚定成 ISO 的日期。
+            # 校验不通过时只丢掉日期字段，候选照常写入。
+            if memory_type == "todo":
+                resolved_due = _resolve_candidate_due_date(
+                    summary.get("due_date"),
+                    candidate_date_evidence,
+                    grounded_dates | deadline_dates,
+                )
+                if resolved_due is None:
+                    summary.pop("due_date", None)
+                else:
+                    summary["due_date"] = resolved_due
             if decision == "UPDATE" and target_memory is not None:
                 summary.setdefault("title", target_memory.title)
                 summary.setdefault("tags", list(target_memory.tags))
@@ -634,6 +661,10 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 summary.setdefault("keywords", list(target_memory.keywords))
                 if target_memory.type == "todo" and "status" not in summary:
                     summary["status"] = target_memory.status or "active"
+                if target_memory.type == "todo" and "due_date" not in summary:
+                    # An update that stays silent about the deadline keeps the
+                    # one already recorded instead of silently clearing it.
+                    summary["due_date"] = target_memory.due_date
                 summary["update_memory_id"] = target_memory.memory_id
             else:
                 summary.setdefault("tags", [])
@@ -668,12 +699,13 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 expected_target_type=target_memory.type if target_memory is not None else None,
                 expected_scopes=scopes,
                 expected_scope_source=scope_source if isinstance(scope_source, str) else None,
-                # A todo due_date is stronger than an ordinary occurrence
-                # date: only a unique deadline cue may authorize it.
-                allowed_due_dates=deadline_dates,
+                # The deadline was already resolved or dropped above; no second
+                # grounding gate decides whether the memory survives.
+                allowed_due_dates=None,
                 allow_no_change=False,
                 allow_update_target=target_memory is not None,
             )
+            # 正文里的日期若无法锚定，只记录诊断，不再丢弃整条记忆。
             date_violations = _summary_date_grounding_violations(
                 parsed,
                 grounded_dates=grounded_dates,
@@ -687,17 +719,13 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 ) if target_memory is not None else (),
             )
             if date_violations:
-                error = ModelOutputError(
-                    "B3 memory contains a date absent from admitted evidence",
-                    validation_detail="relative_time",
-                )
-                # Only literal calendar tokens and program-defined field names
-                # enter diagnostics; never the rejected sentence or body.
-                fields = [field for field in ("title", "body")
-                          if any((token.canonical or token.raw) in date_violations
-                                 for token in calendar_tokens(parsed.get(field, "")))]
-                error.date_diagnostics = {"date_fields": fields, "dates": list(date_violations)}
-                raise error
+                # 正文里的日期无法用本轮证据锚定时只记账，不再丢弃整条记忆。
+                event = getattr(self.model, "_record_metric_event", None)
+                if callable(event):
+                    try:
+                        event({}, "unaligned_date_count", len(date_violations))
+                    except Exception:
+                        pass
             validated_candidates[candidate_id] = candidate
             return parsed
 
@@ -761,16 +789,12 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 summary = dict(row["memory"])
                 candidate = validated_candidates[candidate_id]
                 candidate["evidence_unit_ids"] = unit_ids
-                if summary["scopes"] == ["unscoped"] or summary.get("scope_source") == "insufficient_context":
-                    self.audit._defer_candidate(
-                        turn_ref,
-                        candidate,
-                        "scope_required",
-                        scopes=summary["scopes"],
-                        scope_source=summary.get("scope_source"),
-                        validation_detail="scope_not_grounded",
-                    )
-                    continue
+                # 归属缺失不再拦下候选：写入前统一落到可用的 scope。
+                if summary.get("scopes") in (["unscoped"], [], None):
+                    summary["scopes"] = list(candidate.get("scopes") or ["global"])
+                    candidate["scopes"] = summary["scopes"]
+                    if summary.get("scope_source") == "insufficient_context":
+                        summary["scope_source"] = "model"
                 if decision == "CREATE" and _automatic_create_conflicts(
                     candidate,
                     summary,

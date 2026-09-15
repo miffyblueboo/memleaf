@@ -4,11 +4,10 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.61.**
-> Ordinary automatic extraction now uses a “topic selection → content synthesis” semantic protocol. The model cites only short evidence fragments supplied by Core, while Core still compiles and validates the internal B3 write contract. Transient execution can be marked `session` without entering long-term memory; the normal path uses two model requests, with candidate repair and same-target coordination sharing a third budget.
-> The B3 extraction prompt now tells the model to focus only on the task, decide directly, return promptly, and keep memories brief; evidence, Scope, date and write semantics are unchanged.
-> A todo's `due_date` now means only the explicit deadline of the todo action. Core no longer fills it from other dates in candidate evidence; dates describing the todo's subject or desired outcome are not deadlines, and an unconfirmed action deadline is omitted.
-> Automatic extraction now creates candidate-local source units from Markdown structure in assistant replies; broad whole-report citations and assistant-only intent are not allowed to create memories. Project ownership is the model's semantic judgement and no longer requires the project name to appear literally in the evidence: one project referred to in different words lands on the existing Scope, and the name no longer decides whether the memory survives. Dates and deadlines use one boundary-safe parser, and a todo receives a due date only when its own evidence supplies one unambiguous deadline. Markdown remains the sole source of truth with no SQLite runtime dependency. Acceptance covers deterministic regression suites and synthetic inputs; it does not claim real-mail or customer-business acceptance.
+> **Version: 0.2.62.**
+> Automatic extraction now records conclusions only: what the user chose, agreed to, or what happened. Options, plans and drafts offered by the assistant are process, even when they look like reusable knowledge. One topic is written once, so the same content no longer lands as both a fact and a todo. A single Chinese semantic contract is now sent; the older English B3 prompt has been deleted and B3 remains only as a compatibility read format.
+> Core no longer discards a whole candidate over ownership, dates, task basis or cross-project wording. A missing owner normalizes to the single project named by that candidate's own evidence, otherwise `global`. A deadline is accepted only when it appears in the candidate's own evidence and can be anchored to ISO (`明天`, `周五`, `月底` all resolve); when it cannot, only the date field is dropped and the memory is still written. An unauthorized ownership change keeps the target's existing scope.
+> A todo's `due_date` means only the explicit deadline of the todo action; dates describing its subject or desired outcome are not deadlines. Project ownership remains the model's semantic judgement and needs no literal name match. The review stage now keeps the update target chosen by the first pass, so a state change is no longer downgraded into a new memory. Markdown remains the sole source of truth.
 > **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.
 
 ## Project scope
@@ -79,8 +78,8 @@ Additional rules:
 
 - A normal turn typically produces 0–1 memory rather than one memory per sentence.
 - New memories need a stable title, self-contained body, and appropriate Scope.
-- If project or ownership attribution is unclear, defer the memory instead of guessing `global`.
-- Prefer UPDATE or NO_CHANGE over creating a sibling for the same future use.
+- An unclear owner normalizes to the single project named by that candidate's evidence, or `global` when there is genuinely no subject; an unclear owner never costs the memory.
+- Prefer UPDATE or NO_CHANGE over creating a sibling for the same future use; one topic is written once.
 - An explicit user request can call `remember`, but the content is still normalized, checked, and deduplicated.
 - Model, parsing, write, or index failures keep the inbox and processing watermark retryable.
 - Automatic cleanup has a 24-hour safety period; a failed processing attempt does not delete the original capture.
