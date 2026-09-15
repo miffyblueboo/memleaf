@@ -628,6 +628,40 @@ class PlanningContext:
             native_query=visible,
             return_bound_status=True,
         )
+        # A session scope is conversational background, not a search fence.
+        # Include known projects named in this turn and this session's own
+        # active memories so a project switch cannot hide maintenance targets.
+        with self.service.vault.lock():
+            config = self.service.vault.config()
+            registry = config.get("scopes", {})
+            mentioned = [key for key in registry
+                         if isinstance(key, str) and key.startswith("project:")
+                         and self._scope_terms_present(visible, key, config)]
+            current_records = self.service._read_memories_unlocked("knowledge")
+            contextual = [record.memory.to_dict() for record in current_records
+                          if (any(self._scope_terms_present(visible, key, config)
+                                  for key in record.memory.scopes if key.startswith("project:"))
+                              or (record.memory.extra.get("source") == turn.source and any(
+                                  src.get("session_id") == turn.session_id
+                                  for src in record.memory.sources if isinstance(src, Mapping))))]
+        if explicit_scope is not None:
+            # Explicit caller scope remains a deliberate boundary.
+            contextual = [row for row in contextual
+                          if filter_by_scope([Memory.from_mapping(row)], explicit_scope, config)]
+        elif mentioned:
+            scope_background = mentioned
+        if contextual:
+            contextual = self._overlay_related(contextual, overlay)
+            by_id = {row["memory_id"].casefold(): row for row in contextual}
+            combined = [row for row in related
+                        if row.get("native") is True
+                        or str(row.get("memory_id", "")).casefold() not in by_id]
+            related, complete = self._bound_related_with_status(
+                [*contextual, *combined], priority_memory_ids=by_id)
+            bound_complete = bool(bound_complete and complete)
+            # Several supplied targets are alternatives for the semantic
+            # matcher, not an incomplete lookup merely because they coexist.
+            scope_fallback = None
         correction_rows, correction_complete = self._single_pass_scope_correction_context(turn)
         if correction_rows:
             existing_ids = {

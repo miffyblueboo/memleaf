@@ -366,7 +366,7 @@ _RELATIVE_DATE_TOKEN = (
 )
 _RELATIVE_CALENDAR_EXPRESSION = re.compile(_RELATIVE_DATE_TOKEN, re.IGNORECASE)
 _RELATIVE_PARENTHESIZED_DATE = re.compile(
-    rf"({_RELATIVE_DATE_TOKEN})([ \t]*)([（(])([^()\r\n]*)([）)])",
+    rf"({_RELATIVE_DATE_TOKEN})([ \t]*)([（(])([^()（）\r\n]*)([）)])",
     re.IGNORECASE,
 )
 _NUMERIC_CALENDAR_DATE = re.compile(
@@ -628,17 +628,19 @@ def _valid_calendar_date_token(value: str, fallback_year: int) -> bool:
 def _strip_parenthesized_calendar_dates(value: str, resolved_date: str) -> str:
     """Remove duplicate numeric/ISO date spellings from a relative-date note."""
 
-    try:
-        fallback_year = int(resolved_date[:4])
-    except (TypeError, ValueError):
+    anchor = _calendar_anchor_date(resolved_date)
+    if anchor is None:
         return value
 
-    def remove_valid_date(match: re.Match[str]) -> str:
-        return "" if _valid_calendar_date_token(match.group(0), fallback_year) else match.group(0)
+    def remove_duplicate_date(match: re.Match[str]) -> str:
+        tokens = calendar_tokens(match.group(0), anchor)
+        # A parenthetical can contain a conflicting source date. Only an
+        # equivalent spelling is redundant; preserve all other values for
+        # grounding/review instead of silently choosing the relative date.
+        return "" if len(tokens) == 1 and tokens[0].canonical == resolved_date else match.group(0)
 
-    value = _NUMERIC_CALENDAR_DATE.sub(remove_valid_date, value)
-    value = _ISO_CALENDAR_DATE.sub(remove_valid_date, value)
-    value = value.replace(resolved_date, "")
+    value = _NUMERIC_CALENDAR_DATE.sub(remove_duplicate_date, value)
+    value = _ISO_CALENDAR_DATE.sub(remove_duplicate_date, value)
     value = re.sub(r"[ \t]+", " ", value).strip()
     return value.strip(" \t,，;；:：")
 

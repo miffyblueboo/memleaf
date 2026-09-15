@@ -832,6 +832,10 @@ def _summary_date_grounding_violations(
                 allowed_dates.add(canonical)
 
     yearless_monthdays = source_monthdays | preserved_monthdays
+    # An absolute source date also supports a faithful yearless rendering.
+    # This does not authorize adding a year to an unanchored source date.
+    yearless_monthdays.update(value[5:] for value in allowed_dates
+                             if isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value))
     violations: list[str] = []
     seen: set[str] = set()
     for field in ("title", "body"):
@@ -974,11 +978,19 @@ def _native_result(value: Any) -> list[dict[str, Any]]:
 def _merge_related(values: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     seen_bodies: set[str] = set()
+    seen_ids: set[str] = set()
     for item in values:
         if not isinstance(item, Mapping):
             continue
         body = item.get("body")
         if not isinstance(body, str):
+            continue
+        memory_id = item.get("memory_id")
+        if item.get("native") is not True and isinstance(memory_id, str) and memory_id:
+            key = memory_id.casefold()
+            if key not in seen_ids:
+                seen_ids.add(key)
+                result.append(dict(item))
             continue
         normalized = normalize_term(body)
         if normalized and normalized in seen_bodies:

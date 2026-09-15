@@ -6,6 +6,7 @@ B3 contract is validated.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from copy import deepcopy
 from typing import Any, Iterable, Mapping, Optional
@@ -28,6 +29,7 @@ from .process_common import (
     _grounded_deadline_dates,
     _grounded_due_dates,
     _normalize_summary_dates,
+    _parse_time,
     _summary_date_grounding_violations,
 )
 from .single_pass_plan import run_single_pass_stage
@@ -35,6 +37,7 @@ from .turn_plan import dedup_digest, revision_digest
 from .validation import ModelOutputError, parse_summarize_output, calendar_tokens
 from .evidence_syntax import _assistant_intent_only
 from .semantic_protocol import _independent_project_subjects
+from .scope_state import project_scope_matches_text
 from .llm import ModelUnavailable
 
 
@@ -394,8 +397,13 @@ class SinglePassMemoryPlanner(MemoryPlanner):
         )
         turn_ref = (turn.source, turn.session_id, turn.turn_key)
         if retry_ledger.get("same_turn"):
-            self.audit._dispositions_by_turn[turn_ref] = deepcopy(retry_ledger.get("current_candidates", []))
-            self.audit._deferred_by_turn[turn_ref] = deepcopy(retry_ledger.get("current_deferred", []))
+            # Failed candidates are proposals for the evidence being retried,
+            # not additional outstanding work. Replace them on each attempt.
+            self.audit._dispositions_by_turn[turn_ref] = deepcopy([
+                row for row in retry_ledger.get("current_candidates", [])
+                if row.get("disposition") != "DEFERRED"
+            ])
+            self.audit._deferred_by_turn[turn_ref] = []
         else:
             self.audit._deferred_by_turn.setdefault(turn_ref, [])
 
@@ -436,6 +444,17 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             validation_scope_registry = self.service.vault.config().get("scopes", {})
         title = self.inputs._conversation_title(turn)
         by_unit = {unit.unit_id: unit for unit in planning_units}
+        # Sentence splitting must not sever a pronoun from its paragraph's
+        # subject. Keep source-local paragraph context without expanding claims.
+        event_texts = {event["event_key"]: event.get("content", "") for event in events}
+        paragraph_contexts = {}
+        for unit in planning_units:
+            source_text = event_texts.get(unit.event_key, "")
+            if unit.source_role != "user" or not isinstance(source_text, str):
+                continue
+            start = source_text.rfind("\n", 0, unit.start) + 1
+            end = source_text.find("\n", unit.end)
+            paragraph_contexts[unit.unit_id] = source_text[start:end if end >= 0 else len(source_text)]
         related_native_ids = [
             item["native_id"] for item in native_related
             if isinstance(item.get("native_id"), str)
@@ -493,6 +512,16 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 memory_type = decision_context.get("type")
                 scopes = list(decision_context.get("scopes", []))
                 scope_source = self._derived_scope_source(scopes, scope_background, scope)
+
+            paragraph_owners = set()
+            for claim in claims:
+                paragraph = paragraph_contexts.get(claim.get("unit_id"))
+                if paragraph:
+                    paragraph_owners.update(project_scope_matches_text(
+                        paragraph, {"scopes": validation_scope_registry}))
+            selected_projects = {value for value in scopes if value.startswith("project:")}
+            if len(paragraph_owners) == 1 and selected_projects and selected_projects != paragraph_owners:
+                raise ModelOutputError("task paragraph and memory ownership disagree", validation_detail="scope_drift")
 
             candidate = {
                 "candidate_id": candidate_id,
@@ -572,8 +601,25 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             candidate_date_evidence = candidate_evidence
             grounded_dates = _grounded_due_dates(turn, evidence_events=candidate_date_evidence)
             deadline_dates = _grounded_deadline_dates(candidate_date_evidence)
+            basis = decision_context.get("_task_basis")
+            task_dates: set[str] = set()
+            if memory_type == "todo" and isinstance(basis, Mapping):
+                basis_unit = by_unit.get(basis.get("unit_id"))
+                if (basis_unit is not None and basis_unit.source_role == "user"
+                        and basis_unit.origin == "user_assertion"
+                        and any(c.get("unit_id") == basis.get("unit_id")
+                                and c.get("quote") == basis.get("quote") for c in claims)):
+                    # The semantic task basis ties its stated date to this
+                    # action; lexical deadline keywords are not required.
+                    basis_events = _claim_date_evidence([basis], by_unit, events)
+                    task_dates = _grounded_due_dates(turn, evidence_events=basis_events)
+                    if len(task_dates) == 1:
+                        deadline_dates.update(task_dates)
             grounded_dates.update(deadline_dates)
             summary = dict(proposed)
+            if (memory_type == "todo" and summary.get("status", "active") == "active"
+                    and not summary.get("due_date") and len(task_dates) == 1):
+                summary["due_date"] = next(iter(task_dates))
             # The model need not calculate a calendar year. Resolve a yearless
             # proposed deadline only against the admitted deadline set.
             due_tokens = calendar_tokens(summary.get("due_date", ""))
@@ -595,6 +641,14 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             summary["scopes"] = scopes
             if isinstance(scope_source, str) and scope_source:
                 summary["scope_source"] = scope_source
+            if memory_type == "todo" and summary.get("status") == "completed" and not summary.get("completed_at"):
+                # Completion is a state transition. Record when it was
+                # observed, without asking the model to invent a finish time.
+                observed = [event.get("timestamp") for event in candidate_date_evidence
+                            if _parse_time(event.get("timestamp")) is not None]
+                prior = target_memory.completed_at if target_memory is not None and target_memory.status == "completed" else None
+                if prior or observed:
+                    summary["completed_at"] = prior or max(observed, key=_parse_time)
             summary["sources"] = [{"event_key": key} for key in admitted_keys]
             summary["evidence_event_ids"] = list(admitted_keys)
 
@@ -662,6 +716,7 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 "session_id": turn.session_id,
                 "turn_index": turn.turn_index,
             },
+            evidence_contexts=paragraph_contexts,
             evidence_timestamps={
                 event["event_key"]: event.get("timestamp")
                 for event in events
@@ -669,6 +724,24 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             },
         )
 
+        settled_candidates = self.audit._dispositions_by_turn.get(turn_ref, [])
+        if retry_ledger.get("same_turn") and settled_candidates:
+            # c1/r1 are per-response positions. A retry of remaining evidence
+            # must not overwrite a settled sibling with the same position.
+            namespace = hashlib.sha256(json.dumps(
+                sorted(row["candidate_id"] for row in settled_candidates),
+                separators=(",", ":"),
+            ).encode()).hexdigest()[:10]
+            renamed = {row["candidate_id"]: f"retry{namespace}_{row['candidate_id']}"
+                       for row in result["items"]}
+            for row in result["items"]:
+                row["candidate_id"] = renamed[row["candidate_id"]]
+            for field in ("_defer_details", "_defer_diagnostics", "_candidate_contexts"):
+                if isinstance(result.get(field), Mapping):
+                    result[field] = {renamed.get(key, key): value for key, value in result[field].items()}
+            validated_candidates = {renamed.get(key, key): {**value, "candidate_id": renamed.get(key, key)}
+                                    for key, value in validated_candidates.items()}
+            scope_correction_plans = {renamed.get(key, key): value for key, value in scope_correction_plans.items()}
         raw_defer_details = result.get("_defer_details") if isinstance(result, Mapping) else None
         defer_details = (
             {key: value for key, value in raw_defer_details.items()
@@ -676,7 +749,6 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             if isinstance(raw_defer_details, Mapping)
             else {}
         )
-        fallback_scopes, fallback_scope_source = self._fallback_scopes(scope_background)
         for row in result["items"]:
             candidate_id = row["candidate_id"]
             claims = row["evidence"]
@@ -773,16 +845,24 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                         observed_scopes.append(value)
                 continue
 
-            target = row.get("target_memory_id")
+            context = result.get("_candidate_contexts", {}).get(candidate_id, {})
+            target = row.get("target_memory_id", context.get("target_memory_id"))
             target_memory = self.inputs._active_memory_by_id(target) if isinstance(target, str) else None
+            candidate_scopes = context.get("scopes")
+            if not candidate_scopes:
+                # Deferred evidence has no ownership verdict. Never attach the
+                # last successful project's scope to an unrelated failed row.
+                text = "\n".join(c.get("quote", "") for c in claims)
+                candidate_scopes = project_scope_matches_text(text, {"scopes": validation_scope_registry})
+            candidate_scopes = list(candidate_scopes or ["unscoped"])
             candidate = {
                 "candidate_id": candidate_id,
                 "memory": "",
                 "duplicate": False,
                 "worth": decision == "DEFERRED",
-                "type": target_memory.type if target_memory is not None else None,
-                "scopes": list(target_memory.scopes) if target_memory is not None else list(fallback_scopes),
-                "scope_source": target_memory.scope_source if target_memory is not None else fallback_scope_source,
+                "type": target_memory.type if target_memory is not None else context.get("type"),
+                "scopes": list(target_memory.scopes) if target_memory is not None else candidate_scopes,
+                "scope_source": target_memory.scope_source if target_memory is not None else ("insufficient_context" if candidate_scopes == ["unscoped"] else "model"),
                 "evidence_unit_ids": unit_ids,
             }
             diagnostics = result.get("_defer_diagnostics", {}).get(candidate_id)

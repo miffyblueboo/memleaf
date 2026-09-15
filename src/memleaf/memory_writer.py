@@ -244,9 +244,14 @@ class MemoryWriter:
                 raise self._preflight_error("batch contains duplicate deterministic memory id")
             if deterministic_id in duplicate_ids:
                 raise self._preflight_error("batch memory id collides with metadata merge target")
-            if deterministic_id in target_ids:
+            # An UPDATE keeps its target's identity. Its deterministic request
+            # ID can equal that target when a previously created candidate is
+            # planned again; it is not an attempt to create another memory.
+            # Still reject a request ID that aliases a different update target.
+            if deterministic_id in target_ids and deterministic_id != target_id:
                 raise self._preflight_error("batch memory id collides with update target")
-            if target_id is not None and target_id.casefold() == deterministic_id.casefold():
+            if (target_id is not None and deterministic_id != target_id
+                    and target_id.casefold() == deterministic_id.casefold()):
                 raise self._preflight_error("batch memory id collides with update target")
             memory_ids.add(deterministic_id)
             if "/" in deterministic_id or "\\" in deterministic_id or deterministic_id in (".", ".."):

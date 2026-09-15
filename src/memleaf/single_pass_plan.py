@@ -1282,6 +1282,7 @@ def run_single_pass_stage(
     validate_memory: MemoryValidator,
     diagnostic_context: Mapping[str, Any] | None = None,
     evidence_timestamps: Mapping[str, Any] | None = None,
+    evidence_contexts: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     prompt, source_units, local_by_key = build_single_pass_prompt(
         evidence_units=evidence_units,
@@ -1296,6 +1297,18 @@ def run_single_pass_stage(
     if not callable(complete):
         raise TypeError("model executor does not support bounded model calls")
     local_rows = list(local_by_key.values())
+    candidate_contexts: dict[str, dict[str, Any]] = {}
+
+    def remember_context(envelope):
+        items = envelope.get("items")
+        if not isinstance(items, list):
+            return
+        for row in items:
+            if not isinstance(row, Mapping) or not isinstance(row.get("candidate_id"), str):
+                continue
+            context = {k: row[k] for k in ("type", "scopes", "target_memory_id") if k in row}
+            if context:
+                candidate_contexts[row["candidate_id"]] = context
     budgeted_backend = (
         budget_single_pass_backend(backend)
         if hasattr(backend, "complete") and getattr(backend, "single_pass_safe", False) is True
@@ -1304,11 +1317,15 @@ def run_single_pass_stage(
     inline_system = requires_inline_single_pass_system(backend)
     fragment_data = source_fragments(prompt)
     def visible_fragment(f):
-        return {k: v for k, v in f.items() if k not in {"unit_id", "start", "end", "timestamp"}}
+        result = {k: v for k, v in f.items() if k not in {"unit_id", "start", "end", "timestamp"}}
+        paragraph = (evidence_contexts or {}).get(f["unit_id"])
+        if paragraph and paragraph != f["text"]:
+            result["paragraph"] = paragraph
+        return result
     model_data = {**fragment_data, "fragments": [visible_fragment(f) for f in fragment_data["fragments"]]}
     compact_prompt = "MEMORY_INPUT\n" + json.dumps(model_data, ensure_ascii=False, separators=(",", ":"))
-    primary_prompt = TOPIC_SYSTEM + "\n\n" + compact_prompt if inline_system else compact_prompt
-    primary_system = "" if inline_system else TOPIC_SYSTEM
+    primary_prompt = FRAGMENT_SYSTEM + "\n\n" + compact_prompt if inline_system else compact_prompt
+    primary_system = "" if inline_system else FRAGMENT_SYSTEM
     target_rows: list[dict[str, Any]] = []
     normalizations: list[str] = []
     deferrals: list[dict[str, Any]] = []
@@ -1446,12 +1463,68 @@ def run_single_pass_stage(
         eligible = {row.get("candidate_id") for row in deferrals
                     if row.get("detail") in {"relative_time", "invalid_due_date", "due_date_not_grounded", "scope_drift", "scope_not_grounded", "assistant_intent", "value_disagreement"}}
         failed = [row for row in failed if row["candidate_id"] in eligible]
+        fragments = []
+        if failed:
+            def spans(rows):
+                result = []
+                for row in rows:
+                    for claim in row.get("evidence", []):
+                        unit = next((u for u in source_units if u.unit_id == claim.get("unit_id")), None)
+                        if unit is None:
+                            continue
+                        start, end = claim.get("start"), claim.get("end")
+                        if claim.get("whole_unit") is True:
+                            start, end = 0, len(unit.text)
+                        elif not isinstance(start, int) or not isinstance(end, int):
+                            quote = claim.get("quote", "")
+                            if not quote or unit.text.count(quote) != 1:
+                                continue
+                            start = unit.text.index(quote)
+                            end = start + len(quote)
+                        result.append((row["candidate_id"], unit.unit_id, start, end))
+                return result
+
+            settled_spans = spans(row for row in parsed["items"] if row["decision"] != "DEFERRED")
+            seen_spans = set()
+            used_fragment_ids = set()
+            next_fragment_id = max((f["id"] for f in fragment_data["fragments"]), default=0) + 1
+            repairable_ids = set()
+            for cid, uid, start, end in spans(failed):
+                for fragment in fragment_data["fragments"]:
+                    if fragment["unit_id"] != uid:
+                        continue
+                    pieces = [(max(start, fragment["start"]), min(end, fragment["end"]))]
+                    for _, settled_uid, left, right in settled_spans:
+                        if settled_uid != uid:
+                            continue
+                        pieces = [piece for a, b in pieces
+                                  for piece in ((a, min(b, left)), (max(a, right), b))
+                                  if piece[0] < piece[1]]
+                    for left, right in pieces:
+                        key = (uid, left, right)
+                        if left >= right:
+                            continue
+                        unit = next(u for u in source_units if u.unit_id == uid)
+                        text = unit.text[left:right]
+                        if text.strip():
+                            repairable_ids.add(cid)
+                            if key in seen_spans:
+                                continue
+                            seen_spans.add(key)
+                            fragment_id = fragment["id"]
+                            if fragment_id in used_fragment_ids:
+                                fragment_id = next_fragment_id
+                                next_fragment_id += 1
+                            used_fragment_ids.add(fragment_id)
+                            fragments.append({**fragment, "id": fragment_id,
+                                              "start": left, "end": right, "text": text})
+            # No remaining evidence means no authority to replace a failed
+            # proposal. Keep its DEFERRED outcome instead of inventing coverage.
+            failed = [row for row in failed if row["candidate_id"] in repairable_ids]
         if failed:
             failed_ids = {row["candidate_id"] for row in failed}
             unit_ids = {c["unit_id"] for row in failed for c in row["evidence"]}
-            fragments = [f for f in fragment_data["fragments"] if f["unit_id"] in unit_ids]
             payload = {**model_data, "fragments": [visible_fragment(f) for f in fragments],
-                       "conversation_context": [{"role": u.source_role, "text": u.text} for u in source_units if u.source_role == "user"],
                        "issues": [
                            {**row, "problem": "The selection and synthesis disagree about lasting value. Distinguish underlying lasting facts from details of performing this interaction; neither prior verdict is authoritative."
                             if row.get("detail") == "value_disagreement" else "One memory contains independent project subjects; split their facts by owner."
@@ -1490,7 +1563,8 @@ def run_single_pass_stage(
                             c["unit_id"] == unit.unit_id and basis.get("quote", "") in c.get("quote", "") for c in claims
                         ):
                             raise ModelOutputError("task lacks user basis", validation_detail="assistant_intent")
-                    return validate_memory(cid, decision, target, record, memory, claims, context)
+                    return validate_memory(cid, decision, target, record, memory, claims, {**context, "_task_basis": task_bases.get(cid)})
+                remember_context(envelope)
                 repaired = parse_single_pass_output(
                     json.dumps(envelope, ensure_ascii=False),
                     evidence_units=[u for u in source_units if u.unit_id in unit_ids],
@@ -1507,6 +1581,7 @@ def run_single_pass_stage(
             except (ModelError, ModelOutputError):
                 pass
         value = finalize(parsed)
+        value["_candidate_contexts"] = candidate_contexts
         details: dict[str, str] = {}
         for row in deferrals:
             candidate_id = row.get("candidate_id") if isinstance(row, Mapping) else None
@@ -1528,7 +1603,10 @@ def run_single_pass_stage(
             value["_defer_details"] = details
         return value
 
+    user_review_done = False
+
     def parse(raw: str, *, reviewed_output: bool = False) -> dict[str, Any]:
+        nonlocal user_review_done
         target_rows.clear()
         normalizations.clear()
         deferrals.clear()
@@ -1536,15 +1614,41 @@ def run_single_pass_stage(
         # The old envelope remains readable for host adapters and persisted
         # fixtures. New model requests only advertise the semantic contract.
         if isinstance(value, Mapping) and "protocol_version" in value:
+            remember_context(value)
             return parse_single_pass_output(
                 review_due_dates(raw), evidence_units=source_units,
                 local_memories=local_rows, lookup_complete=lookup_complete,
                 validate_memory=validate_memory, target_rows=target_rows,
                 normalizations=normalizations, deferrals=deferrals,
             )
+        # Long assistant reports can dominate short user corrections. Review
+        # omitted user statements in isolation, preserving the same source IDs.
+        if (not user_review_done and isinstance(value, Mapping) and "memories" in value
+                and sum(len(f["text"]) for f in fragment_data["fragments"] if f["role"] == "assistant") > 1000):
+            expand_fragments(raw, fragment_data["fragments"])
+            ignored = {str(ref) for ref in value["no_memory"]}
+            user_fragments = [f for f in fragment_data["fragments"]
+                              if f["role"] == "user" and str(f["id"]) in ignored]
+            if sum(len(f["text"]) for f in user_fragments) >= 40:
+                user_review_done = True
+                user_data = {**model_data, "fragments": [visible_fragment(f) for f in user_fragments]}
+                user_prompt = "MEMORY_INPUT\n" + json.dumps(user_data, ensure_ascii=False, separators=(",", ":"))
+                user_system = FRAGMENT_SYSTEM
+                if inline_system:
+                    user_prompt, user_system = user_system + "\n\n" + user_prompt, ""
+                user_raw = complete(budgeted_backend, user_prompt, system=user_system, purpose="single_pass",
+                                    metric_stage="single_pass", metric_operation="single_pass_semantic_repair",
+                                    retry=True, metric_context={})
+                expand_fragments(user_raw, user_fragments)
+                user_value = parse_strict_json(user_raw)
+                user_ids = {str(f["id"]) for f in user_fragments}
+                value["memories"].extend(user_value["memories"])
+                value["no_memory"] = [r for r in value["no_memory"] if str(r) not in user_ids] + user_value["no_memory"]
+                value["deferred"].extend(user_value["deferred"])
+                raw = json.dumps(value, ensure_ascii=False)
         topic_scopes = []
         if isinstance(value, Mapping) and "topics" in value:
-            envelope, topic_scopes = compile_topics(raw, fragment_data["fragments"], PROTOCOL_VERSION)
+            envelope, topic_scopes = compile_topics(raw, fragment_data["fragments"], PROTOCOL_VERSION, contexts=candidate_contexts)
             fragment_data["topic_scopes"] = topic_scopes
             bases = {}
         else:
@@ -1563,7 +1667,7 @@ def run_single_pass_stage(
                     error = ModelOutputError("independent project subjects require separate memories", validation_detail="scope_drift")
                     error.scope_subjects = sorted(subjects)
                     raise error
-                validated = validate_memory(cid, decision, target, record, memory, claims, context)
+                validated = validate_memory(cid, decision, target, record, memory, claims, {**context, "_task_basis": bases.get(cid)})
                 if decision == "CREATE" and context.get("type") == "todo":
                     basis = bases.get(cid)
                     unit = units.get(basis.get("unit_id")) if isinstance(basis, dict) else None
@@ -1591,6 +1695,7 @@ def run_single_pass_stage(
                 raise
 
         def validate(envelope):
+            remember_context(envelope)
             project_registry.clear()
             for row in fragment_data.get("scope_registry", []):
                 if isinstance(row, Mapping) and isinstance(row.get("scope"), str):
@@ -1647,6 +1752,11 @@ def run_single_pass_stage(
             for row in affected if problems[row["candidate_id"]]["detail"] not in {"semantic_review", "maintenance_uncertain"}
         ]
         review_system = FRAGMENT_SYSTEM + "\n请按完整证据独立提炼；主题清单和 no_memory_candidates 均是待复核的候选。修正 issues，保留成立的核心事实。"
+        maintenance_context = None
+        if "memories" in value:
+            from .semantic_maintenance import maintenance_input, MAINTENANCE_SYSTEM
+            review_payload, maintenance_context = maintenance_input(raw, repair_fragments, local_rows, model_data)
+            review_system = MAINTENANCE_SYSTEM
         review_prompt = "MEMORY_REVIEW\n" + json.dumps(review_payload, ensure_ascii=False, separators=(",", ":"))
         if inline_system:
             review_prompt, review_system = review_system + "\n\n" + review_prompt, ""
@@ -1665,6 +1775,11 @@ def run_single_pass_stage(
                     row.clear()
                     row.update(candidate_id=cid, evidence=claims, decision="DEFERRED", reason="maintenance_uncertain")
                     deferrals.append({"candidate_id": cid, "reason": "maintenance_uncertain", "detail": "semantic_review_failed"})
+                elif row["decision"] == "DEFERRED" and not any(
+                        d.get("candidate_id") == row["candidate_id"] and d.get("detail")
+                        for d in deferrals):
+                    deferrals.append({"candidate_id": row["candidate_id"], "reason": row["reason"],
+                                      "detail": "semantic_review_failed"})
             return parsed
 
         try:
@@ -1674,6 +1789,9 @@ def run_single_pass_stage(
                 metric_operation="single_pass_semantic_repair", retry=True,
                 metric_context={},
             )
+            if maintenance_context is not None:
+                from .semantic_maintenance import expand_maintenance
+                corrected = expand_maintenance(corrected, maintenance_context)
             replacement, new_bases = compile_semantic(
                 expand_fragments(corrected, repair_fragments), protocol_version=PROTOCOL_VERSION, local_by_key=local_by_key, prefix="r",
             )
@@ -1899,7 +2017,7 @@ def run_single_pass_stage(
                     metric_operation="single_pass_semantic_repair", retry=True,
                     metric_context=repair_context,
                 )
-                return finish(parse(corrected, reviewed_output=True))
+                return finish(parse(corrected))
             except (ModelError, ModelOutputError) as correction_error:
                 fail(correction_error, attempt_count=2, metric_context=repair_context, raw=None)
                 raise

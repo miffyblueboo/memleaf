@@ -19,7 +19,8 @@ def _invalid(detail: str = 'other_schema_violation') -> ModelOutputError:
 def compile_semantic(raw: str, *, protocol_version: str, local_by_key: Mapping[str, Any],
                      prefix: str = 'c') -> tuple[dict[str, Any], dict[str, Any]]:
     value = parse_strict_json(raw)
-    if not isinstance(value, dict) or set(value) != {'memories', 'no_memory', 'deferred'}:
+    if (not isinstance(value, dict) or not {'memories', 'no_memory', 'deferred'} <= set(value)
+            or set(value) - {'memories', 'no_memory', 'deferred', '_coverage_gaps'}):
         raise _invalid()
     if any(not isinstance(value[k], list) for k in value):
         raise _invalid()
@@ -75,7 +76,7 @@ def compile_semantic(raw: str, *, protocol_version: str, local_by_key: Mapping[s
         if not isinstance(uid, str) or not uid:
             raise _invalid('invalid_evidence')
         items.append({'candidate_id': f'{prefix}d{i + 1}', 'decision': 'DEFERRED',
-                      'reason': 'evidence_insufficient',
+                      'reason': 'maintenance_uncertain' if uid in value.get('_coverage_gaps', []) else 'evidence_insufficient',
                       'evidence': [{'unit_id': uid, 'whole_unit': True, 'role': 'assertion'}]})
     if any(not isinstance(uid, str) or not uid for uid in value['no_memory']):
         raise _invalid('invalid_evidence')
@@ -113,8 +114,8 @@ FRAGMENT_SYSTEM = f'''根据底层长期有效的业务含义提炼记忆，不�
 {RETENTION_GUIDANCE}
 返回 JSON：{{"memories":[],"no_memory":[],"deferred":[]}}。
 每条 memory：{{"retention":"reusable 或 session","title":"简短主题","body":"脱离本轮对话仍有价值的核心内容","scope":"project:项目名 或 global","evidence":[片段ID]}}。type 默认 fact，表示业务事实或状态；可选类型 preference、project、todo、event、identity、other，event 仅用于事件本身而非其携带的业务事实。一条一个独立主题与归属，scope 是核心事实实际所属项目，不是报告该信息的系统。同一段的独立主题分别提炼；还支持 domain:名称、portfolio:名称、unscoped。
-新 todo 额外提供 task_basis:[用户角色片段ID]，其内容须明确建立用户自己承担的未完成动作；他方请求或助手建议本身是事实依据，不是用户任务依据。todo 可选 status（active/completed/cancelled）、completed_at、due_date（原文明确属于该动作的截止日期）。日期保留原文写法，由 Core 解析相对日期。
-no_memory 填仅服务本轮交互、没有后续使用价值的片段ID；deferred 填语义尚无法确定的片段ID。每个片段须被 memory 引用或列入其中一个数组。同片段允许支持多条 memory。若与 catalog 中已有记忆是同一主题，可填 target 为其真实 ID；否则省略。无需输出写入决策、生成ID或复制原文。'''
+新 todo 额外提供 task_basis:[用户角色片段ID]，其内容须明确建立用户自己承担的未完成动作；他方请求或助手建议本身是事实依据，不是用户任务依据。todo 提供 status（active/completed/cancelled）及 due_date（该任务约定日期，无则 null），completed_at 可选。日期保留原文写法，由 Core 解析相对日期。
+no_memory 填仅服务本轮交互、没有后续使用价值的片段ID；deferred 填语义尚无法确定的片段ID。每个片段须被 memory 引用或列入其中一个数组。同片段允许支持多条 memory。若为 catalog 中同一事项的补充、状态变化或重复，target 填已有真实 ID 并给出合并后的当前内容；新事项才省略 target。无需输出写入决策、生成ID或复制原文。'''
 
 
 def expand_fragments(raw: str, fragments: list[dict[str, Any]]) -> str:
@@ -128,7 +129,10 @@ def expand_fragments(raw: str, fragments: list[dict[str, Any]]) -> str:
     seen = set()
     claimed_units = set()
     def resolve(ids):
-        if not isinstance(ids, list) or any(type(i) is not int or i not in by_id for i in ids):
+        if not isinstance(ids, list):
+            raise _invalid('invalid_evidence')
+        ids = [int(i) if isinstance(i, str) and len(i) <= 20 and i.isascii() and i.isdecimal() else i for i in ids]
+        if any(type(i) is not int or i not in by_id for i in ids):
             raise _invalid('invalid_evidence')
         seen.update(ids)
         return [by_id[i] for i in ids]
@@ -144,12 +148,13 @@ def expand_fragments(raw: str, fragments: list[dict[str, Any]]) -> str:
         if retention not in ('reusable', 'session'):
             raise _invalid()
         if retention == 'session':
-            if 'task_basis' in row:
+            if row.get('task_basis') is not None:
                 session_refs.extend(resolve(row['task_basis']))
             session_refs.extend(refs)
             continue
         claimed_units.update(f['unit_id'] for f in refs)
-        row = {k: v for k, v in row.items() if k != 'retention'}
+        row = {k: v for k, v in row.items() if k != 'retention'
+               and not (v is None and k in {'target', 'task_basis', 'due_date', 'completed_at', 'status', 'type'})}
         result = {**row, 'evidence': [{'unit_id': f['unit_id'], 'quote': f['text'], 'start': f['start'], 'end': f['end']} for f in refs]}
         if 'task_basis' in row:
             bases = resolve(row['task_basis'])
@@ -157,7 +162,7 @@ def expand_fragments(raw: str, fragments: list[dict[str, Any]]) -> str:
                 raise _invalid('invalid_evidence')
             # Task basis is itself an explicit source citation. Bind it too.
             for f in bases:
-                if f['id'] not in row['evidence']:
+                if f['id'] not in {ref['id'] for ref in refs}:
                     result['evidence'].append({'unit_id': f['unit_id'], 'quote': f['text'], 'start': f['start'], 'end': f['end']})
                     claimed_units.add(f['unit_id'])
             # Keep one concrete admitted basis for the ownership reviewer.
@@ -165,15 +170,18 @@ def expand_fragments(raw: str, fragments: list[dict[str, Any]]) -> str:
         rows.append(result)
     ignored = resolve(value['no_memory']) + session_refs
     deferred = resolve(value['deferred'])
-    if seen != set(by_id):
-        raise _invalid('invalid_evidence')
+    # Coverage omissions are unresolved evidence, not an invalid whole batch.
+    # Preserve valid candidates and let the normal retry path review the gap.
+    gaps = [by_id[ref] for ref in by_id if ref not in seen]
+    deferred.extend(gaps)
     deferred_units = {f['unit_id'] for f in deferred}
     # A partial unit with an unresolved topic remains unresolved even if its
     # other topic was retained. No-memory is terminal only for unclaimed units.
     return json.dumps({'memories': rows,
                        'no_memory': list(dict.fromkeys(f['unit_id'] for f in ignored
                                          if f['unit_id'] not in claimed_units | deferred_units)),
-                       'deferred': list(dict.fromkeys(f['unit_id'] for f in deferred))}, ensure_ascii=False)
+                       'deferred': list(dict.fromkeys(f['unit_id'] for f in deferred)),
+                       '_coverage_gaps': list(dict.fromkeys(f['unit_id'] for f in gaps))}, ensure_ascii=False)
 
 def _independent_project_subjects(text: str, scope_registry: Mapping[str, Any] | None) -> set[str]:
     """Conservative structural guard, not a project-name classifier.
@@ -188,7 +196,16 @@ def _independent_project_subjects(text: str, scope_registry: Mapping[str, Any] |
     registry = scope_registry if isinstance(scope_registry, Mapping) else {}
     labels: set[str] = set()
     subjects: set[str] = set()
-    for clause in re.split(r"[。！？!?；;\n、]+", text):
+    # Chinese project short forms have no word boundary. A unique leading
+    # name prefix can flag a separately headed clause without registering an
+    # invented alias. Ambiguous prefixes remain unresolved.
+    names = {scope: scope.partition(":")[2] for scope in registry if scope.startswith("project:")}
+    short_names = {}
+    for scope, name in names.items():
+        if re.fullmatch(r"[\u4e00-\u9fff]{4,}", name):
+            short_names[scope] = [name[:n] for n in range(2, len(name))
+                                  if sum(other.startswith(name[:n]) for other in names.values()) == 1]
+    for clause in re.split(r"[。！？!?；;，\n、]+", text):
         clause = clause.strip(" -*•0123456789.()（）")
         clause_labels = _explicit_project_scope_labels([clause], registry)
         # Multiple names within one relationship clause are not proof of
@@ -196,9 +213,11 @@ def _independent_project_subjects(text: str, scope_registry: Mapping[str, Any] |
         if len(clause_labels) == 1:
             labels.update(clause_labels)
         matches = project_scope_matches_text(clause, {"scopes": registry})
+        matches = set(matches) | {scope for scope, terms in short_names.items()
+                                  if any(clause.startswith(term) for term in terms)}
         for scope in matches:
             node = registry.get(scope, {})
-            terms = [scope.partition(":")[2]]
+            terms = [scope.partition(":")[2], *short_names.get(scope, [])]
             if isinstance(node, Mapping):
                 terms += [v for v in node.get("aliases", []) if isinstance(v, str)]
             if any(clause.casefold().startswith(term.casefold()) for term in terms if term):
@@ -214,7 +233,7 @@ TOPIC_SYSTEM = RETENTION_GUIDANCE + "\n" + '''根据底层长期有效的业务�
 no_memory 表示仅服务本轮交互的操作过程或瞬时信息，没有长期业务含义；deferred 表示语义无法确定。覆盖所有片段，每个被一个或多个主题引用或列入一个数组。'''
 
 
-def compile_topics(raw: str, fragments: list[dict[str, Any]], protocol_version: str):
+def compile_topics(raw: str, fragments: list[dict[str, Any]], protocol_version: str, *, contexts=None):
     value = parse_strict_json(raw)
     if not isinstance(value, dict) or set(value) != {'topics', 'no_memory', 'deferred'} or not isinstance(value['topics'], list):
         raise _invalid()
@@ -231,6 +250,8 @@ def compile_topics(raw: str, fragments: list[dict[str, Any]], protocol_version: 
     envelope, _ = compile_semantic(expanded,protocol_version=protocol_version,local_by_key={})
     for item in envelope['items']:
         if item['decision']=='CREATE':
+            if contexts is not None:
+                contexts[item['candidate_id']] = {'scopes': list(item['scopes'])}
             for key in ('type','scopes','memory'):
                 item.pop(key,None)
             item.update(decision='DEFERRED',reason='maintenance_uncertain')
