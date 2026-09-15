@@ -4,7 +4,8 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.59.**
+> **Version: 0.2.60.**
+> The B3 extraction prompt now tells the model to focus only on the task, decide directly, return promptly, and keep memories brief; evidence, Scope, date and write semantics are unchanged.
 > A todo's `due_date` now means only the explicit deadline of the todo action. Core no longer fills it from other dates in candidate evidence; dates describing the todo's subject or desired outcome are not deadlines, and an unconfirmed action deadline is omitted.
 > Automatic extraction now creates candidate-local source units from Markdown structure in assistant replies; broad whole-report citations and assistant-only intent are not allowed to create memories. Project ownership is the model's semantic judgement and no longer requires the project name to appear literally in the evidence: one project referred to in different words lands on the existing Scope, and the name no longer decides whether the memory survives. Dates and deadlines use one boundary-safe parser, and a todo receives a due date only when its own evidence supplies one unambiguous deadline. Markdown remains the sole source of truth with no SQLite runtime dependency. Acceptance covers deterministic regression suites and synthetic inputs; it does not claim real-mail or customer-business acceptance.
 > **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.

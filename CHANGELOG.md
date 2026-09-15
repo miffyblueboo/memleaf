@@ -2,6 +2,13 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.60 — 2026-09-15
+
+- Tighten the B3 planner's output discipline without changing its protocol or write semantics. The system prompt now says not to analyze beyond the task, decide directly and return promptly, and keep each memory as brief as possible without losing essential meaning. Evidence, Scope, date grounding, candidate decisions and commit safety remain unchanged.
+- Treat the prompt change as a bounded efficiency-oriented instruction, not a measured latency claim; provider behavior and model quality remain runtime-dependent.
+
+Verification for this release used 23 focused local regression tests with no model call and no production Vault write. Python 3.11 compilation/imports and `git diff --check` pass; real-provider latency and adherence remain unmeasured, and a newly installed Hermes replay remains post-release runtime acceptance.
+
 ## 0.2.59 — 2026-09-15
 
 - Simplify the B3 planner prompt around ordinary semantic judgment. The system instruction is now under 3 KiB and avoids scenario-specific rules; it asks the model to keep only future-use information, identify the user's exact unfinished action before classifying a todo, and attach a date only when that action is explicitly due by it.

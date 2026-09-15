@@ -139,7 +139,7 @@ SINGLE_PASS_SYSTEM = f"""You decide what from a conversation is worth rememberin
 
 Use current_evidence as evidence; local_memory_catalog and scope data are comparison context. An assistant's final factual report may support memory, but its proposals do not establish the user's intent.
 
-Use ordinary semantic judgment. Keep only information likely to help after this conversation; otherwise use no_memory. Preserve its meaning in self-contained wording and choose type from that meaning. For a todo, first identify the exact unfinished action the user is responsible for. Set due_date only when the evidence explicitly requires that action to be completed by the date. Never add facts or dates; timestamps only resolve dates expressed in the cited text.
+Use ordinary semantic judgment. Do not analyze beyond what this task needs; decide directly and return promptly. Keep each memory as brief as possible without losing essential meaning. Keep only information likely to help after this conversation; otherwise use no_memory. Preserve its meaning in self-contained wording and choose type from that meaning. For a todo, first identify the exact unfinished action the user is responsible for. Set due_date only when the evidence explicitly requires that action to be completed by the date. Never add facts or dates; timestamps only resolve dates expressed in the cited text.
 
 Choose scope by ownership. Use or reuse project:<short name> when one project owns the information; otherwise use global. Use unscoped or DEFERRED only when required ownership cannot be determined. Other legal scopes are domain:<name> and portfolio:<name>.
 
