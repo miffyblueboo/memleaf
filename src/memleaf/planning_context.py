@@ -772,8 +772,8 @@ class PlanningContext:
     ) -> dict[str, Any] | None:
         """Authorize one explicit cross-project correction without guessing.
 
-        The current user turn must name exactly two configured project scopes
-        under explicit correction wording. A model-provided target is checked
+        The cited user evidence must name the new project under explicit
+        correction wording; an exact target establishes the previous owner. A model-provided target is checked
         against that evidence; when it is omitted, Core may recover exactly one
         same-type, same-topic active memory from the explicitly named old
         scope. Zero or multiple matches stay deferred rather than becoming a
@@ -793,10 +793,18 @@ class PlanningContext:
             event.content for event in turn.events
             if event.role == "user" and isinstance(event.content, str)
         ).strip()
+        bindings = candidate.get("_evidence_bindings", [])
+        quotes = [binding.get("quote") for binding in bindings if isinstance(binding, Mapping)]
+        cited_user_text = [quote for quote in quotes if isinstance(quote, str) and quote and quote in user_text]
+        if cited_user_text:
+            user_text = " ".join(cited_user_text)
         if not user_text or not _SCOPE_CORRECTION_MARKER_RE.search(user_text):
             return None
         config = config if "scopes" in config else {"scopes": config}
-        scopes = config.get("scopes", {}) if isinstance(config.get("scopes", {}), Mapping) else {}
+        scopes = dict(config.get("scopes", {})) if isinstance(config.get("scopes", {}), Mapping) else {}
+        # Explicit user corrections can introduce a previously unseen owner;
+        # local matching still requires that new name in the cited evidence.
+        scopes.setdefault(new_scope, {})
         mentioned = [
             scope for scope in scopes
             if isinstance(scope, str)
@@ -804,9 +812,19 @@ class PlanningContext:
             and self._scope_terms_present(user_text, scope, config)
         ]
         mentioned = list(dict.fromkeys(mentioned))
-        if len(mentioned) != 2 or all(scope.casefold() != new_scope.casefold() for scope in mentioned):
-            return None
-        old_scope = next(scope for scope in mentioned if scope.casefold() != new_scope.casefold())
+        selected = self._active_memory_by_id(candidate.get("update_memory_id"))
+        if selected is not None and len(selected.scopes) == 1:
+            # Other projects in the same user turn do not invalidate an exact
+            # correction of this selected target. The new owner must occur
+            # in the cited user correction; the old owner is the target's
+            # existing metadata, not an inference from another sentence.
+            old_scope = selected.scopes[0]
+            if new_scope not in mentioned or old_scope == new_scope:
+                return None
+        else:
+            if len(mentioned) != 2 or new_scope not in mentioned:
+                return None
+            old_scope = next(scope for scope in mentioned if scope != new_scope)
 
         topic = str(candidate.get("memory") or "")
         removable_terms: list[str] = []

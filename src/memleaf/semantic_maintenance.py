@@ -3,66 +3,35 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 from .semantic_protocol import RETENTION_GUIDANCE, expand_fragments, _invalid
-from .validation import parse_strict_json
+from .validation import ModelOutputError, parse_strict_json
 
-MAINTENANCE_SYSTEM = RETENTION_GUIDANCE + "\n" + '''维护长期记忆，而不是再次摘录对话。按上述标准复核 incoming：符合标准的继续维护，没有明确价值的放 discard，无法判断的放 deferred。groups 按项目和类型隔离，incoming 是本轮增量，existing 是可更新的 catalog ID。
-同一事项的需求、进展、回复、附件位置和约定日期合并维护；后续状态替换旧状态，重复信息不新建。不同的独立事项保持分开。正文概括核心，不逐条转录文档或保存助手的临时建议。类型由输入确定，本阶段只维护同类型的状态。
-返回 JSON {"memories":[{"from":[incoming ID],"target":"已有memory_id或null","title":"主题","body":"合并后的当前内容","type":"fact或todo等"}],"discard":[incoming ID],"deferred":[incoming ID]}。
-每条仅合并同组 incoming；同一事项已有记忆时 target 必须选该组 existing 中的ID，保留其有效内容并更新变化；独立新事项 target=null。已有target保留原type；新任务没有同事项todo目标时新建todo，不借用fact ID。同一target只输出一次。无需修改的已有记忆可原样返回。todo 提供 status（active/completed/cancelled）和 due_date（原文日期，无则null）；不能把任务变成一般事实而丢失动作。每个 incoming 由 from、discard 或 deferred 覆盖。无需处理原始片段ID、复制证据或生成记忆ID。'''
+MAINTENANCE_SYSTEM = RETENTION_GUIDANCE + "\n" + '''根据 incoming 引用的原始证据维护长期记忆；incoming 仅划定待复核的主题，不提供已确认的分类或归属。catalog 是可更新的已有记忆。先识别已有事项的状态变化，再判断新建价值。同一事项合并维护当前状态，重复不新建；完成或转交也应维护已有 todo，不能另建完成事实留下旧待办。
+返回 JSON {"memories":[{"from":["d1"],"target":null,"title":"简短主题","body":"最小可复用核心","type":"fact","scope":"global","evidence":[片段ID]}],"discard":[],"deferred":[]}。
+每条一个独立主体与用途，可拆分同一 incoming。scope 按证据独立确定为 project:主体名、global（通用原则）或 unscoped（归属未确定）。type 为 fact/preference/project/todo/event/identity/other。target 为同事项的 catalog 真实ID，无才为null；更新保留原type，明确归属纠正可以改变scope。todo 提供 status（active/completed/cancelled）和 due_date（明确行动期限的原文写法，无则null）。正文保留当前有效内容，去掉过时状态和无复用价值的细节。每个 incoming 用 from、discard 或 deferred 覆盖；from 表示该主题已完整复核，evidence 只绑定保留内容，其余细节不记忆。from 和 evidence 只能选输入中已有的编号。'''
 
 
 def maintenance_input(raw: str, fragments: list[dict[str, Any]], catalog: list[dict[str, Any]], model_data: Mapping[str, Any]):
     # Validate exact references before they become trusted input to maintenance.
     expand_fragments(raw, fragments)
     original = parse_strict_json(raw)
-    by_id = {
-        memory['memory_id'].casefold(): memory
-        for memory in catalog
-        if isinstance(memory.get('memory_id'), str)
-    }
-    groups = {}
     incoming = {}
-    targeted: set[str] = set()
+    proposals = []
+    catalog_ids = {m['memory_id'].casefold() for m in catalog}
     for index, row in enumerate(original['memories'], 1):
-        if row.get('retention') == 'session':
-            continue
-        row = dict(row)
-        target_id = row.get('target')
-        record = by_id.get(target_id.casefold()) if isinstance(target_id, str) else None
-        if record is not None:
-            # An UPDATE inherits its target's type and scope.  The provisional
-            # type the model wrote must not move the candidate into another
-            # group, or the reviewer never sees the memory it is updating.
-            row['type'] = record.get('type', row.get('type', 'fact'))
-            scopes = record.get('scopes') or []
-            if len(scopes) == 1:
-                row['scope'] = scopes[0]
-            targeted.add(record['memory_id'])
-        scope = row['scope']
-        kind = row.get('type', 'fact')
-        group = groups.setdefault((scope, kind), {'scope': scope, 'type': kind, 'existing': [], 'incoming': []})
-        incoming[index] = row
-        group['incoming'].append({k:v for k,v in {'id':f'd{index}', **row}.items()
-                                  if k not in {'evidence','task_basis','retention'}})
-        if record is not None and record['memory_id'] not in group['existing']:
-            # The already-chosen target must stay selectable for the reviewer.
-            group['existing'].append(record['memory_id'])
-    related = [m for m in catalog if len(m.get('scopes', [])) == 1 and (m['scopes'][0], m['type']) in groups]
-    known = {m['memory_id'] for m in related}
-    for memory in catalog:
-        if memory['memory_id'] in targeted and memory['memory_id'] not in known:
-            # A target whose recorded type differs from the provisional one is
-            # still part of the comparison context.
-            related.append(memory)
-            known.add(memory['memory_id'])
-    # Small original snippets let the reviewer disambiguate a task or date,
-    # while the long source document is no longer a second extraction job.
-    snippets = [{**f, 'text': f['text'][:240]} for f in model_data['fragments']]
-    payload = {'groups': list(groups.values()), 'catalog': related, 'fragments': snippets}
+        incoming[index] = dict(row)
+        proposal = {'id': f'd{index}', 'evidence': row['evidence']}
+        if isinstance(row.get('target'), str) and row['target'].casefold() in catalog_ids:
+            proposal['target'] = row['target']
+        proposals.append(proposal)
+    related = [m for m in catalog if len(m.get('scopes', [])) == 1]
+    # Show original evidence, not the draft's classifications: the reviewer
+    # must be able to correct ownership and value without inheriting them.
+    snippets = list(model_data['fragments'])
+    payload = {'incoming': proposals, 'catalog': related, 'fragments': snippets}
     return payload, (original, incoming, {m['memory_id'].casefold():m for m in related})
 
 
-def expand_maintenance(raw: str, context) -> str:
+def expand_maintenance(raw: str, context, *, diagnostics=None) -> str:
     value = parse_strict_json(raw)
     original, incoming, catalog = context
     # Older host adapters can still provide fully bound compact output.
@@ -73,6 +42,7 @@ def expand_maintenance(raw: str, context) -> str:
     if any(not isinstance(v,list) for v in value.values()):
         raise _invalid()
     seen = set()
+    reviewed_evidence = set()
     def resolve(refs):
         if not isinstance(refs,list) or not refs:
             raise _invalid('invalid_evidence')
@@ -85,10 +55,23 @@ def expand_maintenance(raw: str, context) -> str:
         seen.update(normalized)
         return [incoming[r] for r in normalized]
     result = {'memories':[], 'no_memory':list(original['no_memory']), 'deferred':list(original['deferred'])}
-    for row in original['memories']:
-        if row.get('retention')=='session':
-            result['no_memory'].extend(row['evidence'])
-    for row in value['memories']:
+    # Only a genuine split may shed a previously bound update identity. A
+    # missing/null field in a one-to-one maintenance result is not a CREATE.
+    from_uses = {}
+    for proposed in value['memories']:
+        if isinstance(proposed, dict) and isinstance(proposed.get('from'), list):
+            for ref in proposed['from']:
+                key = str(ref).removeprefix('d')
+                from_uses[key] = from_uses.get(key, 0) + 1
+    def compile_row(row):
+        if isinstance(row, dict):
+            row = {'target': None, **row}
+        if isinstance(row, dict) and 'scopes' in row:
+            row = dict(row)
+            scopes_value = row.pop('scopes')
+            if not isinstance(scopes_value, list) or len(scopes_value) != 1 or ('scope' in row and row['scope'] != scopes_value[0]):
+                raise _invalid('invalid_scope')
+            row['scope'] = scopes_value[0]
         if not isinstance(row,dict) or 'target' not in row or not {'from','title','body'} <= set(row):
             raise _invalid()
         if row['from'] == []:
@@ -99,42 +82,98 @@ def expand_maintenance(raw: str, context) -> str:
             fields = {k: v for k, v in row.items() if k not in {'from', 'target'} and v is not None}
             if record is None or any(record.get(k) != v for k, v in fields.items()):
                 raise _invalid('invalid_evidence')
-            continue
+            return None
+        if set(row) - {'from', 'target', 'title', 'body', 'scope', 'type', 'status', 'due_date', 'completed_at', 'evidence'}:
+            raise _invalid()
+        if any(not isinstance(row[k], str) or not row[k].strip() for k in ('title', 'body')):
+            raise _invalid()
         sources = resolve(row['from'])
         scopes = {s['scope'] for s in sources}
-        if len(scopes)!=1:
+        if len(scopes)!=1 and 'scope' not in row:
             raise _invalid('scope_drift')
-        scope = next(iter(scopes))
+        scope = row.get('scope', next(iter(scopes)))
+        if not isinstance(scope, str) or not scope:
+            raise _invalid('invalid_scope')
         kinds = {s.get('type', 'fact') for s in sources}
-        if len(kinds) != 1:
-            raise _invalid('invalid_type')
-        kind = next(iter(kinds))
+        kind = row.get('type', next(iter(kinds)))
         target = row['target']
+        inherited = {source['target'] for source in sources if isinstance(source.get('target'), str) and source['target'].casefold() in catalog}
+        if target is None and len(inherited) > 1:
+            raise _invalid('duplicate_update_target')
+        if target is None and len(inherited) == 1 and all(from_uses.get(str(ref).removeprefix('d')) == 1 for ref in row['from']):
+            target = next(iter(inherited))
         if target is not None:
             record = catalog.get(target.casefold()) if isinstance(target,str) else None
-            if record is None or record['scopes'] != [scope]:
+            explicit_target = any(str(source.get('target', '')).casefold() == str(target).casefold() for source in sources)
+            if record is None or (record['scopes'] != [scope] and not (explicit_target or row.get('scope') == scope)):
                 raise _invalid('scope_drift')
-            if kind != record['type']:
+            if row.get('type') == 'todo' and record['type'] != 'todo':
                 raise _invalid('invalid_type')
+            kind = record['type']
+            if kind == 'todo' and 'todo' not in kinds and row.get('status') not in {'active', 'completed', 'cancelled'}:
+                raise _invalid('todo_fields')
+        elif len(kinds) != 1 and 'type' not in row:
+            raise _invalid('invalid_type')
+        if not isinstance(kind, str) or kind not in {'fact', 'preference', 'project', 'todo', 'event', 'identity', 'other'}:
+            raise _invalid('invalid_type')
         memory = {k:v for k,v in row.items() if k!='from'}
-        if 'scope' in memory and memory['scope']!=scope:
-            raise _invalid('scope_drift')
+        memory['target']=target
         memory['scope']=scope
         memory['type']=kind
         if kind != 'todo':
             for field in ('status', 'due_date', 'completed_at'):
                 memory.pop(field, None)
-        memory['evidence']=list(dict.fromkeys(int(r) for s in sources for r in s['evidence']))
+        allowed = list(dict.fromkeys(int(r) for s in sources for r in s['evidence']))
+        chosen = row.get('evidence', allowed)
+        if not isinstance(chosen, list) or not chosen or any(type(r) is not int or r not in allowed for r in chosen):
+            raise _invalid('invalid_evidence')
+        memory['evidence']=list(dict.fromkeys(chosen))
         bases = list(dict.fromkeys(int(r) for s in sources for r in (s.get('task_basis') or [])))
-        if bases:
-            memory['task_basis']=bases
-        result['memories'].append(memory)
+        if bases and kind == 'todo':
+            memory['task_basis']=[ref for ref in bases if ref in chosen]
+            if not memory['task_basis']:
+                del memory['task_basis']
+        reviewed_evidence.update(allowed)
+        return memory
+
+    for index, row in enumerate(value['memories'], 1):
+        try:
+            memory = compile_row(row)
+            if memory is not None:
+                result['memories'].append(memory)
+        except ModelOutputError as error:
+            refs = row.get('from') if isinstance(row, dict) else None
+            try:
+                sources = resolve(refs)
+            except ModelOutputError:
+                # Unresolvable references cannot authorize any write. Missing
+                # input coverage is deferred below, independently of valid rows.
+                sources = []
+            evidence = list(dict.fromkeys(int(r) for source in sources for r in source['evidence']))
+            result['deferred'].extend(evidence)
+            if diagnostics is not None:
+                diagnostics.append({'row': index, 'detail': error.validation_detail, 'evidence': evidence})
     for key,dest in (('discard','no_memory'),('deferred','deferred')):
         if value[key]:
-            for row in resolve(value[key]):
+            try:
+                refs = []
+                for entry in value[key]:
+                    if isinstance(entry, dict) and set(entry) <= {'from', 'reason'} and isinstance(entry.get('from'), list):
+                        refs.extend(entry['from'])
+                    else:
+                        refs.append(entry)
+                sources = resolve(refs)
+            except ModelOutputError:
+                sources = []
+            for row in sources:
                 result[dest].extend(row['evidence'])
-    if seen != set(incoming):
-        raise _invalid('invalid_evidence')
+    for ref in set(incoming) - seen:
+        evidence = incoming[ref]['evidence']
+        result['deferred'].extend(evidence)
+        if diagnostics is not None:
+            diagnostics.append({'detail': 'invalid_evidence', 'evidence': evidence})
+    claimed = {ref for memory in result['memories'] for ref in memory['evidence']}
+    result['no_memory'].extend(sorted(reviewed_evidence - claimed - set(result['deferred'])))
     for key in ('no_memory','deferred'):
         result[key]=list(dict.fromkeys(int(r) for r in result[key]))
     return json.dumps(result,ensure_ascii=False)

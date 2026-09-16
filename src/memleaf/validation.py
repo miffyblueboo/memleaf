@@ -711,7 +711,10 @@ def _normalize_relative_calendar_text(
             safe = False
             return match.group(0)
         relative_replaced = True
-        return resolved
+        # An adjacent quantity must not become part of the ISO day token.
+        # This preserves the meaning of e.g. "yesterday3 pending items".
+        suffix = " " if match.end() < len(match.string) and match.string[match.end()].isdigit() else ""
+        return resolved + suffix
 
     normalized = _RELATIVE_CALENDAR_EXPRESSION.sub(replace_token, text)
     if relative_replaced:

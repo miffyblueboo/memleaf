@@ -10,7 +10,6 @@ import hashlib
 import json
 import re
 from copy import deepcopy
-from datetime import date, timedelta
 from typing import Any, Iterable, Mapping, Optional
 
 from .admission import (
@@ -38,17 +37,58 @@ from .single_pass_plan import run_single_pass_stage
 from .turn_plan import dedup_digest, revision_digest
 from .validation import (
     ModelOutputError,
+    calendar_tokens,
     normalize_relative_calendar_text,
     parse_summarize_output,
 )
+from .semantic_protocol import _independent_project_subjects
 from .scope_state import project_scope_matches_text
 from .llm import ModelUnavailable
 
 
-_WEEKDAY_INDEX = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
-_WEEKDAY_RE = re.compile(r"(?:周|星期|礼拜)\s*([一二三四五六日天1-7])")
-_MONTH_END_RE = re.compile(r"(?:月底|月末)")
-_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_SCHEDULE_ACTION_RE = re.compile(
+    r"^\s*(?:我(?:们)?\s*)?(?:(?:要|会|将|需(?:要)?|计划|准备|打算|必须)\s*)?"
+    r"(?:给(?:出)?|提交|交付|发送|发出|回复|反馈|完成|提供|安排|处理|确认|发布|上线|交接)"
+    r"(?!过|了|的|来)",
+)
+
+
+def _candidate_deadline_dates(evidence: Iterable[Mapping[str, Any]]) -> set[str]:
+    """Exclude observation cutoffs unless they also schedule an action."""
+
+    projected = []
+    for event in evidence:
+        anchor = _parse_time(event.get("timestamp"))
+        content = str(event.get("content", ""))
+        text = normalize_relative_calendar_text(content, anchor) if anchor is not None else content
+        text = text if text is not None else content
+        for token in reversed(calendar_tokens(text, anchor)):
+            if (re.search(r"(?:截至|截止)\s*[:：]?\s*$", text[:token.start])
+                    and not _SCHEDULE_ACTION_RE.match(text[token.end:])):
+                text = text[:token.start] + "[observation cutoff]" + text[token.end:]
+        projected.append({**event, "content": text})
+    return _grounded_deadline_dates(projected)
+
+
+def _task_basis_deadline_dates(evidence: Iterable[Mapping[str, Any]]) -> set[str]:
+    """Recognize dates attached to a task, not dates merely inside its quote."""
+
+    events = tuple(evidence)
+    deadlines = _candidate_deadline_dates(events)
+    for event in events:
+        if event.get("role") != "user":
+            continue
+        anchor = _parse_time(event.get("timestamp"))
+        if anchor is None:
+            continue
+        text = normalize_relative_calendar_text(str(event.get("content", "")), anchor)
+        if text is None:
+            continue
+        for token in calendar_tokens(text, anchor):
+            if (token.canonical is not None and token.canonical >= anchor.date().isoformat()
+                    and _SCHEDULE_ACTION_RE.match(text[token.end:])):
+                deadlines.add(token.canonical)
+    return deadlines
 
 
 def _resolve_candidate_due_date(
@@ -58,8 +98,8 @@ def _resolve_candidate_due_date(
 ) -> Optional[str]:
     """Resolve one proposed todo deadline to ISO, or return None to drop it.
 
-    The date must be written in the candidate's own evidence and must be
-    anchorable against that evidence's timestamp.  Anything else loses the
+    The date must be established as a deadline in this candidate's evidence,
+    not merely occur there, and be anchored to its own timestamp. Anything else loses the
     date, never the memory.
     """
 
@@ -67,39 +107,28 @@ def _resolve_candidate_due_date(
     if not isinstance(raw, str) or not raw.strip():
         return next(iter(grounded)) if len(grounded) == 1 else None
     value = raw.strip()
-    if _ISO_DATE_RE.fullmatch(value):
-        return value
     if value in grounded:
         return value
-    texts = [
-        str(event.get("content", ""))
-        for event in date_evidence
-        if isinstance(event, Mapping) and isinstance(event.get("content"), str)
-    ]
-    if not any(value in text for text in texts):
-        return None
-    anchor = next(
-        (
-            _parse_time(event.get("timestamp"))
-            for event in date_evidence
-            if isinstance(event, Mapping) and _parse_time(event.get("timestamp")) is not None
-        ),
-        None,
-    )
-    if anchor is None:
-        return None
-    rewritten = normalize_relative_calendar_text(value, anchor)
-    if isinstance(rewritten, str) and _ISO_DATE_RE.fullmatch(rewritten.strip()):
-        return rewritten.strip()
-    weekday = _WEEKDAY_RE.search(value)
-    if weekday is not None:
-        name = weekday.group(1)
-        target = int(name) - 1 if name.isdigit() else _WEEKDAY_INDEX[name]
-        return (anchor + timedelta(days=(target - anchor.weekday()) % 7)).date().isoformat()
-    if _MONTH_END_RE.search(value):
-        first_of_next = (anchor.replace(day=28) + timedelta(days=4)).replace(day=1)
-        return (first_of_next - timedelta(days=1)).date().isoformat()
-    return None
+    resolved = set()
+    for event in date_evidence:
+        if not isinstance(event, Mapping) or value not in str(event.get("content", "")):
+            continue
+        anchor = _parse_time(event.get("timestamp"))
+        if anchor is None:
+            continue
+        rewritten = normalize_relative_calendar_text(value, anchor)
+        if isinstance(rewritten, str):
+            tokens = calendar_tokens(rewritten, anchor)
+            # A proposed deadline may retain a qualifier such as 下班前.
+            # Resolve it only when there is one unambiguous date and that
+            # date already passed the candidate-local deadline semantics.
+            canonical = {token.canonical for token in tokens}
+            if len(canonical) == 1 and None not in canonical:
+                resolved.update(canonical & grounded)
+        for token in calendar_tokens(value, anchor):
+            if token.raw == value and token.canonical in grounded:
+                resolved.add(token.canonical)
+    return next(iter(resolved)) if len(resolved) == 1 else None
 
 
 def _claim_date_evidence(
@@ -534,27 +563,20 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 memory_type = decision_context.get("type")
                 scopes = list(decision_context.get("scopes", []))
                 scope_source = self._derived_scope_source(scopes, scope_background, scope)
-            # A missing ownership label must not cost the memory.  Keep the
-            # model's project name when it gave one; otherwise fall back to the
-            # single project named by this candidate's own evidence, else global.
-            usable = [value for value in scopes if isinstance(value, str) and value and value != "unscoped"]
-            if not usable:
-                labels = {
-                    scope_name
-                    for claim in claims if isinstance(claim, Mapping)
-                    for scope_name in project_scope_matches_text(
-                        getattr(by_unit.get(claim.get("unit_id")), "text", "") or "",
-                        {"scopes": validation_scope_registry},
-                    )
-                    if scope_name.startswith("project:")
-                }
-                usable = sorted(labels) if len(labels) == 1 else ["global"]
-            scopes = usable
-            if scope_source == "insufficient_context" and scopes != ["unscoped"]:
-                # insufficient_context is only legal together with unscoped.
-                scope_source = "model"
-
-            selected_projects = {value for value in scopes if value.startswith("project:")}
+            # Caller-selected projects bound the write destination. Source
+            # mentions and model ownership decisions cannot expand that set.
+            # This callback also validates repaired and reconciled updates.
+            selected_projects = {value.casefold() for value in scopes if value.startswith("project:")}
+            authorized_projects = {value.casefold() for value in authorized_project_scopes}
+            if authorized_projects and not selected_projects <= authorized_projects:
+                raise ModelOutputError(
+                    "candidate project is outside the explicit process scope",
+                    validation_detail="scope_drift",
+                )
+            # Uncertain ownership must stay uncertain. Mentioning a project
+            # in the evidence does not establish that it owns the statement.
+            if scopes == ["unscoped"]:
+                scope_source = "insufficient_context"
 
             candidate = {
                 "candidate_id": candidate_id,
@@ -572,8 +594,9 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             if decision == "UPDATE" and isinstance(target_id, str):
                 candidate["update_memory_id"] = target_id
 
-            # One memory covering several projects is the model's call.  Core no
-            # longer discards it; a merged body can still be split by hand.
+            subjects = _independent_project_subjects(str(proposed.get("body", "")), validation_scope_registry)
+            if len(subjects) > 1 and any(s.startswith("project:") for s in scopes):
+                raise ModelOutputError("independent subjects require separate memories", validation_detail="scope_drift")
             candidate_evidence = _claim_date_evidence(claims, by_unit, events)
             # Ownership is a semantic judgement and belongs to the model, not
             # to Core.  Core used to require the project name to occur in the
@@ -606,12 +629,7 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                         scope.casefold() for scope in scopes if isinstance(scope, str)
                     }
                 ):
-                    # An unauthorized ownership change no longer costs the
-                    # update: keep the target's own scopes and apply the change.
-                    scopes = list(target_memory.scopes)
-                    scope_source = target_memory.scope_source
-                    candidate["scopes"] = scopes
-                    candidate["scope_source"] = scope_source
+                    raise ModelOutputError("ownership change lacks correction evidence", validation_detail="scope_drift")
                 else:
                     scope_correction_plans[candidate_id] = dict(correction_plan)
 
@@ -622,7 +640,7 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             ))
             candidate_date_evidence = candidate_evidence
             grounded_dates = _grounded_due_dates(turn, evidence_events=candidate_date_evidence)
-            deadline_dates = _grounded_deadline_dates(candidate_date_evidence)
+            deadline_dates = _candidate_deadline_dates(candidate_date_evidence)
             basis = decision_context.get("_task_basis")
             task_dates: set[str] = set()
             if memory_type == "todo" and isinstance(basis, Mapping):
@@ -631,12 +649,9 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                         and basis_unit.origin == "user_assertion"
                         and any(c.get("unit_id") == basis.get("unit_id")
                                 and c.get("quote") == basis.get("quote") for c in claims)):
-                    # The semantic task basis ties its stated date to this
-                    # action; lexical deadline keywords are not required.
                     basis_events = _claim_date_evidence([basis], by_unit, events)
-                    task_dates = _grounded_due_dates(turn, evidence_events=basis_events)
-                    if len(task_dates) == 1:
-                        deadline_dates.update(task_dates)
+                    task_dates = _task_basis_deadline_dates(basis_events)
+                    deadline_dates.update(task_dates)
             grounded_dates.update(deadline_dates)
             summary = dict(proposed)
             if (memory_type == "todo" and summary.get("status", "active") == "active"
@@ -648,7 +663,7 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 resolved_due = _resolve_candidate_due_date(
                     summary.get("due_date"),
                     candidate_date_evidence,
-                    grounded_dates | deadline_dates,
+                    deadline_dates,
                 )
                 if resolved_due is None:
                     summary.pop("due_date", None)

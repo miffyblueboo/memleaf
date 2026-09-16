@@ -74,7 +74,7 @@ _DEADLINE_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 _DEADLINE_SUFFIX_RE = re.compile(
-    r"^\s*(?:(?:[01]?\d|2[0-3]):[0-5]\d\s*)?(?:前|之前|为止|截止|截至|不晚于|不得晚于|before\b|deadline\b|due\b)",
+    r"^\s*(?:(?:[01]?\d|2[0-3]):[0-5]\d\s*|(?:上午|下午|晚上|下班|中午|凌晨|傍晚|晚间)(?:\d{1,2}(?:点|时))?\s*)?(?:前|之前|为止|截止|截至|不晚于|不得晚于|before\b|deadline\b|due\b)",
     re.IGNORECASE,
 )
 _EXPLICIT_PROJECT_LABEL_RE = re.compile(
@@ -89,7 +89,7 @@ _EXPLICIT_PROJECT_LABEL_RE = re.compile(
 
 
 _SCOPE_CORRECTION_MARKER_RE = re.compile(
-    r"(?:不是|并非|不属于|归错|归属错误|错误归属|应属于|应该属于|改归|改为|纠正为|"
+    r"(?:不是|并非|不属于|归错|归属错误|错误归属|应属于|应该属于|应该(?:是|说)|改归|改为|纠正为|"
     r"wrong\s+(?:project|scope)|belongs?\s+to|correct\s+(?:project|scope))",
     re.IGNORECASE,
 )

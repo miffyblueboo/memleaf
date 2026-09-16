@@ -2,6 +2,13 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.64 — 2026-09-16
+
+- Keep uncertain ownership as `unscoped`: explicit cross-project corrections now require cited user evidence and an exact target, while independent project subjects are deferred instead of guessed. Candidate-local deadline grounding remains conservative, preserving only dates tied to the todo action or its explicit task basis.
+- Preserve target type and Core-owned ownership metadata during same-target reconciliation, and carry bounded `scope_drift` and schema diagnostics through maintenance and repair without rewriting valid sibling candidates.
+
+Verification: Python 3.11 compilation, package metadata consistency, wheel contents and `git diff --check` were checked. Provider/runtime acceptance is completed by the release CI and post-install replay.
+
 ## 0.2.63 — 2026-09-16
 
 - Unify the retention decision across first-pass extraction, topic selection, candidate repair and `semantic_maintenance`. The model now judges future reuse, information gain, direct usability and forgetting cost, keeping only the smallest core with clear material value; the contract contains no mail, report, customer or project-specific exclusion rule.

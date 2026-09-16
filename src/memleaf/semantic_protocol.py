@@ -107,13 +107,13 @@ def source_fragments(b3_prompt: str) -> dict[str, Any]:
             'scope_context': data['scope_background'], 'scope_registry': data['scope_registry']}
 
 
-RETENTION_GUIDANCE = """先判断这段信息是否有长期记忆价值：综合未来复用概率、信息增量、再次读取时是否可直接使用和忘记成本。只有对未来理解、判断或行动可能产生实质影响的信息才保留；没有明确价值就放 no_memory。只保留产生该价值的最小核心。"""
+RETENTION_GUIDANCE = """长期记忆服务于未来协作，不是业务流水归档。保留持续事项的行动与状态、稳定偏好及可直接复用的知识；仅供本次查阅知悉的通知、过程记录不保留。事实成立或能想象用途并不足够，未来仍须重新查询来源才可信的信息通常不保留。只留下有明确未来用途的最小核心，无此价值放 no_memory；已有事项的状态变化仍须更新。retention=reusable 表示可复用，session 表示仅本轮有用。"""
 
 
 FRAGMENT_SYSTEM = f'''根据对话语义判断每段信息是否值得形成长期记忆，不继承原文的标题、紧急程度、列表分类或建议处理方式。
 {RETENTION_GUIDANCE}
 返回 JSON：{{"memories":[],"no_memory":[],"deferred":[]}}。
-每条 memory：{{"retention":"reusable 或 session","title":"简短主题","body":"脱离本轮对话仍有价值的核心内容","scope":"project:主体名 或 global","evidence":[片段ID]}}。type 默认 fact，表示业务事实或状态；可选类型 preference、project、todo、event、identity、other，event 仅用于事件本身而非其携带的业务事实。一条一个独立主题与归属，同一件事只写一次。scope 表示事实所属主体，按语义判断，不要求名称与证据逐字一致；项目、客户、系统、产品等主体均可作为归属，没有明确主体才写 global。同一段的独立主题分别提炼。
+每条 memory：{{"retention":"reusable 或 session","title":"简短主题","body":"脱离本轮对话仍有价值的核心内容","scope":"project:主体名 或 global","evidence":[片段ID]}}。type 默认 fact，表示业务事实或状态；可选类型 preference、project、todo、event、identity、other，event 仅用于事件本身而非其携带的业务事实。一条一个独立主题与归属，同一件事只写一次。scope 表示事实所属主体，按语义判断，不要求名称与证据逐字一致；项目、客户、系统、产品等主体均可作为归属，通用原则写 global，主体所属项目尚未确认写 unscoped，不根据名称相似或当前项目猜测。同一段的独立主题分别提炼。
 新 todo 额外提供 task_basis:[用户角色片段ID]，其内容须明确建立用户自己承担的未完成动作。todo 提供 status（active/completed/cancelled）及 due_date（该任务约定日期，无则 null），completed_at 可选。日期保留原文写法，由 Core 解析相对日期。
 no_memory 填不符合上述长期记忆价值标准的片段ID；deferred 填语义尚无法确定的片段ID。每个片段须被 memory 引用或列入其中一个数组。同片段允许支持多条 memory。若为 catalog 中同一事项的补充、状态变化或重复，target 填已有真实 ID 并给出合并后的当前内容；新事项才省略 target。无需输出写入决策、生成ID或复制原文。'''
 
@@ -196,15 +196,6 @@ def _independent_project_subjects(text: str, scope_registry: Mapping[str, Any] |
     registry = scope_registry if isinstance(scope_registry, Mapping) else {}
     labels: set[str] = set()
     subjects: set[str] = set()
-    # Chinese project short forms have no word boundary. A unique leading
-    # name prefix can flag a separately headed clause without registering an
-    # invented alias. Ambiguous prefixes remain unresolved.
-    names = {scope: scope.partition(":")[2] for scope in registry if scope.startswith("project:")}
-    short_names = {}
-    for scope, name in names.items():
-        if re.fullmatch(r"[\u4e00-\u9fff]{4,}", name):
-            short_names[scope] = [name[:n] for n in range(2, len(name))
-                                  if sum(other.startswith(name[:n]) for other in names.values()) == 1]
     for clause in re.split(r"[。！？!?；;，\n、]+", text):
         clause = clause.strip(" -*•0123456789.()（）")
         clause_labels = _explicit_project_scope_labels([clause], registry)
@@ -213,14 +204,12 @@ def _independent_project_subjects(text: str, scope_registry: Mapping[str, Any] |
         if len(clause_labels) == 1:
             labels.update(clause_labels)
         matches = project_scope_matches_text(clause, {"scopes": registry})
-        matches = set(matches) | {scope for scope, terms in short_names.items()
-                                  if any(clause.startswith(term) for term in terms)}
         for scope in matches:
             node = registry.get(scope, {})
-            terms = [scope.partition(":")[2], *short_names.get(scope, [])]
+            terms = [scope.partition(":")[2]]
             if isinstance(node, Mapping):
                 terms += [v for v in node.get("aliases", []) if isinstance(v, str)]
-            if any(clause.casefold().startswith(term.casefold()) for term in terms if term):
+            if any(clause.casefold().startswith(term.casefold()) or re.search(r"(?:→|->|=>)\s*" + re.escape(term), clause, re.I) for term in terms if term):
                 subjects.add(scope)
     return labels | subjects
 
@@ -229,7 +218,7 @@ def _independent_project_subjects(text: str, scope_registry: Mapping[str, Any] |
 TOPIC_SYSTEM = RETENTION_GUIDANCE + "\n" + '''根据对话语义识别值得保留的独立主题，不继承原文标题、紧急程度、列表分类或建议处理方式。
 这一阶段只选择有后续价值的主题及其证据，不写记忆正文，不分类，不处理日期，不决定数据库操作。
 返回 JSON {"topics":[{"retention":"reusable 或 session","scope":"project:项目名 或 global","evidence":[片段ID]}],"no_memory":[片段ID],"deferred":[片段ID]}。
-每个独立主题单独列出，scope 表示主题真正所属的主体，按语义判断，不要求名称与证据逐字一致；没有明确主体才写 global。其他合法 scope：domain:名称、portfolio:名称、unscoped。
+每个独立主题单独列出，scope 表示主题真正所属的主体，按语义判断，不要求名称与证据逐字一致；通用原则写 global，主体所属项目尚未确认写 unscoped，不根据名称相似或当前项目猜测。其他合法 scope：domain:名称、portfolio:名称、unscoped。
 no_memory 表示不符合上述长期记忆价值标准；deferred 表示语义无法确定。覆盖所有片段，每个被一个或多个主题引用或列入一个数组。'''
 
 

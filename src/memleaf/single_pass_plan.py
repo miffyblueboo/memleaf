@@ -1139,7 +1139,7 @@ B3_SAME_TARGET_SYSTEM = """You reconcile already-admitted B3 items that all targ
 Reconcile EVERY admitted change into ONE current state for the target:
 - Preserve unaffected facts already present in the target.
 - Never concatenate contradictory claims. A later explicit correction may supersede an earlier admitted change only when the order and meaning are unambiguous.
-- Keep the target's type, scopes and scope_source unchanged.
+- Keep the target's type. Core preserves the already-admitted ownership metadata.
 - Do not invent facts, owners, deadlines, statuses, numbers, codes or relationships.
 - When a contradiction cannot be resolved from the admitted changes, return {"decision":"DEFERRED"} instead of guessing.
 - Return {"decision":"NO_CHANGE"} only when the admitted changes add no semantic change.
@@ -1169,7 +1169,7 @@ def reconcile_same_target_group(
     guessed.  Returns ``None`` when no usable reconciliation could be obtained,
     so the caller defers the group rather than writing something invented.
 
-    The call is charged against the same two-request turn budget as the primary
+    The call is charged against the same three-request turn budget as the primary
     extraction and its structural repair, so a collision can never extend a
     turn beyond the documented bound.  When the budget is already spent the
     call fails closed and the group is deferred.
@@ -1491,7 +1491,7 @@ def run_single_pass_stage(
             unit_ids = {c["unit_id"] for row in failed for c in row["evidence"]}
             payload = {**model_data, "fragments": [visible_fragment(f) for f in fragments],
                        "issues": [
-                           {**row, "problem": "The selection and synthesis disagree about lasting value. Distinguish underlying lasting facts from details of performing this interaction; neither prior verdict is authoritative."
+                           {**candidate_contexts.get(row.get("candidate_id"), {}), **row, "problem": "The selection and synthesis disagree about lasting value. Distinguish underlying lasting facts from details of performing this interaction; neither prior verdict is authoritative."
                             if row.get("detail") == "value_disagreement" else "One memory contains independent project subjects; split their facts by owner."
                             if row.get("detail") == "scope_drift" else "A field contains an unsupported date or task attribution; retain supported core facts."}
                            for row in deferrals if row.get("candidate_id") in failed_ids]}
@@ -1516,6 +1516,11 @@ def run_single_pass_stage(
                         if scope.startswith("project:"):
                             repair_registry.setdefault(scope, {"aliases": []})
                 def repaired_validator(cid, decision, target, record, memory, claims, context):
+                    subjects = _independent_project_subjects(str(memory.get("body", "")), repair_registry)
+                    owners = {scope for scope in context.get("scopes", (record or {}).get("scopes", []))
+                              if scope.startswith("project:")}
+                    if owners and (len(subjects) > 1 or (subjects and not subjects <= owners)):
+                        raise ModelOutputError("independent project subjects require separate memories", validation_detail="scope_drift")
                     return validate_memory(cid, decision, target, record, memory, claims,
                                            {**context, "_task_basis": task_bases.get(cid)})
                 remember_context(envelope)
@@ -1616,9 +1621,11 @@ def run_single_pass_stage(
         project_registry: dict[str, Any] = {}
         def checked(cid, decision, target, record, memory, claims, context):
             try:
-                # Atomicity, task ownership and project separation are the
-                # model's judgement.  Core keeps the writer contract only, so a
-                # candidate is never discarded for those reasons.
+                subjects = _independent_project_subjects(str(memory.get("body", "")), project_registry)
+                owners = set(context.get("scopes") or (record or {}).get("scopes") or [])
+                owners = {scope for scope in owners if scope.startswith("project:")}
+                if owners and (len(subjects) > 1 or (subjects and not subjects <= owners)):
+                    raise ModelOutputError("independent project subjects require separate memories", validation_detail="scope_drift")
                 return validate_memory(cid, decision, target, record, memory, claims,
                                        {**context, "_task_basis": bases.get(cid)})
             except ModelOutputError as error:
@@ -1700,7 +1707,7 @@ def run_single_pass_stage(
         review_prompt = "MEMORY_REVIEW\n" + json.dumps(review_payload, ensure_ascii=False, separators=(",", ":"))
         if inline_system:
             review_prompt, review_system = review_system + "\n\n" + review_prompt, ""
-        def unreviewed():
+        def unreviewed(detail="semantic_review_failed"):
             if not parsed["items"]:
                 parsed["no_memory"] = []
                 parsed["items"] = [
@@ -1714,14 +1721,15 @@ def run_single_pass_stage(
                     cid, claims = row["candidate_id"], row["evidence"]
                     row.clear()
                     row.update(candidate_id=cid, evidence=claims, decision="DEFERRED", reason="maintenance_uncertain")
-                    deferrals.append({"candidate_id": cid, "reason": "maintenance_uncertain", "detail": "semantic_review_failed"})
+                    deferrals.append({"candidate_id": cid, "reason": "maintenance_uncertain", "detail": detail})
                 elif row["decision"] == "DEFERRED" and not any(
                         d.get("candidate_id") == row["candidate_id"] and d.get("detail")
                         for d in deferrals):
                     deferrals.append({"candidate_id": row["candidate_id"], "reason": row["reason"],
-                                      "detail": "semantic_review_failed"})
+                                      "detail": detail})
             return parsed
 
+        maintenance_diagnostics = []
         try:
             corrected = complete(
                 budgeted_backend, review_prompt, system=review_system,
@@ -1731,7 +1739,7 @@ def run_single_pass_stage(
             )
             if maintenance_context is not None:
                 from .semantic_maintenance import expand_maintenance
-                corrected = expand_maintenance(corrected, maintenance_context)
+                corrected = expand_maintenance(corrected, maintenance_context, diagnostics=maintenance_diagnostics)
             replacement, new_bases = compile_semantic(
                 expand_fragments(corrected, repair_fragments), protocol_version=PROTOCOL_VERSION, local_by_key=local_by_key, prefix="r",
             )
@@ -1740,7 +1748,7 @@ def run_single_pass_stage(
             repair_ids = {c["unit_id"] for r in replacement["items"] for c in r["evidence"]}
             repair_ids.update(r["unit_id"] for r in replacement["no_memory"])
             if repair_ids != affected_ids:
-                return unreviewed()
+                return unreviewed("invalid_evidence")
             kept = [row for row in envelope["items"] if row["candidate_id"] not in problems]
             combined = {"protocol_version": PROTOCOL_VERSION,
                         "items": kept + replacement["items"],
@@ -1750,6 +1758,14 @@ def run_single_pass_stage(
             old_deferrals, old_targets = list(deferrals), list(target_rows)
             try:
                 final = validate(combined)
+                failure_units = {f['unit_id']: d['detail'] for d in maintenance_diagnostics
+                                 for f in repair_fragments if f['id'] in d['evidence']}
+                for item in final['items']:
+                    if item['decision'] == 'DEFERRED':
+                        detail = next((failure_units[c['unit_id']] for c in item['evidence'] if c['unit_id'] in failure_units), None)
+                        if detail:
+                            item['reason'] = 'maintenance_uncertain'
+                            deferrals.append({'candidate_id': item['candidate_id'], 'reason': 'maintenance_uncertain', 'detail': detail})
                 if topic_scopes:
                     selected_units = {c["unit_id"] for row in envelope["items"] for c in row["evidence"]}
                     retained_units = {c["unit_id"] for row in final["items"] if row["decision"] in {"CREATE", "UPDATE", "NO_CHANGE"} for c in row["evidence"]}
@@ -1775,12 +1791,12 @@ def run_single_pass_stage(
                         covered.add(uid)
                     final["no_memory"] = [row for row in final["no_memory"] if row["unit_id"] not in covered]
                 return final
-            except ModelOutputError:
+            except ModelOutputError as error:
                 deferrals[:] = old_deferrals
                 target_rows[:] = old_targets
-                return unreviewed()
-        except (ModelError, ModelOutputError):
-            return unreviewed()
+                return unreviewed(error.validation_detail)
+        except (ModelError, ModelOutputError) as error:
+            return unreviewed(getattr(error, "validation_detail", None) or "semantic_review_failed")
 
     def finalize(parsed: dict[str, Any]) -> dict[str, Any]:
         """Collapse items that over-reference one target into a single state.
@@ -1839,10 +1855,31 @@ def run_single_pass_stage(
             if len(indexes) < 2:
                 continue
             members = [items[index] for index in indexes]
-            keeper = dict(members[0])
+            updates = [member for member in members if member.get("decision") == "UPDATE"]
+            keeper = dict(updates[0] if updates else members[0])
             evidence = union_evidence(members)
             target = local_by_key.get(target_key)
             target_record: Mapping[str, Any] = target if isinstance(target, Mapping) else {}
+            ownership = {tuple((member.get("memory") or {}).get("scopes") or
+                               candidate_contexts.get(member["candidate_id"], {}).get("scopes") or
+                               target_record.get("scopes", [])) for member in updates}
+            if len(ownership) > 1:
+                items[indexes[0]] = deferred(keeper, evidence)
+                drop.update(indexes[1:])
+                continue
+            merge_context = {**keeper, **candidate_contexts.get(keeper["candidate_id"], {})}
+            if ownership:
+                merge_context["scopes"] = list(next(iter(ownership)))
+            candidate_contexts[keeper["candidate_id"]] = {
+                k: merge_context[k] for k in ("type", "scopes", "target_memory_id") if k in merge_context}
+            # NO_CHANGE contributes provenance, not another state to synthesize.
+            # Identical admitted updates likewise need no additional model call.
+            distinct = {json.dumps(member.get("memory"), sort_keys=True, ensure_ascii=False) for member in updates}
+            if len(distinct) <= 1:
+                keeper["evidence"] = evidence
+                items[indexes[0]] = keeper
+                drop.update(indexes[1:])
+                continue
             outcome = reconcile_same_target_group(
                 model_executor,
                 budgeted_backend,
@@ -1861,7 +1898,7 @@ def run_single_pass_stage(
                         target_record,
                         dict(outcome.get("memory") or {}),
                         evidence,
-                        keeper,
+                        merge_context,
                     )
                 except Exception:  # noqa: BLE001 - any rejection defers the group
                     validated = None

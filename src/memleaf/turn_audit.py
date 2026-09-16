@@ -15,6 +15,8 @@ _SAFE_VALIDATION_DETAILS = frozenset({
     "todo_fields",
     "invalid_type",
     "semantic_review_failed",
+    "other_schema_violation",
+    "invalid_scope",
     "lookup_incomplete",
     "relative_time",
     "scope_drift",
