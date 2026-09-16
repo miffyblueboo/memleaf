@@ -894,6 +894,38 @@ def _grounded_due_dates(
     return result
 
 
+def _deadline_evidence_text(content: str, anchor: Any) -> str:
+    """Normalize presentation only in the deadline view, never stored evidence."""
+    text = content
+    for marker in ("**", "__", "`", "*", "_"):
+        pattern = re.escape(marker) + r"([^\n]+?)" + re.escape(marker)
+        text = re.sub(pattern, lambda match: match.group(1), text)
+    normalized = normalize_relative_calendar_text(text, anchor) if anchor is not None else None
+    text = normalized if normalized is not None else text
+    # A parenthetical restatement of the same date must not separate it from
+    # 'before'. Keep arbitrary notes and conflicting dates intact.
+    for token in reversed(calendar_tokens(text, anchor)):
+        if token.canonical is None:
+            continue
+        note = re.match(r"[（(]([^()（）\n]+)[）)]", text[token.end:])
+        if note is None:
+            continue
+        inner = note.group(1)
+        dates = calendar_tokens(inner, anchor)
+        if any(item.canonical != token.canonical for item in dates):
+            continue
+        for item in reversed(dates):
+            inner = inner[:item.start] + inner[item.end:]
+        weekdays = re.findall(r"(?:周|星期)([一二三四五六日天])", inner)
+        weekday = datetime.fromisoformat(token.canonical).weekday()
+        if any("一二三四五六日".index(day.replace("天", "日")) != weekday for day in weekdays):
+            continue
+        inner = re.sub(r"(?:周|星期)[一二三四五六日天]", "", inner)
+        if (dates or weekdays) and not inner.strip(" ，,、\t"):
+            text = text[:token.end] + text[token.end + note.end():]
+    return text
+
+
 def _grounded_deadline_dates(
     evidence_events: Iterable[Mapping[str, Any]],
 ) -> set[str]:
@@ -912,9 +944,7 @@ def _grounded_deadline_dates(
         if not isinstance(content, str) or not content:
             continue
         timestamp = _parse_time(event.get("timestamp"))
-        text = normalize_relative_calendar_text(content, timestamp) if timestamp is not None else content
-        if text is None:
-            text = content
+        text = _deadline_evidence_text(content, timestamp)
         for token in calendar_tokens(text, timestamp):
             canonical = token.canonical
             if canonical is None:

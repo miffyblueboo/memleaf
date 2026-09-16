@@ -28,6 +28,7 @@ from .process_common import (
     _event_payload,
     _explicit_project_scope_labels,
     _grounded_deadline_dates,
+    _deadline_evidence_text,
     _grounded_due_dates,
     _normalize_summary_dates,
     _parse_time,
@@ -60,8 +61,7 @@ def _candidate_deadline_dates(evidence: Iterable[Mapping[str, Any]]) -> set[str]
     for event in evidence:
         anchor = _parse_time(event.get("timestamp"))
         content = str(event.get("content", ""))
-        text = normalize_relative_calendar_text(content, anchor) if anchor is not None else content
-        text = text if text is not None else content
+        text = _deadline_evidence_text(content, anchor)
         for token in reversed(calendar_tokens(text, anchor)):
             if (re.search(r"(?:截至|截止)\s*[:：]?\s*$", text[:token.start])
                     and not _SCHEDULE_ACTION_RE.match(text[token.end:])):

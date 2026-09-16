@@ -2,6 +2,13 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.65 — 2026-09-16
+
+- Ground maintenance todo deadlines in Core-validated candidate evidence and `reference_time`. Relative calendar ranges resolve deterministically to their last valid day, while the normalized deadline view removes only formatting and equivalent parenthetical restatements without losing conflicting dates.
+- Keep validated dates and bounded evidence references intact through maintenance review. Todo candidates now carry explicit status/deadline fields, numeric reference strings are normalized safely, and the shared retention contract stays focused on future collaborative value.
+
+Verification: Python 3.11 compilation, package metadata consistency, wheel contents and `git diff --check` were checked. The release CI verifies the built distributions and entry points.
+
 ## 0.2.64 — 2026-09-16
 
 - Keep uncertain ownership as `unscoped`: explicit cross-project corrections now require cited user evidence and an exact target, while independent project subjects are deferred instead of guessed. Candidate-local deadline grounding remains conservative, preserving only dates tied to the todo action or its explicit task basis.

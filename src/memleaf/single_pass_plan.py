@@ -1288,6 +1288,10 @@ def run_single_pass_stage(
             result["paragraph"] = paragraph
         return result
     model_data = {**fragment_data, "fragments": [visible_fragment(f) for f in fragment_data["fragments"]]}
+    reference_time = next((f.get("timestamp") for f in reversed(fragment_data["fragments"])
+                           if isinstance(f.get("timestamp"), str) and f["timestamp"]), None)
+    if reference_time is not None:
+        model_data["reference_time"] = reference_time
     compact_prompt = "MEMORY_INPUT\n" + json.dumps(model_data, ensure_ascii=False, separators=(",", ":"))
     primary_prompt = FRAGMENT_SYSTEM + "\n\n" + compact_prompt if inline_system else compact_prompt
     primary_system = "" if inline_system else FRAGMENT_SYSTEM
@@ -1702,7 +1706,9 @@ def run_single_pass_stage(
         maintenance_context = None
         if "memories" in value:
             from .semantic_maintenance import maintenance_input, MAINTENANCE_SYSTEM
-            review_payload, maintenance_context = maintenance_input(raw, repair_fragments, local_rows, model_data)
+            review_payload, maintenance_context = maintenance_input(
+                raw, repair_fragments, local_rows, model_data, validated=parsed,
+            )
             review_system = MAINTENANCE_SYSTEM
         review_prompt = "MEMORY_REVIEW\n" + json.dumps(review_payload, ensure_ascii=False, separators=(",", ":"))
         if inline_system:

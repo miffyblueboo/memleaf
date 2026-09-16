@@ -597,10 +597,10 @@ def _resolve_relative_date(token: str, anchor: date) -> str | None:
     )
     if chinese_match:
         prefix, weekday = chinese_match.groups()
-        # 周末 has no single safe calendar date; leave it for strict
-        # validation/deferred-candidate handling instead of guessing Sunday.
+        # A deadline expressed as a calendar range uses its last day. This
+        # matches the model contract and makes 周末 deterministic as Sunday.
         if weekday == "末":
-            return None
+            weekday = "日"
         week_offset = {"本": 0, "这": 0, "下": 1, "上": -1}[prefix]
         try:
             monday = anchor - timedelta(days=anchor.weekday())

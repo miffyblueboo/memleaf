@@ -5,21 +5,38 @@ from typing import Any, Mapping
 from .semantic_protocol import RETENTION_GUIDANCE, expand_fragments, _invalid
 from .validation import ModelOutputError, parse_strict_json
 
-MAINTENANCE_SYSTEM = RETENTION_GUIDANCE + "\n" + '''根据 incoming 引用的原始证据维护长期记忆；incoming 仅划定待复核的主题，不提供已确认的分类或归属。catalog 是可更新的已有记忆。先识别已有事项的状态变化，再判断新建价值。同一事项合并维护当前状态，重复不新建；完成或转交也应维护已有 todo，不能另建完成事实留下旧待办。
-返回 JSON {"memories":[{"from":["d1"],"target":null,"title":"简短主题","body":"最小可复用核心","type":"fact","scope":"global","evidence":[片段ID]}],"discard":[],"deferred":[]}。
-每条一个独立主体与用途，可拆分同一 incoming。scope 按证据独立确定为 project:主体名、global（通用原则）或 unscoped（归属未确定）。type 为 fact/preference/project/todo/event/identity/other。target 为同事项的 catalog 真实ID，无才为null；更新保留原type，明确归属纠正可以改变scope。todo 提供 status（active/completed/cancelled）和 due_date（明确行动期限的原文写法，无则null）。正文保留当前有效内容，去掉过时状态和无复用价值的细节。每个 incoming 用 from、discard 或 deferred 覆盖；from 表示该主题已完整复核，evidence 只绑定保留内容，其余细节不记忆。from 和 evidence 只能选输入中已有的编号。'''
+MAINTENANCE_SYSTEM = RETENTION_GUIDANCE + "\n" + '''根据 incoming 引用的原始证据维护长期记忆；incoming 仅划定待复核的主题，不提供已确认的分类或归属，其中已有的 due_date 是 Core 按证据和 reference_time 校验过的期限，须原样用于 due_date 和正文。catalog 是可更新的已有记忆。先识别已有事项的状态变化，再判断新建价值。同一事项合并维护当前状态，重复不新建；完成或转交也应维护已有 todo，不能另建完成事实留下旧待办。
+返回 JSON {"memories":[{"from":["d1"],"target":null,"title":"简短主题","body":"最小可复用核心","type":"fact","scope":"global"}],"discard":[],"deferred":[]}。
+每条一个独立主体与用途，可拆分同一 incoming。scope 按证据独立确定为 project:主体名、global（通用原则）或 unscoped（归属未确定）。type 为 fact/preference/project/todo/event/identity/other。target 为同事项的 catalog 真实ID，无才为null；更新保留原type，明确归属纠正可以改变scope。新 todo 须有用户明确承担未完成动作的证据。todo 必须显式提供 status（active/completed/cancelled）和 due_date（无则null）。reference_time 是当前会话时间；按原始约定把可换算的相对期限写成 YYYY-MM-DD，范围取最晚完成日，正文同步使用该日期。无法可靠换算则 due_date:null，但保留核心记忆。正文保留当前有效内容，去掉过时状态和无复用价值的细节。每个 incoming 用 from、discard 或 deferred 覆盖；from 表示该主题已完整复核。仅拆分同一 incoming 时填写 evidence:[fragments.id] 来绑定各自保留内容，否则省略 evidence。所有引用只能选输入中已有的编号。'''
 
 
-def maintenance_input(raw: str, fragments: list[dict[str, Any]], catalog: list[dict[str, Any]], model_data: Mapping[str, Any]):
+def maintenance_input(
+    raw: str,
+    fragments: list[dict[str, Any]],
+    catalog: list[dict[str, Any]],
+    model_data: Mapping[str, Any],
+    validated: Mapping[str, Any] | None = None,
+):
     # Validate exact references before they become trusted input to maintenance.
     expand_fragments(raw, fragments)
     original = parse_strict_json(raw)
     incoming = {}
     proposals = []
     catalog_ids = {m['memory_id'].casefold() for m in catalog}
+    validated_by_id = {
+        item['candidate_id']: item
+        for item in (validated.get('items', []) if isinstance(validated, Mapping) else [])
+        if isinstance(item, Mapping) and isinstance(item.get('candidate_id'), str)
+    }
     for index, row in enumerate(original['memories'], 1):
         incoming[index] = dict(row)
         proposal = {'id': f'd{index}', 'evidence': row['evidence']}
+        accepted = validated_by_id.get(f'c{index}')
+        accepted_memory = accepted.get('memory') if isinstance(accepted, Mapping) else None
+        accepted_due_date = accepted_memory.get('due_date') if isinstance(accepted_memory, Mapping) else None
+        if isinstance(accepted_due_date, str) and accepted_due_date:
+            proposal['due_date'] = accepted_due_date
+            incoming[index]['_confirmed_due_date'] = accepted_due_date
         if isinstance(row.get('target'), str) and row['target'].casefold() in catalog_ids:
             proposal['target'] = row['target']
         proposals.append(proposal)
@@ -28,6 +45,8 @@ def maintenance_input(raw: str, fragments: list[dict[str, Any]], catalog: list[d
     # must be able to correct ownership and value without inheriting them.
     snippets = list(model_data['fragments'])
     payload = {'incoming': proposals, 'catalog': related, 'fragments': snippets}
+    if isinstance(model_data.get('reference_time'), str) and model_data['reference_time']:
+        payload['reference_time'] = model_data['reference_time']
     return payload, (original, incoming, {m['memory_id'].casefold():m for m in related})
 
 
@@ -123,8 +142,28 @@ def expand_maintenance(raw: str, context, *, diagnostics=None) -> str:
         if kind != 'todo':
             for field in ('status', 'due_date', 'completed_at'):
                 memory.pop(field, None)
+        else:
+            confirmed_due_dates = {
+                source.get('_confirmed_due_date')
+                for source in sources
+                if isinstance(source.get('_confirmed_due_date'), str)
+                and source['_confirmed_due_date']
+            }
+            if len(confirmed_due_dates) > 1:
+                raise _invalid('invalid_due_date')
+            if confirmed_due_dates:
+                confirmed_due_date = next(iter(confirmed_due_dates))
+                proposed_due_date = memory.get('due_date')
+                if isinstance(proposed_due_date, str) and proposed_due_date != confirmed_due_date:
+                    for field in ('title', 'body'):
+                        if isinstance(memory.get(field), str):
+                            memory[field] = memory[field].replace(proposed_due_date, confirmed_due_date)
+                memory['due_date'] = confirmed_due_date
         allowed = list(dict.fromkeys(int(r) for s in sources for r in s['evidence']))
         chosen = row.get('evidence', allowed)
+        if isinstance(chosen, list):
+            chosen = [int(r) if isinstance(r, str) and len(r) <= 20 and r.isascii() and r.isdecimal() else r
+                      for r in chosen]
         if not isinstance(chosen, list) or not chosen or any(type(r) is not int or r not in allowed for r in chosen):
             raise _invalid('invalid_evidence')
         memory['evidence']=list(dict.fromkeys(chosen))

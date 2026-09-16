@@ -4,7 +4,7 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.64.**
+> **Version: 0.2.65.**
 > Automatic extraction and review share one future-value standard: the model weighs likely reuse, information gain, direct usability when read again, and the cost of forgetting. It keeps only the smallest core that can materially help future understanding, decisions, or actions; information without clear value is not extracted, and no business-specific exclusion rule is hard-coded.
 > A single Chinese semantic contract is sent for extraction, topic selection, candidate repair, and `semantic_maintenance`; the older English B3 prompt has been deleted and B3 remains only as a compatibility read format. One topic is written once.
 > Core no longer discards a whole candidate over ownership, dates, task basis or cross-project wording. A missing owner normalizes to the single project named by that candidate's own evidence, otherwise `global`. A deadline is accepted only when it appears in the candidate's own evidence and can be anchored to ISO (`明天`, `周五`, `月底` all resolve); when it cannot, only the date field is dropped and the memory is still written. An unauthorized ownership change keeps the target's existing scope.
