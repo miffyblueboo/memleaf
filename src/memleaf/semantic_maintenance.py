@@ -2,10 +2,10 @@
 from __future__ import annotations
 import json
 from typing import Any, Mapping
-from .semantic_protocol import expand_fragments, _invalid
+from .semantic_protocol import RETENTION_GUIDANCE, expand_fragments, _invalid
 from .validation import parse_strict_json
 
-MAINTENANCE_SYSTEM = '''维护长期记忆，而不是再次摘录对话。groups 按项目和类型隔离，incoming 是本轮增量，existing 是可更新的 catalog ID。
+MAINTENANCE_SYSTEM = RETENTION_GUIDANCE + "\n" + '''维护长期记忆，而不是再次摘录对话。按上述标准复核 incoming：符合标准的继续维护，没有明确价值的放 discard，无法判断的放 deferred。groups 按项目和类型隔离，incoming 是本轮增量，existing 是可更新的 catalog ID。
 同一事项的需求、进展、回复、附件位置和约定日期合并维护；后续状态替换旧状态，重复信息不新建。不同的独立事项保持分开。正文概括核心，不逐条转录文档或保存助手的临时建议。类型由输入确定，本阶段只维护同类型的状态。
 返回 JSON {"memories":[{"from":[incoming ID],"target":"已有memory_id或null","title":"主题","body":"合并后的当前内容","type":"fact或todo等"}],"discard":[incoming ID],"deferred":[incoming ID]}。
 每条仅合并同组 incoming；同一事项已有记忆时 target 必须选该组 existing 中的ID，保留其有效内容并更新变化；独立新事项 target=null。已有target保留原type；新任务没有同事项todo目标时新建todo，不借用fact ID。同一target只输出一次。无需修改的已有记忆可原样返回。todo 提供 status（active/completed/cancelled）和 due_date（原文日期，无则null）；不能把任务变成一般事实而丢失动作。每个 incoming 由 from、discard 或 deferred 覆盖。无需处理原始片段ID、复制证据或生成记忆ID。'''

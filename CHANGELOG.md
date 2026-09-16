@@ -2,6 +2,13 @@
 
 All notable changes to memleaf are documented here.
 
+## 0.2.63 — 2026-09-16
+
+- Unify the retention decision across first-pass extraction, topic selection, candidate repair and `semantic_maintenance`. The model now judges future reuse, information gain, direct usability and forgetting cost, keeping only the smallest core with clear material value; the contract contains no mail, report, customer or project-specific exclusion rule.
+- Keep maintenance complementary to extraction: it applies the same value judgment to incoming candidates, continues maintaining candidates that qualify, discards those without clear value and defers only unresolved meaning. The `0.2.62` date/ownership degradation and update-target grouping remain intact.
+
+Verification covers prompt consistency and compactness assertions, Python 3.11 compilation/imports, package metadata consistency, a package wheel containing the Hermes provider resource, and `git diff --check`. Real-provider replay remains runtime acceptance after installation.
+
 ## 0.2.62 — 2026-09-16
 
 - Record conclusions, not process. The contract now opens with one precedence rule -- 只记结论: what the user chose, agreed to, or what happened; options, plans and drafts offered by the assistant are process even when they look like reusable knowledge. It replaces a genuine conflict between two earlier sentences: `reusable`/通用经验 invited storing the assistant's own outline, while the assistant-proposal clause forbade it, so the model decided by coin flip. The contradictory sentence about assistant suggestions never being a task basis is gone with it. Measured on the reproduced turn, the assistant's four-section outline was written in one of two runs before the change and in none of four runs after it.

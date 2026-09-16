@@ -1496,7 +1496,7 @@ def run_single_pass_stage(
                             if row.get("detail") == "scope_drift" else "A field contains an unsupported date or task attribution; retain supported core facts."}
                            for row in deferrals if row.get("candidate_id") in failed_ids]}
             repair_prompt = "MEMORY_REPAIR\n" + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-            repair_system = FRAGMENT_SYSTEM + "\nCore 已拒绝这些候选。请根据证据保留核心事实，纠正违规日期或归属；不要丢弃已成立的核心内容。"
+            repair_system = FRAGMENT_SYSTEM + "\nCore 已拒绝这些候选。请按上述长期记忆价值标准复核，保留符合标准的最小核心，纠正违规日期或归属；不要凭空增加内容。"
             if inline_system:
                 repair_prompt, repair_system = repair_system + "\n\n" + repair_prompt, ""
             repair_details, repair_targets = [], []
@@ -1691,7 +1691,7 @@ def run_single_pass_stage(
                            if any(c["unit_id"] == f["unit_id"] for c in row["evidence"])]}
             for row in affected if problems[row["candidate_id"]]["detail"] not in {"semantic_review", "maintenance_uncertain"}
         ]
-        review_system = FRAGMENT_SYSTEM + "\n请按完整证据独立提炼；主题清单和 no_memory_candidates 均是待复核的候选。修正 issues，保留成立的核心事实。"
+        review_system = FRAGMENT_SYSTEM + "\n请按完整证据独立复核每条信息是否符合上述长期记忆价值标准；主题清单和 no_memory_candidates 均只是待复核候选。修正 issues，只提炼符合标准的最小核心，其余放入 no_memory。"
         maintenance_context = None
         if "memories" in value:
             from .semantic_maintenance import maintenance_input, MAINTENANCE_SYSTEM
