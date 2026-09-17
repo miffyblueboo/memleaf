@@ -32,6 +32,7 @@ jobs:
           tmp = pathlib.Path(tempfile.mkdtemp())
           patchfile = tmp / 'batch.patch'
           patchfile.write_bytes(patch)
+          subprocess.check_call(['git','fetch','--no-tags','--depth=1','origin','c9e070733656688be6c6bb5eb98179a11a073420'])
           subprocess.check_call(['git', 'checkout', '--detach', 'c9e070733656688be6c6bb5eb98179a11a073420'])
           subprocess.check_call(['git', 'apply', '--check', str(patchfile)])
           subprocess.check_call(['git', 'apply', str(patchfile)])
