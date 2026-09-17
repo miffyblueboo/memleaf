@@ -324,9 +324,24 @@ class Memleaf:
         model: Any = None,
         router: Any = None,
         scope: Any = None,
+        pipeline: str | None = None,
+        recover: bool = False,
     ) -> dict[str, Any]:
-        """Process complete inbox turns through the injected model capability."""
+        """Process inbox turns through the explicitly selected automatic pipeline.
 
+        Legacy is the unchanged default. Incremental routing shares the existing
+        bounded runner; recover authorizes only its remaining transport attempt,
+        never an automatic partial semantic replan.
+        """
+        from .processing_route import select_pipeline, process_inbox
+        chosen = select_pipeline(self.vault.config(), pipeline)
+        if type(recover) is not bool:
+            raise ValueError("invalid_recover")
+        if chosen == "incremental":
+            return process_inbox(self, source=source, session_id=session_id,
+                                 model=model, router=router, scope=scope, recover=recover)
+        if recover:
+            raise ValueError("incremental_recovery_required")
         from .processing import Processor
 
         return Processor(self).process(

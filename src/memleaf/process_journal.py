@@ -66,8 +66,13 @@ def processing_health(vault_path: Path | str) -> dict[str, Any]:
             else:
                 idle += 1
     failures.sort(key=lambda item: str(item.get("session_id")))
+    from .processing_route import health_view
+    pipeline_view = health_view(vault)
+    running += int(pipeline_view["incremental"]["owner_live"])
     return {
-        "status": "failed" if failures else ("running" if running else "idle"),
+        **pipeline_view,
+        "status": "failed" if failures else ("running" if running else (
+            "deferred" if pipeline_view["incremental"]["unresolved_runs"] or pipeline_view["incremental"]["pending_commits"] else "idle")),
         "failed_sessions": len(failures),
         "failed_turns": failed_turns,
         "running_sessions": running,

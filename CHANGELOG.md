@@ -4,6 +4,8 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Integrate the existing process/CLI/MCP/job entry points with an opt-in incremental automatic route. Preserve legacy defaults, stable capture addressing, frozen queue controls, two-request source budgets and zero-call commit recovery; retain partial write outcomes and expose read-only runtime health. No default activation or release.
+
 - Coordinate opt-in incremental scope discovery with frozen memory operations: preserve declared identities and explicit boundaries, write Markdown before missing registry nodes, and recover config/index/receipt failures without new model calls or duplicate writes. Version scope-dependent commit receipts while retaining legacy reads.
 
 - Add explicit bounded partial continuation on the existing incremental runner: zero-call exact container repair or one remaining changed-context replan. Preserve accepted operation IDs, source/authorization boundaries and original budgets; carry cumulative recovery receipts, cancel retained partial plaintext on Forget, and release resolved parent context protection. Default routes and the fixed prompt remain unchanged.

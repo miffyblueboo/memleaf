@@ -16,6 +16,7 @@ from .extraction_work_state import (
     ExtractionWorkStateError, extraction_work_id, reserve_model_request,
     complete_turn_budget, _read_budget_state_unlocked,
 )
+from .incremental_commit import equivalent_arguments
 from .incremental_commit import _arguments, _window, apply_incremental, resume_incremental
 from .incremental_journal import digest, load_work, public_result as commit_result
 from .incremental_preview import _prepare_incremental_unlocked
@@ -26,6 +27,7 @@ from .incremental_run_state import (
     register_owner, unregister_owner,
 )
 from .index import turn_key
+from .inbox import captured_turn_selector
 from .llm.base import ModelError
 from .locking import atomic_write_json
 from .models import utc_now
@@ -91,10 +93,10 @@ def run_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
                     backend: Any = None, scope: Any = None, priority_memory_ids=(),
                     candidate_limit: int = 12, selection=None,
                     retention_request: str | None = None,
-                    allow_new_scopes: bool = False) -> dict[str, Any]:
+                    allow_new_scopes: bool = False, captured_turn_key: str | None = None) -> dict[str, Any]:
     """Explicitly process one captured turn; default host routes are unchanged."""
     from .incremental_selection import explicit_run_id, validate_request
-    args = _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, allow_new_scopes, selection)
+    args = _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, allow_new_scopes, selection, captured_turn_key)
     selection = args.get("selection")
     if selection:
         retention_request = validate_request(retention_request, selection)
@@ -104,10 +106,10 @@ def run_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
             raise ValueError("incremental_model_busy")
         _guard_legacy(service, processed)
         run = load_run(processed, explicit_run_id(source, session_id, selection)) if selection else None
-        if run is not None and args != run["arguments"]:
+        if run is not None and not equivalent_arguments(args, run["arguments"]):
             raise ValueError("incremental_run_arguments_changed")
         if run is None:
-            turn, window = _window(service, source, session_id, turn_key(turn_id))
+            turn, window = _window(service, source, session_id, captured_turn_selector(turn_id, captured_turn_key))
             budget_turn = (replace(turn, events=tuple(e for e in turn.events if e.event_key in selection["source_refs"]))
                            if selection else turn)
             budget_id = extraction_work_id(budget_turn, request_kind="explicit_remember" if selection else "automatic",
@@ -115,7 +117,7 @@ def run_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
             identity = explicit_run_id(source, session_id, selection) if selection else "inc-run-" + budget_id.removeprefix("work-")
             run = load_run(processed, identity)
         if run is not None:
-            if args != run["arguments"]:
+            if not equivalent_arguments(args, run["arguments"]):
                 raise ValueError("incremental_run_arguments_changed")
         else:
             if not recording_allowed(processed, source, session_id, turn.turn_key):

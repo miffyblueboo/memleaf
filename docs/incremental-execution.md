@@ -176,3 +176,12 @@ repair whitelist, real-context replan gate, shared total budget and residual lim
 G3g connects bounded scope registration to the same shared commit path; see
 `incremental-scope-registration.md`. Discovery is opt-in and never expands an
 explicit write boundary.
+
+
+### Common process entry (G4a)
+
+The original staged single-turn execution is now also used by the opt-in common
+process route described in `automatic-processing-route.md`. Historical statements
+above about defaults still apply: no installation automatically enables it, and
+no new model stage or ledger is introduced. A repeated background trigger cannot
+spend a transport retry without explicit recovery authorization.

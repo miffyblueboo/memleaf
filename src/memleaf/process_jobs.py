@@ -140,6 +140,12 @@ def _valid_state(value: Any) -> dict[str, Any]:
     for job_id, raw in jobs.items():
         if not _valid_job_id(job_id) or not isinstance(raw, Mapping):
             raise ProcessJobStateError("invalid process job record")
+        from .processing_route import PIPELINES
+        for field in ("pipeline", "configured_pipeline"):
+            if field in raw and (not isinstance(raw[field], str) or raw[field] not in PIPELINES):
+                raise ProcessJobStateError("invalid process job pipeline")
+        if "recover" in raw and type(raw["recover"]) is not bool:
+            raise ProcessJobStateError("invalid process job recovery")
         normalized_jobs[job_id] = dict(raw)
 
     normalized_order: list[str] = []
@@ -406,6 +412,33 @@ def _safe_result(value: Any) -> dict[str, Any]:
     ids = value.get("memory_ids")
     if isinstance(ids, list):
         result["memory_ids"] = [item[:200] for item in ids if isinstance(item, str)][:100]
+    if isinstance(value.get("pipeline"), str) and value["pipeline"] in {"legacy", "incremental"}:
+        result["pipeline"] = value["pipeline"]
+    for key in ("model_calls", "attempted_turns", "unlocated_issue_count"):
+        if type(value.get(key)) is int and value[key] >= 0:
+            result[key] = value[key]
+    if value.get("cleanup_status") == "recovery_required":
+        result["cleanup_status"] = "recovery_required"
+    if isinstance(value.get("execution_status"), str):
+        result["execution_status"] = value["execution_status"][:80]
+    rows = value.get("results")
+    if isinstance(rows, list):
+        fields = ("source", "session_id", "turn_key", "run_id", "work_id", "execution_status", "code")
+        result["results"] = []
+        for row in rows[:100]:
+            if not isinstance(row, Mapping):
+                continue
+            projected = {k: row[k][:200] for k in fields if isinstance(row.get(k), str)}
+            for key in ("turn_index", "model_calls", "reservations", "unresolved_evidence_count", "unlocated_issue_count"):
+                if type(row.get(key)) is int and row[key] >= 0:
+                    projected[key] = row[key]
+            if type(row.get("partial_recovery_available")) is bool:
+                projected["partial_recovery_available"] = row["partial_recovery_available"]
+            result["results"].append(projected)
+        result["results_truncated"] = bool(value.get("results_truncated")) or len(rows) > 100
+    operations = value.get("committed_operation_ids")
+    if isinstance(operations, list):
+        result["committed_operation_ids"] = [x[:200] for x in operations[:256] if isinstance(x, str)]
     model_metrics = _safe_model_metrics(value.get("model_metrics"))
     if model_metrics:
         result["model_metrics"] = model_metrics
@@ -459,6 +492,8 @@ def _result_status(result: Mapping[str, Any]) -> str:
     coverage = result.get("coverage")
     if isinstance(coverage, Mapping) and coverage.get("status") in {"partial", "deferred", "unavailable"}:
         deferred = True
+    if (result.get("pipeline") == "incremental" and result.get("execution_status") != "completed") or result.get("cleanup_status") == "recovery_required":
+        deferred = True
     return "deferred" if deferred else "succeeded"
 
 
@@ -488,6 +523,31 @@ def _aggregate_attempt_results(attempts: list[Any]) -> dict[str, Any]:
         if type(value) is int and value >= 0:
             aggregate["pending_inbox_turns"] = value
             break
+    # Route-change refusals can also originate from an old legacy job. Keep
+    # its safe reason in the top-level result, not only in attempt history.
+    for attempt in reversed(attempts):
+        value = attempt.get("result", {}) if isinstance(attempt, Mapping) else {}
+        if not isinstance(value, Mapping):
+            continue
+        for key in ("pipeline", "execution_status", "results", "results_truncated", "cleanup_status"):
+            if key in value:
+                aggregate[key] = value[key]
+        break
+    incremental = [a.get("result", {}) for a in attempts if isinstance(a, Mapping)
+                   and a.get("result", {}).get("pipeline") == "incremental"]
+    if incremental:
+        last = incremental[-1]
+        for key in ("pipeline", "execution_status", "results", "results_truncated", "deferred_candidates",
+                    "deferred_inbox_turns", "unresolved_evidence_count", "unlocated_issue_count", "retryable_deferred_turns"):
+            if key in last:
+                aggregate[key] = last[key]
+        for key in ("model_calls", "attempted_turns", "unlocated_issue_count"):
+            aggregate[key] = sum(v.get(key, 0) for v in incremental if type(v.get(key, 0)) is int)
+        if "cleanup_status" in last:
+            aggregate["cleanup_status"] = last["cleanup_status"]
+        operations = sorted({op for v in incremental for op in v.get("committed_operation_ids", [])})
+        aggregate["committed_operation_ids"] = operations
+        aggregate["memories_written"] = len(operations)
     ids: list[str] = []
     for attempt in attempts:
         values = attempt.get("result", {}).get("memory_ids") if isinstance(attempt, Mapping) else None
@@ -619,12 +679,21 @@ def _dispatch(vault: Vault, state: dict[str, Any]) -> None:
         return
 
 
-def enqueue(vault_path: Path | str, *, source: str, session_id: str, scope: Any = None) -> dict[str, Any]:
+def enqueue(vault_path: Path | str, *, source: str, session_id: str, scope: Any = None,
+            pipeline: str | None = None, recover: bool = False) -> dict[str, Any]:
     """Accept one process request and return immediately with a job identity."""
     source = safe_component(str(source), "source")
     session_id = safe_component(str(session_id), "session id")
     vault = Vault(vault_path)
+    from .processing_route import select_pipeline
+    from .scope_state import normalize_scopes
+    scope = normalize_scopes(scope) if scope is not None else None
     with vault.lock():
+        config = vault.config()
+        chosen = select_pipeline(config, pipeline)
+        configured = select_pipeline(config)
+        if type(recover) is not bool or (chosen == "legacy" and recover):
+            raise ValueError("invalid_process_recovery")
         state = _read_state(vault)
         recovered = _recover_dead_active(state)
         pruned = _prune_terminal(state)
@@ -635,6 +704,13 @@ def enqueue(vault_path: Path | str, *, source: str, session_id: str, scope: Any 
             job = jobs.get(job_id)
             if not isinstance(job, dict) or job.get("source") != source or job.get("session_id") != session_id:
                 continue
+            if job.get("status") in _ACTIVE | {"pending"}:
+                old_scope = normalize_scopes(job.get("scope")) if job.get("scope") is not None else None
+                if (job.get("pipeline", "legacy") != chosen or old_scope != scope
+                        or job.get("recover", False) != recover
+                        or job.get("configured_pipeline", "legacy") != configured):
+                    return {"accepted": False, "completed": False, "status": "blocked", "job_id": job_id,
+                            "reason": "process_arguments_changed"}
             if job.get("status") in _ACTIVE:
                 job["rerun_requested"] = True
                 job["updated_at"] = _now()
@@ -652,7 +728,8 @@ def enqueue(vault_path: Path | str, *, source: str, session_id: str, scope: Any 
         job_id = f"job-{uuid.uuid4().hex}"
         job = {
             "job_id": job_id, "source": source, "session_id": session_id,
-            "scope": scope, "status": "pending", "accepted_at": _now(),
+            "scope": scope, "pipeline": chosen, "configured_pipeline": configured, "recover": recover,
+            "status": "pending", "accepted_at": _now(),
             "updated_at": _now(), "owner_pid": None, "rerun_requested": False,
         }
         jobs[job_id] = job
@@ -737,7 +814,14 @@ def run_worker(vault_path: Path | str, job_id: str) -> int:
     while True:
         try:
             service = Memleaf(vault)
-            result = service.process(source=job["source"], session_id=job["session_id"], scope=job.get("scope"))
+            from .processing_route import select_pipeline
+            if select_pipeline(vault.config()) != job.get("configured_pipeline", "legacy"):
+                result = {"pipeline": job.get("pipeline", "legacy"), "execution_status": "blocked",
+                          "coverage_status": "partial", "deferred_inbox_turns": 1,
+                          "results": [{"execution_status": "blocked", "code": "processing_pipeline_changed"}]}
+            else:
+                result = service.process(source=job["source"], session_id=job["session_id"], scope=job.get("scope"),
+                                         pipeline=job.get("pipeline", "legacy"), recover=job.get("recover", False))
             terminal = _result_status(result if isinstance(result, Mapping) else {})
             rerun = _finish(vault, job_id, status_value=terminal, result=result)
         except Exception as error:

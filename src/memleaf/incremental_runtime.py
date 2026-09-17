@@ -9,10 +9,10 @@ from __future__ import annotations
 from typing import Any
 
 from .extraction_work_state import extraction_work_id
-from .incremental_commit import _arguments, _window
+from .incremental_commit import _arguments, _window, equivalent_arguments
 from .incremental_execution import run_incremental, resume_incremental_run
 from .incremental_run_state import KEY, TERMINAL, load_run, public_result
-from .index import turn_key
+from .inbox import captured_turn_selector
 from .llm import ModelRouter, ModelUnavailable
 from .process_common import _read_processed
 
@@ -21,6 +21,8 @@ def _resolve(service: Any, model: Any, router: Any) -> Any:
     if model is not None and router is not None:
         raise ValueError("ambiguous_model_route")
     backend = model if model is not None else router
+    if backend is None:
+        backend = getattr(service, "router", None)
     if backend is None:
         backend = ModelRouter.from_config(service.vault.config())
     if isinstance(backend, ModelRouter):
@@ -43,7 +45,7 @@ def process_incremental(service: Any, *, source: str, session_id: str, turn_id: 
                         scope: Any = None, priority_memory_ids=(), candidate_limit: int = 12,
                         model: Any = None, router: Any = None, recover: bool = False,
                         selection=None, retention_request: str | None = None,
-                        allow_new_scopes: bool = False) -> dict[str, Any]:
+                        allow_new_scopes: bool = False, captured_turn_key: str | None = None) -> dict[str, Any]:
     """Process a captured turn; retry transport failure only with recover=True.
 
     Saved responses and commit recovery need no configured model. The explicit
@@ -54,7 +56,7 @@ def process_incremental(service: Any, *, source: str, session_id: str, turn_id: 
     if model is not None and router is not None:
         raise ValueError("ambiguous_model_route")
     from .incremental_selection import explicit_run_id, validate_request
-    args = _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, allow_new_scopes, selection)
+    args = _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, allow_new_scopes, selection, captured_turn_key)
     selection = args.get("selection")
     if selection:
         retention_request = validate_request(retention_request, selection)
@@ -62,22 +64,22 @@ def process_incremental(service: Any, *, source: str, session_id: str, turn_id: 
         processed = _read_processed(service.vault.processed_state_path)
         if selection:
             run = load_run(processed, explicit_run_id(source, session_id, selection))
-            if run is not None and run["arguments"] != args:
+            if run is not None and not equivalent_arguments(run["arguments"], args):
                 raise ValueError("incremental_run_arguments_changed")
         else:
             try:
-                selected, _ = _window(service, source, session_id, turn_key(turn_id))
+                selected, _ = _window(service, source, session_id, captured_turn_selector(turn_id, captured_turn_key))
             except (OSError, ValueError):
                 # Only a unique terminal receipt can stand in for cleaned source.
                 matches = [load_run(processed, key) for key in processed.get(KEY, {})]
-                matches = [r for r in matches if r["arguments"] == args]
+                matches = [r for r in matches if equivalent_arguments(r["arguments"], args)]
                 if len(matches) != 1 or matches[0]["status"] not in TERMINAL:
                     raise ValueError("source_not_complete_or_ambiguous_receipt") from None
                 run = matches[0]
             else:
                 budget_id = extraction_work_id(selected, request_kind="automatic", intent_id="automatic")
                 run = load_run(processed, "inc-run-" + budget_id.removeprefix("work-"))
-                if run is not None and run["arguments"] != args:
+                if run is not None and not equivalent_arguments(run["arguments"], args):
                     raise ValueError("incremental_run_arguments_changed")
         if run is not None and run["status"] == "retryable" and not recover:
             return _receipt(public_result(run))
@@ -92,7 +94,7 @@ def process_incremental(service: Any, *, source: str, session_id: str, turn_id: 
                                  scope=scope, priority_memory_ids=args["priority_memory_ids"],
                                  candidate_limit=candidate_limit, backend=backend,
                                  selection=selection, retention_request=retention_request,
-                                 allow_new_scopes=allow_new_scopes)
+                                 allow_new_scopes=allow_new_scopes, captured_turn_key=captured_turn_key)
     return _receipt(result)
 
 

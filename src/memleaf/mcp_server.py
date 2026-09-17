@@ -288,6 +288,8 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                 "session_id": {"type": "string"},
                 "scope": _text_or_texts_schema(),
                 "background": {"type": "boolean"},
+                "pipeline": {"type": "string", "enum": ["legacy", "incremental"]},
+                "recover": {"type": "boolean"},
             }
         ),
     },
@@ -953,7 +955,8 @@ def _invoke_tool(
                     service.vault.root,
                     source=args.get("source", ""),
                     session_id=args.get("session_id", ""),
-                    scope=args.get("scope"),
+                    scope=args.get("scope"), pipeline=args.get("pipeline"),
+                    recover=args.get("recover", False),
                 )
             else:
                 source = args.get("source")

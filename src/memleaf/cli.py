@@ -94,6 +94,10 @@ def build_parser() -> argparse.ArgumentParser:
     process.add_argument("--source", default=None)
     process.add_argument("--session-id", default=None)
     process.add_argument("--scope", default=None)
+    process.add_argument("--pipeline", choices=("legacy", "incremental"), default=None,
+                         help="explicit automatic pipeline; otherwise use Vault configuration")
+    process.add_argument("--recover", action="store_true",
+                         help="allow remaining incremental transport recovery, not partial replan")
     process.add_argument("--dry-run", action="store_true", help="no source Vault writes; may call the configured model")
     process.add_argument("--json", action="store_true")
     host_event = commands.add_parser(
@@ -248,11 +252,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.command == "audit":
                 output = audit_vault(args.vault)
             elif args.dry_run:
-                output = preview_process(args.vault, source=args.source, session_id=args.session_id, scope=args.scope)
+                output = preview_process(args.vault, source=args.source, session_id=args.session_id, scope=args.scope, pipeline=args.pipeline, recover=args.recover)
             else:
                 from .service import Memleaf
                 output = Memleaf(existing_root(args.vault)).process(
-                    source=args.source, session_id=args.session_id, scope=args.scope)
+                    source=args.source, session_id=args.session_id, scope=args.scope, pipeline=args.pipeline, recover=args.recover)
         elif args.command == "host-event":
             output = _host_event(args)
         else:  # pragma: no cover - argparse requires a known subcommand.

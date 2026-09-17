@@ -448,8 +448,10 @@ class HostRuntime:
                 isinstance(processed.get(key), int)
                 and not isinstance(processed.get(key), bool)
                 and processed.get(key, 0) > 0
-                for key in ("deferred_candidates", "deferred_inbox_turns", "unresolved_evidence_count")
+                for key in ("deferred_candidates", "deferred_inbox_turns", "unresolved_evidence_count", "pending_inbox_turns")
             )
+            if processed.get("pipeline") == "incremental":
+                deferred = deferred or processed.get("execution_status") != "completed"
         retryable = isinstance(processed, Mapping) and isinstance(processed.get("retryable_deferred_turns"), int) and processed["retryable_deferred_turns"] > 0
         self._set_process_pending(session_id, retryable)
         return TurnCompletion(

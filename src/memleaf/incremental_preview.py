@@ -12,7 +12,7 @@ from typing import Any, Iterable
 from .incremental_protocol import PlanningSnapshot, compile_incremental, MAX_BYTES
 from .incremental_prompts import INCREMENTAL_SYSTEM
 from .index import turn_key
-from .inbox import parse_inbox_file, source_ordered_turns
+from .inbox import parse_inbox_file, source_ordered_turns, captured_turn_selector
 from .models import Memory
 from .incremental_native import read_comparison
 from .process_common import _read_processed
@@ -25,7 +25,8 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
                         scope: Any = None, priority_memory_ids: Iterable[str] = (),
                         candidate_limit: int = 12, allow_new_scopes: bool = False,
                         selection: dict[str, Any] | None = None,
-                        retention_request: str | None = None) -> PlanningSnapshot:
+                        retention_request: str | None = None,
+                        captured_turn_key: str | None = None) -> PlanningSnapshot:
     """Build a bounded current-source/target snapshot under the existing lock.
 
     At this stage evidence units are complete visible messages, not per-sentence
@@ -54,7 +55,7 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
     # Do not use the mutation boundary: it would resume compaction writes.
     path = service.vault._inside("inbox", source, f"{session_id}.md")
     turns = source_ordered_turns(parse_inbox_file(path))
-    selected = next((t for t in turns if t.turn_key == turn_key(turn_id)), None)
+    selected = next((t for t in turns if t.turn_key == captured_turn_selector(turn_id, captured_turn_key)), None)
     if selected is None or not selected.complete:
         raise ValueError("source_not_complete")
     selected_index = turns.index(selected)

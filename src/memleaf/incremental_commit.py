@@ -13,7 +13,7 @@ from .incremental_journal import (VERSION, TERMINAL, digest, load_work, save_wor
 from .incremental_preview import _prepare_incremental_unlocked
 from .incremental_protocol import compile_incremental
 from .incremental_native import guard_current, validate_binding
-from .inbox import parse_inbox_file, source_ordered_turns
+from .inbox import parse_inbox_file, source_ordered_turns, captured_turn_selector
 from .index import turn_key
 from .memory_writer import MemoryWriter
 from .models import Memory, MemoryVersionError, utc_now
@@ -43,10 +43,11 @@ def _window(service: Any, source: str, session_id: str, selected_key: str):
     return selected, digest([(t.turn_key, input_digest(t)) for t in relevant])
 
 
-def _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, allow_new_scopes, selection=None):
+def _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, allow_new_scopes, selection=None, captured_turn_key=None):
     from .scope_state import normalize_scopes
     from .incremental_selection import validate_selection
     selection = validate_selection(selection)
+    captured_turn_selector(turn_id, captured_turn_key)
     source, session_id = safe_component(source, "source"), safe_component(session_id, "session id")
     if not isinstance(turn_id, str) or not turn_id or len(turn_id) > 800:
         raise ValueError("invalid_turn_id")
@@ -62,7 +63,22 @@ def _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidat
     return {"source": source, "session_id": session_id, "turn_id": turn_id,
             "scope": normalize_scopes(scope) if scope is not None else None,
             "priority_memory_ids": priority, "candidate_limit": candidate_limit, "allow_new_scopes": allow_new_scopes,
-            **({"selection": selection} if selection else {})}
+            **({"selection": selection} if selection else {}),
+            **({"captured_turn_key": captured_turn_key} if captured_turn_key is not None else {})}
+
+
+
+def equivalent_arguments(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Compare raw-ID and explicitly typed-key addressing of the same source.
+
+    All authorization and context options remain exact. Never rewrite a stored
+    request or treat an arbitrary 64-character raw ID as a captured key.
+    """
+    def normalize(args):
+        value = dict(args)
+        value["turn_id"] = captured_turn_selector(value["turn_id"], value.pop("captured_turn_key", None))
+        return value
+    return normalize(left) == normalize(right)
 
 
 def _freeze_operation(proposal: dict[str, Any], snapshot: Any, now: str, active: list[Memory]) -> dict[str, Any]:
@@ -260,16 +276,16 @@ def apply_incremental(service: Any, *, response: str, expected_snapshot: str, in
                       source: str, session_id: str, turn_id: str, scope: Any = None,
                       priority_memory_ids=(), candidate_limit: int = 12, allow_new_scopes: bool = False,
                       _run_guard: tuple[str, str] | None = None, selection=None,
-                      retention_request: str | None = None) -> dict[str, Any]:
+                      retention_request: str | None = None, captured_turn_key: str | None = None) -> dict[str, Any]:
     if not isinstance(intent_id, str) or not intent_id.strip() or len(intent_id) > 800 or any(c in intent_id for c in "\0\r\n"):
         raise ValueError("invalid_intent_id")
     if not isinstance(expected_snapshot, str) or len(expected_snapshot) != 64:
         raise ValueError("invalid_planning_snapshot")
-    args = _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, allow_new_scopes, selection)
+    args = _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, allow_new_scopes, selection, captured_turn_key)
     if not isinstance(response, str) or len(response.encode("utf-8")) > 128 * 1024:
         raise ValueError("invalid_response_size")
     binding = {"arguments": args, "snapshot_id": expected_snapshot, "response_digest": digest(parse_strict_json(response))}
-    identity = "inc-" + digest([source, session_id, turn_key(turn_id), intent_id])
+    identity = "inc-" + digest([source, session_id, captured_turn_selector(turn_id, captured_turn_key), intent_id])
     with service._mutation_boundary():
         processed = _read_processed(service.vault.processed_state_path)
         _check_run_guard(processed, _run_guard)
@@ -279,7 +295,7 @@ def apply_incremental(service: Any, *, response: str, expected_snapshot: str, in
                 raise ValueError("incremental_intent_payload_conflict")
             return (_resume_unlocked(service, processed, stored) if public_result(stored)["execution_status"] == "recovery_required"
                     else public_result(stored))
-        selected, window = _window(service, source, session_id, turn_key(turn_id))
+        selected, window = _window(service, source, session_id, captured_turn_selector(turn_id, captured_turn_key))
         if not recording_allowed(processed, source, session_id, selected.turn_key):
             raise ValueError("source_recording_revoked")
         state = processed.get("sessions", {}).get(f"{source}/{session_id}", {})

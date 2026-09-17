@@ -21,6 +21,25 @@ from .index import EVENT_V2_BLOCK, extract_event_metadata
 _HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
+def captured_turn_selector(turn_id: str, captured_turn_key: str | None = None) -> str:
+    """Resolve either a raw host ID or an explicit, persisted capture key.
+
+    No numeric/name fallback is allowed. For keyed calls the display argument
+    must equal the key, so two conflicting identities cannot enter a snapshot.
+    This is an internal location selector, not write authorization.
+    """
+    from .index import turn_key
+    if not isinstance(turn_id, str) or not turn_id or len(turn_id) > 800:
+        raise ValueError("invalid_turn_id")
+    if captured_turn_key is None:
+        return turn_key(turn_id)
+    if (not isinstance(captured_turn_key, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", captured_turn_key)
+            or turn_id != captured_turn_key):
+        raise ValueError("invalid_captured_turn_key")
+    return captured_turn_key
+
+
 @dataclass(frozen=True)
 class InboxEvent:
     source: str

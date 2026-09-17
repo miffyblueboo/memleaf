@@ -62,3 +62,13 @@ boolean `allow_new_scopes=False`. The canonical runner binds it into the origina
 request; changing it during retry conflicts rather than granting new authority.
 Scope changes, shared post-head registration and zero-call recovery follow
 `incremental-scope-registration.md`. The default production routes do not change.
+
+
+## G4a automatic entry-point integration
+
+The existing `process()` / CLI / MCP / detached worker can now explicitly select
+this same runner via `pipeline="incremental"` or `process.automatic_pipeline`.
+The configured default remains legacy and the text remember API is unchanged.
+See [automatic-processing-route.md](automatic-processing-route.md) for immutable
+queue controls, batch/backlog semantics, read-only status and cold-switch limits.
+This is not production activation or native/live-model acceptance.

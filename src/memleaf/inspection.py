@@ -128,7 +128,7 @@ def audit_vault(path: Path | str | None = None) -> dict[str, Any]:
 
 def preview_process(path: Path | str | None = None, *, model: Any = None, router: Any = None,
                     source: str | None = None, session_id: str | None = None, scope: Any = None,
-                    clock: Any = None) -> dict[str, Any]:
+                    clock: Any = None, pipeline: str | None = None, recover: bool = False) -> dict[str, Any]:
     """Run the same processor on an isolated copy, never the source Vault.
 
     TemporaryDirectory is private to the current user. Existing configured
@@ -146,7 +146,7 @@ def preview_process(path: Path | str | None = None, *, model: Any = None, router
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(data)
         core = Memleaf(target, model=model, router=router, clock=clock)
-        result = core.process(source=source, session_id=session_id, model=model, router=router, scope=scope)
+        result = core.process(source=source, session_id=session_id, model=model, router=router, scope=scope, pipeline=pipeline, recover=recover)
         after = _snapshot(target)
         changes = []
         for name in sorted(set(before) | set(after)):
