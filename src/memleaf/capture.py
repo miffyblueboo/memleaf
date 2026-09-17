@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import datetime, timezone
@@ -257,37 +258,6 @@ def _append_event(
     )
 
 
-def _safe_event_entry(
-    *, source: str, session_id: str, turn_id: str, role: str, turn_index: int,
-    captured_at: str, message_id: str, message_revision: str,
-    previous_message_revision: str | None,
-    source_sequence: int | None, previous_message_id: str | None,
-    source_time: str | None, final: bool | None,
-) -> dict:
-    result = {
-        "event_key": "",
-        "source": source,
-        "session_id": session_id,
-        "turn_id": turn_id,
-        "role": role,
-        "turn_index": turn_index,
-        "captured_at": captured_at,
-        "message_id": message_id,
-        "message_revision": message_revision,
-    }
-    if source_sequence is not None:
-        result["source_sequence"] = source_sequence
-    if previous_message_revision is not None:
-        result["previous_message_revision"] = previous_message_revision
-    if previous_message_id is not None:
-        result["previous_message_id"] = previous_message_id
-    if source_time is not None:
-        result["source_time"] = source_time
-    if final is not None:
-        result["final"] = final
-    return result
-
-
 def _invalidate_revised_message_unlocked(
     processed: dict,
     *,
@@ -333,6 +303,15 @@ def _invalidate_revised_message_unlocked(
             values = entry.get("memory_ids")
             if isinstance(values, list):
                 target_ids.update(value for value in values if isinstance(value, str) and value)
+    affected_turn_keys = set(prior_turn_keys) | {turn_key_value}
+    for operation in processed.get("pending_operations", {}).values():
+        if (isinstance(operation, Mapping) and operation.get("source") == source
+                and operation.get("session_id") == session_id
+                and operation.get("turn_key") in affected_turn_keys):
+            for field in ("memory_id", "duplicate_memory_id"):
+                value = operation.get(field)
+                if isinstance(value, str) and value:
+                    target_ids.add(value)
     revised = state.get("revised_turns")
     if not isinstance(revised, list):
         revised = []
@@ -352,9 +331,8 @@ def _invalidate_revised_message_unlocked(
     marker["memory_ids"] = sorted(
         set(marker.get("memory_ids", [])) | target_ids
     )
-    state["revised_turns"] = revised[-64:]
+    state["revised_turns"] = revised
 
-    affected_turn_keys = set(prior_turn_keys) | {turn_key_value}
     processing = state.get("processing")
     if isinstance(processing, Mapping) and affected_turn_keys.intersection(
         value for value in processing.get("turn_keys", []) if isinstance(value, str)
@@ -378,6 +356,83 @@ def _invalidate_revised_message_unlocked(
             ):
                 operations.pop(operation_id, None)
 
+
+
+_IMMUTABLE_EVENT_FIELDS = (
+    "source", "session_id", "turn_key", "role", "message_id", "message_revision",
+    "previous_message_revision", "source_sequence", "previous_message_id", "source_time", "final",
+)
+
+
+def _payload_digest(metadata: Mapping[str, Any], content: str) -> str:
+    value = {field: metadata.get(field) for field in _IMMUTABLE_EVENT_FIELDS}
+    value["content"] = content.rstrip("\n")
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                    separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _current_revision(processed: Mapping[str, Any], source: str, session_id: str, message_id: str) -> str | None:
+    rows = [row for row in processed.get("events", {}).values()
+            if isinstance(row, Mapping) and row.get("source") == source
+            and row.get("session_id") == session_id and row.get("message_id") == message_id
+            and isinstance(row.get("message_revision"), str)]
+    revisions = {row["message_revision"] for row in rows}
+    previous = {row.get("previous_message_revision") for row in rows}
+    heads = revisions - previous
+    if len(heads) > 1:
+        raise ValueError("message revision lineage is ambiguous")
+    return next(iter(heads)) if heads else None
+
+
+def recover_capture_receipts_unlocked(vault: Vault, processed: dict, path: Path) -> bool:
+    """Reconcile durable inbox blocks after a crash before receipt/fence save.
+
+    Caller holds the Vault lock and persists processed if True is returned.
+    No message body is copied into runtime state, and no old model plan runs.
+    """
+    if not path.exists():
+        return False
+    if path.is_symlink():
+        raise ValueError("unsafe inbox session path")
+    changed = False
+    events = processed.setdefault("events", {})
+    for metadata in extract_event_metadata(path.read_text(encoding="utf-8")):
+        if metadata.get("legacy") or not metadata.get("message_id"):
+            continue
+        key = metadata.get("event_key")
+        if not isinstance(key, str) or not isinstance(metadata.get("content"), str):
+            continue
+        source, session = metadata.get("source"), metadata.get("session_id")
+        if not isinstance(source, str) or not isinstance(session, str):
+            raise ValueError("invalid capture receipt source")
+        if path != vault.inbox_path / safe_component(source, "source") / (safe_component(session, "session id") + ".md"):
+            raise ValueError("capture receipt source mismatch")
+        digest = _payload_digest(metadata, metadata["content"])
+        existing = events.get(key)
+        if isinstance(existing, dict):
+            if existing.get("payload_digest") not in (None, digest):
+                raise ValueError("capture receipt payload changed")
+            if existing.get("payload_digest") is None:
+                existing["payload_digest"] = digest
+                changed = True
+            continue
+        _invalidate_revised_message_unlocked(
+            processed, source=source, session_id=session,
+            turn_key_value=metadata["turn_key"], turn_index=metadata["turn_index"],
+            message_id=metadata["message_id"], message_revision=metadata["message_revision"],
+        )
+        entry = {field: metadata[field] for field in (*_IMMUTABLE_EVENT_FIELDS, "turn_id", "turn_index", "captured_at")
+                 if field in metadata}
+        entry.update(event_key=key, payload_digest=digest)
+        events[key] = entry
+        keys = processed.setdefault("event_keys", [])
+        if key not in keys:
+            keys.append(key)
+        state = processed.setdefault("sessions", {}).setdefault(_session_key(source, session), {})
+        state.setdefault("turns", {})[metadata["turn_key"]] = metadata["turn_index"]
+        state["next_turn_index"] = max(state.get("next_turn_index", 1), metadata["turn_index"] + 1)
+        changed = True
+    return changed
 
 def capture_event(
     vault: Vault,
@@ -419,6 +474,12 @@ def capture_event(
         raise ValueError("invalid source sequence")
     if final is not None and not isinstance(final, bool):
         raise ValueError("invalid final flag")
+    if role == "assistant" and final is None and any(value is not None for value in (
+        message_id, message_revision, previous_message_revision, previous_message_id, source_sequence, source_time
+    )):
+        # Opting into source envelopes does not implicitly certify completion.
+        # Old callers with no source metadata retain their legacy boundary.
+        final = False
     resolved_event_id, resolved_message_id, resolved_event_key = _event_identity(
         source, session_id, turn_id, role, event_id, message_id, message_revision
     )
@@ -453,44 +514,34 @@ def capture_event(
             existing = path.read_text(encoding="utf-8") if path.exists() else ""
         except (OSError, UnicodeError) as error:
             raise ValueError("cannot read inbox session") from error
-        existing_event = next(
-            (
-                metadata
-                for metadata in extract_event_metadata(existing)
-                if metadata.get("event_key") == resolved_event_key
-            ),
-            None,
-        )
-        if existing_event is not None:
-            if (
-                existing_event.get("role") != role
-                or existing_event.get("turn_key") != resolved_turn_key
-                or existing_event.get("message_id") not in {None, resolved_message_id}
-                or existing_event.get("message_revision") not in {None, resolved_message_revision}
-                or existing_event.get("content") != safe_content.rstrip("\n")
-            ):
+        if recover_capture_receipts_unlocked(vault, processed, path):
+            atomic_write_json(vault.processed_state_path, processed)
+        # All control metadata, not just text, belongs to the immutable revision.
+        incoming = {
+            "source": source, "session_id": session_id, "turn_key": resolved_turn_key, "role": role,
+            "message_id": resolved_message_id, "message_revision": resolved_message_revision,
+            "previous_message_revision": previous_message_revision, "source_sequence": source_sequence,
+            "previous_message_id": previous_message_id, "source_time": source_time, "final": final,
+        }
+        digest = _payload_digest(incoming, safe_content)
+        existing_event = processed.get("events", {}).get(resolved_event_key)
+        if isinstance(existing_event, Mapping) and existing_event.get("payload_digest"):
+            if existing_event["payload_digest"] != digest:
                 raise ValueError("event revision identity reused with different payload")
-            return CaptureResult(resolved_event_id, stored=False, duplicate=True, path=path, content=safe_content)
+            return CaptureResult(resolved_event_id, stored=False, duplicate=True,
+                                 path=path if path.exists() else None, content=safe_content)
         if known_event:
-            # The inbox block may already have crossed its cleanup boundary;
-            # the durable receipt still proves this delivery was accepted.
-            return CaptureResult(
-                resolved_event_id,
-                stored=False,
-                duplicate=True,
-                path=path if path.exists() else None,
-                content=safe_content,
-            )
-
-        prior_revisions = [
-            metadata.get("message_revision")
-            for metadata in extract_event_metadata(existing)
-            if metadata.get("source") == source
-            and metadata.get("session_id") == session_id
-            and metadata.get("message_id") == resolved_message_id
-            and isinstance(metadata.get("message_revision"), str)
-        ]
-        current_revision = prior_revisions[-1] if prior_revisions else None
+            # Old receipts without a fingerprint remain delivery receipts, not
+            # permission to alter their metadata. Legacy retries remain valid.
+            supplied = (message_id, message_revision, previous_message_revision,
+                        source_sequence, previous_message_id, source_time, final)
+            if any(value is not None for value in supplied):
+                raise ValueError("legacy receipt cannot verify a new source envelope")
+            return CaptureResult(resolved_event_id, stored=False, duplicate=True,
+                                 path=path if path.exists() else None, content=safe_content)
+        # The revision chain outlives inbox body retention. Do not infer a head
+        # from JSON key order, which is sorted during durable writes.
+        current_revision = _current_revision(processed, source, session_id, resolved_message_id)
         if current_revision is None and previous_message_revision is not None:
             raise ValueError("message revision predecessor does not exist")
         if current_revision is not None and current_revision != resolved_message_revision:
@@ -506,15 +557,6 @@ def capture_event(
             session_key,
             turn_id,
             persisted_turn_id,
-        )
-        _invalidate_revised_message_unlocked(
-            processed,
-            source=source,
-            session_id=session_id,
-            turn_key_value=resolved_turn_key,
-            turn_index=turn_index,
-            message_id=resolved_message_id,
-            message_revision=resolved_message_revision,
         )
         captured_at = _timestamp()
         updated = _append_event(
@@ -539,51 +581,7 @@ def capture_event(
         )
         atomic_write_text(path, updated)
 
-        event_keys = _known_event_keys(vault, processed)
-        event_keys.add(resolved_event_key)
-        existing_events = processed.get("events", {})
-        event_entries = {
-            key: dict(value)
-            for key, value in existing_events.items()
-            if isinstance(key, str) and len(key) == 64 and isinstance(value, dict)
-        } if isinstance(existing_events, dict) else {}
-        entry = _safe_event_entry(
-            source=source,
-            session_id=session_id,
-            turn_id=persisted_turn_id,
-            role=role,
-            turn_index=turn_index,
-            captured_at=captured_at,
-            message_id=resolved_message_id,
-            message_revision=resolved_message_revision,
-            previous_message_revision=previous_message_revision,
-            source_sequence=source_sequence,
-            previous_message_id=previous_message_id,
-            source_time=source_time,
-            final=final,
-        )
-        entry["turn_key"] = resolved_turn_key
-        entry["event_key"] = resolved_event_key
-        event_entries[resolved_event_key] = entry
-        sessions = processed.get("sessions", {})
-        if not isinstance(sessions, dict):
-            sessions = {}
-        # Merge only capture-owned turn-index fields. In particular, preserve
-        # revision coordination and a processor's in-flight ownership marker.
-        old_state = sessions.get(session_key)
-        new_state = dict(old_state) if isinstance(old_state, dict) else {}
-        new_state["turns"] = dict(state.get("turns", {}))
-        if "next_turn_index" in state:
-            new_state["next_turn_index"] = state["next_turn_index"]
-        sessions[session_key] = new_state
-        atomic_write_json(
-            vault.processed_state_path,
-            {
-                **processed,
-                "version": 1,
-                "event_keys": sorted(event_keys),
-                "events": event_entries,
-                "sessions": sessions,
-            },
-        )
+        recover_capture_receipts_unlocked(vault, processed, path)
+        atomic_write_json(vault.processed_state_path, processed)
+
         return CaptureResult(resolved_event_id, stored=True, duplicate=False, path=path, content=safe_content)

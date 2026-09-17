@@ -1,18 +1,10 @@
-"""Durable request-count state for one background extraction work item.
+"""Durable provider-request accounting for source revisions and intent.
 
-A detached worker can die after a provider request but before memleaf records a
-normal model failure.  The process-job ID survives that worker restart, so use
-it as the stable work identity and reserve each outbound single-pass request
-*before* dispatch.  A restarted worker therefore cannot reopen the bounded
-automatic budget for the same turn.
-
-Older releases also recorded a wall-clock start. Those timestamps are accepted
-for compatibility but never used to shorten requests or forbid a later commit.
-Request counters, not elapsed time, remain authoritative across restarts.
-Deterministic no-write turns never consult this model-request ledger.
-
-This state contains only control identifiers, counters, and timestamps; never
-prompts, responses, evidence bodies, credentials, or exception text.
+Synchronous and background callers share work identity. Reservations precede
+actual dispatch; an uncertain process exit conservatively consumes the slot.
+Legacy job-keyed counters can be migrated only for a matching legacy source
+turn. Time does not expire or reopen request authority. This ledger has no
+message bodies, prompts, credentials, or exception text.
 """
 from __future__ import annotations
 
@@ -272,6 +264,7 @@ def reserve_model_request(
     work_id: str,
     turn_id: str,
     request_limit: int = MAX_MODEL_REQUESTS,
+    legacy_turn_id: str | None = None,
 ) -> int | None:
     """Atomically reserve the next provider request and return its ordinal.
 
@@ -288,8 +281,31 @@ def reserve_model_request(
         raise ExtractionWorkStateError("invalid extraction request limit")
     with vault.lock():
         state = _read_budget_state_unlocked(vault)
+        # Previous releases keyed budgets by job ID. Moving to a source key
+        # must not silently grant a second budget for the same legacy turn.
+        migrated = []
+        if legacy_turn_id is not None and work_id not in state["works"]:
+            if legacy_turn_id != turn_id:
+                raise ExtractionWorkStateError("legacy turn budget identity mismatch")
+            for old_id in list(state["order"]):
+                old_work = state["works"][old_id]
+                if not old_id.startswith("job-") or legacy_turn_id not in old_work["turns"]:
+                    continue
+                migrated.append(_normalize_turn_state(old_work["turns"].pop(legacy_turn_id)))
+                if not old_work["turns"]:
+                    del state["works"][old_id]
+                    state["order"].remove(old_id)
         work = _work_unlocked(state, work_id=work_id)
         turns = work["turns"]
+        if migrated:
+            turns[turn_id] = {
+                "requests": min(1_000_000, sum(row["requests"] for row in migrated)),
+                "started_at_epoch": None,
+                "request_limit_at_creation": min([request_limit] + [row["request_limit_at_creation"] for row in migrated]),
+                "completed": any(row["completed"] for row in migrated),
+            }
+            # Persist even when the migrated count is already exhausted.
+            atomic_write_json(_budget_path(vault), state, mode=0o600)
         turn_state = turns.get(turn_id)
         if turn_state is None:
             if len(turns) >= _MAX_TURNS_PER_WORK:

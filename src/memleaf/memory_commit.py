@@ -177,6 +177,22 @@ class MemoryCommitter:
                 marker = state.get("processing") if isinstance(state, Mapping) else None
                 if not isinstance(marker, Mapping) or marker.get("token") != snapshot.token:
                     raise ProcessingError("processing ownership changed")
+            from .inbox import parse_inbox_file
+            from .turn_plan import input_digest
+            for snapshot in snapshots:
+                turn = snapshot.turn
+                receipts = processed.get("events", {})
+                is_explicit = all(
+                    isinstance(receipts.get(event.event_key), Mapping)
+                    and receipts[event.event_key].get("request_kind") == "explicit_remember"
+                    for event in turn.events
+                )
+                if is_explicit:
+                    continue
+                path = self.service.vault.session_path(turn.source, turn.session_id)
+                current = next((row for row in parse_inbox_file(path) if row.turn_key == turn.turn_key), None)
+                if current is None or not current.complete or input_digest(current) != input_digest(turn):
+                    raise ProcessingError("source revision changed before commit")
             written: list[Memory] = []
             all_requests = list(requests)
             claimed_native: dict[str, str] = {}
@@ -397,6 +413,10 @@ class MemoryCommitter:
                 if isinstance(existing_entry, dict):
                     entry = existing_entry
                     entry["memory_ids"] = sorted(set(entry.get("memory_ids", []) + ids))
+                    entry["cleanup_event_keys"] = sorted(set(entry.get("cleanup_event_keys", []))
+                                                          | set(entry.get("event_keys", []))
+                                                          | set(snapshot.turn.event_keys))
+                    entry.pop("cleanup_done_at", None)
                     entry["event_keys"] = list(snapshot.turn.event_keys)
                     entry["processed_at"] = now
                 else:
@@ -482,7 +502,8 @@ class MemoryCommitter:
                 entry["evidence_dispositions"] = self.audit._evidence_by_turn.get(scope_key, [])
                 state["processed_turns"] = entries
                 revised_entries = state.get("revised_turns")
-                if isinstance(revised_entries, list):
+                if (isinstance(revised_entries, list) and not entry.get("deferred_candidates")
+                        and not entry.get("deferred_evidence")):
                     remaining_revisions = [
                         item
                         for item in revised_entries

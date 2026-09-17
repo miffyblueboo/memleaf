@@ -100,9 +100,8 @@ def turn_plan_key(turn: Any) -> str:
 
 
 def input_digest(turn: Any) -> str:
-    # Explicit remember may recreate an event with a fresh timestamp on retry.
-    # Its content, role, provenance and identity must remain identical. The plan
-    # already freezes any dates resolved from the original evidence timestamp.
+    # Source metadata belongs to immutable input. Explicit remember freezes its
+    # first observation in the receipt ledger instead of assigning retry time.
     events = [{
         "event_key": e.event_key,
         "role": e.role,
@@ -117,6 +116,24 @@ def input_digest(turn: Any) -> str:
         "tool_evidence": list(getattr(e, "tool_evidence", ())),
     } for e in turn.events]
     return _digest([turn.source, turn.session_id, turn.turn_key, events])
+
+
+def _input_matches(value: Mapping[str, Any], turn: Any) -> bool:
+    version = value.get("input_schema_version")
+    if version not in (None, 2):
+        return False
+    if value.get("input_digest") == input_digest(turn):
+        return True
+    # Older plans used body/role/event identity only. Accept that digest only
+    # for genuinely legacy events: never discard known revision/time/final
+    # metadata to make a stale plan fit a new source envelope.
+    fields = ("message_id", "message_revision", "previous_message_revision",
+              "source_sequence", "previous_message_id", "source_time", "final")
+    if version is not None or any(getattr(e, f, None) is not None for e in turn.events for f in fields):
+        return False
+    events = [{"event_key": e.event_key, "role": e.role, "content": e.content,
+               "tool_evidence": list(getattr(e, "tool_evidence", ()))} for e in turn.events]
+    return value.get("input_digest") == _digest([turn.source, turn.session_id, turn.turn_key, events])
 
 
 def contributing_candidates(request: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -219,7 +236,8 @@ class FrozenTurn:
                 raise _error("write plan contains another turn")
             records.append({k: v for k, v in request.items() if k != "turn"})
         value = {"schema_version": SCHEMA_VERSION, "evidence_policy": EVIDENCE_POLICY, "turn_id": turn_plan_key(turn),
-                 "input_digest": input_digest(turn), "requests": records, "scopes": list(scopes),
+                 "input_digest": input_digest(turn), "input_schema_version": 2,
+                 "requests": records, "scopes": list(scopes),
                  "candidate_dispositions": list(candidates), "evidence_dispositions": list(evidence),
                  "deferred_candidates": list(deferred)}
         payload = _json(value)
@@ -237,7 +255,7 @@ class FrozenTurn:
             raise _error("stored write plan checksum mismatch")
         value = parse_strict_json(payload)
         if (not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION
-            or value.get("turn_id") != turn_plan_key(turn) or value.get("input_digest") != input_digest(turn)):
+            or value.get("turn_id") != turn_plan_key(turn) or not _input_matches(value, turn)):
             raise _error("stored write plan does not match current evidence")
         if value.get("evidence_policy") != EVIDENCE_POLICY:
             raise _error("stored write plan predates the conversation-only evidence policy")

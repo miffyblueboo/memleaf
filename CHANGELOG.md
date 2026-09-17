@@ -4,6 +4,12 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Repair source/intent contracts end to end: forward public remember intent, bind each authorization to immutable content/scope and original observation time, and keep separate authorizations in one host turn independent.
+- Preserve out-of-order initial messages, require trusted final for new source envelopes, and validate all immutable revision metadata even after inbox body cleanup.
+- Reconcile durable inbox receipts before selection/cleanup, fence commits against the actual source snapshot, retain revised evidence/coordination targets, and prevent duplicate retry selection.
+- Keep partial work eligible within its remaining budget; migrate exhausted legacy job counters without reopening authority. Version frozen input digests and reject unprovable legacy explicit-remember bindings instead of inventing timestamps.
+- Add 32 synthetic boundary regression tests. No extraction prompts, model settings, version, tags or release workflows changed.
+
 - Fix cross-namespace maintenance disposition fallback, provenance-sensitive semantic duplicates, and withdrawn-head leakage through project/priority/contextual retrieval.
 - Validate validity types before enum membership; keep malformed records from breaking unrelated reads. Retain pre-validity frozen UPDATE compatibility only for unchanged legacy-format targets.
 - Journal explicit retractions for bounded, revision-checked forward recovery; finish failed index work without duplicate history, preserve later edits, and cancel pending plaintext on forget.

@@ -1,6 +1,7 @@
 """Inbox ownership, progress, cleanup and recovery selection."""
 from __future__ import annotations
 import errno
+import hashlib
 import json
 import os
 import re
@@ -9,7 +10,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping, Optional
 from .admission import analyze_turn_evidence, read_only_turn
-from .capture import _safe_turn_id
+from .capture import _safe_turn_id, recover_capture_receipts_unlocked
 from .evidence_policy import capture_policy_status, retain_tool_evidence
 from .index import EVENT_V2_BLOCK, extract_event_keys, turn_key
 from .inbox import InboxEvent, InboxTurn, parse_inbox
@@ -169,7 +170,7 @@ class ProcessJournal:
             raise ProcessingError("cannot read inbox session") from error
         target_keys = {
             item.casefold()
-            for item in entry.get("event_keys", [])
+            for item in [*entry.get("event_keys", []), *entry.get("cleanup_event_keys", [])]
             if isinstance(item, str)
         }
         target_turn_key = entry.get("turn_key")
@@ -186,7 +187,7 @@ class ProcessJournal:
             key = metadata.get("event_key")
             matches = isinstance(key, str) and key.casefold() in target_keys
             matches = matches or (
-                isinstance(target_turn_key, str)
+                not target_keys and isinstance(target_turn_key, str)
                 and metadata.get("turn_key") == target_turn_key
                 and metadata.get("turn_index") == target_index
             )
@@ -221,6 +222,11 @@ class ProcessJournal:
         # eligibility timestamps are written at successful commit time.  It
         # is accepted here to keep the lock-held cleanup boundary explicit.
         del cleanup_hours
+        recovered = False
+        for inbox_path in self.service.vault.list_markdown("inbox"):
+            recovered = recover_capture_receipts_unlocked(self.service.vault, processed, inbox_path) or recovered
+        if recovered:
+            self._write_processed_unlocked(processed)
         now_time = _parse_time(now)
         if now_time is None:
             return 0
@@ -241,6 +247,9 @@ class ProcessJournal:
                 if not isinstance(raw_entry, dict) or raw_entry.get("cleanup_done_at"):
                     continue
                 if raw_entry.get("deferred_candidates") or raw_entry.get("deferred_evidence"):
+                    continue
+                if any(isinstance(item, Mapping) and item.get("turn_key") == raw_entry.get("turn_key")
+                       for item in state_value.get("revised_turns", [])):
                     continue
                 pending = processed.get("pending_turn_plans", {})
                 state_source, _, state_session = state_key.partition("/")
@@ -416,7 +425,7 @@ class ProcessJournal:
                         continue
                     turn = next((item for item in turns
                         if item.turn_key == entry.get("turn_key") and item.complete), None)
-                    if turn is not None:
+                    if turn is not None and turn not in selected:
                         selected.append(turn)
                         if not explicit_retry:
                             entry["automatic_retry_count"] = _as_int(entry.get("automatic_retry_count"), 0) + 1
@@ -794,6 +803,34 @@ class ProcessJournal:
             self.service._recover_compaction_unlocked()
             processed = _read_processed(self.service.vault.processed_state_path)
             cleaned = self._cleanup_due_unlocked(processed, now, cleanup_hours)
+            receipt_payload = json.dumps(
+                [source, session_id, turn_id, redact_text(content), scopes],
+                ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            )
+            fingerprint = hashlib.sha256(receipt_payload.encode("utf-8")).hexdigest()
+            event_rows = processed.setdefault("events", {})
+            receipt = event_rows.get(event_key_value)
+            if isinstance(receipt, Mapping):
+                if receipt.get("payload_digest") != fingerprint:
+                    raise ProcessingError("remember intent reused with different payload")
+                observed_at = receipt.get("source_time")
+                if _parse_time(observed_at) is None:
+                    raise ProcessingError("remember receipt has no valid source time")
+            else:
+                if (self._processed_memory_ids(processed, event_key_value) is not None
+                        or turn_identity_key(source, session_id, turn_key(turn_id))
+                        in processed.get("pending_turn_plans", {})):
+                    # Older explicit work has no recoverable original timestamp
+                    # or payload binding. Do not invent either from this retry.
+                    raise ProcessingError("legacy remember receipt requires explicit migration or a new authorization")
+                observed_at = now
+                event_rows[event_key_value] = {
+                    "event_key": event_key_value, "request_kind": "explicit_remember",
+                    "source": source, "session_id": session_id,
+                    "turn_key": turn_key(turn_id), "message_id": event_key_value,
+                    "message_revision": "1", "payload_digest": fingerprint,
+                    "source_time": observed_at, "captured_at": observed_at,
+                }
             existing = self._processed_memory_ids(processed, event_key_value)
             if existing is not None:
                 return None, {"memory_ids": existing}, None, cleaned
@@ -837,9 +874,9 @@ class ProcessJournal:
             turn_id=_safe_turn_id(turn_id),
             message_id=event_key_value,
             message_revision="1",
-            source_time=now,
-            captured_at=now,
-            timestamp=now,
+            source_time=observed_at,
+            captured_at=observed_at,
+            timestamp=observed_at,
         )
         turn = InboxTurn(source, session_id, stable_key, index, (event,))
         candidate = {

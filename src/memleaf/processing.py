@@ -1,6 +1,7 @@
 """Public processing orchestration; one planner and one commit boundary."""
 from __future__ import annotations
 import hashlib
+import json
 import uuid
 from typing import Any, Mapping
 from .admission import analyze_turn_evidence, memory_writes_disabled
@@ -187,6 +188,18 @@ class Processor:
         turn = snapshot.turn
         return f"{turn.source}/{turn.session_id}/{turn.turn_key}"
 
+    def _turn_settled(self, snapshot: Any) -> bool:
+        """A successful commit can still contain unresolved evidence."""
+        with self.service.vault.lock():
+            processed = _read_processed(self.service.vault.processed_state_path)
+            state = processed.get("sessions", {}).get(snapshot.state_key, {})
+            entry = next((row for row in state.get("processed_turns", [])
+                          if isinstance(row, Mapping) and row.get("turn_key") == snapshot.turn.turn_key), None)
+            return (isinstance(entry, Mapping)
+                    and set(entry.get("event_keys", [])) == set(snapshot.turn.event_keys)
+                    and not entry.get("deferred_candidates")
+                    and not entry.get("deferred_evidence"))
+
     def process(
         self,
         *,
@@ -270,6 +283,11 @@ class Processor:
                     request_kind="automatic",
                     intent_id="automatic",
                 )
+                legacy_turn = not any(
+                    getattr(event, field, None) is not None
+                    for event in snapshot.turn.events
+                    for field in ("message_id", "message_revision", "source_time", "source_sequence", "final")
+                )
                 turn_timing = ExtractionTiming()
 
                 with self.service.vault.lock():
@@ -294,11 +312,12 @@ class Processor:
                         backend = self.model._resolve_backend(model=model, router=router)
                     turn_backend = backend
                     if getattr(backend, "single_pass_safe", False) is True:
-                        reserve_request = lambda work_id=durable_work_id, turn_id=durable_turn_budget_id: reserve_model_request(
+                        reserve_request = lambda work_id=durable_work_id, turn_id=durable_turn_budget_id, legacy=legacy_turn: reserve_model_request(
                             self.service.vault,
                             work_id=work_id,
                             turn_id=turn_id,
                             request_limit=3,
+                            legacy_turn_id=turn_id if legacy else None,
                         )
                         turn_backend = budget_single_pass_backend(
                             backend,
@@ -320,11 +339,12 @@ class Processor:
                         ref: self.audit._deferred_by_turn.get(ref, [])
                     },
                 )
-                complete_turn_budget(
-                    self.service.vault,
-                    work_id=durable_work_id,
-                    turn_id=durable_turn_budget_id,
-                )
+                if self._turn_settled(snapshot):
+                    complete_turn_budget(
+                        self.service.vault,
+                        work_id=durable_work_id,
+                        turn_id=durable_turn_budget_id,
+                    )
                 all_ids.extend(ids)
                 metadata_merged += self.writer.last_metadata_merged
                 self._extraction_timings.append(turn_timing.finish())
@@ -383,7 +403,9 @@ class Processor:
         source = safe_component(source, "source")
         session_id = safe_component(session_id, "session id")
         if intent_id is None:
-            intent_id = f"intent-{uuid.uuid4().hex}"
+            receipt = event_id or turn_id
+            intent_id = ("receipt-" + hashlib.sha256(receipt.encode("utf-8")).hexdigest()
+                         if isinstance(receipt, str) and receipt else f"intent-{uuid.uuid4().hex}")
         if (
             not isinstance(intent_id, str)
             or not intent_id
@@ -403,7 +425,15 @@ class Processor:
         raw_event_id = event_id or f"remember/{source}/{session_id}/{intent_id}"
         if not isinstance(raw_event_id, str) or not raw_event_id or "\x00" in raw_event_id or "\n" in raw_event_id or "\r" in raw_event_id:
             raise ValueError("invalid event id")
-        stable_event_key = event_key(raw_event_id)
+        # A host may issue multiple explicit authorizations in one source turn.
+        # Keep their frozen plans and receipts separate, while retries stay stable.
+        stable_event_key = event_key(
+            json.dumps([source, session_id, raw_event_id, intent_id]) if event_id is not None else raw_event_id
+        )
+        if turn_id is not None:
+            raw_turn_id = "remember-" + hashlib.sha256(
+                json.dumps([raw_turn_id, intent_id]).encode("utf-8")
+            ).hexdigest()
         now = _now_value(getattr(self.service, "clock", None))
         cleanup_hours = self.journal._cleanup_hours()
         snapshot, candidate, turn, cleaned = self.journal._remember_turn(

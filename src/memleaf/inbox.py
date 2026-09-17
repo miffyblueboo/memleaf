@@ -264,21 +264,27 @@ def parse_inbox_text(
     # message. File order is the durable arrival order; revisions are opaque
     # host identifiers and therefore are never compared lexically.
     latest_message_index: dict[tuple[str, str, str], int] = {}
+    first_message_index: dict[tuple[str, str, str], int] = {}
     for index, event in enumerate(parsed_events):
         if event.message_id:
-            latest_message_index[(event.source, event.session_id, event.message_id)] = index
+            identity = (event.source, event.session_id, event.message_id)
+            first_message_index.setdefault(identity, index)
+            latest_message_index[identity] = index
     parsed_events = [
         event
         for index, event in enumerate(parsed_events)
         if not event.message_id
         or latest_message_index[(event.source, event.session_id, event.message_id)] == index
-        # A reply captured before a newer revision of the message it directly
-        # answers is stale context. Keep the revised turn pending until the
-        # host supplies a final reply for the new revision.
+        # Invalidate a reply only if an already-observed predecessor is later
+        # revised. The first arrival of a predecessor can follow its reply
+        # during out-of-order delivery; it is not evidence of a revision.
         if not event.previous_message_id
         or latest_message_index.get(
             (event.source, event.session_id, event.previous_message_id), -1
         ) < index
+        or first_message_index.get(
+            (event.source, event.session_id, event.previous_message_id), -1
+        ) > index
     ]
 
     groups: dict[tuple[str, str, str, int], list[InboxEvent]] = {}

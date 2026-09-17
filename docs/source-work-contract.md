@@ -35,7 +35,10 @@ keyed from synchronous versus background transport or from a transient job ID.
 Automatic processing uses the `automatic` intent for a frozen source-revision
 set. Explicit `remember` accepts an `intent_id`; retries of one authorization
 must reuse it, while a genuinely new authorization uses a new ID. If omitted,
-Core creates a new intent and returns it in the result.
+Core derives a stable intent from a supplied legacy event/turn receipt, or
+creates a new intent when neither is supplied, and returns it in the result.
+Same-intent retries must preserve their content and scope. Distinct explicit
+intents may share a host turn or delivery event without sharing a frozen plan.
 
 The durable request ledger reserves before dispatch. A completed row remains
 terminal instead of being deleted and silently reopened. When the bounded
@@ -49,3 +52,53 @@ current limit are accepted as exhausted, not treated as corruption or reset.
 proves when completion was reported, not necessarily when it occurred.
 `completed_at` is retained only when evidence explicitly establishes the
 actual completion time or an existing trusted value is preserved.
+
+
+## Retry and cleanup boundaries
+
+Capture receipts bind content, role, source time/order, predecessor, revision
+and final metadata. Changing any of them requires a new message revision;
+a transport retry cannot silently change them. A small payload fingerprint and
+revision lineage survive inbox body cleanup. Revision labels are opaque.
+New source envelopes without a trusted assistant final signal are not complete;
+legacy callers without source metadata retain their existing completion rule.
+The first arrival of a predecessor after its reply is not a revision.
+
+Inbox append is the durable source record. After an interruption between append
+and receipt save, capture or process reconciles the missing receipts and fences
+old work before processing or cleanup. Commit also verifies the actual current
+inbox snapshot under the Vault lock. Cleanup uses the settled event revisions,
+not every block sharing a turn ID; unresolved source revisions are retained.
+Source revisions retain known committed and pending-operation target IDs for
+later coordination. This does not claim the legacy model protocol can already
+retract every assertion removed by a source edit.
+
+Explicit remember persists its original observation time and payload binding.
+A retry never rebases a relative date to its retry time. Old explicit work whose
+receipt no longer proves these values requires explicit migration or a genuinely
+new authorization; the system does not invent evidence to bypass this boundary.
+
+A successful partial commit is not terminal authorization. It may use only the
+remaining durable request allowance, subject to the existing finite retry policy.
+Unchanged legacy automatic events migrate matching job-keyed counters once when
+first reserved under their source-work key; explicit new intent is not charged
+against an old automatic decision. Completed work remains terminal while its
+receipt is retained. Ledger retention does not promise unlimited historical replay.
+
+Frozen plans now tag their input digest format. An unversioned pre-source digest
+is accepted only when the actual events contain no new source metadata; known
+source time, revision or final cannot be discarded to make an old digest match.
+This is separate from target-memory revision compatibility.
+
+## Staged integration, not full redesign completion
+
+These changes do not replace the legacy extraction/maintenance model protocol.
+The current automatic path retains its existing three-dispatch ceiling; explicit
+remember retains two. The planned normal-one-plus-one-recovery budget belongs to
+the later unified planner and must not be claimed here. No extra dispatches were
+introduced by these fixes.
+
+Core can accept original message timestamps, but an adapter must actually provide
+them to obtain that guarantee. Missing Hermes source timestamps remain unknown;
+local capture time is not an alternative source timestamp. Real model semantics
+and Windows/macOS host acceptance require separate validation.
