@@ -131,7 +131,8 @@ def owned_turn_keys(processed: dict[str, Any], source: str, session_id: str) -> 
     works = processed.get(KEY, {})
     if not isinstance(works, dict):
         raise ValueError("invalid_incremental_ledger")
-    return {w["turn_key"] for key in works if (w := load_work(processed, key))["source"] == source
+    from .incremental_run_state import owned_turns
+    return owned_turns(processed, source, session_id) | {w["turn_key"] for key in works if (w := load_work(processed, key))["source"] == source
             and w["session_id"] == session_id}
 
 
@@ -139,7 +140,8 @@ def protected_turn_keys(processed: dict[str, Any], source: str, session_id: str)
     works = processed.get(KEY, {})
     if not isinstance(works, dict):
         raise ValueError("invalid_incremental_ledger")
-    return {w["turn_key"] for key in works if (w := load_work(processed, key))["source"] == source
+    from .incremental_run_state import owned_turns
+    return owned_turns(processed, source, session_id, protect=True) | {w["turn_key"] for key in works if (w := load_work(processed, key))["source"] == source
             and w["session_id"] == session_id and public_result(w)["execution_status"] != "completed"}
 
 
@@ -192,3 +194,6 @@ def cancel_forgotten_unlocked(service: Any, records: list[Any]) -> None:
         if changed:
             work["issues"] = [{"code": "explicit_forget", "evidence": sorted(shared)}]
             save_work(service, processed, work)
+
+    from .incremental_run_state import cancel_forgotten_unlocked as cancel_runs
+    cancel_runs(service, _read_processed(service.vault.processed_state_path), ids, sources)

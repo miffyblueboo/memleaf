@@ -208,9 +208,21 @@ def _resume_unlocked(service, processed, work):
     return public_result(work)
 
 
+def _check_run_guard(processed, guard):
+    if guard is None:
+        return
+    from .incremental_run_state import load_run, OWNER, TERMINAL as RUN_TERMINAL
+    run_id, token = guard
+    run = load_run(processed, run_id)
+    if (run is None or run["status"] in RUN_TERMINAL
+            or processed.get(OWNER, {}).get("token") != token):
+        raise ValueError("incremental_run_revoked")
+
+
 def apply_incremental(service: Any, *, response: str, expected_snapshot: str, intent_id: str,
                       source: str, session_id: str, turn_id: str, scope: Any = None,
-                      priority_memory_ids=(), candidate_limit: int = 12, allow_new_scopes: bool = False) -> dict[str, Any]:
+                      priority_memory_ids=(), candidate_limit: int = 12, allow_new_scopes: bool = False,
+                      _run_guard: tuple[str, str] | None = None) -> dict[str, Any]:
     if not isinstance(intent_id, str) or not intent_id.strip() or len(intent_id) > 800 or any(c in intent_id for c in "\0\r\n"):
         raise ValueError("invalid_intent_id")
     if not isinstance(expected_snapshot, str) or len(expected_snapshot) != 64:
@@ -222,6 +234,7 @@ def apply_incremental(service: Any, *, response: str, expected_snapshot: str, in
     identity = "inc-" + digest([source, session_id, turn_key(turn_id), intent_id])
     with service._mutation_boundary():
         processed = _read_processed(service.vault.processed_state_path)
+        _check_run_guard(processed, _run_guard)
         stored = load_work(processed, identity)
         if stored is not None:
             if stored["binding"] != binding:
@@ -253,11 +266,12 @@ def apply_incremental(service: Any, *, response: str, expected_snapshot: str, in
         return _resume_unlocked(service, processed, work)
 
 
-def resume_incremental(service: Any, work_id: str) -> dict[str, Any]:
+def resume_incremental(service: Any, work_id: str, *, _run_guard: tuple[str, str] | None = None) -> dict[str, Any]:
     if not isinstance(work_id, str) or not work_id.startswith("inc-") or len(work_id) != 68:
         raise ValueError("invalid_incremental_work_id")
     with service._mutation_boundary():
         processed = _read_processed(service.vault.processed_state_path)
+        _check_run_guard(processed, _run_guard)
         work = load_work(processed, work_id)
         if work is None:
             raise ValueError("incremental_work_not_found")

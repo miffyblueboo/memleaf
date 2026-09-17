@@ -388,6 +388,20 @@ class Memleaf:
 
         return Compactor(self).compact(model=model, router=router)
 
+    def run_incremental(self, *, source: str, session_id: str, turn_id: str,
+                        backend: Any = None, scope: Any = None,
+                        priority_memory_ids=(), candidate_limit: int = 12) -> dict[str, Any]:
+        """Opt-in captured-turn model execution; legacy host routes are unchanged."""
+        from .incremental_execution import run_incremental
+        return run_incremental(self, source=source, session_id=session_id, turn_id=turn_id,
+                               backend=backend, scope=scope, priority_memory_ids=priority_memory_ids,
+                               candidate_limit=candidate_limit)
+
+    def resume_incremental_run(self, run_id: str, *, backend: Any = None) -> dict[str, Any]:
+        """Resume a frozen response/commit without another model request when possible."""
+        from .incremental_execution import resume_incremental_run
+        return resume_incremental_run(self, run_id, backend=backend)
+
     def apply_incremental(self, *, response: str, expected_snapshot: str, intent_id: str,
                           source: str, session_id: str, turn_id: str, scope: Any = None,
                           priority_memory_ids=(), candidate_limit: int = 12,

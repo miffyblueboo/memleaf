@@ -4,6 +4,9 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Add an opt-in captured-turn incremental model runner on the shared G3b commit bridge. Persist request/response receipts, reuse source-work budgets with a two-dispatch ceiling, and recover saved responses without model regeneration. Do not switch production process/remember/MCP routes.
+- Fence concurrent legacy/incremental model workers without holding a file lock across provider calls; cancel in-flight receipts on Forget and preserve unresolved decisions without a second semantic review. Keep permanent-error and partial replanning boundaries explicit.
+
 - Stage explicit incremental apply/resume APIs on the shared MemoryWriter, freezing target groups, source/revision checks and NO_MEMORY/NO_CHANGE decisions. Default model routes remain unchanged.
 - Recover interrupted history/head/index/source-receipt work without reallocating IDs; protect staged sources from legacy re-extraction/cleanup and cancel shared-source pending plaintext before Forget.
 - Add 55 public commit/recovery regressions, including real process exit, concurrent replay and ten receipt-write fault boundaries. Preserve 187 existing tests; native comparison, new-scope transactions and model dispatch remain separate stages.

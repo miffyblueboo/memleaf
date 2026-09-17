@@ -343,6 +343,8 @@ class ProcessJournal:
         with self.service.vault.lock():
             self.service._recover_compaction_unlocked()
             processed = _read_processed(self.service.vault.processed_state_path)
+            from .incremental_run_state import assert_no_runner
+            assert_no_runner(processed)
             cleaned = self._cleanup_due_unlocked(processed, now, cleanup_hours)
             grouped = self._turns_by_session()
             sessions = processed.setdefault("sessions", {})
@@ -817,6 +819,8 @@ class ProcessJournal:
         with self.service.vault.lock():
             self.service._recover_compaction_unlocked()
             processed = _read_processed(self.service.vault.processed_state_path)
+            from .incremental_run_state import assert_no_runner
+            assert_no_runner(processed)
             cleaned = self._cleanup_due_unlocked(processed, now, cleanup_hours)
             receipt_payload = json.dumps(
                 [source, session_id, turn_id, redact_text(content), scopes],
