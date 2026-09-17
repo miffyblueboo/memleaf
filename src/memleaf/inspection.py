@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from pathlib import Path
 import tempfile
 from typing import Any
@@ -33,31 +34,59 @@ def existing_root(path: Path | str | None = None) -> Path:
     return root
 
 
+# Only known advisory lock files are disposable. An opaque *.lock control file
+# is not permission to omit it from a migration backup.
+_LOCK_FILES = frozenset({"_state/vault.lock", "_state/retrieval_gate.lock",
+                         "_index/vault.lock", "_index/retrieval_gate.lock"})
+
+
 def _snapshot(root: Path) -> dict[str, bytes]:
+    """Bounded file-only snapshot of managed areas; no initialization or repair."""
     result: dict[str, bytes] = {}
     total = 0
-    for parent, directories, files in os.walk(root, followlinks=False):
+    visited = 0
+    def unreadable(error):
+        raise InspectionError("cannot enumerate managed Vault files") from error
+    for parent, directories, files in os.walk(root, followlinks=False, onerror=unreadable):
         current = Path(parent)
         relative = current.relative_to(root)
         if current == root:
             directories[:] = [name for name in directories if name in _AREAS]
+            # A managed directory replaced by a regular file must not disappear
+            # from the selected file set and look like an empty area.
+            if any(name in _AREAS for name in files):
+                raise InspectionError("managed Vault area is not a directory")
             files = [name for name in files if name == "config.yaml"]
+        visited += len(directories) + len(files)
+        if visited > MAX_SNAPSHOT_FILES:
+            raise InspectionError("Vault exceeds bounded inspection budget")
         for name in directories + files:
             if (current / name).is_symlink():
                 raise InspectionError("inspection refuses symlinked Vault children")
         for name in sorted(files):
-            if name.endswith(".lock"):
+            key = (relative / name).as_posix()
+            if key in _LOCK_FILES:
                 continue
             path = current / name
-            if not path.is_file():
+            stamp = path.lstat()
+            if not stat.S_ISREG(stamp.st_mode):
                 raise InspectionError("inspection requires regular files")
-            if path.stat().st_size + total > MAX_SNAPSHOT_BYTES or len(result) >= MAX_SNAPSHOT_FILES:
+            if stamp.st_size + total > MAX_SNAPSHOT_BYTES:
                 raise InspectionError("Vault exceeds bounded inspection budget")
-            data = path.read_bytes()
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags)
+            with os.fdopen(descriptor, "rb") as stream:
+                opened = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(opened.st_mode)
+                        or (stamp.st_dev, stamp.st_ino) != (opened.st_dev, opened.st_ino)):
+                    raise InspectionError("Vault file changed while opening")
+                data = stream.read(MAX_SNAPSHOT_BYTES - total + 1)
             total += len(data)
             if total > MAX_SNAPSHOT_BYTES:
                 raise InspectionError("Vault changed beyond inspection budget")
-            result[(relative / name).as_posix()] = data
+            result[key] = data
+    if "config.yaml" not in result:
+        raise InspectionError("existing Vault with config.yaml is required")
     return result
 
 

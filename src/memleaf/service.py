@@ -282,12 +282,8 @@ class Memleaf:
         state_key = f"{source}/{session_id}"
         with self.vault.lock():
             self._recover_compaction_unlocked()
-            try:
-                processed = read_json(self.vault.processed_state_path)
-            except (OSError, UnicodeError, TypeError, ValueError):
-                processed = {}
-            if not isinstance(processed, dict):
-                processed = {}
+            from .process_common import _read_processed
+            processed = _read_processed(self.vault.processed_state_path)
             sessions = processed.setdefault("sessions", {})
             if not isinstance(sessions, dict):
                 raise ValueError("processed sessions are invalid")
@@ -318,6 +314,18 @@ class Memleaf:
                 "parent_session_id": parent_session_id,
                 "linked": True,
             }
+
+    def migration_preflight(self) -> dict[str, Any]:
+        """Read-only local checks; never authorizes switching production routes."""
+        from .migration import migration_preflight
+        return migration_preflight(self)
+
+    def backup_for_migration(self, destination: Path | str, *, expected_snapshot: str,
+                             writers_stopped: bool = False) -> dict[str, Any]:
+        """Create an exclusive, verified local backup of an inspected Vault."""
+        from .migration import backup_for_migration
+        return backup_for_migration(self, destination, expected_snapshot=expected_snapshot,
+                                    writers_stopped=writers_stopped)
 
     def compact_runtime_state(self, *, dry_run: bool = True,
                               expected_revision: str | None = None,

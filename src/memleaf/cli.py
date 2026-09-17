@@ -106,6 +106,17 @@ def build_parser() -> argparse.ArgumentParser:
     maintenance.add_argument("--expected-revision", default=None)
     maintenance.add_argument("--max-records", type=int, default=64)
     maintenance.add_argument("--json", action="store_true")
+    migration = commands.add_parser("migration-check", help="read-only preflight; does not authorize a pipeline switch")
+    migration.add_argument("--vault", type=Path, default=None)
+    migration.add_argument("--json", action="store_true")
+    backup = commands.add_parser("migration-backup", help="create or verify a private local migration backup")
+    action = backup.add_mutually_exclusive_group(required=True)
+    action.add_argument("--destination", type=Path, help="new directory outside the Vault; never overwritten")
+    action.add_argument("--verify", type=Path, help="verify only; do not restore or modify files")
+    backup.add_argument("--vault", type=Path, default=None)
+    backup.add_argument("--expected-snapshot", default=None)
+    backup.add_argument("--writers-stopped", action="store_true", help="operator confirms all writers have stopped")
+    backup.add_argument("--json", action="store_true")
     host_event = commands.add_parser(
         "host-event",
         help="host lifecycle hook entry",
@@ -275,6 +286,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             except RuntimeRetentionError as error:
                 print(json.dumps(error.result, ensure_ascii=False, sort_keys=True))
                 return 1
+        elif args.command in {"migration-check", "migration-backup"}:
+            from .inspection import existing_root
+            from .service import Memleaf
+            from .migration import MigrationError, verify_migration_backup
+            try:
+                if args.command == "migration-backup" and args.verify is not None:
+                    if args.vault is not None or args.expected_snapshot is not None or args.writers_stopped:
+                        raise MigrationError("invalid_backup_verify_options")
+                    output = verify_migration_backup(args.verify)
+                else:
+                    service = Memleaf(Vault(existing_root(args.vault), create=False))
+                    output = service.migration_preflight() if args.command == "migration-check" else service.backup_for_migration(
+                        args.destination, expected_snapshot=args.expected_snapshot, writers_stopped=args.writers_stopped)
+            except MigrationError as error:
+                print(json.dumps(error.result, ensure_ascii=False, sort_keys=True))
+                return 1
         elif args.command == "host-event":
             output = _host_event(args)
         else:  # pragma: no cover - argparse requires a known subcommand.
@@ -291,16 +318,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print("{}")
             return 0
         if getattr(args, "json", False):
-            print(json.dumps({"error": "operation failed" if args.command in {"audit", "process", "maintain-state"}
+            print(json.dumps({"error": "operation failed" if args.command in {"audit", "process", "maintain-state", "migration-check", "migration-backup"}
                               else "initialization failed", "stage": args.command}, ensure_ascii=False))
         else:
             action = getattr(args, "command", "init")
             print(f"memleaf {action} failed unexpectedly", file=sys.stderr)
         return 1
 
-    if args.command in {"audit", "process", "maintain-state"}:
+    if args.command in {"audit", "process", "maintain-state", "migration-check", "migration-backup"}:
         print(json.dumps(output, ensure_ascii=False, sort_keys=True, indent=None if args.json else 2))
-        return 0
+        return 2 if args.command == "migration-check" and output["local_status"] != "clear" else 0
     if args.command == "host-event":
         print(json.dumps(output, ensure_ascii=False, separators=(",", ":")))
         return 0

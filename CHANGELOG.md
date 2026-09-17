@@ -4,6 +4,9 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Add read-only migration preflight and explicit private local backup/verification through existing inspection and control contracts. Preserve exact source/authority bytes, publish the checksum manifest last, refuse stale or active snapshots, and keep backup integrity distinct from production readiness. No automatic switching, restore, model calls or default changes.
+- Reuse strict processed-state reading in session lineage updates instead of overwriting damaged authority with an empty ledger. Surface managed-area enumeration and nonregular-file failures in bounded inspection.
+
 - Preserve runtime-maintenance partial outcomes when dependency/final observation fails, verify the final intended control bytes instead of accepting any new revision, and report uncertain write outcomes explicitly. Reuse the existing lossless receipt codec, budget retirement and replay contracts; no extra cleanup policy or model calls.
 
 - Add explicit, preview-first lossless terminal control-state compaction. Seal only proven completed run/commit receipts, preserve their exact decisions and cancellation behavior, and release active slots without deleting authorization. Keep bounded historical receipts readable through versioned, size-limited encoding; leave unresolved work and source/permission state intact.
