@@ -55,6 +55,8 @@ class PlanningContext:
         by_id: dict[str, dict[str, Any]] = {}
         without_id: list[dict[str, Any]] = []
         for item in values:
+            if item.get("validity", "valid") != "valid":
+                continue
             memory_id = item.get("memory_id")
             if isinstance(memory_id, str) and item.get("native") is not True:
                 by_id[memory_id.casefold()] = item
@@ -65,6 +67,10 @@ class PlanningContext:
                 continue
             value = dict(item)
             memory_id = value.get("memory_id")
+            if value.get("validity", "valid") != "valid":
+                if isinstance(memory_id, str):
+                    by_id.pop(memory_id.casefold(), None)
+                continue
             if isinstance(memory_id, str) and value.get("native") is not True:
                 item_scopes = value.get("scopes")
                 if isinstance(scope, str):
@@ -169,6 +175,7 @@ class PlanningContext:
                 by_id = {
                     record.memory.memory_id.casefold(): record
                     for record in available
+                    if record.memory.validity == "valid"
                 }
                 priority_records = [
                     by_id[value] for value in priority_wanted if value in by_id
@@ -392,6 +399,11 @@ class PlanningContext:
         return selected
 
 
+    def _valid_records_unlocked(self) -> list[Any]:
+        """The legacy planner cannot represent restoration of withdrawn heads."""
+        return [record for record in self.service._read_memories_unlocked("knowledge")
+                if record.memory.validity == "valid"]
+
     def _scope_records_unlocked(self, scope: Any) -> tuple[list[Any], bool]:
         """Read and rank active records once for a scoped fallback.
 
@@ -409,7 +421,7 @@ class PlanningContext:
         ambiguity is not.
         """
 
-        active_records = self.service._read_memories_unlocked("knowledge")
+        active_records = self._valid_records_unlocked()
         scoped = filter_by_scope(
             [record.memory for record in active_records],
             scope,
@@ -569,7 +581,7 @@ class PlanningContext:
                 mentioned = list(dict.fromkeys(mentioned))
                 if len(mentioned) != 2:
                     return [], True
-                records = self.service._read_memories_unlocked("knowledge")
+                records = self._valid_records_unlocked()
                 values = [
                     record.memory.to_dict()
                     for record in records
@@ -637,7 +649,7 @@ class PlanningContext:
             mentioned = [key for key in registry
                          if isinstance(key, str) and key.startswith("project:")
                          and self._scope_terms_present(visible, key, config)]
-            current_records = self.service._read_memories_unlocked("knowledge")
+            current_records = self._valid_records_unlocked()
             contextual = [record.memory.to_dict() for record in current_records
                           if (any(self._scope_terms_present(visible, key, config)
                                   for key in record.memory.scopes if key.startswith("project:"))
@@ -721,7 +733,7 @@ class PlanningContext:
         key = memory_id.casefold()
         try:
             with self.service.vault.lock():
-                for record in self.service._read_memories_unlocked("knowledge"):
+                for record in self._valid_records_unlocked():
                     if record.memory.memory_id.casefold() == key:
                         return record.memory
         except (OSError, UnicodeError, ValueError, TypeError):
@@ -848,7 +860,7 @@ class PlanningContext:
 
         try:
             with self.service.vault.lock():
-                records = self.service._read_memories_unlocked("knowledge")
+                records = self._valid_records_unlocked()
         except (OSError, UnicodeError, ValueError, TypeError):
             return None
         eligible_old: list[Memory] = []

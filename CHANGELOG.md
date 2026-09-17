@@ -4,6 +4,11 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Fix cross-namespace maintenance disposition fallback, provenance-sensitive semantic duplicates, and withdrawn-head leakage through project/priority/contextual retrieval.
+- Validate validity types before enum membership; keep malformed records from breaking unrelated reads. Retain pre-validity frozen UPDATE compatibility only for unchanged legacy-format targets.
+- Journal explicit retractions for bounded, revision-checked forward recovery; finish failed index work without duplicate history, preserve later edits, and cancel pending plaintext on forget.
+- Include public regressions in sdist, covering recovery boundaries, real subprocess exits, concurrency, old revisions and negative protocol cases. No model prompts, package version or release automation were changed.
+
 - Add a first-class `validity: valid|retracted` state. Deterministic retraction uses an expected revision, archives the previous valid body, keeps the stable current identity, and excludes retracted assertions from ordinary read/search/todo results while retaining explicit audit and forget paths.
 - Preserve completed and cancelled todo heads in `knowledge/` instead of retiring their stable identities by age. Add public deterministic contract tests to CI for legacy compatibility, retraction, revision conflicts, and closed-todo retention.
 

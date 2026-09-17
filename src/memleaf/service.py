@@ -625,66 +625,16 @@ class Memleaf:
         deliberately separate from ``forget_memory``, which deletes content.
         """
 
-        from .memory_writer import MemoryWriter
-        from .turn_plan import revision_digest
+        from .memory_retraction import RetractionManager
 
         safe_component(memory_id, "memory id")
         if not isinstance(expected_revision, str) or not expected_revision:
             raise ValueError("expected_revision must be a non-empty string")
         if reason is not None and (not isinstance(reason, str) or not reason.strip()):
             raise ValueError("retraction reason must be non-empty text")
-
+        reason = reason.strip() if reason is not None else None
         with self._mutation_boundary():
-            matches = self._find_records_unlocked(memory_id, include_history=False)
-            if not matches:
-                raise ValueError("memory does not exist")
-            if len(matches) != 1:
-                raise ValueError("duplicate current memory id")
-            record = matches[0]
-            current = record.memory
-            if revision_digest(current) != expected_revision:
-                raise MemoryVersionError("memory revision mismatch")
-            if current.validity == "retracted":
-                return current
-
-            now = utc_now()
-            writer = MemoryWriter(self)
-            writer._write_history(
-                current,
-                superseded_by=current.memory_id,
-                archived_at=now,
-                invalidated_reason="retracted",
-            )
-            extra = dict(current.extra)
-            extra["retracted_at"] = now
-            if reason is not None:
-                extra["retraction_reason"] = reason.strip()
-            retracted = Memory(
-                memory_id=current.memory_id,
-                title=current.title,
-                body="",
-                tags=list(current.tags),
-                type=current.type,
-                scopes=list(current.scopes),
-                aliases=list(current.aliases),
-                keywords=list(current.keywords),
-                scope_source=current.scope_source,
-                sources=[dict(item) for item in current.sources],
-                created=current.created,
-                updated=now,
-                hit_count=current.hit_count,
-                last_hit_at=current.last_hit_at,
-                status=current.status,
-                completed_at=current.completed_at,
-                due_date=current.due_date,
-                validity="retracted",
-                extra=extra,
-            )
-            if record.path.is_symlink():
-                raise ValueError("unsafe memory path")
-            atomic_write_text(record.path, retracted.to_markdown())
-            self._rebuild_index_unlocked()
-            return retracted
+            return RetractionManager(self).retract_unlocked(memory_id, expected_revision, reason)
 
     def read(self, memory_id: str, *, include_history: bool = False) -> Optional[Memory]:
         safe_component(memory_id, "memory id")

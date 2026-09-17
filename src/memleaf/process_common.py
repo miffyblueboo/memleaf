@@ -987,15 +987,24 @@ def _native_result(value: Any) -> list[dict[str, Any]]:
         "status",
         "completed_at",
         "due_date",
+        "validity",
+        "assignee",
+        "waiting_on",
+        "due_text",
+        "due_anchor",
     }
     for item in values:
         if isinstance(item, Memory):
+            if item.validity != "valid":
+                continue
             value = item.to_dict()
             projected = {key: value[key] for key in allowed_fields if key in value}
             if item.type == "todo":
                 projected["due_date"] = item.due_date
             result.append(projected)
         elif isinstance(item, Mapping):
+            if item.get("validity", "valid") != "valid":
+                continue
             projected = {key: item[key] for key in allowed_fields if key in item}
             if projected.get("type") == "todo":
                 projected["due_date"] = item.get("due_date")

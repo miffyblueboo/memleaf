@@ -6,6 +6,7 @@ from .config import save_config
 from .memory_writer import MemoryWriter
 from .turn_plan import dedup_digest, TurnPlan, FrozenTurn, content_digest, revision_digest, turn_plan_key
 from .models import Memory
+from .frontmatter import parse_frontmatter
 from .native_index import NativeIndexer
 from .scope_state import ScopeError, register_scope_nodes
 from .scope_maintenance import ScopeMaintainer, ScopeMaintenanceError
@@ -18,6 +19,34 @@ class MemoryCommitter:
         self.writer = writer
         self.audit = audit
         self.journal = journal
+
+    @staticmethod
+    def _revision_matches_record(record: Any, expected: str) -> bool:
+        """Accept pre-validity revisions only for still-legacy on-disk heads.
+
+        No expected token is rewritten. All other protected fields must match;
+        an explicit validity field (including valid) closes this compatibility
+        branch. Current a47db71 revisions continue to use the unchanged digest.
+        """
+        memory = getattr(record, "memory", record)
+        if memory is None:
+            return False
+        if revision_digest(memory) == expected:
+            return True
+        if not isinstance(memory, Memory) or memory.validity != "valid":
+            return False
+        path = getattr(record, "path", None)
+        if path is None or path.is_symlink():
+            return False
+        try:
+            metadata, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            return False
+        if "validity" in metadata:
+            return False
+        legacy = memory.to_dict()
+        legacy.pop("validity", None)
+        return revision_digest(legacy) == expected
 
     def _validate_target_revisions_unlocked(self, requests: list[Mapping[str, Any]]) -> None:
         active = self.writer._active_records()
@@ -32,7 +61,7 @@ class MemoryCommitter:
                     record = active.get(correction[key])
                     current = getattr(record, "memory", record)
                     expected = correction.get(revision_key)
-                    if current is None or (expected and revision_digest(current) != expected):
+                    if current is None or (expected and not self._revision_matches_record(record, expected)):
                         raise ProcessingError("scope correction target changed before commit")
                 continue
             target = request.get("summary", {}).get("update_memory_id")
@@ -55,7 +84,7 @@ class MemoryCommitter:
                 raise ProcessingError("update target disappeared before commit")
             if MemoryWriter._request_already_applied(request, current):
                 continue
-            if revision_digest(current) != request["expected_revision"]:
+            if not self._revision_matches_record(record, request["expected_revision"]):
                 raise ProcessingError("update target changed before commit; no stale overwrite")
 
     @staticmethod
@@ -487,6 +516,8 @@ class MemoryCommitter:
         if not unique:
             return []
         from .process_journal import ProcessJournal
+        from .memory_retraction import RetractionManager
+        RetractionManager(service).cancel_unlocked(unique)
         ProcessJournal(service).cancel_forgotten_unlocked({record.memory.memory_id for record in unique})
         deleted: list[str] = []
         try:

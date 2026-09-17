@@ -31,3 +31,57 @@ The derived active index excludes retracted heads. History indexing remains avai
 ## Compatibility boundary
 
 `closed_todo_retention_days` remains accepted so existing config files continue to load, but it no longer retires the stable current identity. Optional structured fields stored in frontmatter participate in the protected revision. The automatic model protocol does not yet emit `validity`; retraction is currently a deterministic Core/Python operation, and retracted heads stay out of that legacy planner's candidate projection until the protocol can represent an explicit restore safely.
+
+## Review fixes and recovery boundary (unreleased)
+
+Explicit retraction now freezes its before/after payload and operation identity in
+`_state/retractions/<memory_id>.json` before writing history or the current head.
+This is a local forward-recovery journal, not another model workflow. A retry of
+the same request resumes its remaining writes, index rebuild and settlement.
+`RetractionCommitError.applied` reports whether the current head is known to have
+changed; it does not claim that the index or settlement is complete. Keep the
+same expected revision and reason when retrying the interrupted operation.
+
+After settlement, a small receipt on the current head supports the same request's
+replay. It validates the protected result so a later real edit is never overwritten
+by that replay. A current retracted revision also allows an idempotent index repair,
+including for withdrawals created before these journals existed. The operation
+never reloads an old body as current or generates another history version merely
+to finish an index repair. A later edit cancels an incompatible pending snapshot.
+
+Ordinary lock acquisition does not replay retractions. Explicit forget cancels
+related retraction journals (including their saved plaintext) before deleting the
+selected records. A missing target is not recreated. Corrupt journals are kept
+for inspection and fail closed; there is no automatic reset. Recovery is triggered
+by an explicit retraction retry, not a daemon or an extra model request.
+
+Legacy planner eligibility is shared by normal search, project fallback,
+priority-target lookup, contextual unions and projections. Withdrawn heads are
+not exposed as ordinary active targets. This is still **not** automatic semantic
+restoration support: the future planner must carry an explicit validity-aware
+identity view before it can reason about retracted targets.
+
+Semantic duplicate comparisons exclude `field_basis`. For unresolved deadlines,
+`due_anchor` contributes only the currently supported calendar fields
+(`source_time`, `reference_time`, `timezone`, `precision`); source IDs do not make a
+new fact. A resolved deadline compares its date and retained wording, not the
+observation that supplied it. Complete provenance remains protected by revision.
+Do not use the semantic duplicate digest as an authorization or operation ID.
+
+Frozen pre-validity UPDATEs have a bounded compatibility check: the old digest is
+accepted only while the on-disk target still has no explicit `validity` field, is
+valid, and every other protected value matches. Current revisions use the existing
+algorithm. Explicit validity, retraction or another authored edit closes that
+fallback. Canonical rewrites of an old file require a fresh revision rather than
+silently changing its old authorization. This does not enable mixed old/new writers;
+use the controlled stop-write upgrade procedure before resuming pending work.
+
+Malformed validity types raise controlled validation errors. Existing scanning
+can skip the invalid record and keep unrelated records usable; a full scan-quality
+report for all malformed files remains a separate design item, not a claim of this
+patch. Public tests are included in the source distribution and use temporary
+Vaults only, with no model or network access:
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests_public -p 'test_*.py' -v
+```

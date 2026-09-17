@@ -45,10 +45,20 @@ def content_digest(summary: Mapping[str, Any]) -> str:
             "assignee",
             "waiting_on",
             "due_text",
-            "due_anchor",
-            "field_basis",
         )
     }
+    # An unresolved relative deadline depends on its calendar anchor, not on
+    # the ID of the observation that supplied it. Once resolved, due_date and
+    # due_text carry its business value. field_basis remains revision-protected.
+    anchor = summary.get("due_anchor")
+    if not summary.get("due_date"):
+        if isinstance(anchor, Mapping):
+            calendar = {key: anchor[key] for key in (
+                "source_time", "reference_time", "timezone", "precision"
+            ) if key in anchor}
+            fields["due_anchor"] = calendar or None
+        else:
+            fields["due_anchor"] = anchor
     fields["validity"] = fields["validity"] or "valid"
     fields["scopes"] = sorted(fields["scopes"] or ["global"])
     if fields["type"] == "todo":

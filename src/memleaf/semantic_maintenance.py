@@ -220,16 +220,10 @@ def expand_maintenance(raw: str, context, *, diagnostics=None) -> str:
                         raise _invalid('invalid_evidence')
                 else:
                     refs = entry.get('from') if isinstance(entry, dict) and set(entry) <= {'from', 'reason'} else [entry]
-                    # Bare numbers historically denote incoming IDs. Only accept
-                    # fragment-number fallback where the namespaces cannot clash.
-                    if isinstance(refs, list) and len(refs) == 1:
-                        ref = normalize_ref(refs[0])
-                        if type(ref) is int and ref not in incoming and ref in known_evidence:
-                            evidence = [ref]
-                        else:
-                            evidence = [r for source in resolve(refs) for r in source['evidence']]
-                    else:
-                        evidence = [r for source in resolve(refs) for r in source['evidence']]
+                    # `from` and legacy bare IDs both refer to incoming rows.
+                    # Evidence IDs are accepted only in the explicit `evidence`
+                    # shape above; an unknown incoming ID is never reinterpreted.
+                    evidence = [r for source in resolve(refs) for r in source['evidence']]
                 result[dest].extend(evidence)
             except ModelOutputError:
                 if diagnostics is not None:

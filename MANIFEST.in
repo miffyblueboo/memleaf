@@ -7,5 +7,6 @@ include README.en.md
 recursive-include examples *.md *.ndjson *.py
 recursive-exclude examples *_acceptance.py
 prune tests
+recursive-include tests_public test_*.py
 
 include docs/*.md

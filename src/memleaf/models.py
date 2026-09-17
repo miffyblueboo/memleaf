@@ -88,7 +88,7 @@ class Memory:
             raise ValueError("memory status must be a string")
         if self.completed_at is not None and not isinstance(self.completed_at, str):
             raise ValueError("memory completed_at must be a string")
-        if self.validity not in {"valid", "retracted"}:
+        if not isinstance(self.validity, str) or self.validity not in {"valid", "retracted"}:
             raise ValueError("memory validity must be valid or retracted")
         if self.validity == "retracted" and self.body:
             raise ValueError("retracted memory body must be empty")
