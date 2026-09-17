@@ -1,0 +1,84 @@
+name: Verify G4a delivery without release
+on:
+  push:
+    branches: ['verify/g4a-delivery-20260917']
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      tree: ${{ steps.verify.outputs.tree }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install build
+      - name: Apply exact batch, test three carriers and upload Git objects only
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, sys, tarfile, tempfile, urllib.request
+          root = pathlib.Path.cwd()
+          def run(*args, **kwargs):
+              return subprocess.check_output(args, **kwargs).decode().strip()
+          patch = lzma.decompress(base64.b64decode(''.join((root / '.verify-payload' / str(i)).read_text() for i in range(4)), validate=True))
+          assert hashlib.sha256(patch).hexdigest() == '3a6967bd41108803fbbf6c6a0271f688ea7f16a892c3775b221d946f4238e8cd'
+          tmp = pathlib.Path(tempfile.mkdtemp())
+          patchfile = tmp / 'batch.patch'
+          patchfile.write_bytes(patch)
+          subprocess.check_call(['git', 'checkout', '--detach', 'c9e070733656688be6c6bb5eb98179a11a073420'])
+          subprocess.check_call(['git', 'apply', '--check', str(patchfile)])
+          subprocess.check_call(['git', 'apply', str(patchfile)])
+          changed = [p for p in run('git','diff','--name-only').splitlines() if p]
+          untracked = [p for p in run('git','ls-files','--others','--exclude-standard').splitlines() if p]
+          changed += untracked
+          assert len(changed) == 21, changed
+          subprocess.check_call(['git','add','--',*changed])
+          tree = run('git','write-tree')
+          assert tree == '5ed95ef55afb4434e0801e97d541aba6af6beae6', tree
+          def test(where, code, tests, name):
+              env = dict(os.environ, PYTHONPATH=str(code))
+              result = subprocess.run([sys.executable,'-m','unittest','discover','-s',str(tests),'-p','test_*.py'],cwd=where,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+              print(result.stdout)
+              (tmp / (name+'.log')).write_text(result.stdout)
+              assert result.returncode == 0 and 'Ran 559 tests' in result.stdout, name
+          test(root,root/'src',root/'tests_public','source')
+          subprocess.check_call([sys.executable,'-m','build','--wheel','--sdist'])
+          with tarfile.open(next((root/'dist').glob('*.tar.gz'))) as ar:
+              ar.extractall(tmp/'sdist',filter='data')
+          source = next((tmp/'sdist').iterdir())
+          test(source,source/'src',source/'tests_public','sdist')
+          installed = tmp/'installed'
+          subprocess.check_call([sys.executable,'-m','pip','install','--no-deps','--target',str(installed),str(next((root/'dist').glob('*.whl')))])
+          test(tmp,installed,root/'tests_public','wheel')
+          api = 'https://api.github.com/repos/' + os.environ['GITHUB_REPOSITORY'] + '/git/'
+          def post(endpoint, payload):
+              req = urllib.request.Request(api+endpoint,data=json.dumps(payload).encode(),headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'},method='POST')
+              with urllib.request.urlopen(req,timeout=60) as r:
+                  return json.load(r)
+          entries=[]
+          for path in changed:
+              row=run('git','ls-tree',tree,'--',path).split(None,3)
+              mode,kind,sha=row[:3]
+              data=subprocess.check_output(['git','cat-file','blob',sha])
+              actual=post('blobs',{'content':base64.b64encode(data).decode(),'encoding':'base64'})['sha']
+              assert actual==sha
+              entries.append({'path':path,'mode':mode,'type':kind,'sha':sha})
+          actual=post('trees',{'base_tree':'c26efd9e95c6bd03243606fecb1564465f2c7ca8','tree':entries})['sha']
+          assert actual==tree
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              f.write('tree='+tree+'\n')
+          print('VERIFIED TREE',tree,'559 tests on source, sdist and installed wheel. No ref or release changes.')
+          PY
+  result:
+    needs: verify
+    runs-on: ubuntu-latest
+    name: verified-tree-${{ needs.verify.outputs.tree }}
+    steps:
+      - run: echo 'Exact delivery verified. No release performed.'
