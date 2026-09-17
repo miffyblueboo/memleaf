@@ -12,3 +12,5 @@ recursive-include tests_public *.py
 include docs/*.md
 
 include examples/incremental_acceptance.json
+
+include scripts/verify_distribution.py

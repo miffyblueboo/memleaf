@@ -4,11 +4,7 @@ on:
   push:
   pull_request:
 
-# Keep one current run per event type and head branch. The workflow is
-# intentionally triggered by both push and pull_request, but rapid development
-# should not leave dozens of obsolete matrix runs ahead of the current head.
-# Including event_name avoids a push run cancelling the PR check for the same
-# commit while still cancelling superseded push/PR runs independently.
+# Distinguish PR and push runs; cancel obsolete runs of the same branch only.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
@@ -17,9 +13,9 @@ permissions:
   contents: read
 
 jobs:
-
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -28,29 +24,69 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install build tools
-        run: |
-          python -m pip install --upgrade pip build
+        run: python -m pip install --upgrade pip build
       - name: Run public deterministic contract tests
         env:
           PYTHONPATH: src
         run: python -m unittest discover -s tests_public -p 'test_*.py'
       - name: Build wheel and source distribution
         run: python -m build --wheel --sdist
-      - name: Verify wheel installation and entry points
-        run: |
-          python -m pip install --force-reinstall dist/*.whl
-          python -c "import memleaf; print(memleaf.__version__)"
-          memleaf --help
-          memleaf --version
-          memleaf-mcp --version
+      - name: Bind distributions to source and public tests
+        run: python scripts/verify_distribution.py --prepare --source . --dist dist --commit "${{ github.sha }}"
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
           name: memleaf-distributions
           path: dist/
+          if-no-files-found: error
+
+  platform:
+    name: Installed distributions (${{ matrix.os }}, Python ${{ matrix.python }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: windows-latest
+            python: "3.12"
+          - os: macos-latest
+            python: "3.12"
+    steps:
+      - name: Preserve repository bytes on every OS
+        run: git config --global core.autocrlf false
+      - name: Check out the same source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install sdist build tools (not application dependencies)
+        run: python -m pip install --upgrade setuptools wheel
+      - name: Download the exact distributions from this run
+        uses: actions/download-artifact@v4
+        with:
+          name: memleaf-distributions
+          path: dist/
+      - name: Test fresh wheel and native sdist installations
+        run: python scripts/verify_distribution.py --verify --source . --dist dist --commit "${{ github.sha }}" --output platform-verification
+      - name: Retain platform evidence including failures and skips
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-${{ matrix.os }}-${{ matrix.python }}
+          path: platform-verification/
+          if-no-files-found: warn
 
   release:
-    needs: [build]
+    needs: [build, platform]
     if: >-
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
@@ -147,7 +183,7 @@ jobs:
               dist/SHA256SUMS; then
             :
           else
-            # Another release attempt may have won the create race.  Only
+            # Another release attempt may have won the create race. Only
             # continue after resolving and validating that release's target.
             gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
             verify_existing_release
