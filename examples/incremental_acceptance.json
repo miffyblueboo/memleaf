@@ -1,0 +1,748 @@
+{
+  "version": 1,
+  "suite_id": "memleaf-public-regression-v1",
+  "cases": [
+    {
+      "id": "task_lifecycle",
+      "split": "regression",
+      "semantic_checks": [
+        "持续事项保留目标和明确期限；完成维护原ID，不另建完成事实。",
+        "重复完成表达不新增记忆；正文与completed一致。"
+      ],
+      "initial_memories": [],
+      "turns": [
+        {
+          "id": "t1",
+          "messages": [
+            {
+              "role": "user",
+              "content": "请持续跟踪这件事：我负责交付验收报告，期限是2026-10-02。",
+              "source_sequence": 1,
+              "source_time": "2026-09-17T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "已了解。",
+              "source_sequence": 2,
+              "source_time": "2026-09-17T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "count": 1,
+            "required": [
+              {
+                "type": "todo",
+                "status": "active",
+                "due_date": "2026-10-02"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t2",
+          "messages": [
+            {
+              "role": "user",
+              "content": "验收报告已经交付完成。",
+              "source_sequence": 3,
+              "source_time": "2026-09-18T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "已了解。",
+              "source_sequence": 4,
+              "source_time": "2026-09-18T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "count": 1,
+            "same_ids_as": 0,
+            "required": [
+              {
+                "type": "todo",
+                "status": "completed"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t3",
+          "messages": [
+            {
+              "role": "user",
+              "content": "再次确认：刚才说的验收报告已经交付，不是另一份报告。",
+              "source_sequence": 5,
+              "source_time": "2026-09-19T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "已了解。",
+              "source_sequence": 6,
+              "source_time": "2026-09-19T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "count": 1,
+            "same_ids_as": 0,
+            "required": [
+              {
+                "status": "completed"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "temporary_instructions",
+      "split": "regression",
+      "semantic_checks": [
+        "本次操作要求和通道瞬时状态不升级为长期流程或工具记忆。"
+      ],
+      "initial_memories": [],
+      "turns": [
+        {
+          "id": "t1",
+          "messages": [
+            {
+              "role": "user",
+              "content": "先告诉我本次操作要准备什么，我稍后提供材料。",
+              "source_sequence": 1,
+              "source_time": "2026-09-17T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "这次把文件、收件人发来即可。当前发送通道刚检查正常。",
+              "source_sequence": 2,
+              "source_time": "2026-09-17T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "count": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "assistant_preference",
+      "split": "regression",
+      "semantic_checks": [
+        "未确认的助手建议和“按你惯例”不能成为用户稳定偏好。"
+      ],
+      "initial_memories": [],
+      "turns": [
+        {
+          "id": "t1",
+          "messages": [
+            {
+              "role": "user",
+              "content": "先看下这段文字怎么整理，我还没确定风格。",
+              "source_sequence": 1,
+              "source_time": "2026-09-17T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "我建议简短一点，先按你惯例写最简版。",
+              "source_sequence": 2,
+              "source_time": "2026-09-17T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "count": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "responsibility_transfer",
+      "split": "regression",
+      "semantic_checks": [
+        "转交不等于完成；维护同一事项的责任和后续等待。",
+        "验收成立后关闭原任务。"
+      ],
+      "initial_memories": [
+        {
+          "memory_id": "mem-report",
+          "title": "验收报告",
+          "body": "交付验收报告。",
+          "type": "todo",
+          "scopes": [
+            "global"
+          ],
+          "due_date": "2026-09-25",
+          "assignee": "user",
+          "status": "active"
+        }
+      ],
+      "turns": [
+        {
+          "id": "t1",
+          "messages": [
+            {
+              "role": "user",
+              "content": "验收报告改由同事林工负责交付，我会继续跟踪并等待客户验收；尚未完成。",
+              "source_sequence": 1,
+              "source_time": "2026-09-17T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "已了解。",
+              "source_sequence": 2,
+              "source_time": "2026-09-17T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "count": 1,
+            "required": [
+              {
+                "memory_id": "mem-report",
+                "status": "active",
+                "assignee": "林工",
+                "waiting_on": "客户验收",
+                "due_date": "2026-09-25"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t2",
+          "messages": [
+            {
+              "role": "user",
+              "content": "客户已经验收通过，验收报告事项可以关闭了。",
+              "source_sequence": 3,
+              "source_time": "2026-09-18T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "已了解。",
+              "source_sequence": 4,
+              "source_time": "2026-09-18T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "count": 1,
+            "required": [
+              {
+                "memory_id": "mem-report",
+                "status": "completed"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "deadline_preservation",
+      "split": "regression",
+      "semantic_checks": [
+        "普通进度不丢原期限；明确取消期限不取消任务。",
+        "迟到旧期限不能恢复已取消字段。"
+      ],
+      "initial_memories": [
+        {
+          "memory_id": "mem-report",
+          "title": "验收报告",
+          "body": "交付验收报告。",
+          "type": "todo",
+          "scopes": [
+            "global"
+          ],
+          "due_date": "2026-09-25",
+          "status": "active"
+        }
+      ],
+      "turns": [
+        {
+          "id": "t1",
+          "messages": [
+            {
+              "role": "user",
+              "content": "验收报告的开发已经开始，原安排没有其他变化。",
+              "source_sequence": 1,
+              "source_time": "2026-09-17T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "已了解。",
+              "source_sequence": 2,
+              "source_time": "2026-09-17T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "required": [
+              {
+                "memory_id": "mem-report",
+                "due_date": "2026-09-25"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t2",
+          "messages": [
+            {
+              "role": "user",
+              "content": "验收报告原定截止日期取消，等待重新确定日期，任务仍需继续。",
+              "source_sequence": 5,
+              "source_time": "2026-09-19T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "已了解。",
+              "source_sequence": 6,
+              "source_time": "2026-09-19T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "required": [
+              {
+                "memory_id": "mem-report",
+                "due_date": null,
+                "status": "active"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t3",
+          "messages": [
+            {
+              "role": "user",
+              "content": "补录之前的消息：验收报告当时截止日期是2026-09-25。",
+              "source_sequence": 3,
+              "source_time": "2026-09-18T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "已了解。",
+              "source_sequence": 4,
+              "source_time": "2026-09-18T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "count": 1,
+            "required": [
+              {
+                "memory_id": "mem-report",
+                "due_date": null
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "separate_projects",
+      "split": "regression",
+      "semantic_checks": [
+        "两个项目的独立事项保持独立身份和归属，不能混成同一记忆。"
+      ],
+      "initial_memories": [
+        {
+          "memory_id": "mem-atlas",
+          "title": "Atlas接口验收",
+          "body": "完成Atlas接口验收。",
+          "type": "todo",
+          "scopes": [
+            "project:Atlas"
+          ],
+          "status": "active"
+        },
+        {
+          "memory_id": "mem-beacon",
+          "title": "Beacon接口验收",
+          "body": "完成Beacon接口验收。",
+          "type": "todo",
+          "scopes": [
+            "project:Beacon"
+          ],
+          "status": "active"
+        }
+      ],
+      "turns": [
+        {
+          "id": "t1",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Atlas 项目的接口验收已经完成；Beacon 项目的接口验收仍待测试，两个是独立任务。",
+              "source_sequence": 1,
+              "source_time": "2026-09-17T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "已了解。",
+              "source_sequence": 2,
+              "source_time": "2026-09-17T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "count": 2,
+            "required": [
+              {
+                "memory_id": "mem-atlas",
+                "status": "completed",
+                "scopes": [
+                  "project:Atlas"
+                ]
+              },
+              {
+                "memory_id": "mem-beacon",
+                "status": "active",
+                "scopes": [
+                  "project:Beacon"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "unconfirmed_scope",
+      "split": "regression",
+      "semantic_checks": [
+        "保留持续事项与明确归属不确定性，不把待确认写成已确认项目。"
+      ],
+      "initial_memories": [],
+      "turns": [
+        {
+          "id": "t1",
+          "messages": [
+            {
+              "role": "user",
+              "content": "请记下持续协调事项：有一份客户任务清单待确认，归属 Atlas 还是 Beacon 还没确认，先不要归入任一项目。",
+              "source_sequence": 1,
+              "source_time": "2026-09-17T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "已了解。",
+              "source_sequence": 2,
+              "source_time": "2026-09-17T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "count": 1,
+            "required": [
+              {
+                "scopes": [
+                  "unscoped"
+                ]
+              }
+            ],
+            "forbidden": [
+              {
+                "scopes": [
+                  "project:Atlas"
+                ]
+              },
+              {
+                "scopes": [
+                  "project:Beacon"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "ordinary_date",
+      "split": "regression",
+      "semantic_checks": [
+        "邮件日期是观察时间，不是行动截止日。"
+      ],
+      "initial_memories": [],
+      "turns": [
+        {
+          "id": "t1",
+          "messages": [
+            {
+              "role": "user",
+              "content": "2026-09-16收到客户邮件，要求我们持续跟踪接口验收准备，目前没有规定完成期限。",
+              "source_sequence": 1,
+              "source_time": "2026-09-17T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "已了解。",
+              "source_sequence": 2,
+              "source_time": "2026-09-17T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "count": 1,
+            "required": [
+              {
+                "type": "todo",
+                "due_date": null
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "relative_deadline",
+      "split": "regression",
+      "semantic_checks": [
+        "相对期限依源消息当地日期换算，保留“下班前”的限定。"
+      ],
+      "initial_memories": [],
+      "turns": [
+        {
+          "id": "t1",
+          "messages": [
+            {
+              "role": "user",
+              "content": "我负责把评估清单提交给团队，必须在明天下班前完成，请持续跟踪。",
+              "source_sequence": 1,
+              "source_time": "2026-09-17T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "已了解。",
+              "source_sequence": 2,
+              "source_time": "2026-09-17T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "count": 1,
+            "required": [
+              {
+                "type": "todo",
+                "due_date": "2026-09-18"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "retract_example",
+      "split": "regression",
+      "semantic_checks": [
+        "否定旧偏好应撤回原断言，不能推断用户偏好相反风格。"
+      ],
+      "initial_memories": [
+        {
+          "memory_id": "mem-preference",
+          "title": "报告偏好",
+          "body": "用户偏好极简报告。",
+          "type": "preference",
+          "scopes": [
+            "global"
+          ]
+        }
+      ],
+      "turns": [
+        {
+          "id": "t1",
+          "messages": [
+            {
+              "role": "user",
+              "content": "之前说的“我偏好极简报告”只是举例，不是我的真实偏好，请撤回那条记忆。",
+              "source_sequence": 1,
+              "source_time": "2026-09-17T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "已了解。",
+              "source_sequence": 2,
+              "source_time": "2026-09-17T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "count": 1,
+            "required": [
+              {
+                "memory_id": "mem-preference",
+                "validity": "retracted"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "new_cycle",
+      "split": "regression",
+      "semantic_checks": [
+        "下一周期的新义务单独新增，不能为减少数量重开上一周期任务。"
+      ],
+      "initial_memories": [
+        {
+          "memory_id": "mem-q3",
+          "title": "第三季度审阅",
+          "body": "审阅第三季度材料。",
+          "type": "todo",
+          "scopes": [
+            "global"
+          ],
+          "status": "completed"
+        }
+      ],
+      "turns": [
+        {
+          "id": "t1",
+          "messages": [
+            {
+              "role": "user",
+              "content": "第三季度审阅已经结束了。现在新增第四季度审阅任务，由我负责，需持续跟踪。",
+              "source_sequence": 1,
+              "source_time": "2026-09-17T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "已了解。",
+              "source_sequence": 2,
+              "source_time": "2026-09-17T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "count": 2,
+            "required": [
+              {
+                "memory_id": "mem-q3",
+                "status": "completed"
+              },
+              {
+                "status": "active"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "late_independent",
+      "split": "regression",
+      "semantic_checks": [
+        "后续无关问候不能让较早的独立持续事项永久无法入库。"
+      ],
+      "initial_memories": [],
+      "turns": [
+        {
+          "id": "newer",
+          "messages": [
+            {
+              "role": "user",
+              "content": "你好，这是一条问候。",
+              "source_sequence": 3,
+              "source_time": "2026-09-19T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "已了解。",
+              "source_sequence": 4,
+              "source_time": "2026-09-19T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "count": 0
+          }
+        },
+        {
+          "id": "older",
+          "messages": [
+            {
+              "role": "user",
+              "content": "请持续跟踪：我负责准备测试环境。",
+              "source_sequence": 1,
+              "source_time": "2026-09-18T10:00:00+08:00"
+            },
+            {
+              "role": "assistant",
+              "content": "已了解。",
+              "source_sequence": 2,
+              "source_time": "2026-09-18T10:00:01+08:00",
+              "final": true
+            }
+          ],
+          "expected": {
+            "execution_status": "completed",
+            "coverage_status": "complete",
+            "max_calls": 1,
+            "count": 1,
+            "required": [
+              {
+                "type": "todo",
+                "status": "active"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

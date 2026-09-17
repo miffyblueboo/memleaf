@@ -4,6 +4,9 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Add a plan-first, explicitly budgeted isolated multi-turn acceptance utility with twelve public synthetic regression trajectories. Keep expected assertions out of model inputs, preserve private evidence traces, and separate structural, semantic and host/migration gates; no default activation or live calls during delivery.
+- Expose bounded returned-model metadata from the configured compatible adapter for acceptance without changing its request route or retaining hidden reasoning. Replace obsolete acceptance requirements for the legacy Gate/review chain with the current incremental contract.
+
 - Add read-only migration preflight and explicit private local backup/verification through existing inspection and control contracts. Preserve exact source/authority bytes, publish the checksum manifest last, refuse stale or active snapshots, and keep backup integrity distinct from production readiness. No automatic switching, restore, model calls or default changes.
 - Reuse strict processed-state reading in session lineage updates instead of overwriting damaged authority with an empty ledger. Surface managed-area enumeration and nonregular-file failures in bounded inspection.
 

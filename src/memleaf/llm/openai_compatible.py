@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from typing import Any, Callable, Mapping, Optional
 
 from .base import DEFAULT_REQUEST_TIMEOUT, HTTPModelBackend, ModelError
@@ -171,6 +172,11 @@ class OpenAICompatibleBackend(HTTPModelBackend):
         max_output_tokens: int | None,
     ) -> dict[str, Any]:
         result: dict[str, Any] = dict(thinking_metrics)
+        response_model = value.get("model")
+        # Response identity is metadata, never substituted for the requested
+        # route. Missing/invalid labels remain unknown to acceptance tooling.
+        if isinstance(response_model, str) and re.fullmatch(r"[A-Za-z0-9._:/-]{1,160}", response_model):
+            result["response_model"] = response_model
         if isinstance(max_output_tokens, int):
             result["max_output_tokens"] = max_output_tokens
         usage = value.get("usage")

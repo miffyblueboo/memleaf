@@ -1,81 +1,184 @@
-# Processing performance and semantic-quality acceptance
+# Incremental processing acceptance (G5a tooling; not production activation)
 
-This document defines acceptance for automatic memory extraction without treating one validation layer as proof of another.
+Acceptance separates semantic quality, deterministic maintenance and coverage.
+The online candidate path uses one incremental planner and at most two durable
+request reservations per source/authorization work. It does not retain the old
+Gate -> summary -> semantic-review tail as an acceptance requirement. Legacy
+routes remain available for compatibility and deliberately stay the default
+until separately authorized migration. This document replaces the obsolete
+statement that deterministic tests are local-only: `tests_public/` is committed,
+in the sdist, and exercised by CI. A green CI is not live-model acceptance.
 
-The deterministic suite and acceptance helpers described below are maintained
-locally and are not committed or shipped. Remote CI currently validates package
-construction and installed command entry points only; the layers below are not
-automatically exercised by that workflow.
+## What runs, and what does not
 
-## Invariants
+`python -m memleaf.acceptance` is an offline acceptance utility, not a new online
+planner, writer, plugin framework, daemon or MCP tool. It uses the real capture,
+incremental runner/compiler, two-request Core budget and shared commit/recovery.
+It creates fresh isolated Vaults for each case/repetition. No production Vault
+argument, automatic installation, process termination, restore or pipeline
+activation is provided. The fixed main prompt is unchanged.
 
-- Markdown under `knowledge/` remains the active-memory source of truth; `history/` remains historical state.
-- Gate stays serial. Model work must not run while a Vault write lock is held.
-- Candidate/review parallelism is bounded and opt-in through an explicitly parallel-safe backend. The default maximum is 3.
-- Same-target updates are coordinated before independent final reviews. Revision checks, idempotency and atomic commit remain authoritative.
-- Performance improvements must not remove Gate, summarization, reconciliation or semantic-review checks that are required for the same input.
-- Prompt/review rules are source-neutral. No mail-, calendar-, customer-, product- or other application-specific extraction rule is used.
+The bundled `examples/incremental_acceptance.json` contains twelve **synthetic
+public regression** trajectories, eighteen turns in total. They cover same-ID
+completion/repetition, transient instructions, unsupported assistant preferences,
+responsibility transfer, deadline preservation/cancellation/late observation,
+independent projects, unknown attribution, observation dates, relative deadlines,
+fact retraction, an independent new cycle and an independent late task. They are
+not private incident reconstructions or a hidden holdout set. A private holdout
+can use the same schema; labelling a case `holdout` does not prove it was never
+used to tune prompts. Preserve that provenance outside the candidate's input.
 
-## Safe model telemetry
+Each JSON case has:
 
-`process()` returns `model_metrics`, and detached process-job results retain the same bounded projection. Metrics contain only structural numbers:
+- `id`, `split` (`regression|holdout`) and a nonempty `semantic_checks` checklist;
+- optional `initial_memories` with fixed IDs and ordinary Core memory fields;
+- `turns` containing an `id`, original user/assistant `messages`, optional exact
+  write `scope`, and optional deterministic `expected` assertions.
 
-- call count, retry count and failed-call count;
-- cumulative model-request duration and stage wall-clock duration;
-- input/output character and UTF-8 byte counts;
-- maximum in-flight model calls;
-- stage buckets for Gate, summarize, semantic review, coordination and target reconciliation.
+Messages retain their roles, optional source time/sequence/ID, and explicit
+assistant `final:true`. This fixture format requires one complete visible pair;
+it does not fabricate an assistant or turn arbitrary tool logs into user input.
+It deliberately does not implement a general source revision/fault-injection DSL.
+Those deterministic paths, native sharing, selected/text remember, Forget,
+background processes and migration remain covered by their existing public tests
+and final native-host acceptance, not implicitly by these twelve fixtures.
 
-Prompts, responses, memory bodies, source text, credentials and provider secrets are not retained by these metrics. Existing optional diagnostic logging keeps its separate bounded structural contract.
+Assertions support count, required/forbidden structural field subsets,
+`same_ids_as` (zero-based earlier turn), maximum calls, execution status and
+coverage status. They do not perform title/body keyword grading or demand exact
+natural-language answers. Titles and bodies are retained for independent review.
+Two tasks can share a reasonable title; only the actual identity/state constraints
+matter. Checklists and expected assertions are **never included in a model input**.
 
-## Semantic acceptance contract
+## Plan first: no models, credentials or Vaults
 
-A memory must remain understandable without reopening its source. For one admitted future-use topic, the summary/reviewer must preserve source-supported information that defines the item's meaning: the explicit subject or named entity, object/deliverable, concrete action or state, necessary business/workstream context, and any number or code together with its source-stated meaning when that meaning is required for interpretation.
+```sh
+python -m memleaf.acceptance \
+  --suite examples/incremental_acceptance.json --repeat 5
+```
 
-Minimality does not permit semantic generalization. A concrete requirement cannot become only “related matters” or an umbrella coordination item. Scope metadata is not a substitute for a named subject in the title/body when that subject distinguishes the item. A customer/project that owns an item and a broader product/platform in which it is implemented are separate relationships; one must not silently replace the other. Existing memories are comparison context and cannot supply a new ownership/project relationship. If attribution, a number's role, ownership, deadline or status is not established, preserve uncertainty or defer rather than guess.
+This reads/validates the suite and reports its SHA-256, prompt SHA-256/byte count,
+case count, repeat count and request upper bounds. It does not initialize a Vault,
+read a backend configuration or create output files. Twelve cases repeated five
+times mean sixty independent case runs and ninety normal turn requests; the
+absolute bound including a possible second dispatch is 180. The bound is not a
+price quote or prediction that every turn will need recovery. A smaller explicit
+cap is allowed; results then disclose unexecuted cases/steps instead of reporting
+full completion. One final case stopped halfway is incomplete too.
 
-Independent deliverables that can be executed, tracked or closed independently remain independent memories. Same-turn aggregate reconciliation may merge only one future-use topic; otherwise the item remains deferred for reprocessing rather than being silently discarded as no change.
+## Explicit live execution, same configured route
 
-## Acceptance layers
+```sh
+python -m memleaf.acceptance \
+  --suite /private/approved-suite.json --repeat 5 \
+  --execute --authorize-model \
+  --backend-config /private/model-config.yaml \
+  --max-requests 180 --output /private/new-acceptance-run
+```
 
-### 1. Deterministic unit/regression tests
+All execution options are required. The backend configuration uses the existing
+Memleaf format; only its `llm` settings are given to the existing ModelRouter.
+The configured Vault, native note paths and host installations are never opened
+by this utility. Choose the actually deployed DeepSeek Flash route and its
+existing endpoint; the utility does not invent a model alias, change models to
+make a test pass, or fall back to a host callback. CLI execution requires
+`llm.thinking.single_pass: disabled` and a fixed single-dispatch API backend.
+Requiring that setting does not prove the service honors it: applied controls
+and observed reasoning statistics are reported separately when available.
 
-Required checks include:
+The target directory must be new, with an existing parent. This is a fresh test
+authorization, not a retry of a former acceptance run. Existing output is rejected
+rather than clearing its request counter. The runner has no automatic resume or
+transport-retry loop: a saved, interrupted trial remains a trial needing review;
+starting a new output directory is a new expressly authorized test expense.
+The Core's bounded invalid-response retry still counts toward both limits.
+Partial semantic replan is not silently added to the regression run. Authentication,
+configuration and transport failures stop the suite with a bounded reason; later
+cases do not repeatedly consume the same broken route. Invalid model content is
+retained as a failed trial rather than hidden by selecting a successful repeat.
 
-- telemetry contains only allowlisted structural fields and counts retries correctly;
-- unsafe Host/callable routes remain serial; a parallel-safe API route respects `process.model_concurrency`;
-- final review concurrency preserves request/result ordering and does not mutate audit/Vault state from worker threads;
-- semantic-review contracts require both non-invention and preservation of meaning-defining facts;
-- existing negative-context, evidence-span, scope-operation/native-shadow, aggregate-splitting and Windows process-owner regressions continue to pass.
+Before each backend dispatch the runner persists one reservation in
+`requests.json`; it cannot exceed `max_requests` even when the Core requests its
+second attempt. A process dying after reservation may waste a slot. A network
+failure may have reached the provider. Reservation counts are not exact charges.
+Repeated trials use independent Vaults and empty control state, not a cached
+successful response or an earlier repetition's memories.
 
-Passing this layer proves only the deterministic contracts under test.
+Limits: 2 MiB suite, 64 cases, 128 total turns, 32 turns per case, 20 repetitions,
+2048 dispatch reservations, and the existing Core input/output size bounds.
+Exceeding a limit fails visibly or stops at the requested cap. Necessary input is
+not truncated to manufacture passing results. Cases sharing a source sequence or
+message identity without a distinct supported revision are invalid fixtures,
+not evidence of a runtime regression.
 
-### 2. Cross-platform local regression and MCP/background-runtime verification
+## Output, privacy and measurements
 
-Run the maintained local-only test suite on supported OSes and the
-process-job/MCP tests. Verify that detached worker status exposes the bounded
-metrics, reruns aggregate metrics safely, and no model call is made while the
-Vault write lock is held.
+The root and case directories are created private (0700, where supported), with
+JSON files written 0600. Windows ACL behavior needs native verification. These
+modes are not encryption. Output contains source text and generated memories;
+do not attach a real run to a public issue or commit it. Tests in this batch use
+only synthetic fixtures and local backends.
 
-Passing this layer proves the tested runtime paths and platforms. It does not prove that a real model will always extract every business fact.
+- `suite.json` freezes the input and independent review checklist.
+- `report.json` contains safe per-step structural checks, runtime implementation
+  fingerprint, requested model identity, case split, prompt/suite hashes and
+  timings. It always returns `switch_authorized:false`.
+- `requests.json` records reservation/outcome, input/output byte lengths and
+  hashes, available token/cache counts and known thinking-control observations.
+  The configured OpenAI-compatible adapter exposes the returned model label when
+  the response supplies a valid bounded label. Missing values stay unknown.
+- Private `traces/` retain the exact prepared prompt and visible completion text,
+  not HTTP headers, credentials or hidden reasoning fields. Oversized completions
+  are represented by length/hash and an explicit omission, not a truncated valid
+  response. Failed-response payloads unavailable through the normal adapter stay
+  unavailable; the harness does not bypass it to capture reasoning or raw errors.
+- Each case's `observations.json` retains current heads, original execution/commit
+  results and the independent semantic checklist. This can be compared with its
+  sources and raw visible responses without another evaluation-model call.
 
-### 3. Authorized real-model replay in an isolated Vault
+Ordinary runtime metrics are not broadened into plaintext logging. Trace retention
+exists only within this expressly requested private acceptance output. Missing
+or broken metric collection does not turn a valid completion into a failed model
+request. A trace/journal write failure can leave partial data and a reserved or
+returned attempt; it must not be interpreted as zero cost or zero writes.
 
-Use an explicitly authorized conversation and the same configured model/provider, but point the replay at an isolated temporary Vault. Record only the safe structural metrics plus the resulting test memories. Check at least:
+`backend_reservations` is confirmed entry into the metered backend boundary;
+`confirmed_responses` counts returned calls. Actual provider execution is unknown
+for an interrupted/error call. Requested and returned model labels are distinct.
+Endpoint identity is a SHA-256 fingerprint, never a URL containing credentials.
+`duration_seconds` is wall time for the observed backend/step, not provider-only
+inference time. Detailed stage timing/performance remains a separate measurement.
 
-- omissions of subject/customer, concrete requirement, business context, and numeric meaning;
-- incorrect project/customer attribution or product-as-owner substitution;
-- incorrect todo state, owner, date or completion inference;
-- independent-item splitting and aggregate deferral/reprocessing;
-- duplicate/update behavior under repeated identical input;
-- sensitive-data boundaries and the configured external-provider authorization.
+## Separate acceptance gates
 
-For a before/after performance comparison, use the same captured input and equivalent model configuration. Compare model call count, retries, stage request-duration totals, stage wall-clock duration, maximum concurrency and final-memory quality. Do not claim a latency regression or improvement from different source input.
+1. **Deterministic contracts and artifact consistency.** Run `tests_public/` on
+   source, sdist and an actually installed wheel, verifying import paths. Fixed
+   oracle responses test the harness/runtime, not the model. Source and artifact
+   implementation fingerprints must match before comparing results.
+2. **Live semantic judgement.** A structurally passing live run still records
+   `semantic_status:not_reviewed`. Review each repetition against its own source
+   and checklist: future value, non-invention, correct subject/scope, independent
+   topics, responsibility, deadline meaning, same-item maintenance and omissions.
+   Good paraphrases are accepted. Evaluate correctness, not similarity to an
+   example sentence. No second online or offline grading model is invoked.
+3. **Coverage convergence.** Report complete/partial, committed operations,
+   NO_MEMORY and unresolved reasons separately. Complete coverage is not evidence
+   that every meaningful subtopic was extracted. An expected blocked result can
+   pass its structural check without counting as successful business extraction.
+4. **Host, platform and migration.** Real Hermes capture/installed Provider,
+   Windows/macOS process behavior, existing Codex compatibility, stopped writers,
+   verified private backup, latest Forget evidence and authorized activation
+   remain external gates. No stub replay grants a production switch.
 
-### 4. Production conversation observation
+Retain all attempted repetitions, including errors and budget stops; never choose
+only one successful seed. Five repeats are a starting point for observing
+variation, not a reliability percentage. The public twelve-case set does not
+replace the private A-I incidents, E01-E20 applicable paths, reverse cases, or a
+held-out set. Compare the actual production baseline and the candidate under the
+same source and route; do not rerun all historic prompts by default.
 
-After release, compare one or more normal authorized production sessions against the same semantic checklist. Production observations are separate evidence from an isolated replay because model/service latency and real conversation structure can differ.
-
-## Delivery reporting
-
-Every delivery report must identify each layer as **passed**, **failed**, or **not run**. Never promote “unit tests passed” or “CI passed” into a claim that real-model semantic acceptance passed. If the real conversation content is not authorized for a particular external model/service, do not send it merely to complete acceptance; report that layer as not run.
+The fixed-oracle programmatic test flag is for trusted local injected backends;
+it is not a network sandbox or proof that an arbitrary callback is offline.
+The CLI intentionally provides no way to call a live service while relabelling
+it a fixture test. Neither a fixture pass nor a live structural pass is a model
+quality approval or release authorization.
