@@ -265,6 +265,7 @@ def reserve_model_request(
     turn_id: str,
     request_limit: int = MAX_MODEL_REQUESTS,
     legacy_turn_id: str | None = None,
+    legacy_source_unchanged: bool = True,
 ) -> int | None:
     """Atomically reserve the next provider request and return its ordinal.
 
@@ -279,18 +280,24 @@ def reserve_model_request(
         raise ExtractionWorkStateError("invalid extraction turn id")
     if type(request_limit) is not int or not 1 <= request_limit <= MAX_MODEL_REQUESTS:
         raise ExtractionWorkStateError("invalid extraction request limit")
+    if type(legacy_source_unchanged) is not bool:
+        raise ExtractionWorkStateError("invalid legacy source compatibility flag")
     with vault.lock():
         state = _read_budget_state_unlocked(vault)
         # Previous releases keyed budgets by job ID. Moving to a source key
         # must not silently grant a second budget for the same legacy turn.
         migrated = []
-        if legacy_turn_id is not None and work_id not in state["works"]:
+        if legacy_turn_id is not None:
             if legacy_turn_id != turn_id:
                 raise ExtractionWorkStateError("legacy turn budget identity mismatch")
             for old_id in list(state["order"]):
                 old_work = state["works"][old_id]
                 if not old_id.startswith("job-") or legacy_turn_id not in old_work["turns"]:
                     continue
+                if not legacy_source_unchanged:
+                    # The old job key does not identify the source revision.
+                    # Do not borrow its authority OR silently start a new budget.
+                    raise ExtractionWorkStateError("legacy source budget requires migration")
                 migrated.append(_normalize_turn_state(old_work["turns"].pop(legacy_turn_id)))
                 if not old_work["turns"]:
                     del state["works"][old_id]
@@ -298,6 +305,8 @@ def reserve_model_request(
         work = _work_unlocked(state, work_id=work_id)
         turns = work["turns"]
         if migrated:
+            if turn_id in turns:
+                migrated.append(_normalize_turn_state(turns[turn_id]))
             turns[turn_id] = {
                 "requests": min(1_000_000, sum(row["requests"] for row in migrated)),
                 "started_at_epoch": None,

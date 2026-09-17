@@ -19,6 +19,55 @@ except (ImportError, ValueError):
         _spec.loader.exec_module(_module)
     globals().update({name: getattr(_module, name) for name in getattr(_module, "__all__", ())})
 
+def _sync_source_metadata(messages: Any, user_content: str, assistant_content: str) -> dict[str, dict[str, Any]]:
+    """Read optional host metadata only from the exact visible tail pair.
+
+    Hermes' base API does not guarantee IDs or timestamps. Do not consult tools,
+    attachments, older matching text, or a local clock to invent missing fields.
+    Strings supplied to sync_turn remain the only captured conversation bodies.
+    """
+    from datetime import datetime
+
+    if not isinstance(messages, list) or not messages:
+        return {}
+    assistant = messages[-1]
+    if (not isinstance(assistant, Mapping) or assistant.get("role") != "assistant"
+            or assistant.get("content") != assistant_content or assistant.get("tool_calls")):
+        return {}
+    user = next((item for item in reversed(messages[:-1][-32:])
+                 if isinstance(item, Mapping) and item.get("role") == "user"), None)
+    if user is None or user.get("content") != user_content:
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for role, item in (("user", user), ("assistant", assistant)):
+        row: dict[str, Any] = {}
+        for name in ("message_id", "message_revision", "previous_message_revision", "previous_message_id"):
+            value = item.get(name, item.get("id") if name == "message_id" else None)
+            if isinstance(value, str) and 0 < len(value) <= 800 and not any(c in value for c in "\x00\r\n"):
+                row[name] = value
+        timestamp = item.get("source_time", item.get("timestamp"))
+        if isinstance(timestamp, str) and len(timestamp) <= 80:
+            try:
+                parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+                    row["source_time"] = parsed.isoformat()
+            except ValueError:
+                pass
+        sequence = item.get("source_sequence")
+        if type(sequence) is int and sequence >= 0:
+            row["source_sequence"] = sequence
+        result[role] = row
+    # Do not mix partial host identity/order with role-derived compatibility IDs.
+    if not all(result[role].get("message_id") for role in ("user", "assistant")):
+        for row in result.values():
+            for field in ("message_id", "message_revision", "previous_message_revision", "previous_message_id"):
+                row.pop(field, None)
+    if not all("source_sequence" in result[role] for role in ("user", "assistant")):
+        for row in result.values():
+            row.pop("source_sequence", None)
+    return result
+
+
 def _capture_policy_status(config: Mapping[str, Any], vault: Path) -> dict[str, Any]:
     """Read the effective policy through the public Core MCP stats result.
 
@@ -1262,7 +1311,13 @@ class MemleafMemoryProvider(MemoryProvider):
         content: str,
         source_sequence: int | None = None,
         final: bool | None = None,
+        source_metadata: Mapping[str, Any] | None = None,
     ) -> bool:
+        metadata = {
+            key: value for key, value in (source_metadata or {}).items()
+            if key in {"message_id", "message_revision", "previous_message_revision",
+                       "previous_message_id", "source_sequence", "source_time"}
+        }
         result = self._call(
             "capture",
             {
@@ -1275,6 +1330,7 @@ class MemleafMemoryProvider(MemoryProvider):
                 **({"previous_message_id": f"{turn_id}/user"} if role == "assistant" else {}),
                 **({"source_sequence": source_sequence} if source_sequence is not None else {}),
                 **({"final": final} if final is not None else {}),
+                **metadata,
                 "record": True,
                 "visible": True,
             },
@@ -1535,8 +1591,9 @@ class MemleafMemoryProvider(MemoryProvider):
         # ``messages`` may contain system prompts, tool calls/results, and
         # attachment parts.  Hermes already supplies the visible user and
         # assistant strings separately; derive only a bounded search status
-        # from an explicit public memleaf tool result below.  Never capture
-        # the raw message list as business conversation content.
+        # from an explicit public memleaf tool result below. Optional source
+        # metadata is copied only from an exactly matched visible tail pair.
+        # Never capture the raw message list as business conversation content.
         if not self._write_enabled or self._client is None:
             return
         visible_events = [
@@ -1563,6 +1620,12 @@ class MemleafMemoryProvider(MemoryProvider):
                     user_content,
                     assistant_content,
                 )
+                source_metadata = _sync_source_metadata(messages, user_content, assistant_content)
+                user_source_id = source_metadata.get("user", {}).get("message_id")
+                if user_source_id:
+                    # Stable host identity survives a revised body/final reply.
+                    turn_id = "source-" + sha256(user_source_id.encode("utf-8")).hexdigest()[:24]
+                    source_metadata["assistant"].setdefault("previous_message_id", user_source_id)
                 retrieval_id = self._gate_id_for_turn(effective_session, resolved_turn_number)
                 if retrieval_id is None and resolved_turn_number is None:
                     retrieval_id = self._current_gate_id(effective_session)
@@ -1591,6 +1654,7 @@ class MemleafMemoryProvider(MemoryProvider):
                         content=content,
                         source_sequence=(sequence_base + offset if sequence_base is not None else None),
                         final=True if role == "assistant" else None,
+                        source_metadata=source_metadata.get(role),
                     ):
                         return
                 if not self._auto_process:

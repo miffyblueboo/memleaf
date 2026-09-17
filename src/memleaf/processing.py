@@ -317,7 +317,8 @@ class Processor:
                             work_id=work_id,
                             turn_id=turn_id,
                             request_limit=3,
-                            legacy_turn_id=turn_id if legacy else None,
+                            legacy_turn_id=turn_id,
+                            legacy_source_unchanged=legacy,
                         )
                         turn_backend = budget_single_pass_backend(
                             backend,

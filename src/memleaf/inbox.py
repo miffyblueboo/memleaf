@@ -112,6 +112,31 @@ class InboxTurn:
         return tuple(event.event_key for event in self.events)
 
 
+def source_ordered_turns(turns: Iterable[InboxTurn]) -> list[InboxTurn]:
+    """Order one stream only when all source positions prove a total order.
+
+    Local turn indices remain capture identities. Unknown, overlapping or
+    mixed-stream positions retain caller order; no wall clock or text inference
+    is used to invent causality. This orders the currently available window,
+    not messages which have not arrived yet.
+    """
+    values = list(turns)
+    if not values or len({(turn.source, turn.session_id) for turn in values}) != 1:
+        return values
+    bounds = []
+    for turn in values:
+        positions = [event.source_sequence for event in turn.events]
+        if not positions or any(type(position) is not int for position in positions):
+            return values
+        if len(set(positions)) != len(positions):
+            return values
+        bounds.append((min(positions), max(positions), turn))
+    bounds.sort(key=lambda item: item[0])
+    if any(left[1] >= right[0] for left, right in zip(bounds, bounds[1:])):
+        return values
+    return [item[2] for item in bounds]
+
+
 def _fallback_component(value: Optional[str], default: str) -> str:
     return value if isinstance(value, str) and value else default
 
@@ -318,7 +343,7 @@ def parse_inbox_text(
                 events=tuple(events),
             )
         )
-    return result
+    return source_ordered_turns(result)
 
 
 def parse_inbox_file(path: Path | str) -> list[InboxTurn]:

@@ -98,7 +98,7 @@ SOURCES SHAPE
 """ + _SOURCES_CONTRACT + """
 
 TODO AND DATES
-Evidence events may include an ISO-8601 UTC timestamp. For a new todo, include status and due_date; use due_date=null when no deadline is established. For an updated todo, include current status. completed requires completed_at grounded in the admitted event timestamp. Do not invent dates. Preserve only date meaning supported by admitted Evidence; an admitted visible-message timestamp may anchor a supported relative date. Core normalizes supported relative calendar dates to YYYY-MM-DD and validates grounding; recurring schedules may remain recurring.
+Evidence events may include an ISO-8601 UTC timestamp. For a new todo, include status and due_date; use due_date=null when no deadline is established. For an updated todo, include current status. For completed, include completed_at only when admitted Evidence establishes the actual completion time, or preserve a trusted existing value; a message timestamp alone is not completion time. Do not invent dates. Preserve only date meaning supported by admitted Evidence; an admitted visible-message timestamp may anchor a supported relative date. Core normalizes supported relative calendar dates to YYYY-MM-DD and validates grounding; recurring schedules may remain recurring.
 
 Return JSON only. No prose, markdown, comments, or reasoning."""
 

@@ -13,7 +13,7 @@ from .admission import analyze_turn_evidence, read_only_turn
 from .capture import _safe_turn_id, recover_capture_receipts_unlocked
 from .evidence_policy import capture_policy_status, retain_tool_evidence
 from .index import EVENT_V2_BLOCK, extract_event_keys, turn_key
-from .inbox import InboxEvent, InboxTurn, parse_inbox
+from .inbox import InboxEvent, InboxTurn, parse_inbox, source_ordered_turns
 from .locking import atomic_write_json, atomic_write_text
 from .turn_plan import turn_identity_key
 from .redaction import redact_text
@@ -369,29 +369,33 @@ class ProcessJournal:
                 watermark = max(
                     _as_int(state.get("watermark"), 0),
                     _as_int(state.get("processed_watermark"), 0),
-                    *(index for index in processed_indices if index > 0),
                 )
                 by_index = {
                     turn.turn_index: turn
                     for turn in turns
                     if isinstance(turn.turn_index, int) and turn.turn_index > 0
                 }
+                # Only a contiguous local receipt watermark can skip work.
+                # A higher local index may have committed first in source order.
+                while watermark + 1 in processed_indices:
+                    watermark += 1
                 next_index = watermark + 1
                 selected: list[InboxTurn] = []
                 # A temporary model coverage omission gets one natural retry.
                 # Missing original evidence and ambiguous ownership wait for
                 # new input or an explicit scope; no timer or busy retry loop.
                 explicit_retry = scope is not None and scope not in ("", [])
-                new_turns: list[InboxTurn] = []
+                pending_window: list[InboxTurn] = []
                 while next_index in by_index:
                     turn = by_index[next_index]
+                    if turn.turn_key not in processed_keys and next_index not in processed_indices:
+                        pending_window.append(turn)
+                    next_index += 1
+                new_turns: list[InboxTurn] = []
+                for turn in source_ordered_turns(pending_window):
                     if not turn.complete:
                         break
-                    if turn.turn_key in processed_keys or next_index in processed_indices:
-                        next_index += 1
-                        continue
                     new_turns.append(turn)
-                    next_index += 1
                 new_queries_only = bool(new_turns) and all(
                     self._turn_is_read_only(turn)
                     for turn in new_turns
@@ -431,6 +435,7 @@ class ProcessJournal:
                             entry["automatic_retry_count"] = _as_int(entry.get("automatic_retry_count"), 0) + 1
                             automatic_retries += 1
                 selected.extend(turn for turn in new_turns if turn not in selected)
+                selected = source_ordered_turns(selected)
                 if not selected:
                     continue
                 token = uuid.uuid4().hex

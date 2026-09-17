@@ -514,7 +514,14 @@ class MemoryCommitter:
                         state["revised_turns"] = remaining_revisions
                     else:
                         state.pop("revised_turns", None)
-                watermark = max(_as_int(state.get("watermark"), 0), _as_int(snapshot.turn.turn_index, 0))
+                watermark = max(_as_int(state.get("watermark"), 0),
+                                _as_int(state.get("processed_watermark"), 0))
+                settled_indices = {
+                    _as_int(item.get("turn_index"), -1)
+                    for item in entries if isinstance(item, Mapping)
+                }
+                while watermark + 1 in settled_indices:
+                    watermark += 1
                 state["watermark"] = watermark
                 state["processed_watermark"] = watermark
                 if prepared_scopes is not None and snapshot.state_key in prepared_scopes.session_scopes:

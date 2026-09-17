@@ -4,6 +4,11 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Order known, non-overlapping source-turn windows before processing without changing capture IDs; advance only contiguous local receipt watermarks so capped batches and interrupted runs do not skip pending turns.
+- Reject ambiguous legacy job-budget migration for metadata-bearing sources rather than granting fresh allowance; merge proven legacy consumption even when a source-work row already exists.
+- Forward optional Hermes source metadata only from an exactly matched visible pair; keep missing timestamps unknown and bind revision-capable host IDs without reading tool or attachment content.
+- Remove the legacy summary instruction equating a completion report timestamp with the actual completion time. No model call, model-setting, package-version or release changes.
+
 - Repair source/intent contracts end to end: forward public remember intent, bind each authorization to immutable content/scope and original observation time, and keep separate authorizations in one host turn independent.
 - Preserve out-of-order initial messages, require trusted final for new source envelopes, and validate all immutable revision metadata even after inbox body cleanup.
 - Reconcile durable inbox receipts before selection/cleanup, fence commits against the actual source snapshot, retain revised evidence/coordination targets, and prevent duplicate retry selection.

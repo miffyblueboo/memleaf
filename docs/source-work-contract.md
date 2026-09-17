@@ -102,3 +102,43 @@ Core can accept original message timestamps, but an adapter must actually provid
 them to obtain that guarantee. Missing Hermes source timestamps remain unknown;
 local capture time is not an alternative source timestamp. Real model semantics
 and Windows/macOS host acceptance require separate validation.
+
+## Follow-up: ordered windows, ambiguous migration and host metadata
+
+For one source/session, an available window with complete, unique source
+positions and non-overlapping turn ranges is processed in source order. Local
+`turn_index` is never rewritten. If an earlier known turn is incomplete, a later
+turn in that ordered window does not overtake it. Unknown or overlapping source
+positions retain the compatibility ordering: this is not a global event clock
+or a promise to order unseen messages. The local progress watermark advances
+only through consecutive settled indices; a source-ordered higher index cannot
+cause a capped batch or crash recovery to skip a lower pending index.
+
+A legacy job counter matching the current local turn must be considered before
+reserving a new automatic request. For proven legacy events, consumption is
+merged exactly once, including when a source-work row already exists. If new
+source metadata prevents establishing which revision the legacy counter belongs
+to, reservation fails with a migration cause; neither a new allowance nor a
+semantic NO_MEMORY decision is invented. A genuinely new explicit remember
+intent remains independent. This conservative case needs explicit migration
+or new user authorization, not automatic counter reset.
+
+Hermes' public `sync_turn` API supplies visible strings and an OpenAI-style
+message list, but does not guarantee original timestamps or revision metadata.
+When present, Memleaf copies an allowlist from the exact visible tail pair only:
+`message_id` (or `id`), `message_revision`, `previous_message_revision`,
+`previous_message_id`, `source_sequence`, and timezone-aware `source_time`
+(or `timestamp`). Both host message IDs must be available to use host identity;
+otherwise the compatibility role IDs remain. Host sequence and synthetic turn
+positions are not mixed within a pair. Stable host user identity also binds the
+capture turn so body/final revisions do not create an unrelated turn. Raw tool,
+attachment, system and developer contents remain excluded. Missing metadata is
+unknown, never inferred from text or capture time. Hosts omitting revision
+metadata still cannot claim native edit support, and native Hermes acceptance
+remains a separate test from these adapter contract tests.
+
+The legacy summary prompt now agrees with the completion-time contract above:
+only evidence of actual completion time (or a trusted existing value) supplies
+`completed_at`. The report's observation timestamp alone is not enough. This
+changes no normal model-call count and does not switch to the future items
+planner.
