@@ -1,0 +1,34 @@
+name: Verify G3a exact tree (no release)
+on:
+  push:
+    branches: [fix/g3a-staging-20260917]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tree: ${{ steps.store.outputs.tree }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply exact G3a patch and run contracts
+        run: python .review/verify_g3a.py verify
+      - name: Store verified Git tree without moving refs
+        id: store
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .review/verify_g3a.py store
+  evidence:
+    needs: prepare
+    name: verified-tree-${{ needs.prepare.outputs.tree }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Verified patch and tests. No refs, tags or releases changed by this workflow.'
