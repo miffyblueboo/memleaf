@@ -337,6 +337,19 @@ class Memleaf:
             scope=scope,
         )
 
+    def preview_incremental(self, *, source: str, session_id: str, turn_id: str,
+                            response: str | None = None, expected_snapshot: str | None = None,
+                            scope: Any = None, priority_memory_ids: Iterable[str] = (),
+                            candidate_limit: int = 12, allow_new_scopes: bool = False) -> dict[str, Any]:
+        """Read-only staged items request/compiler; does not call a model or write."""
+        from .incremental_preview import preview_incremental
+        return preview_incremental(
+            self, source=source, session_id=session_id, turn_id=turn_id,
+            response=response, expected_snapshot=expected_snapshot, scope=scope,
+            priority_memory_ids=priority_memory_ids, candidate_limit=candidate_limit,
+            allow_new_scopes=allow_new_scopes,
+        )
+
     def remember(
         self,
         content: str | None = None,

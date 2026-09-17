@@ -4,6 +4,8 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Add the staged, read-only incremental-items-v1 request/response compiler and Python preview API. Preserve target state with grouped patches, explicit scope/lifecycle checks and evidence-anchored calendar conversion. This does not enable a new production planner, call models, settle evidence or change package version.
+
 - Order known, non-overlapping source-turn windows before processing without changing capture IDs; advance only contiguous local receipt watermarks so capped batches and interrupted runs do not skip pending turns.
 - Reject ambiguous legacy job-budget migration for metadata-bearing sources rather than granting fresh allowance; merge proven legacy consumption even when a source-work row already exists.
 - Forward optional Hermes source metadata only from an exactly matched visible pair; keep missing timestamps unknown and bind revision-capable host IDs without reading tool or attachment content.

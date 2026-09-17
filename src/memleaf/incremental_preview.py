@@ -1,0 +1,146 @@
+"""Read-only integration of the experimental incremental protocol.
+
+This is deliberately not a second production writer. It prepares a single model
+request and compiles a supplied response against a rechecked snapshot. It never
+calls an LLM, captures messages, changes a budget or marks evidence settled.
+"""
+from __future__ import annotations
+
+import json
+from typing import Any, Iterable
+
+from .incremental_protocol import PlanningSnapshot, compile_incremental, MAX_BYTES
+from .incremental_prompts import INCREMENTAL_SYSTEM
+from .index import turn_key
+from .inbox import parse_inbox_file, source_ordered_turns
+from .models import Memory
+from .process_common import _read_processed
+from .retrieval import candidate_matches_query, fulltext_score
+from .scope_state import normalize_scopes
+from .vault import safe_component
+
+
+def prepare_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
+                        scope: Any = None, priority_memory_ids: Iterable[str] = (),
+                        candidate_limit: int = 12, allow_new_scopes: bool = False) -> PlanningSnapshot:
+    """Build a bounded current-source/target snapshot under the existing lock.
+
+    At this stage evidence units are complete visible messages, not per-sentence
+    heuristic fragments. Caller-provided target IDs are required context and are
+    never dropped to fit the budget. Other candidates share the budget by query.
+    """
+    source = safe_component(source, "source")
+    session_id = safe_component(session_id, "session id")
+    if not isinstance(turn_id, str) or not turn_id:
+        raise ValueError("invalid_turn_id")
+    if type(candidate_limit) is not int or not 1 <= candidate_limit <= 20:
+        raise ValueError("invalid_candidate_limit")
+    boundary = normalize_scopes(scope) if scope is not None else None
+    if isinstance(priority_memory_ids, (str, bytes)):
+        raise ValueError("invalid_priority_ids")
+    priority = list(dict.fromkeys(priority_memory_ids))
+    if len(priority) > candidate_limit:
+        raise ValueError("blocked_context")
+    for identity in priority:
+        safe_component(identity, "memory id")
+    with service.vault.lock():
+        # Do not use the mutation boundary: it would resume compaction writes.
+        path = service.vault._inside("inbox", source, f"{session_id}.md")
+        turns = source_ordered_turns(parse_inbox_file(path))
+        selected = next((t for t in turns if t.turn_key == turn_key(turn_id)), None)
+        if selected is None or not selected.complete:
+            raise ValueError("source_not_complete")
+        selected_index = turns.index(selected)
+        later = turns[selected_index + 1:]
+        if any(not t.complete for t in later):
+            raise ValueError("blocked_context")
+        processed = _read_processed(service.vault.processed_state_path)
+        state = processed.get("sessions", {}).get(f"{source}/{session_id}", {})
+        available = {t.turn_key for t in turns}
+        # Missing subsequent raw source cannot be replaced by an invented summary.
+        missing_window = any(
+            isinstance(entry, dict) and type(entry.get("turn_index")) is int
+            and entry["turn_index"] > selected.turn_index and entry.get("turn_key") not in available
+            for entry in state.get("processed_turns", [])
+        )
+        if missing_window:
+            raise ValueError("blocked_context")
+        contexts = ([turns[selected_index - 1]] if selected_index else []) + later
+        evidence = []
+        for t, use in [(selected, "new"), *[(t, "context") for t in contexts]]:
+            for event in t.events:
+                if not event.content.strip() or event.role not in {"user", "assistant"}:
+                    continue
+                evidence.append({
+                    "ref": f"e{len(evidence) + 1}", "use": use, "role": event.role,
+                    "text": event.content, "source": event.source, "session_id": event.session_id,
+                    "event_key": event.event_key, "message_id": event.message_id,
+                    "message_revision": event.message_revision, "source_time": event.source_time,
+                    "source_sequence": event.source_sequence,
+                })
+        records = {}
+        for file_path in sorted(service.vault.knowledge_path.rglob("*.md")):
+            if file_path.is_symlink():
+                raise ValueError("incomplete_library")
+            try:
+                memory = Memory.from_markdown(file_path.read_text(encoding="utf-8"), file_path)
+            except (OSError, UnicodeError, ValueError, TypeError) as error:
+                raise ValueError("incomplete_library") from error
+            key = memory.memory_id.casefold()
+            if key in records:
+                raise ValueError("duplicate_memory_id")
+            records[key] = memory
+        chosen = []
+        for identity in priority:
+            if identity.casefold() not in records:
+                raise ValueError("required_target_unavailable")
+            chosen.append(records[identity.casefold()])
+        query_rows = []
+        for event in evidence:
+            query = event["text"]
+            scored = [(fulltext_score(memory, query), memory) for memory in records.values()
+                      if candidate_matches_query(memory, query)]
+            scored.sort(key=lambda item: (-item[0], item[1].memory_id))
+            query_rows.append([memory for _, memory in scored[:candidate_limit]])
+        # Reuse the pure retrieval functions, not service._search_unlocked(),
+        # whose index accessor may rebuild files or recover compaction.
+        seen = {memory.memory_id.casefold() for memory in chosen}
+        for rank in range(candidate_limit):
+            for candidates in query_rows:
+                if len(chosen) >= candidate_limit:
+                    break
+                if rank < len(candidates):
+                    candidate = candidates[rank]
+                    key = candidate.memory_id.casefold()
+                    if key not in seen:
+                        chosen.append(candidate)
+                        seen.add(key)
+        scopes = sorted({s for m in chosen for s in m.scopes} | set(boundary or []))
+        scope_refs = {f"s{i}": s for i, s in enumerate(scopes, 1) if s not in {"global", "unscoped"}}
+        targets = {f"m{i}": memory for i, memory in enumerate(chosen, 1)}
+        writable = {ref: boundary is None or set(memory.scopes) <= set(boundary) for ref, memory in targets.items()}
+        return PlanningSnapshot.build(evidence=evidence, targets=targets, scopes=scope_refs,
+                                      write_scopes=boundary, writable=writable,
+                                      allow_new_scopes=allow_new_scopes)
+
+
+def preview_incremental(service: Any, *, response: str | None = None,
+                        expected_snapshot: str | None = None, **arguments: Any) -> dict[str, Any]:
+    """Prepare a model request, or compile a response only if the snapshot agrees.
+
+    ``expected_snapshot`` is a comparison token, NOT authorization to commit. The
+    supplied response may come from an explicitly authorized isolated evaluation.
+    There is no automatic retry or connection to process()/remember() here.
+    """
+    snapshot = prepare_incremental(service, **arguments)
+    if response is not None:
+        if expected_snapshot != snapshot.snapshot_id:
+            raise ValueError("stale_planning_snapshot")
+        return compile_incremental(response, snapshot)
+    payload = json.dumps(snapshot.model_input(), ensure_ascii=False, separators=(",", ":"))
+    if len(payload.encode("utf-8")) + len(INCREMENTAL_SYSTEM.encode("utf-8")) > MAX_BYTES:
+        raise ValueError("blocked_context")
+    return {"mode": "preview", "snapshot_id": snapshot.snapshot_id,
+            "request": {"system": INCREMENTAL_SYSTEM, "user": payload},
+            "model_calls": 0, "memories_written": 0,
+            "limitations": ["native_comparison_not_integrated", "commit_not_integrated", "coverage_is_not_semantic_quality"]}
