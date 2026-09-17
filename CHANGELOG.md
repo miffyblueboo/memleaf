@@ -2,6 +2,11 @@
 
 All notable changes to memleaf are documented here.
 
+## Unreleased
+
+- Add a first-class `validity: valid|retracted` state. Deterministic retraction uses an expected revision, archives the previous valid body, keeps the stable current identity, and excludes retracted assertions from ordinary read/search/todo results while retaining explicit audit and forget paths.
+- Preserve completed and cancelled todo heads in `knowledge/` instead of retiring their stable identities by age. Add public deterministic contract tests to CI for legacy compatibility, retraction, revision conflicts, and closed-todo retention.
+
 ## 0.2.65 — 2026-09-16
 
 - Ground maintenance todo deadlines in Core-validated candidate evidence and `reference_time`. Relative calendar ranges resolve deterministically to their last valid day, while the normalized deadline view removes only formatting and equivalent parenthetical restatements without losing conflicting dates.

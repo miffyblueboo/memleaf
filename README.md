@@ -77,6 +77,8 @@ memleaf 不把每句话都保存为记忆。处理一轮完整的 user + assista
 - `UPDATE`：同一未来用途的现存记忆需要更新，沿用原 `memory_id`；旧内容进入 `history/`；
 - `NO_CHANGE`：只是重复、查询、临时状态、测试、审计、诊断或没有稳定复用价值，不新增记忆。
 
+普通事实被明确撤回但未要求彻底删除时，Core 可使用 `retract_memory()` 将同一 `memory_id` 标为 `validity: retracted`。旧有效正文进入 `history/`，普通 search/read/list_todos 不再把它作为当前事实；这与 `forget_memory()` 的物理删除合同不同。确定性撤回必须携带 `memory_revision()` 或 `read_page()` 返回的当前 `revision`，避免覆盖并发修改。完整边界见 [Memory state contract](docs/memory-state-contract.md)。
+
 额外约束：
 
 - 通常一轮产生 0～1 条记忆，而不是按句子拆分；
@@ -296,6 +298,8 @@ capture()             捕获可见事件
 process()             处理完整 inbox 轮次，需要模型路由
 remember()            显式保存，需要模型路由
 create_memory()       直接创建一条 Markdown 记忆
+memory_revision()     读取受保护内容的并发版本
+retract_memory()      撤回当前事实，保留同 ID 头和历史
 search()              本地检索，不更新命中统计
 context()             兼容接口，返回轻量目录
 read() / read_page()  读取记忆或分页正文
@@ -421,7 +425,7 @@ history:
 ```
 
 - active Markdown 每条最多保留 16 个来源明细，同时记录累计 `source_count`、`source_digest` 和省略数量，避免 UPDATE 让 `sources` 无限膨胀；
-- 已完成/已取消 todo 默认在 30 天后退出 `knowledge/` 并进入 `history/`；`list_todos(status=completed|cancelled|all)` 仍可枚举这些历史待办；
+- 已完成/已取消 todo 保留在 `knowledge/` 中作为稳定当前身份，默认 active 清单不展示，但 `list_todos(status=completed|cancelled|all)` 和后续维护仍可按原 ID 定位；`closed_todo_retention_days` 仅作为旧配置兼容项保留；
 - `history.policy: bounded` 默认每个稳定记忆身份最多保留 32 个完整历史版本，且超过 3650 天的版本可被维护流程淘汰；需要永久审计时可显式设置 `history.policy: keep_all`；
 - compaction 会保留一个既有 canonical `memory_id`，不会再为整理结果创建新的 `mem-compact-*` 身份；单条精简保持原 ID，多条合并选择一个稳定 survivor。
 - 这些维护动作在正常 `process()` / `remember()` / `compact()` 生命周期中执行，不需要 daemon；普通只读检索本身不触发维护写入。

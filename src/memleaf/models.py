@@ -65,6 +65,7 @@ class Memory:
     status: Optional[str] = None
     completed_at: Optional[str] = None
     due_date: Optional[str] = None
+    validity: str = "valid"
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -87,6 +88,10 @@ class Memory:
             raise ValueError("memory status must be a string")
         if self.completed_at is not None and not isinstance(self.completed_at, str):
             raise ValueError("memory completed_at must be a string")
+        if self.validity not in {"valid", "retracted"}:
+            raise ValueError("memory validity must be valid or retracted")
+        if self.validity == "retracted" and self.body:
+            raise ValueError("retracted memory body must be empty")
         if self.due_date is not None:
             if not isinstance(self.due_date, str) or len(self.due_date) != 10:
                 raise ValueError("memory due_date must be YYYY-MM-DD")
@@ -131,6 +136,7 @@ class Memory:
             status=metadata.pop("status", None),
             completed_at=metadata.pop("completed_at", None),
             due_date=metadata.pop("due_date", None),
+            validity=metadata.pop("validity", "valid"),
             extra=metadata,
         )
 
@@ -156,6 +162,7 @@ class Memory:
             "status",
             "completed_at",
             "due_date",
+            "validity",
         }
         missing = [key for key in ("memory_id", "title", "body") if key not in value]
         if missing:
@@ -178,6 +185,7 @@ class Memory:
             status=value.get("status"),
             completed_at=value.get("completed_at"),
             due_date=value.get("due_date"),
+            validity=value.get("validity", "valid"),
             extra={key: item for key, item in value.items() if key not in known},
         )
 
@@ -220,6 +228,7 @@ class Memory:
             metadata["completed_at"] = self.completed_at
         if self.due_date is not None:
             metadata["due_date"] = self.due_date
+        metadata["validity"] = self.validity
         for key, value in self.extra.items():
             metadata.setdefault(key, value)
         return metadata

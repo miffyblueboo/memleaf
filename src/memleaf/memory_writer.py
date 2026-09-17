@@ -85,6 +85,7 @@ class MemoryWriter:
             and left.status == right.status
             and left.completed_at == right.completed_at
             and left.due_date == right.due_date
+            and left.validity == right.validity
             and left_extra == right_extra
         )
 
@@ -306,6 +307,9 @@ class MemoryWriter:
         if summary["type"] == "todo" and status is None:
             status = "active"
         due_date = summary.get("due_date") if "due_date" in summary else (existing.due_date if existing is not None else None)
+        validity = summary.get("validity") if "validity" in summary else (
+            existing.validity if existing is not None else "valid"
+        )
         completed_at = (
             summary.get("completed_at")
             if "completed_at" in summary
@@ -340,6 +344,7 @@ class MemoryWriter:
             status=status,
             completed_at=completed_at,
             due_date=due_date,
+            validity=validity,
             extra=extra,
         )
 
@@ -373,6 +378,7 @@ class MemoryWriter:
             status=existing.status,
             completed_at=existing.completed_at,
             due_date=existing.due_date,
+            validity=existing.validity,
             extra=extra,
         )
 
@@ -426,6 +432,7 @@ class MemoryWriter:
             status=old.status,
             completed_at=old.completed_at,
             due_date=old.due_date,
+            validity=old.validity,
             extra=extra,
         )
         path = self.service.vault.memory_path(history_id, "history")

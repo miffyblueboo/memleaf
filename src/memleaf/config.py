@@ -89,6 +89,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "memory_compact_threshold_tokens": 100000,
         "memory_compact_candidate_ratio": 0.30,
         "inbox_cleanup_hours": 24,
+        # Compatibility key: closed todo heads remain current identities.
         "closed_todo_retention_days": 30,
         "model_concurrency": DEFAULT_MODEL_CONCURRENCY,
     },

@@ -32,7 +32,24 @@ def _error(message: str) -> ModelOutputError:
 
 def content_digest(summary: Mapping[str, Any]) -> str:
     """Compare committed semantic state, excluding generated time and provenance."""
-    fields = {key: summary.get(key) for key in ("body", "type", "scopes", "status", "completed_at", "due_date")}
+    fields = {
+        key: summary.get(key)
+        for key in (
+            "body",
+            "type",
+            "scopes",
+            "status",
+            "completed_at",
+            "due_date",
+            "validity",
+            "assignee",
+            "waiting_on",
+            "due_text",
+            "due_anchor",
+            "field_basis",
+        )
+    }
+    fields["validity"] = fields["validity"] or "valid"
     fields["scopes"] = sorted(fields["scopes"] or ["global"])
     if fields["type"] == "todo":
         fields["status"] = fields["status"] or "active"

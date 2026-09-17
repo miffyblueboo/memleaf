@@ -498,7 +498,7 @@ class Memleaf:
         atomic_write_json(
             self.vault.tags_index_path,
             build_tags_index(
-                [record.memory for record in knowledge],
+                [record.memory for record in knowledge if record.memory.validity == "valid"],
                 [record.memory for record in history],
             ),
         )
@@ -597,12 +597,106 @@ class Memleaf:
         )
         return self.write_memory(memory, area=area)
 
+    def memory_revision(self, memory_id: str) -> str | None:
+        """Return the protected-state revision for one current memory."""
+
+        from .turn_plan import revision_digest
+
+        safe_component(memory_id, "memory id")
+        with self.vault.lock():
+            self._recover_compaction_unlocked()
+            matches = self._find_records_unlocked(memory_id, include_history=False)
+            if len(matches) > 1:
+                raise ValueError("duplicate current memory id")
+            return revision_digest(matches[0].memory) if matches else None
+
+    def retract_memory(
+        self,
+        memory_id: str,
+        *,
+        expected_revision: str,
+        reason: str | None = None,
+    ) -> Memory:
+        """Retract a current assertion without deleting its stable identity.
+
+        The previous valid state is written to history.  Ordinary retrieval no
+        longer exposes the assertion, while maintenance and explicit audit can
+        still locate the current retracted head.  This deterministic API is
+        deliberately separate from ``forget_memory``, which deletes content.
+        """
+
+        from .memory_writer import MemoryWriter
+        from .turn_plan import revision_digest
+
+        safe_component(memory_id, "memory id")
+        if not isinstance(expected_revision, str) or not expected_revision:
+            raise ValueError("expected_revision must be a non-empty string")
+        if reason is not None and (not isinstance(reason, str) or not reason.strip()):
+            raise ValueError("retraction reason must be non-empty text")
+
+        with self._mutation_boundary():
+            matches = self._find_records_unlocked(memory_id, include_history=False)
+            if not matches:
+                raise ValueError("memory does not exist")
+            if len(matches) != 1:
+                raise ValueError("duplicate current memory id")
+            record = matches[0]
+            current = record.memory
+            if revision_digest(current) != expected_revision:
+                raise MemoryVersionError("memory revision mismatch")
+            if current.validity == "retracted":
+                return current
+
+            now = utc_now()
+            writer = MemoryWriter(self)
+            writer._write_history(
+                current,
+                superseded_by=current.memory_id,
+                archived_at=now,
+                invalidated_reason="retracted",
+            )
+            extra = dict(current.extra)
+            extra["retracted_at"] = now
+            if reason is not None:
+                extra["retraction_reason"] = reason.strip()
+            retracted = Memory(
+                memory_id=current.memory_id,
+                title=current.title,
+                body="",
+                tags=list(current.tags),
+                type=current.type,
+                scopes=list(current.scopes),
+                aliases=list(current.aliases),
+                keywords=list(current.keywords),
+                scope_source=current.scope_source,
+                sources=[dict(item) for item in current.sources],
+                created=current.created,
+                updated=now,
+                hit_count=current.hit_count,
+                last_hit_at=current.last_hit_at,
+                status=current.status,
+                completed_at=current.completed_at,
+                due_date=current.due_date,
+                validity="retracted",
+                extra=extra,
+            )
+            if record.path.is_symlink():
+                raise ValueError("unsafe memory path")
+            atomic_write_text(record.path, retracted.to_markdown())
+            self._rebuild_index_unlocked()
+            return retracted
+
     def read(self, memory_id: str, *, include_history: bool = False) -> Optional[Memory]:
         safe_component(memory_id, "memory id")
         with self.vault.lock():
             self._recover_compaction_unlocked()
             matches = self._find_records_unlocked(memory_id, include_history=include_history)
-            return matches[0].memory if matches else None
+            if not matches:
+                return None
+            memory = matches[0].memory
+            if memory.validity == "retracted" and not include_history:
+                return None
+            return memory
 
     def read_page(
         self,
@@ -641,6 +735,9 @@ class Memleaf:
             memory_type: str = "other",
             status: str | None = None,
             due_date: str | None = None,
+            validity: str = "valid",
+            revision: str | None = None,
+            structured_fields: Mapping[str, Any] | None = None,
             record: _Record | None = None,
         ) -> dict[str, Any]:
             if expected_version is not None and expected_version != version:
@@ -661,7 +758,7 @@ class Memleaf:
                 record.memory.hit_count += 1
                 record.memory.last_hit_at = utc_now()
                 atomic_write_text(record.path, record.memory.to_markdown())
-            return {
+            result = {
                 "memory_id": memory_id,
                 "title": display.title,
                 "scopes": list(display.scopes),
@@ -674,7 +771,14 @@ class Memleaf:
                 "type": memory_type,
                 "status": status,
                 "due_date": due_date,
+                "validity": validity,
+                "revision": revision or version,
             }
+            structured_fields = structured_fields or {}
+            for name in ("assignee", "waiting_on", "due_text", "due_anchor"):
+                if name in structured_fields:
+                    result[name] = structured_fields[name]
+            return result
 
         with self.vault.lock():
             self._recover_compaction_unlocked()
@@ -682,6 +786,10 @@ class Memleaf:
             if matches:
                 record = matches[0]
                 memory = record.memory
+                if memory.validity == "retracted" and not include_history:
+                    return None
+                from .turn_plan import revision_digest
+
                 return _page(
                     title=memory.title,
                     scopes=list(memory.scopes),
@@ -691,6 +799,9 @@ class Memleaf:
                     memory_type=memory.type,
                     status=(memory.status or "active") if memory.type == "todo" else memory.status,
                     due_date=memory.due_date,
+                    validity=memory.validity,
+                    revision=revision_digest(memory),
+                    structured_fields=memory.extra,
                     record=record,
                 )
 
@@ -751,6 +862,8 @@ class Memleaf:
         # A manually-created memory can introduce a valid scope before the
         # registry is updated.  Only its scope metadata is exposed here.
         for record in self._read_memories_unlocked("knowledge"):
+            if record.memory.validity != "valid":
+                continue
             for raw_scope in record.memory.scopes:
                 try:
                     scope = validate_scope_key(raw_scope)
@@ -1084,7 +1197,11 @@ class Memleaf:
         scope_value = self._scope_query_values(scope)
         with self.vault.lock():
             self._recover_compaction_unlocked()
-            active_records = [record for record in self._read_memories_unlocked("knowledge") if record.memory.type == "todo"]
+            active_records = [
+                record
+                for record in self._read_memories_unlocked("knowledge")
+                if record.memory.type == "todo" and record.memory.validity == "valid"
+            ]
             active_ids = {record.memory.memory_id.casefold() for record in active_records}
             records = list(active_records)
             if status in {"completed", "cancelled", "all"}:
@@ -1214,6 +1331,7 @@ class Memleaf:
         context_only_global: bool = False,
         stable: bool = False,
         strict_candidates: bool = False,
+        include_retracted: bool = False,
     ) -> list[_Record]:
         if isinstance(query, str):
             query_value: str | list[str] = query
@@ -1233,6 +1351,8 @@ class Memleaf:
         history_records = self._read_memories_unlocked("history") if include_history else []
         by_id: dict[str, _Record] = {}
         for record in active_records + history_records:
+            if record.memory.validity == "retracted" and not include_retracted:
+                continue
             by_id.setdefault(record.memory.memory_id, record)
 
         # Apply scope before selecting the indexed first layer.  Otherwise a
@@ -1564,6 +1684,7 @@ class Memleaf:
                 include_history=True,
                 todo_status="all",
                 limit=None,
+                include_retracted=True,
             )
             title_matches = [record for record in records if normalize_term(record.memory.title) == normalized]
             title_groups = self._forget_groups_unlocked(title_matches)

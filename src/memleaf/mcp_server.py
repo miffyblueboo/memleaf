@@ -500,18 +500,36 @@ def _read_page_result(value: Any) -> dict[str, Any] | None:
     memory_type = value.get("type")
     status = value.get("status")
     due_date = value.get("due_date")
+    validity = value.get("validity")
+    revision = value.get("revision")
     if memory_type is not None and not isinstance(memory_type, str):
         raise ValueError("invalid read memory type")
     if status is not None and not isinstance(status, str):
         raise ValueError("invalid read todo status")
     if due_date is not None and not isinstance(due_date, str):
         raise ValueError("invalid read todo due date")
+    if validity is not None and validity not in {"valid", "retracted"}:
+        raise ValueError("invalid read validity")
+    if revision is not None and (not isinstance(revision, str) or not revision):
+        raise ValueError("invalid read revision")
     if "type" in value:
         result["type"] = memory_type
     if "status" in value:
         result["status"] = status
     if "due_date" in value:
         result["due_date"] = due_date
+    if "validity" in value:
+        result["validity"] = validity
+    if "revision" in value:
+        result["revision"] = revision
+    for name in ("assignee", "waiting_on", "due_text"):
+        field = value.get(name)
+        if field is not None and not isinstance(field, str):
+            raise ValueError(f"invalid read {name}")
+        if name in value:
+            result[name] = field
+    if "due_anchor" in value:
+        result["due_anchor"] = _jsonable(value.get("due_anchor"))
     return result
 
 

@@ -396,6 +396,8 @@ class Compactor:
         with self.service._mutation_boundary():
             candidates: list[_Candidate] = []
             for record in self.service._read_memories_unlocked("knowledge"):
+                if record.memory.validity != "valid":
+                    continue
                 try:
                     raw = record.path.read_text(encoding="utf-8")
                 except (OSError, UnicodeError) as error:
@@ -520,6 +522,7 @@ class Compactor:
             status=status,
             completed_at=summary.get("completed_at"),
             due_date=summary.get("due_date"),
+            validity="valid",
             extra=extra,
         )
         raw = memory.to_markdown()
@@ -550,6 +553,7 @@ class Compactor:
             and left.status == right.status
             and left.completed_at == right.completed_at
             and left.due_date == right.due_date
+            and left.validity == right.validity
             and left_extra == right_extra
         )
 
@@ -657,6 +661,7 @@ class Compactor:
             status=source.memory.status,
             completed_at=source.memory.completed_at,
             due_date=source.memory.due_date,
+            validity=source.memory.validity,
             extra=extra,
         )
         return history_id, historical, historical.to_markdown()

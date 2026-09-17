@@ -55,20 +55,34 @@ def expand_maintenance(raw: str, context, *, diagnostics=None) -> str:
     original, incoming, catalog = context
     # Older host adapters can still provide fully bound compact output.
     if isinstance(value, dict) and set(value) == {'memories','no_memory','deferred'}:
-        return raw
+        if not any(isinstance(row, dict) and 'from' in row for row in value.get('memories', [])):
+            return raw
+        # Mixed adapters may use the fragment disposition name with maintenance rows.
+        value['discard'] = [{'evidence': value.pop('no_memory')}]
     if not isinstance(value, dict) or set(value) != {'memories','discard','deferred'}:
         raise _invalid()
     if any(not isinstance(v,list) for v in value.values()):
         raise _invalid()
     seen = set()
     reviewed_evidence = set()
+    def normalize_ref(ref):
+        if isinstance(ref, str):
+            ref = ref.strip()
+            if len(ref) <= 20 and ref.isascii() and ref.isdecimal():
+                return int(ref)
+        return ref
+
+    def incoming_ref(ref):
+        if isinstance(ref, str):
+            ref = ref.strip()
+            if ref[:1].lower() == 'd':
+                ref = ref[1:]
+        return normalize_ref(ref)
+
     def resolve(refs):
         if not isinstance(refs,list) or not refs:
             raise _invalid('invalid_evidence')
-        normalized = []
-        for ref in refs:
-            r = ref[1:] if isinstance(ref, str) and ref.startswith('d') else ref
-            normalized.append(int(r) if isinstance(r, str) and len(r) <= 20 and r.isascii() and r.isdecimal() else r)
+        normalized = [incoming_ref(ref) for ref in refs]
         if any((type(r) is not int and not isinstance(r, str)) or r not in incoming for r in normalized):
             raise _invalid('invalid_evidence')
         seen.update(normalized)
@@ -80,7 +94,7 @@ def expand_maintenance(raw: str, context, *, diagnostics=None) -> str:
     for proposed in value['memories']:
         if isinstance(proposed, dict) and isinstance(proposed.get('from'), list):
             for ref in proposed['from']:
-                key = str(ref).removeprefix('d')
+                key = str(incoming_ref(ref))
                 from_uses[key] = from_uses.get(key, 0) + 1
     def compile_row(row):
         if isinstance(row, dict):
@@ -119,7 +133,7 @@ def expand_maintenance(raw: str, context, *, diagnostics=None) -> str:
         inherited = {source['target'] for source in sources if isinstance(source.get('target'), str) and source['target'].casefold() in catalog}
         if target is None and len(inherited) > 1:
             raise _invalid('duplicate_update_target')
-        if target is None and len(inherited) == 1 and all(from_uses.get(str(ref).removeprefix('d')) == 1 for ref in row['from']):
+        if target is None and len(inherited) == 1 and all(from_uses.get(str(incoming_ref(ref))) == 1 for ref in row['from']):
             target = next(iter(inherited))
         if target is not None:
             record = catalog.get(target.casefold()) if isinstance(target,str) else None
@@ -162,8 +176,7 @@ def expand_maintenance(raw: str, context, *, diagnostics=None) -> str:
         allowed = list(dict.fromkeys(int(r) for s in sources for r in s['evidence']))
         chosen = row.get('evidence', allowed)
         if isinstance(chosen, list):
-            chosen = [int(r) if isinstance(r, str) and len(r) <= 20 and r.isascii() and r.isdecimal() else r
-                      for r in chosen]
+            chosen = [normalize_ref(r) for r in chosen]
         if not isinstance(chosen, list) or not chosen or any(type(r) is not int or r not in allowed for r in chosen):
             raise _invalid('invalid_evidence')
         memory['evidence']=list(dict.fromkeys(chosen))
@@ -192,24 +205,40 @@ def expand_maintenance(raw: str, context, *, diagnostics=None) -> str:
             result['deferred'].extend(evidence)
             if diagnostics is not None:
                 diagnostics.append({'row': index, 'detail': error.validation_detail, 'evidence': evidence})
-    for key,dest in (('discard','no_memory'),('deferred','deferred')):
-        if value[key]:
+    known_evidence = {int(r) for source in incoming.values() for r in source['evidence']}
+    known_evidence.update(int(r) for key in ('no_memory', 'deferred') for r in original[key])
+    for key, dest in (('discard', 'no_memory'), ('deferred', 'deferred')):
+        # Resolve independently: one bad ID must not discard valid dispositions.
+        for entry in value[key]:
             try:
-                refs = []
-                for entry in value[key]:
-                    if isinstance(entry, dict) and set(entry) <= {'from', 'reason'} and isinstance(entry.get('from'), list):
-                        refs.extend(entry['from'])
+                if isinstance(entry, dict) and set(entry) <= {'evidence', 'reason'} and 'evidence' in entry:
+                    refs = entry['evidence']
+                    if not isinstance(refs, list):
+                        raise _invalid('invalid_evidence')
+                    evidence = [normalize_ref(ref) for ref in refs]
+                    if any(type(ref) is not int or ref not in known_evidence for ref in evidence):
+                        raise _invalid('invalid_evidence')
+                else:
+                    refs = entry.get('from') if isinstance(entry, dict) and set(entry) <= {'from', 'reason'} else [entry]
+                    # Bare numbers historically denote incoming IDs. Only accept
+                    # fragment-number fallback where the namespaces cannot clash.
+                    if isinstance(refs, list) and len(refs) == 1:
+                        ref = normalize_ref(refs[0])
+                        if type(ref) is int and ref not in incoming and ref in known_evidence:
+                            evidence = [ref]
+                        else:
+                            evidence = [r for source in resolve(refs) for r in source['evidence']]
                     else:
-                        refs.append(entry)
-                sources = resolve(refs)
+                        evidence = [r for source in resolve(refs) for r in source['evidence']]
+                result[dest].extend(evidence)
             except ModelOutputError:
-                sources = []
-            for row in sources:
-                result[dest].extend(row['evidence'])
+                if diagnostics is not None:
+                    diagnostics.append({'detail': 'invalid_evidence', 'disposition': key, 'evidence': []})
+    settled = {int(r) for key in ('no_memory', 'deferred') for r in result[key]}
     for ref in set(incoming) - seen:
-        evidence = incoming[ref]['evidence']
+        evidence = [r for r in incoming[ref]['evidence'] if int(r) not in settled]
         result['deferred'].extend(evidence)
-        if diagnostics is not None:
+        if evidence and diagnostics is not None:
             diagnostics.append({'detail': 'invalid_evidence', 'evidence': evidence})
     claimed = {ref for memory in result['memories'] for ref in memory['evidence']}
     result['no_memory'].extend(sorted(reviewed_evidence - claimed - set(result['deferred'])))

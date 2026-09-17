@@ -75,6 +75,8 @@ memleaf does not save every sentence. When a complete visible user + assistant t
 - `UPDATE`: an active memory for the same future use needs new information, so keep its `memory_id` and move the old version to `history/`;
 - `NO_CHANGE`: the turn is a duplicate, query, temporary state, test, audit, diagnostic, or otherwise has no stable reuse value, so append nothing.
 
+When an ordinary assertion is explicitly withdrawn without a request to erase it, Core can use `retract_memory()` to keep the same `memory_id` with `validity: retracted`. The prior valid body moves to `history/`, and ordinary search/read/list_todos no longer treats it as current fact. This is distinct from the physical-deletion contract of `forget_memory()`. A deterministic retraction must carry the current revision returned by `memory_revision()` or `read_page()` so it cannot overwrite a concurrent edit. See [Memory state contract](docs/memory-state-contract.md) for the complete boundary.
+
 Additional rules:
 
 - A normal turn typically produces 0–1 memory rather than one memory per sentence.
@@ -298,6 +300,8 @@ capture()             Capture a visible event
 process()             Process complete inbox turns; requires a model route
 remember()            Explicitly save a memory; requires a model route
 create_memory()       Directly create a Markdown memory
+memory_revision()     Read the protected-state concurrency revision
+retract_memory()      Retract an assertion while keeping its ID and history
 search()              Local retrieval without updating hit counts
 context()             Compatibility API returning a light directory
 read() / read_page()  Read a memory or a body page
@@ -423,7 +427,7 @@ history:
 ```
 
 - Each active Markdown memory retains at most 16 detailed provenance rows while tracking cumulative `source_count`, `source_digest`, and omitted rows, so repeated UPDATEs cannot grow `sources` without bound.
-- Completed/cancelled todos leave `knowledge/` after 30 days by default and move to `history/`; `list_todos(status=completed|cancelled|all)` can still enumerate retired todos.
+- Completed/cancelled todos remain in `knowledge/` as stable current identities. The default active view hides them, while `list_todos(status=completed|cancelled|all)` and later maintenance can still resolve the original ID. `closed_todo_retention_days` remains only as a legacy configuration key.
 - With `history.policy: bounded`, each stable memory identity keeps at most 32 full historical versions, and versions older than 3650 days are eligible for pruning. Set `history.policy: keep_all` explicitly when permanent audit retention is required.
 - Compaction preserves an existing canonical `memory_id` instead of creating a new `mem-compact-*` identity; a single-memory rewrite keeps its ID and a multi-memory merge chooses one stable survivor.
 - Maintenance runs through normal `process()` / `remember()` / `compact()` lifecycle calls and requires no daemon. Ordinary read-only retrieval does not trigger maintenance writes.

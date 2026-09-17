@@ -7,7 +7,6 @@ from typing import Any, Mapping
 from .locking import atomic_unlink, atomic_write_text
 from .models import Memory
 from .process_common import _read_processed
-from .memory_writer import MemoryWriter
 from .source_policy import MAX_MEMORY_SOURCES, merge_sources
 
 
@@ -102,34 +101,12 @@ class RetentionManager:
         return memory.memory_id.casefold()
 
     def _retire_closed_todos_unlocked(self, now: datetime, closed_days: int) -> int:
-        processed = _read_processed(self.service.vault.processed_state_path)
-        pending = {
-            "pending_operations": processed.get("pending_operations", {}),
-            "pending_turn_plans": processed.get("pending_turn_plans", {}),
-        }
-        writer = MemoryWriter(self.service)
-        retired = 0
-        for record in list(self.service._read_memories_unlocked("knowledge")):
-            memory = record.memory
-            if memory.type != "todo" or memory.status not in {"completed", "cancelled"}:
-                continue
-            anchor = memory.completed_at if memory.status == "completed" else memory.updated
-            age = _age_days(now, anchor)
-            if age is None or age < closed_days:
-                continue
-            if _references_target(pending, memory.memory_id):
-                continue
-            writer._write_history(
-                memory,
-                superseded_by=memory.memory_id,
-                archived_at=now.isoformat(timespec="seconds").replace("+00:00", "Z"),
-                invalidated_reason="todo_closed",
-            )
-            if record.path.is_symlink():
-                raise RetentionError("unsafe closed todo path")
-            atomic_unlink(record.path)
-            retired += 1
-        return retired
+        # Closed todos remain current identities.  Age changes their default
+        # presentation, not whether the durable target still exists for
+        # NO_CHANGE, reopen, or later correction.  Keep the legacy setting in
+        # config for compatibility, but no longer move these heads to history.
+        del now, closed_days
+        return 0
 
     def _prune_history_unlocked(
         self, now: datetime, policy: str, retention_days: int, max_versions: int
