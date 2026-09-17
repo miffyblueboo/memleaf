@@ -58,6 +58,18 @@ def load_run(processed: dict[str, Any], run_id: str) -> dict[str, Any] | None:
             or not isinstance(run.get("attempts"), list) or len(run["attempts"]) > 2
             or type(run.get("reserved_requests")) is not int or run["reserved_requests"] < 0):
         raise ValueError("invalid_incremental_run")
+    from .incremental_selection import validate_selection, validate_request
+    selection = validate_selection(run["arguments"].get("selection"))
+    kind = run.get("request_kind", "automatic")
+    if not isinstance(kind, str) or kind not in {"automatic", "explicit_remember"} or (kind == "explicit_remember") != bool(selection):
+        raise ValueError("invalid_incremental_intent")
+    if selection:
+        if run.get("authorization_intent") != selection["intent_id"]:
+            raise ValueError("invalid_incremental_intent")
+        if run["status"] not in TERMINAL:
+            validate_request(run.get("retention_request"), selection)
+        elif "retention_request" in run:
+            raise ValueError("terminal_retention_payload")
     ordinals = [a.get("ordinal") for a in run["attempts"] if isinstance(a, dict)]
     if (any(type(v) is not int for v in ordinals) or ordinals != sorted(set(ordinals))
             or type(run.get("budget_finalized", False)) is not bool):
@@ -96,7 +108,7 @@ def save_run(service: Any, processed: dict[str, Any], run: dict[str, Any]) -> No
 
 
 def strip_payload(run: dict[str, Any]) -> None:
-    for key in ("request", "response"):
+    for key in ("request", "response", "retention_request"):
         run.pop(key, None)
 
 
@@ -136,7 +148,10 @@ def owned_turns(processed: dict[str, Any], source: str, session_id: str, *, prot
     result = set()
     for key in runs:
         run = load_run(processed, key)
-        if run["source"] == source and run["session_id"] == session_id and (not protect or run["status"] != "completed"):
+        if (run["source"] == source and run["session_id"] == session_id
+                and (not protect or run["status"] != "completed")
+                and (protect or run.get("request_kind", "automatic") == "automatic"
+                     or run["status"] not in TERMINAL)):
             result.add(run["turn_key"])
             if protect:
                 from .incremental_journal import referenced_turn_keys
@@ -147,6 +162,8 @@ def owned_turns(processed: dict[str, Any], source: str, session_id: str, *, prot
 def public_result(run: dict[str, Any], *, calls: int = 0) -> dict[str, Any]:
     return {
         "run_id": run["run_id"], "execution_status": run["status"],
+        "request_kind": run.get("request_kind", "automatic"),
+        **({"intent_id": run["authorization_intent"]} if "authorization_intent" in run else {}),
         "code": run.get("code"), "commit_work_id": run["commit_work_id"],
         "model_calls_this_invocation": calls,
         "model_calls_known": sum(a["outcome"] != "unknown" for a in run["attempts"]),

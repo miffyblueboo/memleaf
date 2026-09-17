@@ -41,7 +41,8 @@ def _receipt(result: dict[str, Any]) -> dict[str, Any]:
 
 def process_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
                         scope: Any = None, priority_memory_ids=(), candidate_limit: int = 12,
-                        model: Any = None, router: Any = None, recover: bool = False) -> dict[str, Any]:
+                        model: Any = None, router: Any = None, recover: bool = False,
+                        selection=None, retention_request: str | None = None) -> dict[str, Any]:
     """Process a captured turn; retry transport failure only with recover=True.
 
     Saved responses and commit recovery need no configured model. The explicit
@@ -51,23 +52,32 @@ def process_incremental(service: Any, *, source: str, session_id: str, turn_id: 
         raise ValueError("invalid_recover")
     if model is not None and router is not None:
         raise ValueError("ambiguous_model_route")
-    args = _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, False)
+    from .incremental_selection import explicit_run_id, validate_request
+    args = _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, False, selection)
+    selection = args.get("selection")
+    if selection:
+        retention_request = validate_request(retention_request, selection)
     with service.vault.lock():
         processed = _read_processed(service.vault.processed_state_path)
-        try:
-            selected, _ = _window(service, source, session_id, turn_key(turn_id))
-        except (OSError, ValueError):
-            # Only a unique terminal receipt can stand in for cleaned source.
-            matches = [load_run(processed, key) for key in processed.get(KEY, {})]
-            matches = [r for r in matches if r["arguments"] == args]
-            if len(matches) != 1 or matches[0]["status"] not in TERMINAL:
-                raise ValueError("source_not_complete_or_ambiguous_receipt") from None
-            run = matches[0]
-        else:
-            budget_id = extraction_work_id(selected, request_kind="automatic", intent_id="automatic")
-            run = load_run(processed, "inc-run-" + budget_id.removeprefix("work-"))
+        if selection:
+            run = load_run(processed, explicit_run_id(source, session_id, selection))
             if run is not None and run["arguments"] != args:
                 raise ValueError("incremental_run_arguments_changed")
+        else:
+            try:
+                selected, _ = _window(service, source, session_id, turn_key(turn_id))
+            except (OSError, ValueError):
+                # Only a unique terminal receipt can stand in for cleaned source.
+                matches = [load_run(processed, key) for key in processed.get(KEY, {})]
+                matches = [r for r in matches if r["arguments"] == args]
+                if len(matches) != 1 or matches[0]["status"] not in TERMINAL:
+                    raise ValueError("source_not_complete_or_ambiguous_receipt") from None
+                run = matches[0]
+            else:
+                budget_id = extraction_work_id(selected, request_kind="automatic", intent_id="automatic")
+                run = load_run(processed, "inc-run-" + budget_id.removeprefix("work-"))
+                if run is not None and run["arguments"] != args:
+                    raise ValueError("incremental_run_arguments_changed")
         if run is not None and run["status"] == "retryable" and not recover:
             return _receipt(public_result(run))
         stored_commit = run is not None and run["commit_work_id"] in processed.get("incremental_commits", {})
@@ -79,5 +89,24 @@ def process_incremental(service: Any, *, source: str, session_id: str, turn_id: 
     else:
         result = run_incremental(service, source=source, session_id=session_id, turn_id=turn_id,
                                  scope=scope, priority_memory_ids=args["priority_memory_ids"],
-                                 candidate_limit=candidate_limit, backend=backend)
+                                 candidate_limit=candidate_limit, backend=backend,
+                                 selection=selection, retention_request=retention_request)
     return _receipt(result)
+
+
+def remember_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
+                         intent_id: str, selected_source_refs: list[str], retention_request: str,
+                         scope: Any = None, priority_memory_ids=(), candidate_limit: int = 12,
+                         model: Any = None, router: Any = None, recover: bool = False) -> dict[str, Any]:
+    """Explicit retention of selected captured content, using the canonical runner.
+
+    The trusted caller supplies the user's actual request, not inferred consent.
+    Selection is an upper bound: a request such as 'remember the second point'
+    is passed to the same model, not expanded to every assertion in its message.
+    """
+    from .incremental_selection import bind_selection
+    selection, request = bind_selection(intent_id, selected_source_refs, retention_request)
+    return process_incremental(service, source=source, session_id=session_id, turn_id=turn_id,
+                               scope=scope, priority_memory_ids=priority_memory_ids,
+                               candidate_limit=candidate_limit, model=model, router=router,
+                               recover=recover, selection=selection, retention_request=request)

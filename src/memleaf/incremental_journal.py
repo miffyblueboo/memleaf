@@ -54,6 +54,11 @@ def load_work(processed: dict[str, Any], work_id: str) -> dict[str, Any] | None:
             or type(work.get("receipt_settled")) is not bool
             or not isinstance(work.get("index_status"), str) or work["index_status"] not in {"dirty", "current"}):
         raise ValueError("invalid_incremental_work")
+    from .incremental_selection import validate_selection
+    selection = validate_selection(work["binding"].get("arguments", {}).get("selection"))
+    kind = work.get("request_kind", "automatic")
+    if not isinstance(kind, str) or kind not in {"automatic", "explicit_remember"} or (kind == "explicit_remember") != bool(selection):
+        raise ValueError("invalid_incremental_intent")
     if work.get("native_guard") is not None:
         from .incremental_native import validate_guard
         validate_guard(work["native_guard"])
@@ -132,6 +137,7 @@ def public_result(work: dict[str, Any]) -> dict[str, Any]:
     status = "recovery_required" if active or work["index_status"] != "current" or not work["receipt_settled"] else (
         "completed_with_unresolved" if unresolved else "completed")
     return {"work_id": work["work_id"], "intent_id": work["intent_id"], "execution_status": status,
+            "request_kind": work.get("request_kind", "automatic"),
             "coverage_status": "partial" if unresolved else "complete", "operations": operations,
             "counts": counts, "issues": work["issues"], "index_status": work["index_status"], "model_calls": 0,
             "native_comparison": work.get("native_comparison", {"status": "not_evaluated"}),
@@ -144,7 +150,9 @@ def owned_turn_keys(processed: dict[str, Any], source: str, session_id: str) -> 
         raise ValueError("invalid_incremental_ledger")
     from .incremental_run_state import owned_turns
     return owned_turns(processed, source, session_id) | {w["turn_key"] for key in works if (w := load_work(processed, key))["source"] == source
-            and w["session_id"] == session_id}
+            and w["session_id"] == session_id
+            and (w.get("request_kind", "automatic") == "automatic"
+                 or public_result(w)["execution_status"] == "recovery_required")}
 
 
 def referenced_turn_keys(processed: dict[str, Any], source: str, session_id: str,

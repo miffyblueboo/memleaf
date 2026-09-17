@@ -71,7 +71,8 @@ class PlanningSnapshot:
               writable: Mapping[str, bool] | None = None, request_kind: str = "automatic",
               allow_new_scopes: bool = False, context_complete: bool = True,
               native_targets: Mapping[str, dict[str, Any]] | None = None,
-              native_guard: dict[str, Any] | None = None) -> "PlanningSnapshot":
+              native_guard: dict[str, Any] | None = None,
+              retention_request: str | None = None) -> "PlanningSnapshot":
         if request_kind not in {"automatic", "explicit_remember"}:
             raise ValueError("invalid_request_kind")
         if type(allow_new_scopes) is not bool or type(context_complete) is not bool:
@@ -141,6 +142,11 @@ class PlanningSnapshot:
         state = {"protocol_version": PROTOCOL_VERSION, "evidence": evidence, "targets": target_values,
                  "scopes": scopes, "write_scopes": write_scopes, "request_kind": request_kind,
                  "allow_new_scopes": allow_new_scopes, "context_complete": context_complete}
+        if retention_request is not None:
+            from .incremental_selection import validate_request
+            if request_kind != "explicit_remember":
+                raise ValueError("unexpected_retention_request")
+            state["retention_request"] = validate_request(retention_request)
         if native_guard is not None:
             from .incremental_native import validate_guard
             validate_guard(native_guard)
@@ -185,6 +191,7 @@ class PlanningSnapshot:
             memories.append(fields)
         return {
             "protocol_version": PROTOCOL_VERSION, "request_kind": state["request_kind"],
+            **({"retention_request": state["retention_request"]} if "retention_request" in state else {}),
             "write_scopes": state["write_scopes"], "scopes": state["scopes"],
             "allow_new_scopes": state["allow_new_scopes"], "context_complete": state["context_complete"],
             "evidence": [{key: e[key] for key in ("ref", "use", "role", "text", "source_time", "source_sequence") if key in e}

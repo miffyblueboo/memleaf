@@ -43,8 +43,10 @@ def _window(service: Any, source: str, session_id: str, selected_key: str):
     return selected, digest([(t.turn_key, input_digest(t)) for t in relevant])
 
 
-def _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, allow_new_scopes):
+def _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, allow_new_scopes, selection=None):
     from .scope_state import normalize_scopes
+    from .incremental_selection import validate_selection
+    selection = validate_selection(selection)
     source, session_id = safe_component(source, "source"), safe_component(session_id, "session id")
     if not isinstance(turn_id, str) or not turn_id or len(turn_id) > 800:
         raise ValueError("invalid_turn_id")
@@ -59,7 +61,8 @@ def _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidat
         safe_component(identity, "memory id")
     return {"source": source, "session_id": session_id, "turn_id": turn_id,
             "scope": normalize_scopes(scope) if scope is not None else None,
-            "priority_memory_ids": priority, "candidate_limit": candidate_limit, "allow_new_scopes": False}
+            "priority_memory_ids": priority, "candidate_limit": candidate_limit, "allow_new_scopes": False,
+            **({"selection": selection} if selection else {})}
 
 
 def _freeze_operation(proposal: dict[str, Any], snapshot: Any, now: str, active: list[Memory]) -> dict[str, Any]:
@@ -123,6 +126,10 @@ def _source_valid(service, processed, work):
 
 
 def _settle_source(service, processed, work, *, source_valid):
+    if work.get("request_kind", "automatic") == "explicit_remember":
+        # This authorization only selected some material. Its own work receipt
+        # settles it; it never consumes the automatic turn or changes cleanup.
+        return
     now = utc_now()
     state = processed.setdefault("sessions", {}).setdefault(f'{work["source"]}/{work["session_id"]}', {})
     entries = state.setdefault("processed_turns", [])
@@ -234,12 +241,13 @@ def _check_run_guard(processed, guard):
 def apply_incremental(service: Any, *, response: str, expected_snapshot: str, intent_id: str,
                       source: str, session_id: str, turn_id: str, scope: Any = None,
                       priority_memory_ids=(), candidate_limit: int = 12, allow_new_scopes: bool = False,
-                      _run_guard: tuple[str, str] | None = None) -> dict[str, Any]:
+                      _run_guard: tuple[str, str] | None = None, selection=None,
+                      retention_request: str | None = None) -> dict[str, Any]:
     if not isinstance(intent_id, str) or not intent_id.strip() or len(intent_id) > 800 or any(c in intent_id for c in "\0\r\n"):
         raise ValueError("invalid_intent_id")
     if not isinstance(expected_snapshot, str) or len(expected_snapshot) != 64:
         raise ValueError("invalid_planning_snapshot")
-    args = _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, allow_new_scopes)
+    args = _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, allow_new_scopes, selection)
     if not isinstance(response, str) or len(response.encode("utf-8")) > 128 * 1024:
         raise ValueError("invalid_response_size")
     binding = {"arguments": args, "snapshot_id": expected_snapshot, "response_digest": digest(parse_strict_json(response))}
@@ -261,7 +269,7 @@ def apply_incremental(service: Any, *, response: str, expected_snapshot: str, in
             raise ValueError("legacy_processing_busy")
         if turn_identity_key(source, session_id, selected.turn_key) in processed.get("pending_turn_plans", {}):
             raise ValueError("legacy_pending_plan")
-        snapshot = _prepare_incremental_unlocked(service, **args)
+        snapshot = _prepare_incremental_unlocked(service, retention_request=retention_request, **args)
         if snapshot.snapshot_id != expected_snapshot:
             raise ValueError("stale_planning_snapshot")
         compiled = compile_incremental(response, snapshot)
@@ -269,6 +277,7 @@ def apply_incremental(service: Any, *, response: str, expected_snapshot: str, in
         active = [r.memory for r in service._read_memories_unlocked("knowledge")]
         operations = [_freeze_operation(op, snapshot, now, active) for op in compiled["operations"]]
         work = {"version": VERSION, "work_id": identity, "intent_id": intent_id, "binding": binding,
+                "request_kind": "explicit_remember" if selection else "automatic",
                 "source": source, "session_id": session_id, "turn_id": turn_id, "turn_key": selected.turn_key,
                 "turn_index": selected.turn_index, "source_digest": input_digest(selected), "source_window": window,
                 "evidence": [{k: e[k] for k in ("ref", "event_key", "use")} for e in snapshot.state()["evidence"]],

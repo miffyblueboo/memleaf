@@ -94,5 +94,5 @@ selection, same-mtime edits, revoked sharing, local/native ID collision, forbidd
 writes, same-call NO_CHANGE, partial local success, frozen recovery, real process
 exit, no re-dispatch and source-context cleanup. Native files are synthetic and
 all model responses are local substitutes. Real Hermes/Flash and native OS
-acceptance, selected-source explicit remember, limited partial repair/replan,
+acceptance, legacy remember routing, limited partial repair/replan,
 new-scope transactions and default routing are still separate work.

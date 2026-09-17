@@ -7,6 +7,7 @@ not submitted to another full semantic pass. No legacy planner fallback exists.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 import os
 import uuid
 from typing import Any
@@ -62,7 +63,7 @@ def _check_sources(service, processed, run):
     turn, window = _window(service, run["source"], run["session_id"], run["turn_key"])
     if window != run["source_window"] or input_digest(turn) != run["source_digest"]:
         raise ValueError("source_or_context_changed")
-    snapshot = _prepare_incremental_unlocked(service, **run["arguments"])
+    snapshot = _prepare_incremental_unlocked(service, retention_request=run.get("retention_request"), **run["arguments"])
     if snapshot.snapshot_id != run["snapshot_id"]:
         raise ValueError("stale_planning_snapshot")
     return snapshot
@@ -83,18 +84,30 @@ def _finish(service, processed, run, status, code=None):
 
 def run_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
                     backend: Any = None, scope: Any = None, priority_memory_ids=(),
-                    candidate_limit: int = 12) -> dict[str, Any]:
+                    candidate_limit: int = 12, selection=None,
+                    retention_request: str | None = None) -> dict[str, Any]:
     """Explicitly process one captured turn; default host routes are unchanged."""
-    args = _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, False)
+    from .incremental_selection import explicit_run_id, validate_request
+    args = _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, False, selection)
+    selection = args.get("selection")
+    if selection:
+        retention_request = validate_request(retention_request, selection)
     with service.vault.lock():
         processed = _read(service)
         if owner_live(processed):
             raise ValueError("incremental_model_busy")
         _guard_legacy(service, processed)
-        turn, window = _window(service, source, session_id, turn_key(turn_id))
-        budget_id = extraction_work_id(turn, request_kind="automatic", intent_id="automatic")
-        identity = "inc-run-" + budget_id.removeprefix("work-")
-        run = load_run(processed, identity)
+        run = load_run(processed, explicit_run_id(source, session_id, selection)) if selection else None
+        if run is not None and args != run["arguments"]:
+            raise ValueError("incremental_run_arguments_changed")
+        if run is None:
+            turn, window = _window(service, source, session_id, turn_key(turn_id))
+            budget_turn = (replace(turn, events=tuple(e for e in turn.events if e.event_key in selection["source_refs"]))
+                           if selection else turn)
+            budget_id = extraction_work_id(budget_turn, request_kind="explicit_remember" if selection else "automatic",
+                                           intent_id=selection["intent_id"] if selection else "automatic")
+            identity = explicit_run_id(source, session_id, selection) if selection else "inc-run-" + budget_id.removeprefix("work-")
+            run = load_run(processed, identity)
         if run is not None:
             if args != run["arguments"]:
                 raise ValueError("incremental_run_arguments_changed")
@@ -106,7 +119,7 @@ def run_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
             # Do not recapture an already consumed decision under a new pipeline.
             state = processed.get("sessions", {}).get(f"{source}/{session_id}", {})
             for entry in state.get("processed_turns", []):
-                if (entry.get("turn_key") == turn.turn_key
+                if (not selection and entry.get("turn_key") == turn.turn_key
                         and set(entry.get("event_keys", [])) == {e.event_key for e in turn.events}):
                     raise ValueError("source_already_processed")
             from .incremental_journal import KEY as COMMIT_KEY
@@ -117,7 +130,8 @@ def run_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
                 prior = load_work(processed, key)
                 if (prior["source"] == source and prior["session_id"] == session_id
                         and prior["turn_key"] == turn.turn_key
-                        and (prior["source_digest"] == input_digest(turn)
+                        and ((not selection and prior.get("request_kind", "automatic") == "automatic"
+                              and prior["source_digest"] == input_digest(turn))
                              or commit_result(prior)["execution_status"] == "recovery_required")):
                     raise ValueError("incremental_source_already_owned")
             for key in processed.get(RUN_KEY, {}):
@@ -125,7 +139,7 @@ def run_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
                 if (prior["source"] == source and prior["session_id"] == session_id
                         and prior["turn_key"] == turn.turn_key and prior["status"] not in TERMINAL):
                     raise ValueError("incremental_source_already_owned")
-            snapshot = _prepare_incremental_unlocked(service, **args)
+            snapshot = _prepare_incremental_unlocked(service, retention_request=retention_request, **args)
             request = {"system": INCREMENTAL_SYSTEM,
                        "user": json.dumps(snapshot.model_input(), ensure_ascii=False, separators=(",", ":"))}
             if sum(len(s.encode("utf-8")) for s in request.values()) + len(RETRY_SYSTEM.encode("utf-8")) > MAX_BYTES:
@@ -147,8 +161,11 @@ def run_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
                    "commit_intent": commit_intent,
                    "commit_work_id": "inc-" + digest([source, session_id, turn.turn_key, commit_intent]),
                    "attempts": [], "reserved_requests": 0, "budget_finalized": False}
+            if selection:
+                run.update(request_kind="explicit_remember", retention_request=retention_request,
+                           authorization_intent=selection["intent_id"])
             save_run(service, processed, run)
-    return resume_incremental_run(service, identity, backend=backend)
+    return resume_incremental_run(service, run["run_id"], backend=backend)
 
 
 def _owned(service, run_id, token):
@@ -199,7 +216,8 @@ def _drive(service, run_id, token, backend, calls):
                     result = resume_incremental(service, run["commit_work_id"], _run_guard=(run_id, token))
                 else:
                     result = apply_incremental(service, response=run["response"], expected_snapshot=run["snapshot_id"],
-                                               intent_id=run["commit_intent"], _run_guard=(run_id, token), **run["arguments"])
+                                               intent_id=run["commit_intent"], _run_guard=(run_id, token),
+                                               retention_request=run.get("retention_request"), **run["arguments"])
             except ValueError:
                 with service.vault.lock():
                     processed, run = _owned(service, run_id, token)
@@ -219,7 +237,8 @@ def _drive(service, run_id, token, backend, calls):
                 if _budget_count(service, run) < run["reserved_requests"]:
                     raise ExtractionWorkStateError("request budget lost committed consumption")
             ordinal = reserve_model_request(service.vault, work_id=run["budget_id"], turn_id=run["turn_budget_id"],
-                                            request_limit=2, legacy_turn_id=run["turn_budget_id"],
+                                            request_limit=2,
+                                            legacy_turn_id=(None if run.get("request_kind") == "explicit_remember" else run["turn_budget_id"]),
                                             legacy_source_unchanged=run["legacy_source_unchanged"])
         except ExtractionWorkStateError:
             with service.vault.lock():

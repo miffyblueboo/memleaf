@@ -388,6 +388,19 @@ class Memleaf:
 
         return Compactor(self).compact(model=model, router=router)
 
+    def remember_incremental(self, *, source: str, session_id: str, turn_id: str,
+                             intent_id: str, selected_source_refs: list[str], retention_request: str,
+                             scope: Any = None, priority_memory_ids: Iterable[str] = (),
+                             candidate_limit: int = 12, model: Any = None, router: Any = None,
+                             recover: bool = False) -> dict[str, Any]:
+        """Opt-in selected retention; does not consume the automatic source turn."""
+        from .incremental_runtime import remember_incremental
+        return remember_incremental(self, source=source, session_id=session_id, turn_id=turn_id,
+                                    intent_id=intent_id, selected_source_refs=selected_source_refs,
+                                    retention_request=retention_request, scope=scope,
+                                    priority_memory_ids=priority_memory_ids, candidate_limit=candidate_limit,
+                                    model=model, router=router, recover=recover)
+
     def process_incremental(self, *, source: str, session_id: str, turn_id: str,
                             scope: Any = None, priority_memory_ids: Iterable[str] = (),
                             candidate_limit: int = 12, model: Any = None, router: Any = None,

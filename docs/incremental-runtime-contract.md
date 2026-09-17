@@ -40,3 +40,10 @@ Existing indefinite-live-process fencing is retained. Original 286 tests remain;
 14 facade integration tests cover shared identity, routing, explicit recovery,
 cleaned source receipts and saved-response recovery. Read-only native comparison
 is connected by G3d; default host-route activation remains staged. There is no version bump/release.
+
+## Selected explicit retention
+
+`remember_incremental()` now binds an actual user request to selected immutable
+captured source refs and the same canonical runner. It does not consume the whole
+automatic turn. See [selected-source retention](incremental-selected-retention.md)
+for identity, privacy, retry and staged legacy-route limits.

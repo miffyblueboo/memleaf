@@ -4,6 +4,8 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Add opt-in selected-source explicit retention on the canonical incremental runner: bind user intent and exact captured sources, keep unselected text as context, preserve automatic settlement, and recover with the shared two-request allowance. No default routing, prompt, model-setting or version change.
+
 - Connect configured native notes to opt-in incremental comparison using existing fragment identities, read-only NO_CHANGE targets and content/sharing guards. Keep native files and shadow maps untouched; disclose bounded selection and unavailable sources instead of assuming deduplication.
 - Protect pending incremental source context as well as its selected turn from cleanup, without claiming context as a new processing owner. No production-route, prompt, model-setting or version changes.
 

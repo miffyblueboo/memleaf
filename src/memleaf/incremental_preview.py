@@ -23,7 +23,9 @@ from .vault import safe_component
 
 def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str, turn_id: str,
                         scope: Any = None, priority_memory_ids: Iterable[str] = (),
-                        candidate_limit: int = 12, allow_new_scopes: bool = False) -> PlanningSnapshot:
+                        candidate_limit: int = 12, allow_new_scopes: bool = False,
+                        selection: dict[str, Any] | None = None,
+                        retention_request: str | None = None) -> PlanningSnapshot:
     """Build a bounded current-source/target snapshot under the existing lock.
 
     At this stage evidence units are complete visible messages, not per-sentence
@@ -78,6 +80,13 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
                 "message_revision": event.message_revision, "source_time": event.source_time,
                 "source_sequence": event.source_sequence,
             })
+    from .incremental_selection import validate_selection, validate_request, select_evidence
+    selection = validate_selection(selection)
+    if selection is not None:
+        retention_request = validate_request(retention_request, selection)
+        evidence = select_evidence(evidence, selection)
+    elif retention_request is not None:
+        raise ValueError("unexpected_retention_request")
     records = {}
     for file_path in sorted(service.vault.knowledge_path.rglob("*.md")):
         if file_path.is_symlink():
@@ -149,7 +158,9 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
     return PlanningSnapshot.build(evidence=evidence, targets=targets, scopes=scope_refs,
                                   write_scopes=boundary, writable=writable,
                                   allow_new_scopes=allow_new_scopes, native_targets=native_targets,
-                                  native_guard=native.guard if native.guard["sources"] else None)
+                                  native_guard=native.guard if native.guard["sources"] else None,
+                                  request_kind="explicit_remember" if selection else "automatic",
+                                  retention_request=retention_request)
 
 
 def prepare_incremental(service: Any, **arguments: Any) -> PlanningSnapshot:
@@ -175,6 +186,8 @@ def preview_incremental(service: Any, *, response: str | None = None,
     if len(payload.encode("utf-8")) + len(INCREMENTAL_SYSTEM.encode("utf-8")) > MAX_BYTES:
         raise ValueError("blocked_context")
     return {"mode": "preview", "snapshot_id": snapshot.snapshot_id,
+            "source_refs": [{"ref": e["ref"], "source_ref": e["event_key"], "role": e["role"]}
+                            for e in snapshot.state()["evidence"] if e["use"] == "new"],
             "request": {"system": INCREMENTAL_SYSTEM, "user": payload},
             "model_calls": 0, "memories_written": 0,
             "native_comparison": {"status": "available" if snapshot.state().get("native_guard") else "no_eligible_sources",

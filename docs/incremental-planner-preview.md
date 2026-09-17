@@ -85,8 +85,10 @@ arbitrary prose and status are semantically consistent.
 
 `request_kind=explicit_remember` grants retention for the supplied selected new
 input in the low-level snapshot builder, not authorization to invent facts or
-cross scope. The public captured-turn preview currently uses automatic intent;
-existing explicit remember integration is intentionally not changed yet.
+cross scope. The public captured-turn preview uses automatic intent and returns a source-ref
+map. The opt-in `remember_incremental()` wrapper selects from those immutable
+refs and carries the actual retention request to this same compiler. The legacy
+text `remember()` route is not switched.
 
 ## Evidence, time, lifecycle and scope
 
