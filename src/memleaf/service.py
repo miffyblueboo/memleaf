@@ -388,6 +388,17 @@ class Memleaf:
 
         return Compactor(self).compact(model=model, router=router)
 
+    def process_incremental(self, *, source: str, session_id: str, turn_id: str,
+                            scope: Any = None, priority_memory_ids: Iterable[str] = (),
+                            candidate_limit: int = 12, model: Any = None, router: Any = None,
+                            recover: bool = False) -> dict[str, Any]:
+        """Configured fixed-API facade on the existing incremental runner."""
+        from .incremental_runtime import process_incremental
+        return process_incremental(self, source=source, session_id=session_id, turn_id=turn_id,
+                                   scope=scope, priority_memory_ids=priority_memory_ids,
+                                   candidate_limit=candidate_limit, model=model, router=router,
+                                   recover=recover)
+
     def run_incremental(self, *, source: str, session_id: str, turn_id: str,
                         backend: Any = None, scope: Any = None,
                         priority_memory_ids=(), candidate_limit: int = 12) -> dict[str, Any]:

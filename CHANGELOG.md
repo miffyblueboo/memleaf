@@ -4,6 +4,8 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Reconcile the configured `process_incremental()` facade with the committed run-ID API and existing receipt schema; preserve one source-work budget, explicit transport recovery and cached-response recovery without model configuration.
+
 - Add an opt-in captured-turn incremental model runner on the shared G3b commit bridge. Persist request/response receipts, reuse source-work budgets with a two-dispatch ceiling, and recover saved responses without model regeneration. Do not switch production process/remember/MCP routes.
 - Fence concurrent legacy/incremental model workers without holding a file lock across provider calls; cancel in-flight receipts on Forget and preserve unresolved decisions without a second semantic review. Keep permanent-error and partial replanning boundaries explicit.
 

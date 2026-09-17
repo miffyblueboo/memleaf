@@ -146,6 +146,7 @@ def public_result(run: dict[str, Any], *, calls: int = 0) -> dict[str, Any]:
         "run_id": run["run_id"], "execution_status": run["status"],
         "code": run.get("code"), "commit_work_id": run["commit_work_id"],
         "model_calls_this_invocation": calls,
+        "model_calls_known": sum(a["outcome"] != "unknown" for a in run["attempts"]),
         "reserved_requests": run["reserved_requests"], "request_limit": 2,
         "budget_finalized": run.get("budget_finalized", False),
         "unattributed_reservations": max(0, run["reserved_requests"] - len(run["attempts"])),
