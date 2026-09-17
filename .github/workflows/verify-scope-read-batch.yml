@@ -1,0 +1,71 @@
+name: Verify scope batch (no release)
+on:
+  push:
+    branches: [fix/g3g-read-verify-20260917]
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --upgrade build 'setuptools>=77' wheel
+      - name: Verify exact reviewed scope patch and three distributions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, sys, tarfile, tempfile, urllib.request
+          P = pathlib.Path
+          root = P.cwd()
+          repo = os.environ['GITHUB_REPOSITORY']
+          assert repo == 'miffyblueboo/memleaf'
+          base = 'b7d4a67ae93627e7b1cea4c924625fc7014d024e'
+          expected = 'c26efd9e95c6bd03243606fecb1564465f2c7ca8'
+          patch = lzma.decompress(base64.b64decode(''.join((root / f'.review/g3g-{i}.b64').read_text().strip() for i in range(4)), validate=True))
+          assert hashlib.sha256(patch).hexdigest() == '34079f5dbbc8b145a232d41a3bfb73ec982d965778397a3fc4c751b96e776eae'
+          def cmd(*args, **kw):
+              return subprocess.run(args, check=True, **kw)
+          # Reset only this disposable Actions checkout, never a user's worktree.
+          cmd('git', 'reset', '--hard', base)
+          cmd('git', 'apply', '--index', '-', input=patch)
+          tree = subprocess.check_output(['git', 'write-tree'], text=True).strip()
+          assert tree == expected, tree
+          assert not (root / '.review').exists()
+          test_code = "import sys,unittest,memleaf; print('MODULE',memleaf.__file__); s=unittest.defaultTestLoader.discover(sys.argv[1],pattern='test_*.py'); assert s.countTestCases()==489,s.countTestCases(); r=unittest.TextTestRunner(verbosity=1).run(s); sys.exit(not r.wasSuccessful())"
+          def test(package, tests):
+              env = dict(os.environ, PYTHONPATH=str(package))
+              cmd(sys.executable, '-c', test_code, str(tests), cwd='/tmp', env=env)
+          test(root / 'src', root / 'tests_public')
+          cmd(sys.executable, '-m', 'build', '--no-isolation', '--wheel', '--sdist')
+          temp = P(tempfile.mkdtemp(prefix='memleaf-review-'))
+          with tarfile.open(next((root / 'dist').glob('*.tar.gz'))) as tf:
+              tf.extractall(temp, filter='data')
+          source = temp / 'memleaf-0.2.65'
+          test(source / 'src', source / 'tests_public')
+          target = temp / 'installed'
+          cmd(sys.executable, '-m', 'pip', 'install', '--no-deps', '--target', str(target), str(next((root/'dist').glob('*.whl'))))
+          test(target, source / 'tests_public')
+          for p in (root/'src/memleaf').rglob('*.py'):
+              rel = p.relative_to(root/'src')
+              assert p.read_bytes() == (source/'src'/rel).read_bytes() == (target/rel).read_bytes(), rel
+          entries = []
+          names = subprocess.check_output(['git','diff','--cached','--name-only',base],text=True).splitlines()
+          assert len(names) == 21, names
+          for name in names:
+              assert not name.startswith(('.github/', '.review/')), name
+              entries.append({'path':name,'mode':'100644','type':'blob','content':(root/name).read_text(encoding='utf-8')})
+          data = json.dumps({'base_tree':'6902a3d3234207ca973797d6772d549cb2787b93','tree':entries},ensure_ascii=False).encode()
+          request = urllib.request.Request(f'https://api.github.com/repos/{repo}/git/trees',data=data,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'},method='POST')
+          with urllib.request.urlopen(request, timeout=60) as response:
+              actual = json.load(response)['sha']
+          assert actual == expected, actual
+          print('VERIFIED_SCOPE_TREE', actual, '489 tests passed on source, sdist and installed wheel; no ref or release changed')
+          PY
