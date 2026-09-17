@@ -100,6 +100,12 @@ def build_parser() -> argparse.ArgumentParser:
                          help="allow remaining incremental transport recovery, not partial replan")
     process.add_argument("--dry-run", action="store_true", help="no source Vault writes; may call the configured model")
     process.add_argument("--json", action="store_true")
+    maintenance = commands.add_parser("maintain-state", help="preview lossless terminal control-state compaction")
+    maintenance.add_argument("--vault", type=Path, default=None)
+    maintenance.add_argument("--apply", action="store_true", help="apply only to --expected-revision from preview")
+    maintenance.add_argument("--expected-revision", default=None)
+    maintenance.add_argument("--max-records", type=int, default=64)
+    maintenance.add_argument("--json", action="store_true")
     host_event = commands.add_parser(
         "host-event",
         help="host lifecycle hook entry",
@@ -257,6 +263,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 from .service import Memleaf
                 output = Memleaf(existing_root(args.vault)).process(
                     source=args.source, session_id=args.session_id, scope=args.scope, pipeline=args.pipeline, recover=args.recover)
+        elif args.command == "maintain-state":
+            from .inspection import existing_root
+            from .service import Memleaf
+            from .runtime_retention import RuntimeRetentionError
+            # Do not initialize/migrate an inspected Vault, especially in preview.
+            service = Memleaf(Vault(existing_root(args.vault), create=False))
+            try:
+                output = service.compact_runtime_state(dry_run=not args.apply,
+                    expected_revision=args.expected_revision, max_records=args.max_records)
+            except RuntimeRetentionError as error:
+                print(json.dumps(error.result, ensure_ascii=False, sort_keys=True))
+                return 1
         elif args.command == "host-event":
             output = _host_event(args)
         else:  # pragma: no cover - argparse requires a known subcommand.
@@ -273,14 +291,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print("{}")
             return 0
         if getattr(args, "json", False):
-            print(json.dumps({"error": "operation failed" if args.command in {"audit", "process"}
+            print(json.dumps({"error": "operation failed" if args.command in {"audit", "process", "maintain-state"}
                               else "initialization failed", "stage": args.command}, ensure_ascii=False))
         else:
             action = getattr(args, "command", "init")
             print(f"memleaf {action} failed unexpectedly", file=sys.stderr)
         return 1
 
-    if args.command in {"audit", "process"}:
+    if args.command in {"audit", "process", "maintain-state"}:
         print(json.dumps(output, ensure_ascii=False, sort_keys=True, indent=None if args.json else 2))
         return 0
     if args.command == "host-event":

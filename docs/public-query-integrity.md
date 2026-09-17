@@ -139,7 +139,9 @@ never releases a request budget, expires a lease, removes a cancelled suppressor
 replays a source or starts a job. Reading malformed state remains an explicit
 health error; normal local factual queries report progress unknown and continue.
 
-Full terminal-state reclamation is **not implemented** here. A terminal/cancelled
+Time-window deletion of control decisions is **not implemented**. The explicit
+`maintain-state` path now provides lossless completed-receipt compaction, documented
+in `runtime-state-retention.md`; observing this inventory still never invokes it. A terminal/cancelled
 row can still suppress replay, and a partial parent may be needed by cumulative
 recovery. Deleting the oldest 128 records would reopen budgets or resurrect old
 inputs. The next lifecycle change needs a coherent retention-window/tombstone

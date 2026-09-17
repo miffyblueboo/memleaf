@@ -12,14 +12,19 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
 from .locking import atomic_write_json, read_json
 from .extraction_budget import MAX_MODEL_REQUESTS
+from .validation import parse_strict_json
 
 
 _VERSION = 1
+_RETIRED_VERSION = 2
+_MAX_RETIRED_WORKS = 4096
+_MAX_BUDGET_BYTES = 8 * 1024 * 1024
 _PROCESS_JOB_VERSION = 1
 _MAX_WORKS = 128
 _MAX_TURNS_PER_WORK = 64
@@ -100,22 +105,29 @@ def _normalize_turn_state(value: Any) -> dict[str, Any]:
 
 def _read_budget_state_unlocked(vault: Any) -> dict[str, Any]:
     path = _budget_path(vault)
-    if not path.exists():
+    if not path.exists() and not path.is_symlink():
         return _empty_state()
     if path.is_symlink() or not path.is_file():
         raise ExtractionWorkStateError("unsafe extraction request budget state")
     try:
-        value = read_json(path)
+        with path.open("rb") as stream:
+            raw = stream.read(_MAX_BUDGET_BYTES + 1)
+        if len(raw) > _MAX_BUDGET_BYTES:
+            raise ValueError("extraction budget state too large")
+        value = parse_strict_json(raw.decode("utf-8"))
     except (OSError, UnicodeError, TypeError, ValueError) as error:
         # Do not clear/recreate damaged authorization/retry state: that would
         # silently reopen the provider request budget after corruption.
         raise ExtractionWorkStateError("cannot read extraction request budget state") from error
-    if not isinstance(value, Mapping) or value.get("version") != _VERSION:
+    if (not isinstance(value, Mapping) or type(value.get("version")) is not int
+            or value["version"] not in {_VERSION, _RETIRED_VERSION}):
         raise ExtractionWorkStateError("invalid extraction request budget state")
     works = value.get("works")
     order = value.get("order")
     if not isinstance(works, Mapping) or not isinstance(order, list):
         raise ExtractionWorkStateError("invalid extraction request budget state")
+    if len(works) > _MAX_WORKS + _MAX_RETIRED_WORKS:
+        raise ExtractionWorkStateError("extraction request budget state exceeds bound")
     normalized_works: dict[str, dict[str, Any]] = {}
     for work_id, raw in works.items():
         if not _valid_identifier(work_id, maximum=200) or not isinstance(raw, Mapping):
@@ -128,16 +140,28 @@ def _read_budget_state_unlocked(vault: Any) -> dict[str, Any]:
             if not _valid_identifier(turn_id, maximum=800):
                 raise ExtractionWorkStateError("invalid extraction request budget turn id")
             normalized_turns[turn_id] = _normalize_turn_state(turn_state)
-        normalized_works[work_id] = {"turns": normalized_turns}
+        retired = raw.get("retired", False)
+        if (type(retired) is not bool or ("retired" in raw and value["version"] != _RETIRED_VERSION)
+                or (retired and (not normalized_turns or any(not t["completed"] for t in normalized_turns.values())))):
+            raise ExtractionWorkStateError("invalid retired extraction budget")
+        normalized_works[work_id] = {"turns": normalized_turns, **({"retired": True} if retired else {})}
     normalized_order = [
         item for item in order
         if _valid_identifier(item, maximum=200) and item in normalized_works
     ]
     if len(normalized_order) != len(set(normalized_order)) or set(normalized_order) != set(normalized_works):
         raise ExtractionWorkStateError("invalid extraction request budget order")
-    if len(normalized_works) > _MAX_WORKS:
+    retired_count = sum(w.get("retired", False) for w in normalized_works.values())
+    if len(normalized_works) - retired_count > _MAX_WORKS or retired_count > _MAX_RETIRED_WORKS:
         raise ExtractionWorkStateError("extraction request budget state exceeds bound")
-    return {"version": _VERSION, "works": normalized_works, "order": normalized_order}
+    return {"version": value["version"], "works": normalized_works, "order": normalized_order}
+
+
+def _save_budget_state_unlocked(vault: Any, state: dict[str, Any]) -> None:
+    encoded = (json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True, separators=(",", ": ")) + "\n").encode("utf-8")
+    if len(encoded) > _MAX_BUDGET_BYTES:
+        raise ExtractionWorkStateError("extraction request budget state exceeds byte bound")
+    atomic_write_json(_budget_path(vault), state, mode=0o600)
 
 
 def _work_unlocked(state: dict[str, Any], *, work_id: str) -> dict[str, Any]:
@@ -148,25 +172,18 @@ def _work_unlocked(state: dict[str, Any], *, work_id: str) -> dict[str, Any]:
         if not isinstance(work, dict) or not isinstance(work.get("turns"), dict):
             raise ExtractionWorkStateError("invalid extraction request budget work")
         return work
-    if len(works) >= _MAX_WORKS:
-        oldest = next(
-            (
-                item
-                for item in order
-                if item != work_id
-                and isinstance(works.get(item), Mapping)
-                and isinstance(works[item].get("turns"), Mapping)
-                and all(
-                    isinstance(turn, Mapping) and turn.get("completed") is True
-                    for turn in works[item]["turns"].values()
-                )
-            ),
-            None,
-        )
-        if oldest is None:
+    if sum(not row.get("retired", False) for row in works.values()) >= _MAX_WORKS:
+        # The previous implementation deleted a completed row here, permitting
+        # that exact work to reserve again. Retain its counts instead. Only
+        # source-scoped work IDs identify a closed immutable set of turns;
+        # old job IDs may still acquire another turn and must not be guessed.
+        oldest = next((key for key in order if re.fullmatch(r"work-[0-9a-f]{64}", key)
+                       and not works[key].get("retired") and works[key]["turns"]
+                       and all(t["completed"] for t in works[key]["turns"].values())), None)
+        if oldest is None or sum(w.get("retired", False) for w in works.values()) >= _MAX_RETIRED_WORKS:
             raise ExtractionWorkStateError("extraction request budget state is full")
-        works.pop(oldest, None)
-        order.remove(oldest)
+        works[oldest]["retired"] = True
+        state["version"] = _RETIRED_VERSION
     work = {"turns": {}}
     works[work_id] = work
     order.append(work_id)
@@ -304,6 +321,10 @@ def reserve_model_request(
                     state["order"].remove(old_id)
         work = _work_unlocked(state, work_id=work_id)
         turns = work["turns"]
+        if work.get("retired"):
+            if migrated:
+                raise ExtractionWorkStateError("retired extraction budget requires migration")
+            return None
         if migrated:
             if turn_id in turns:
                 migrated.append(_normalize_turn_state(turns[turn_id]))
@@ -314,7 +335,7 @@ def reserve_model_request(
                 "completed": any(row["completed"] for row in migrated),
             }
             # Persist even when the migrated count is already exhausted.
-            atomic_write_json(_budget_path(vault), state, mode=0o600)
+            _save_budget_state_unlocked(vault, state)
         turn_state = turns.get(turn_id)
         if turn_state is None:
             if len(turns) >= _MAX_TURNS_PER_WORK:
@@ -339,7 +360,7 @@ def reserve_model_request(
             return None
         ordinal = count + 1
         turn_state["requests"] = ordinal
-        atomic_write_json(_budget_path(vault), state, mode=0o600)
+        _save_budget_state_unlocked(vault, state)
         return ordinal
 
 
@@ -355,9 +376,11 @@ def complete_turn_budget(vault: Any, *, work_id: str, turn_id: str) -> bool:
             if not isinstance(work, dict) or turn_id not in work.get("turns", {}):
                 return False
             turn_state = _normalize_turn_state(work["turns"][turn_id])
+            if turn_state["completed"]:
+                return True
             turn_state["completed"] = True
             work["turns"][turn_id] = turn_state
-            atomic_write_json(_budget_path(vault), state, mode=0o600)
+            _save_budget_state_unlocked(vault, state)
             return True
     except (OSError, UnicodeError, TypeError, ValueError, ExtractionWorkStateError):
         # Permanent memory is already committed at this point.  Cleanup of a

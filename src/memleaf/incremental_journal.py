@@ -12,9 +12,11 @@ from typing import Any
 from .locking import atomic_write_json
 from .process_common import _read_processed
 from .validation import parse_strict_json
+from .receipt_codec import decode_receipt, encode_receipt, is_compact, ledger_usage
 
 KEY = "incremental_commits"
 VERSION = 2
+COMPACT_VERSION = 3
 SUPPORTED_VERSIONS = {1, VERSION}
 MAX_WORK_BYTES = 8 * 1024 * 1024
 MAX_LEDGER_BYTES = 16 * 1024 * 1024
@@ -33,9 +35,13 @@ def load_work(processed: dict[str, Any], work_id: str) -> dict[str, Any] | None:
     works = processed.get(KEY, {})
     if not isinstance(works, dict):
         raise ValueError("invalid_incremental_ledger")
+    ledger_usage(works, compact_version=COMPACT_VERSION)
     wrapper = works.get(work_id)
     if wrapper is None:
         return None
+    compact = is_compact(wrapper, COMPACT_VERSION)
+    if compact:
+        wrapper = decode_receipt(wrapper, version=COMPACT_VERSION, maximum=MAX_WORK_BYTES, payload_versions=SUPPORTED_VERSIONS)
     if (not isinstance(wrapper, dict) or type(wrapper.get("version")) is not int
             or wrapper["version"] not in SUPPORTED_VERSIONS or not isinstance(wrapper.get("payload"), str)):
         raise ValueError("unsupported_incremental_journal")
@@ -111,6 +117,9 @@ def load_work(processed: dict[str, Any], work_id: str) -> dict[str, Any] | None:
         from .incremental_scopes import validate_registration
         validate_registration(op, work.get("scope_guard"))
         ids.add(op["operation_id"])
+    if compact and (not work["receipt_settled"] or work["index_status"] != "current"
+            or any(op["state"] not in TERMINAL or "before" in op or "after" in op for op in work["operations"])):
+        raise ValueError("compact_work_not_sealed")
     return work
 
 
@@ -122,8 +131,12 @@ def save_work(service: Any, processed: dict[str, Any], work: dict[str, Any]) -> 
     works = processed.setdefault(KEY, {})
     if not isinstance(works, dict):
         raise ValueError("invalid_incremental_ledger")
+    previous = works.get(work["work_id"])
     works[work["work_id"]] = {"version": work["version"], "payload": payload,
                               "checksum": hashlib.sha256(payload.encode("utf-8")).hexdigest()}
+    if is_compact(previous, COMPACT_VERSION):
+        works[work["work_id"]] = encode_receipt(works[work["work_id"]], version=COMPACT_VERSION)
+    ledger_usage(works, compact_version=COMPACT_VERSION)
     if len(canonical(works).encode("utf-8")) > MAX_LEDGER_BYTES:
         raise ValueError("incremental_ledger_full")
     load_work(processed, work["work_id"])

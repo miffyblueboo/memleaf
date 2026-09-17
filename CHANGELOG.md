@@ -4,6 +4,9 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Add explicit, preview-first lossless terminal control-state compaction. Seal only proven completed run/commit receipts, preserve their exact decisions and cancellation behavior, and release active slots without deleting authorization. Keep bounded historical receipts readable through versioned, size-limited encoding; leave unresolved work and source/permission state intact.
+- Retain completed source-work budget counts under capacity pressure instead of evicting them and reopening the same work. Preserve legacy job ambiguity and independent new authorization; bound retired counters and reject damaged or oversized state. Default extraction routes, main prompt and package version stay unchanged.
+
 - Make public query completeness and Vault-wide pending progress explicit. Isolate malformed/duplicate records, use current Markdown for candidate lookup, freeze Todo query clocks across pages, and expose a read-only state-retention capacity inventory. No state collection, model calls, prompt changes or default pipeline activation.
 
 - Add opt-in incremental routing to existing text remember and MCP remember, using one typed user source and the shared selected-retention runner. Preserve caller policy, stable intent, source time, scope, cleanup isolation and zero-call recovery; retain legacy defaults.

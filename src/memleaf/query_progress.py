@@ -14,7 +14,8 @@ from collections import Counter
 from .inbox import parse_inbox_text, _event_metadata
 from .index import EVENT_V2_BLOCK
 from .incremental_journal import KEY as COMMIT_KEY, load_work, public_result, resolved_parent_ids
-from .incremental_run_state import KEY as RUN_KEY, MAX_RUNS, TERMINAL, load_run, owner_live
+from .incremental_run_state import KEY as RUN_KEY, MAX_RUNS, COMPACT_VERSION, TERMINAL, load_run, owner_live
+from .receipt_codec import ledger_usage, MAX_COMPACT_RECEIPTS
 from .process_common import _read_processed
 from .recording_policy import recording_allowed
 from .query_scan import markdown_paths, MAX_FILE_BYTES, MAX_TOTAL_BYTES
@@ -136,10 +137,14 @@ def retention_inventory(vault) -> dict:
     statuses = Counter(r["status"] for r in runs)
     if before != _control_stamp(vault.processed_state_path):
         raise ValueError("control_state_changed")
+    usage = ledger_usage(state.get(RUN_KEY, {}), compact_version=COMPACT_VERSION)
     return {"read_only": True, "collection_authorized": False,
+            "full_runs": usage["full"], "compact_runs": usage["compact"],
+            "compact_run_limit": MAX_COMPACT_RECEIPTS,
+            "compaction_available": True, "automatic_collection": False,
             "retained_runs": len(runs), "run_limit": MAX_RUNS,
-            "remaining_run_slots": max(0, MAX_RUNS - len(runs)),
-            "capacity_status": "full" if len(runs) >= MAX_RUNS else "available",
+            "remaining_run_slots": max(0, MAX_RUNS - usage["full"]),
+            "capacity_status": "full" if usage["full"] >= MAX_RUNS else "available",
             "retained_commits": len(works), "retained_by_status": dict(sorted(statuses.items())),
             "pending_commits": sum(public_result(w)["execution_status"] == "recovery_required" for w in works),
             "owner_live": owner_live(state),

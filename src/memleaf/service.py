@@ -319,6 +319,14 @@ class Memleaf:
                 "linked": True,
             }
 
+    def compact_runtime_state(self, *, dry_run: bool = True,
+                              expected_revision: str | None = None,
+                              max_records: int = 64) -> dict[str, Any]:
+        """Preview or explicitly compact proven terminal control receipts."""
+        from .runtime_retention import compact_runtime_state
+        return compact_runtime_state(self, dry_run=dry_run,
+                                     expected_revision=expected_revision, max_records=max_records)
+
     def process(
         self,
         *,

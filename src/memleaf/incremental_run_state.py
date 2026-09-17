@@ -14,10 +14,12 @@ from typing import Any
 from .incremental_journal import canonical, digest
 from .locking import atomic_write_json
 from .validation import parse_strict_json
+from .receipt_codec import decode_receipt, encode_receipt, is_compact, ledger_usage
 
 KEY = "incremental_runs"
 OWNER = "incremental_run_owner"
 VERSION = 1
+COMPACT_VERSION = 2
 MAX_RUNS = 128
 MAX_RUN_BYTES = 1024 * 1024
 MAX_LEDGER_BYTES = 16 * 1024 * 1024
@@ -34,11 +36,14 @@ def load_run(processed: dict[str, Any], run_id: str) -> dict[str, Any] | None:
     if not valid_run_id(run_id):
         raise ValueError("invalid_incremental_run_id")
     runs = processed.get(KEY, {})
-    if not isinstance(runs, dict) or len(runs) > MAX_RUNS:
+    if not isinstance(runs, dict) or ledger_usage(runs, compact_version=COMPACT_VERSION)["full"] > MAX_RUNS:
         raise ValueError("invalid_incremental_runs")
     wrapper = runs.get(run_id)
     if wrapper is None:
         return None
+    compact = is_compact(wrapper, COMPACT_VERSION)
+    if compact:
+        wrapper = decode_receipt(wrapper, version=COMPACT_VERSION, maximum=MAX_RUN_BYTES, payload_versions={VERSION})
     if (not isinstance(wrapper, dict) or type(wrapper.get("version")) is not int
             or wrapper["version"] != VERSION or not isinstance(wrapper.get("payload"), str)):
         raise ValueError("unsupported_incremental_run")
@@ -89,6 +94,9 @@ def load_run(processed: dict[str, Any], run_id: str) -> dict[str, Any] | None:
         raise ValueError("invalid_incremental_response")
     from .incremental_recovery import validate_recovery
     validate_recovery(run)
+    if compact and (run["status"] not in TERMINAL or any(k in run for k in
+            ("request", "response", "retention_request", "recovery_seed", "partial_basis"))):
+        raise ValueError("compact_run_not_sealed")
     return run
 
 
@@ -99,10 +107,14 @@ def save_run(service: Any, processed: dict[str, Any], run: dict[str, Any]) -> No
     runs = processed.setdefault(KEY, {})
     if not isinstance(runs, dict):
         raise ValueError("invalid_incremental_runs")
-    if run["run_id"] not in runs and len(runs) >= MAX_RUNS:
+    previous = runs.get(run["run_id"])
+    if previous is None and ledger_usage(runs, compact_version=COMPACT_VERSION)["full"] >= MAX_RUNS:
         raise ValueError("incremental_runs_full")
     runs[run["run_id"]] = {"version": VERSION, "payload": payload,
                            "checksum": hashlib.sha256(payload.encode("utf-8")).hexdigest()}
+    if is_compact(previous, COMPACT_VERSION):
+        runs[run["run_id"]] = encode_receipt(runs[run["run_id"]], version=COMPACT_VERSION)
+    ledger_usage(runs, compact_version=COMPACT_VERSION)
     if len(canonical(runs).encode("utf-8")) > MAX_LEDGER_BYTES:
         raise ValueError("incremental_runs_full")
     load_run(processed, run["run_id"])
