@@ -9,9 +9,9 @@ facades on that same runner, budget and commit journal.
 The default is still `legacy`. This is an integration for isolated evaluation,
 not live Flash/Hermes acceptance, a release, or permission to change a production
 Vault. No existing config, memory, model route or version is automatically migrated.
-The existing text `remember()` is not rerouted in this increment. Selected-source
-explicit retention already uses the shared incremental runner, but the old text
-API's authorization/selection mapping still needs its own compatibility work.
+Text `remember()` has a separate, default-legacy `process.remember_pipeline`
+selection; see `remember-incremental-route.md`. Switching automatic processing
+alone does not enable the text route. Both use the same incremental runner.
 
 ## Select the route, not a second pipeline
 

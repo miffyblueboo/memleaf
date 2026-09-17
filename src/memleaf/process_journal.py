@@ -310,6 +310,8 @@ class ProcessJournal:
     def _turns_by_session(self) -> dict[str, list[InboxTurn]]:
         grouped: dict[str, list[InboxTurn]] = {}
         for turn in parse_inbox(self.service.vault):
+            if any(getattr(event, "explicit_input", None) is not None for event in turn.events):
+                continue
             if not isinstance(turn.source, str) or not isinstance(turn.session_id, str):
                 continue
             grouped.setdefault(_session_key(turn.source, turn.session_id), []).append(turn)

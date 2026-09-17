@@ -2,8 +2,8 @@
 
 This increment connects a real, selected retention authorization to the existing
 incremental preview/compiler, configured backend, two-dispatch run ledger and
-shared commit/recovery. It does not enable a second dispatcher or writer. Default
-`remember()`, `process()`, Hermes hooks and MCP routing are not switched yet.
+shared commit/recovery. It does not enable a second dispatcher or writer. Defaults remain legacy. Existing process and text remember/MCP tools now offer
+explicit incremental selection; see their route integration contracts.
 
 ## Public contract
 

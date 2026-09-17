@@ -19,7 +19,7 @@ from .index import (
     extract_event_metadata,
     turn_key,
 )
-from .locking import atomic_write_json, atomic_write_text, read_json
+from .locking import atomic_write_json, atomic_write_text
 from .models import CaptureResult
 from .redaction import redact_text
 from .turn_plan import turn_identity_key
@@ -88,24 +88,11 @@ def _event_id(source: str, session_id: str, turn_id: str, role: str, event_id: O
     return f"{source}/{session_id}/{turn_id}/{role}"
 
 
-def _empty_processed() -> dict:
-    return {"version": 1, "event_keys": [], "events": {}, "sessions": {}}
-
-
 def _read_processed(path: Path) -> dict:
-    if not path.exists() or path.is_symlink():
-        return _empty_processed()
-    try:
-        value = read_json(path)
-    except (OSError, ValueError, TypeError):
-        return _empty_processed()
-    if not isinstance(value, dict):
-        return _empty_processed()
-    value.setdefault("version", 1)
-    value.setdefault("event_keys", [])
-    value.setdefault("events", {})
-    value.setdefault("sessions", {})
-    return value
+    # Capture and execution share the same corruption policy: neither may erase
+    # recording decisions or request consumption by treating bad state as empty.
+    from .process_common import _read_processed as read_processed
+    return read_processed(path)
 
 
 def _known_event_keys(vault: Vault, processed: dict) -> set[str]:
@@ -211,6 +198,7 @@ def _append_event(
     captured_at: str,
     final: bool | None,
     tool_evidence: list[dict[str, str]] | None = None,
+    explicit_input: dict[str, Any] | None = None,
 ) -> str:
     if not existing:
         existing = _new_session_text(source, session_id, captured_at)
@@ -242,6 +230,8 @@ def _append_event(
         metadata["source_time"] = source_time
     if final is not None:
         metadata["final"] = final
+    if explicit_input is not None:
+        metadata["explicit_input"] = explicit_input
     if tool_evidence:
         metadata["tool_evidence"] = [dict(item) for item in tool_evidence]
     metadata_line = json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -366,6 +356,9 @@ _IMMUTABLE_EVENT_FIELDS = (
 
 def _payload_digest(metadata: Mapping[str, Any], content: str) -> str:
     value = {field: metadata.get(field) for field in _IMMUTABLE_EVENT_FIELDS}
+    if metadata.get("explicit_input") is not None:
+        from .explicit_text_source import validate_origin
+        value["explicit_input"] = validate_origin(metadata["explicit_input"])
     value["content"] = content.rstrip("\n")
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
                                     separators=(",", ":")).encode("utf-8")).hexdigest()
@@ -421,7 +414,7 @@ def recover_capture_receipts_unlocked(vault: Vault, processed: dict, path: Path)
             turn_key_value=metadata["turn_key"], turn_index=metadata["turn_index"],
             message_id=metadata["message_id"], message_revision=metadata["message_revision"],
         )
-        entry = {field: metadata[field] for field in (*_IMMUTABLE_EVENT_FIELDS, "turn_id", "turn_index", "captured_at")
+        entry = {field: metadata[field] for field in (*_IMMUTABLE_EVENT_FIELDS, "turn_id", "turn_index", "captured_at", "explicit_input")
                  if field in metadata}
         entry.update(event_key=key, payload_digest=digest)
         events[key] = entry
@@ -453,6 +446,7 @@ def capture_event(
     previous_message_revision: Optional[str] = None,
     previous_message_id: Optional[str] = None,
     final: Optional[bool] = None,
+    _explicit_input: dict[str, Any] | None = None,
 ) -> CaptureResult:
     """Capture one visible event; all persisted text is redacted first."""
 
@@ -463,6 +457,10 @@ def capture_event(
     role = safe_component(str(role), "role")
     if not isinstance(content, str):
         raise TypeError("captured content must be text")
+    from .explicit_text_source import validate_origin
+    _explicit_input = validate_origin(_explicit_input)
+    if _explicit_input is not None and role != "user":
+        raise ValueError("invalid_explicit_text_role")
     message_id = _optional_identifier(message_id, "message id")
     message_revision = _optional_identifier(message_revision, "message revision")
     previous_message_revision = _optional_identifier(
@@ -492,6 +490,11 @@ def capture_event(
 
     with vault.lock():
         processed = _read_processed(vault.processed_state_path)
+        if _explicit_input is not None:
+            # An internal transport session cannot bypass the real caller policy.
+            from .recording_policy import recording_allowed
+            if not recording_allowed(processed, source, _explicit_input["session_id"], _explicit_input["turn_key"]):
+                raise ValueError("source_recording_revoked")
         from .recording_policy import apply_control
         allowed, changed = apply_control(processed, source=source, session_id=session_id,
             turn_key=resolved_turn_key, event_key=resolved_event_key, role=role, content=content, record=record)
@@ -523,6 +526,8 @@ def capture_event(
             "previous_message_revision": previous_message_revision, "source_sequence": source_sequence,
             "previous_message_id": previous_message_id, "source_time": source_time, "final": final,
         }
+        if _explicit_input is not None:
+            incoming["explicit_input"] = _explicit_input
         digest = _payload_digest(incoming, safe_content)
         existing_event = processed.get("events", {}).get(resolved_event_key)
         if isinstance(existing_event, Mapping) and existing_event.get("payload_digest"):
@@ -578,6 +583,7 @@ def capture_event(
             captured_at=captured_at,
             final=final,
             tool_evidence=safe_tool_evidence,
+            explicit_input=_explicit_input,
         )
         atomic_write_text(path, updated)
 

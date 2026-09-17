@@ -79,6 +79,11 @@ def load_work(processed: dict[str, Any], work_id: str) -> dict[str, Any] | None:
                 or not isinstance(e.get("use"), str) or e["use"] not in {"new", "context"}
                 or e["ref"] in refs):
             raise ValueError("invalid_incremental_evidence")
+        if e.get("explicit_input") is not None:
+            from .explicit_text_source import validate_origin
+            origin = validate_origin(e["explicit_input"])
+            if not selection or origin["intent_hash"] != digest(selection["intent_id"]):
+                raise ValueError("invalid_explicit_text_intent")
         refs.add(e["ref"])
     for op in work["operations"]:
         if (not isinstance(op, dict) or not isinstance(op.get("operation_id"), str)

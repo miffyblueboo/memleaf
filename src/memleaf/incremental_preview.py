@@ -56,8 +56,19 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
     path = service.vault._inside("inbox", source, f"{session_id}.md")
     turns = source_ordered_turns(parse_inbox_file(path))
     selected = next((t for t in turns if t.turn_key == captured_turn_selector(turn_id, captured_turn_key)), None)
-    if selected is None or not selected.complete:
+    from .explicit_text_source import explicit_turn, check_origin
+    if selected is None or not (selected.complete or explicit_turn(selected)):
         raise ValueError("source_not_complete")
+    if explicit_turn(selected):
+        from .incremental_journal import digest
+        if not selection or digest(selection.get("intent_id")) != selected.events[0].explicit_input["intent_hash"]:
+            raise ValueError("explicit_text_requires_matching_intent")
+        from .remember_route import _REQUEST
+        origin = selected.events[0].explicit_input
+        if (digest(normalize_scopes(scope) if scope is not None else None) != origin["scope_hash"]
+                or selection.get("request_hash") != digest(_REQUEST)):
+            raise ValueError("explicit_text_binding_changed")
+        check_origin(service, selected)
     selected_index = turns.index(selected)
     later = turns[selected_index + 1:]
     if any(not t.complete for t in later):
@@ -85,6 +96,7 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
                 "event_key": event.event_key, "message_id": event.message_id,
                 "message_revision": event.message_revision, "source_time": event.source_time,
                 "source_sequence": event.source_sequence,
+                **({"explicit_input": event.explicit_input} if event.explicit_input is not None else {}),
             })
     from .incremental_selection import validate_selection, validate_request, select_evidence
     selection = validate_selection(selection)

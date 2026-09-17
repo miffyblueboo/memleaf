@@ -378,9 +378,24 @@ class Memleaf:
         scopes: Any = None,
         model: Any = None,
         router: Any = None,
+        pipeline: str | None = None,
+        recover: bool = False,
+        source_time: str | None = None,
     ) -> dict[str, Any]:
-        """Explicitly remember text; worthiness is granted but summarize still runs."""
-
+        """Explicit text retention; choose a pipeline without resetting an intent."""
+        chosen = self.vault.config().get("process", {}).get("remember_pipeline", "legacy") if pipeline is None else pipeline
+        if not isinstance(chosen, str) or chosen not in {"legacy", "incremental"}:
+            raise ValueError("invalid_remember_pipeline")
+        if type(recover) is not bool:
+            raise ValueError("invalid_recover")
+        if chosen == "incremental":
+            from .remember_route import remember_text
+            return remember_text(self, content=content, text=text, source=source,
+                                 session_id=session_id, turn_id=turn_id, event_id=event_id,
+                                 intent_id=intent_id, scopes=scopes, model=model, router=router,
+                                 recover=recover, source_time=source_time)
+        if recover or source_time is not None:
+            raise ValueError("incremental_remember_required")
         from .processing import Processor
 
         return Processor(self).remember(

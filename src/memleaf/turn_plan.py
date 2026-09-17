@@ -114,6 +114,7 @@ def input_digest(turn: Any) -> str:
         "source_time": getattr(e, "source_time", None),
         "final": getattr(e, "final", None),
         "tool_evidence": list(getattr(e, "tool_evidence", ())),
+        **({"explicit_input": e.explicit_input} if getattr(e, "explicit_input", None) is not None else {}),
     } for e in turn.events]
     return _digest([turn.source, turn.session_id, turn.turn_key, events])
 
@@ -128,7 +129,7 @@ def _input_matches(value: Mapping[str, Any], turn: Any) -> bool:
     # for genuinely legacy events: never discard known revision/time/final
     # metadata to make a stale plan fit a new source envelope.
     fields = ("message_id", "message_revision", "previous_message_revision",
-              "source_sequence", "previous_message_id", "source_time", "final")
+              "source_sequence", "previous_message_id", "source_time", "final", "explicit_input")
     if version is not None or any(getattr(e, f, None) is not None for e in turn.events for f in fields):
         return False
     events = [{"event_key": e.event_key, "role": e.role, "content": e.content,

@@ -33,10 +33,16 @@ def reading_text(value: str) -> str:
 
 
 def source_basis(evidence: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: evidence[key] for key in (
+    value = {key: evidence[key] for key in (
         "source", "session_id", "event_key", "message_id", "message_revision",
         "source_time", "source_sequence",
     ) if key in evidence and evidence[key] is not None}
+    if evidence.get("explicit_input") is not None:
+        from .explicit_text_source import validate_origin
+        origin = validate_origin(evidence["explicit_input"])
+        value.update(input_kind="explicit_text", origin_session_id=origin["session_id"],
+                     origin_turn_key=origin["turn_key"])
+    return value
 
 
 def selected_calendar(text: str, evidence: Mapping[str, Any]) -> dict[str, Any]:

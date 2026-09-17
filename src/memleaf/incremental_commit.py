@@ -37,8 +37,10 @@ def _window(service: Any, source: str, session_id: str, selected_key: str):
     path = service.vault._inside("inbox", source, f"{session_id}.md")
     turns = source_ordered_turns(parse_inbox_file(path))
     selected = next((t for t in turns if t.turn_key == selected_key), None)
-    if selected is None or not selected.complete:
+    from .explicit_text_source import explicit_turn, check_origin
+    if selected is None or not (selected.complete or explicit_turn(selected)):
         raise ValueError("source_not_complete")
+    check_origin(service, selected)
     relevant = turns[max(0, turns.index(selected) - 1):]
     return selected, digest([(t.turn_key, input_digest(t)) for t in relevant])
 
@@ -111,8 +113,8 @@ def _freeze_operation(proposal: dict[str, Any], snapshot: Any, now: str, active:
         if same:
             op.update(action="NO_CHANGE", memory_id=same[0].memory_id, expected_revision=revision_digest(same[0]))
             return op
-    provenance = [{k: e[k] for k in ("source", "session_id", "event_key", "message_id", "message_revision", "source_time", "source_sequence")
-                   if e.get(k) is not None} for e in state["evidence"] if e["ref"] in op["evidence"]]
+    from .incremental_dates import source_basis
+    provenance = [source_basis(e) for e in state["evidence"] if e["ref"] in op["evidence"]]
     after.sources, source_meta = merge_sources(before.sources if before else [], provenance,
                                                extra=before.extra if before else {})
     after.extra.update(source_meta)
@@ -149,7 +151,8 @@ def _source_valid(service, processed, work):
 
 
 def _settle_source(service, processed, work, *, source_valid):
-    if work.get("request_kind", "automatic") == "explicit_remember":
+    if (work.get("request_kind", "automatic") == "explicit_remember"
+            and not any(e.get("explicit_input") for e in work["evidence"])):
         # This authorization only selected some material. Its own work receipt
         # settles it; it never consumes the automatic turn or changes cleanup.
         return
@@ -330,7 +333,9 @@ def apply_incremental(service: Any, *, response: str, expected_snapshot: str, in
                 repair_rows=(recovery_run["partial_recovery"]["repair_rows"]
                              if recovery_run["partial_recovery"]["mode"] == "repair" else None))
         operations = inherited + [_freeze_operation(op, snapshot, now, active) for op in proposals]
-        evidence = [{k: e[k] for k in ("ref", "event_key", "use")} for e in snapshot.state()["evidence"]]
+        evidence = [{**{k: e[k] for k in ("ref", "event_key", "use")},
+                     **({"explicit_input": e["explicit_input"]} if e.get("explicit_input") else {})}
+                    for e in snapshot.state()["evidence"]]
         if recovery_run is not None:
             # The compile view authorizes only unresolved new blocks. The source
             # receipt still accounts for the original complete selected set.

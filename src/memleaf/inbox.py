@@ -61,6 +61,7 @@ class InboxEvent:
     timestamp: Optional[str] = None
     tool_evidence: tuple[dict[str, str], ...] = ()
     legacy: bool = False
+    explicit_input: dict[str, Any] | None = None
 
     @property
     def processable(self) -> bool:
@@ -234,6 +235,8 @@ def parse_inbox_text(
         source_time = metadata.get("source_time")
         captured_at = metadata.get("captured_at")
         final = metadata.get("final")
+        from .explicit_text_source import validate_origin
+        explicit_input = validate_origin(metadata.get("explicit_input"))
         valid_v2 = (
             role in ("user", "assistant")
             and isinstance(display_turn_id, str)
@@ -275,6 +278,7 @@ def parse_inbox_text(
                     final=final if isinstance(final, bool) else None,
                     timestamp=source_time if isinstance(source_time, str) and source_time else None,
                     tool_evidence=_bounded_tool_evidence(metadata.get("tool_evidence")),
+                    explicit_input=explicit_input,
                     legacy=not groupable,
                 )
             )
@@ -301,6 +305,7 @@ def parse_inbox_text(
                 final=final if isinstance(final, bool) else None,
                 timestamp=source_time if isinstance(source_time, str) and source_time else None,
                 tool_evidence=_bounded_tool_evidence(metadata.get("tool_evidence")),
+                explicit_input=explicit_input,
             )
         )
 

@@ -13,7 +13,6 @@ from typing import Any, Iterable, Mapping, Optional
 from .admission import analyze_turn_evidence, read_only_turn
 from .inbox import InboxTurn
 from .llm import MODEL_ERROR_CODES, MODEL_VALIDATION_REASONS, ModelUnavailable
-from .locking import read_json
 from .models import Memory, utc_now
 from .retrieval import candidate_matches_query, normalize_term
 from .scope_state import project_scope_matches_text
@@ -516,21 +515,37 @@ def _empty_processed() -> dict[str, Any]:
 
 
 def _read_processed(path: Path) -> dict[str, Any]:
-    if path.is_symlink() or not path.exists():
+    """Read control state without converting damaged authority into a fresh Vault.
+
+    Absence is the historical first-use case. Existing invalid bytes, links and
+    unsupported shapes are not equivalent to absence; leave them for recovery.
+    Payload-specific checksums and versions remain the individual journal's job.
+    """
+    if path.is_symlink():
+        raise ValueError("invalid_processed_state")
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return _empty_processed()
     try:
-        value = read_json(path)
-    except (OSError, UnicodeError, TypeError, ValueError):
-        return _empty_processed()
+        value = parse_strict_json(raw)
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ValueError("invalid_processed_state") from error
     if not isinstance(value, dict):
-        return _empty_processed()
+        raise ValueError("invalid_processed_state")
     result = dict(value)
     result.setdefault("version", 1)
+    if type(result["version"]) is not int or result["version"] != 1:
+        raise ValueError("unsupported_processed_state")
     result.setdefault("event_keys", [])
     result.setdefault("events", {})
     result.setdefault("sessions", {})
-    if not isinstance(result.get("sessions"), dict):
-        result["sessions"] = {}
+    if (not isinstance(result["event_keys"], list)
+            or any(not isinstance(k, str) for k in result["event_keys"])
+            or any(not isinstance(result[k], dict) for k in ("events", "sessions"))
+            or any(not isinstance(row, dict) for name in ("events", "sessions")
+                   for row in result[name].values())):
+        raise ValueError("invalid_processed_state")
     return result
 
 
