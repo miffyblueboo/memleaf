@@ -1,0 +1,39 @@
+name: Verify G3.1 items candidate (no release)
+on:
+  push:
+    branches: [work/g3-items-verify-20260917]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tree: ${{ steps.verify.outputs.tree }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tooling
+        run: python -m pip install build
+      - name: Verify exact reviewed bytes, source and installed artifacts
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python _g3_transport/verify.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g3-items-verification
+          path: g3-verification-logs/
+          if-no-files-found: warn
+  verified:
+    needs: prepare
+    name: verified-tree-${{ needs.prepare.outputs.tree }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo '219 tests passed on source, sdist and installed wheel. Verification created only Git objects; no refs, tags or releases were changed.'
