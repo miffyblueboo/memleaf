@@ -38,7 +38,12 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
         raise ValueError("invalid_turn_id")
     if type(candidate_limit) is not int or not 1 <= candidate_limit <= 20:
         raise ValueError("invalid_candidate_limit")
+    from .incremental_scopes import registry_view, resolve_scope
+    registry, scope_guard, scope_aliases = registry_view(service.vault.config())
     boundary = normalize_scopes(scope) if scope is not None else None
+    if boundary is not None:
+        boundary = list(dict.fromkeys(resolve_scope(s, {k: k for k in registry}, scope_aliases) or s
+                                      for s in boundary))
     if isinstance(priority_memory_ids, (str, bytes)):
         raise ValueError("invalid_priority_ids")
     priority = list(dict.fromkeys(priority_memory_ids))
@@ -148,7 +153,7 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
                 if key not in seen:
                     chosen.append(candidate)
                     seen.add(key)
-    scopes = sorted({s for m in chosen for s in m.scopes} | set(boundary or []))
+    scopes = sorted({s for m in chosen for s in m.scopes} | set(boundary or []) | set(registry))
     scope_refs = {f"s{i}": s for i, s in enumerate(scopes, 1) if s not in {"global", "unscoped"}}
     targets = {f"m{i}": memory for i, memory in enumerate(chosen, 1)}
     writable = {ref: memory.memory_id not in native.bindings and
@@ -160,7 +165,8 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
                                   allow_new_scopes=allow_new_scopes, native_targets=native_targets,
                                   native_guard=native.guard if native.guard["sources"] else None,
                                   request_kind="explicit_remember" if selection else "automatic",
-                                  retention_request=retention_request)
+                                  retention_request=retention_request, scope_guard=scope_guard,
+                                  scope_aliases=scope_aliases)
 
 
 def prepare_incremental(service: Any, **arguments: Any) -> PlanningSnapshot:

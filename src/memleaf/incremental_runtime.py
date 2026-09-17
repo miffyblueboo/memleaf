@@ -42,7 +42,8 @@ def _receipt(result: dict[str, Any]) -> dict[str, Any]:
 def process_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
                         scope: Any = None, priority_memory_ids=(), candidate_limit: int = 12,
                         model: Any = None, router: Any = None, recover: bool = False,
-                        selection=None, retention_request: str | None = None) -> dict[str, Any]:
+                        selection=None, retention_request: str | None = None,
+                        allow_new_scopes: bool = False) -> dict[str, Any]:
     """Process a captured turn; retry transport failure only with recover=True.
 
     Saved responses and commit recovery need no configured model. The explicit
@@ -53,7 +54,7 @@ def process_incremental(service: Any, *, source: str, session_id: str, turn_id: 
     if model is not None and router is not None:
         raise ValueError("ambiguous_model_route")
     from .incremental_selection import explicit_run_id, validate_request
-    args = _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, False, selection)
+    args = _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, allow_new_scopes, selection)
     selection = args.get("selection")
     if selection:
         retention_request = validate_request(retention_request, selection)
@@ -90,14 +91,16 @@ def process_incremental(service: Any, *, source: str, session_id: str, turn_id: 
         result = run_incremental(service, source=source, session_id=session_id, turn_id=turn_id,
                                  scope=scope, priority_memory_ids=args["priority_memory_ids"],
                                  candidate_limit=candidate_limit, backend=backend,
-                                 selection=selection, retention_request=retention_request)
+                                 selection=selection, retention_request=retention_request,
+                                 allow_new_scopes=allow_new_scopes)
     return _receipt(result)
 
 
 def remember_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
                          intent_id: str, selected_source_refs: list[str], retention_request: str,
                          scope: Any = None, priority_memory_ids=(), candidate_limit: int = 12,
-                         model: Any = None, router: Any = None, recover: bool = False) -> dict[str, Any]:
+                         model: Any = None, router: Any = None, recover: bool = False,
+                         allow_new_scopes: bool = False) -> dict[str, Any]:
     """Explicit retention of selected captured content, using the canonical runner.
 
     The trusted caller supplies the user's actual request, not inferred consent.
@@ -109,4 +112,5 @@ def remember_incremental(service: Any, *, source: str, session_id: str, turn_id:
     return process_incremental(service, source=source, session_id=session_id, turn_id=turn_id,
                                scope=scope, priority_memory_ids=priority_memory_ids,
                                candidate_limit=candidate_limit, model=model, router=router,
-                               recover=recover, selection=selection, retention_request=request)
+                               recover=recover, selection=selection, retention_request=request,
+                               allow_new_scopes=allow_new_scopes)

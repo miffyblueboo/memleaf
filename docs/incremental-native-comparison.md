@@ -96,6 +96,10 @@ selection, same-mtime edits, revoked sharing, local/native ID collision, forbidd
 writes, same-call NO_CHANGE, partial local success, frozen recovery, real process
 exit, no re-dispatch and source-context cleanup. Native files are synthetic and
 all model responses are local substitutes. Real Hermes/Flash and native OS
-acceptance, legacy remember routing, new-scope transactions and default routing
+acceptance, legacy remember routing, generalized scope merging and default routing
 are still separate work. Limited explicit partial repair/replan is described in
 `incremental-partial-recovery.md`.
+
+G3g connects bounded scope registration to the same shared commit path; see
+`incremental-scope-registration.md`. Discovery is opt-in and never expands an
+explicit write boundary.

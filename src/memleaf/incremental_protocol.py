@@ -72,7 +72,8 @@ class PlanningSnapshot:
               allow_new_scopes: bool = False, context_complete: bool = True,
               native_targets: Mapping[str, dict[str, Any]] | None = None,
               native_guard: dict[str, Any] | None = None,
-              retention_request: str | None = None) -> "PlanningSnapshot":
+              retention_request: str | None = None, scope_guard: dict[str, Any] | None = None,
+              scope_aliases: Mapping[str, list[str]] | None = None) -> "PlanningSnapshot":
         if request_kind not in {"automatic", "explicit_remember"}:
             raise ValueError("invalid_request_kind")
         if type(allow_new_scopes) is not bool or type(context_complete) is not bool:
@@ -151,6 +152,16 @@ class PlanningSnapshot:
             from .incremental_native import validate_guard
             validate_guard(native_guard)
             state["native_guard"] = deepcopy(native_guard)
+        if scope_guard is not None:
+            from .incremental_scopes import validate_guard
+            validate_guard(scope_guard)
+            state["scope_guard"] = deepcopy(scope_guard)
+        if scope_aliases:
+            if (not isinstance(scope_aliases, Mapping) or set(scope_aliases) - set(scopes.values())
+                    or any(not isinstance(v, list) or any(not isinstance(a, str) or not a.strip() for a in v)
+                           for v in scope_aliases.values())):
+                raise ValueError("invalid_scope_aliases")
+            state["scope_aliases"] = deepcopy(dict(scope_aliases))
         payload = _json(state)
         if len(payload.encode("utf-8")) > MAX_BYTES:
             raise ValueError("blocked_context")
@@ -193,6 +204,8 @@ class PlanningSnapshot:
             "protocol_version": PROTOCOL_VERSION, "request_kind": state["request_kind"],
             **({"retention_request": state["retention_request"]} if "retention_request" in state else {}),
             "write_scopes": state["write_scopes"], "scopes": state["scopes"],
+            **({"scope_aliases": {reverse_scope[s]: a for s, a in state["scope_aliases"].items()}}
+               if state.get("scope_aliases") else {}),
             "allow_new_scopes": state["allow_new_scopes"], "context_complete": state["context_complete"],
             "evidence": [{key: e[key] for key in ("ref", "use", "role", "text", "source_time", "source_sequence") if key in e}
                          for e in state["evidence"]], "memories": memories,
@@ -218,6 +231,10 @@ def _scope(value: Any, state: Mapping[str, Any]) -> str:
         return state["scopes"][value]
     if value in {"global", "unscoped"}:
         return value
+    from .incremental_scopes import resolve_scope
+    existing = resolve_scope(value, state["scopes"], state.get("scope_aliases", {}))
+    if existing is not None:
+        return existing
     if not state["allow_new_scopes"] or not value.startswith("project:"):
         raise ValueError("invalid_scope")
     return validate_scope_key(value)

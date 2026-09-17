@@ -90,10 +90,11 @@ def _finish(service, processed, run, status, code=None):
 def run_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
                     backend: Any = None, scope: Any = None, priority_memory_ids=(),
                     candidate_limit: int = 12, selection=None,
-                    retention_request: str | None = None) -> dict[str, Any]:
+                    retention_request: str | None = None,
+                    allow_new_scopes: bool = False) -> dict[str, Any]:
     """Explicitly process one captured turn; default host routes are unchanged."""
     from .incremental_selection import explicit_run_id, validate_request
-    args = _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, False, selection)
+    args = _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidate_limit, allow_new_scopes, selection)
     selection = args.get("selection")
     if selection:
         retention_request = validate_request(retention_request, selection)

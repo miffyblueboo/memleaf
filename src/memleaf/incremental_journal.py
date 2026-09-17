@@ -14,7 +14,8 @@ from .process_common import _read_processed
 from .validation import parse_strict_json
 
 KEY = "incremental_commits"
-VERSION = 1
+VERSION = 2
+SUPPORTED_VERSIONS = {1, VERSION}
 MAX_WORK_BYTES = 8 * 1024 * 1024
 MAX_LEDGER_BYTES = 16 * 1024 * 1024
 TERMINAL = frozenset({"settled", "blocked", "cancelled", "deferred"})
@@ -36,7 +37,7 @@ def load_work(processed: dict[str, Any], work_id: str) -> dict[str, Any] | None:
     if wrapper is None:
         return None
     if (not isinstance(wrapper, dict) or type(wrapper.get("version")) is not int
-            or wrapper["version"] != VERSION or not isinstance(wrapper.get("payload"), str)):
+            or wrapper["version"] not in SUPPORTED_VERSIONS or not isinstance(wrapper.get("payload"), str)):
         raise ValueError("unsupported_incremental_journal")
     payload = wrapper["payload"]
     if (len(payload.encode("utf-8")) > MAX_WORK_BYTES
@@ -44,7 +45,7 @@ def load_work(processed: dict[str, Any], work_id: str) -> dict[str, Any] | None:
         raise ValueError("invalid_incremental_checksum")
     work = parse_strict_json(payload)
     if (not isinstance(work, dict) or work.get("work_id") != work_id
-            or type(work.get("version")) is not int or work["version"] != VERSION
+            or type(work.get("version")) is not int or work["version"] != wrapper["version"]
             or not isinstance(work.get("operations"), list) or not isinstance(work.get("issues"), list)
             or not isinstance(work.get("binding"), dict) or not isinstance(work.get("evidence"), list)):
         raise ValueError("invalid_incremental_work")
@@ -66,6 +67,11 @@ def load_work(processed: dict[str, Any], work_id: str) -> dict[str, Any] | None:
     if work.get("native_guard") is not None:
         from .incremental_native import validate_guard
         validate_guard(work["native_guard"])
+    if work["version"] == VERSION and work.get("scope_guard") is None:
+        raise ValueError("missing_scope_guard")
+    if work.get("scope_guard") is not None:
+        from .incremental_scopes import validate_guard
+        validate_guard(work["scope_guard"])
     refs, ids = set(), set()
     for e in work["evidence"]:
         if (not isinstance(e, dict) or not isinstance(e.get("ref"), str) or not e["ref"]
@@ -95,6 +101,10 @@ def load_work(processed: dict[str, Any], work_id: str) -> dict[str, Any] | None:
             if op["action"] != "NO_CHANGE" or any(k in op for k in ("before", "after")):
                 raise ValueError("native_target_must_be_read_only")
             validate_binding(op["native"], work.get("native_guard"), op["memory_id"])
+        if work["version"] == 1 and "scope_registration" in op:
+            raise ValueError("unsupported_scope_registration")
+        from .incremental_scopes import validate_registration
+        validate_registration(op, work.get("scope_guard"))
         ids.add(op["operation_id"])
     return work
 
@@ -107,7 +117,7 @@ def save_work(service: Any, processed: dict[str, Any], work: dict[str, Any]) -> 
     works = processed.setdefault(KEY, {})
     if not isinstance(works, dict):
         raise ValueError("invalid_incremental_ledger")
-    works[work["work_id"]] = {"version": VERSION, "payload": payload,
+    works[work["work_id"]] = {"version": work["version"], "payload": payload,
                               "checksum": hashlib.sha256(payload.encode("utf-8")).hexdigest()}
     if len(canonical(works).encode("utf-8")) > MAX_LEDGER_BYTES:
         raise ValueError("incremental_ledger_full")
@@ -118,6 +128,8 @@ def save_work(service: Any, processed: dict[str, Any], work: dict[str, Any]) -> 
 def strip_payload(op: dict[str, Any]) -> None:
     op.pop("before", None)
     op.pop("after", None)
+    if op.get("state") in {"blocked", "cancelled"} and "scope_registration" in op:
+        op["scope_registration"]["state"] = "cancelled"
 
 
 def public_result(work: dict[str, Any]) -> dict[str, Any]:
@@ -128,6 +140,10 @@ def public_result(work: dict[str, Any]) -> dict[str, Any]:
         operations.append({k: op[k] for k in ("operation_id", "action", "memory_id", "evidence", "state", "code") if k in op})
         if "native" in op:
             operations[-1]["native"] = True
+        if "scope_registration" in op:
+            operations[-1]["scope_registration"] = dict(op["scope_registration"])
+        if "scope_error" in op:
+            operations[-1]["scope_error"] = op["scope_error"]
         if op["state"] in {"applied", "settled"} and op["action"] in {"CREATE", "UPDATE"}:
             counts["applied"] += 1
         if op["state"] == "settled":

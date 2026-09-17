@@ -103,7 +103,10 @@ retrieval functions, with a round-robin budget across source messages. Search ca
 consider closed and retracted heads and cross-type/cross-scope expressions, while
 `writable` and the explicit write boundary separately constrain changes. Neither
 scope is guessed from cwd nor aliases merged by approximate spelling. Registry
-updates/new canonical scope creation are not committed by preview.
+updates/new canonical scope creation are not committed by preview. G3g binds
+the configured registry and declared aliases into this snapshot, then coordinates
+registration with accepted memory writes at the shared commit boundary. See
+`incremental-scope-registration.md`.
 
 The model selects a deadline phrase; Core checks its quoted source and converts
 only its calendar meaning. The source-local day, not UTC/capture/process date,

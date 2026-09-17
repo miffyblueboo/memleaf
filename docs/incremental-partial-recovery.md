@@ -135,6 +135,10 @@ new-context gating, old receipts, source/target/native revisions, same/new selec
 boundaries, scope denial, unchanged accepted IDs, timeout and exhausted allowance,
 write/index/ledger faults, native NO_CHANGE, Forget, concurrency and actual process
 exits before/after the second response. They use temporary Vaults and local model
-substitutes. Real Flash semantics, native Windows/macOS/Hermes acceptance, new-scope
-transactions, lifecycle GC, controlled migration and default routing are not
+substitutes. Real Flash semantics, native Windows/macOS/Hermes acceptance, default-route
+integration, lifecycle GC and controlled migration are not
 claimed complete by this batch.
+
+G3g connects bounded scope registration to the same shared commit path; see
+`incremental-scope-registration.md`. Discovery is opt-in and never expands an
+explicit write boundary.

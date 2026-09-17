@@ -31,6 +31,7 @@ def restore_snapshot(state: Any) -> PlanningSnapshot:
             native_guard=state.get("native_guard"), request_kind=state["request_kind"],
             retention_request=state.get("retention_request"),
             allow_new_scopes=state["allow_new_scopes"], context_complete=state["context_complete"],
+            scope_guard=state.get("scope_guard"), scope_aliases=state.get("scope_aliases"),
         )
     except (KeyError, TypeError) as error:
         raise ValueError("invalid_partial_snapshot") from error
@@ -167,7 +168,9 @@ def context_changed(original: PlanningSnapshot, current: PlanningSnapshot, work:
     old, new = original.state(), current.state()
     old_e = {e["event_key"]: {k: v for k, v in e.items() if k != "ref"} for e in old["evidence"]}
     new_e = {e["event_key"]: {k: v for k, v in e.items() if k != "ref"} for e in new["evidence"]}
-    if old_e != new_e or old.get("native_guard") != new.get("native_guard"):
+    from .incremental_scopes import guard_matches, applied_additions
+    if (old_e != new_e or old.get("native_guard") != new.get("native_guard")
+            or not guard_matches(new.get("scope_guard"), old.get("scope_guard"), applied_additions(work))):
         return True
     expected = {t["memory"]["memory_id"]: t["revision"] for t in old["targets"].values()}
     own_created = set()
@@ -184,8 +187,12 @@ def context_changed(original: PlanningSnapshot, current: PlanningSnapshot, work:
 def recovery_snapshot(original: PlanningSnapshot, current: PlanningSnapshot, work: dict[str, Any],
                       focus: set[str], *, mode: str) -> PlanningSnapshot:
     old, new = original.state(), current.state()
+    from .incremental_scopes import guard_matches, applied_additions
+    if mode == "repair" and not guard_matches(new.get("scope_guard"), old.get("scope_guard"), applied_additions(work)):
+        raise ValueError("partial_scope_context_changed")
     if (old["write_scopes"] != new["write_scopes"] or old["request_kind"] != new["request_kind"]
-            or old.get("retention_request") != new.get("retention_request")):
+            or old.get("retention_request") != new.get("retention_request")
+            or old["allow_new_scopes"] != new["allow_new_scopes"]):
         raise ValueError("partial_authorization_changed")
     # Pin the original reference-to-object bindings. Added context receives fresh
     # references; it never becomes a newly authorized assertion in this work.
@@ -244,7 +251,8 @@ def recovery_snapshot(original: PlanningSnapshot, current: PlanningSnapshot, wor
                                   write_scopes=old["write_scopes"], writable=writable,
                                   native_targets=natives, native_guard=new.get("native_guard"),
                                   request_kind=old["request_kind"], retention_request=old.get("retention_request"),
-                                  allow_new_scopes=False, context_complete=new["context_complete"])
+                                  allow_new_scopes=old["allow_new_scopes"], context_complete=new["context_complete"],
+                                  scope_guard=new.get("scope_guard"), scope_aliases=new.get("scope_aliases"))
 
 
 def new_revision(memory: Memory) -> str:

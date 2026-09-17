@@ -159,8 +159,7 @@ The built-in HTTP adapter is tested with its POST replaced: payload settings and
 one call are checked without real network traffic.
 
 Passing deterministic tests is not live Flash semantic acceptance. Do not enable
-this route as the default until the remaining new-scope transactions,
-automatic/legacy host routing, migration and the agreed real Hermes/Flash plus
+this route as the default until the remaining automatic/legacy host routing and migration and the agreed real Hermes/Flash plus
 native Windows/macOS acceptance are complete. G3f recovery retains explicit
 shared-block, missing-basis and finite-round limitations.
 
@@ -173,3 +172,7 @@ Partial continuation is now available explicitly via `recover_incremental_partia
 It replaces the earlier limitation on parsed partial recovery, not the ordinary
 whole-response retry path. See `incremental-partial-recovery.md` for the local
 repair whitelist, real-context replan gate, shared total budget and residual limits.
+
+G3g connects bounded scope registration to the same shared commit path; see
+`incremental-scope-registration.md`. Discovery is opt-in and never expands an
+explicit write boundary.

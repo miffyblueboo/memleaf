@@ -174,7 +174,7 @@ class IncrementalCommitTests(IncrementalFixture):
 
     def test_new_scope_transaction_not_silently_enabled(self):
         req=self.request([self.create(),self.no_memory()]);req['allow_new_scopes']=True
-        with self.assertRaisesRegex(ValueError,'new_scope_commit_not_enabled'):self.s.apply_incremental(**req)
+        with self.assertRaisesRegex(ValueError,'stale_planning_snapshot'):self.s.apply_incremental(**req)
         self.assertFalse(self.ledger().get(KEY))
 
     def test_unparsed_deadline_is_visible_to_mcp(self):

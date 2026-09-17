@@ -46,9 +46,10 @@ remote authorization server; trusted callers supply the intent identity.
 First application rechecks source/context, recording policy, targets and scope
 under the existing Vault lock. A live legacy worker or old pending frozen plan
 must be finished or explicitly migrated; this API never steals its ownership.
-`allow_new_scopes=True` is rejected until new registry transactions are wired.
-Existing scopes and explicitly authorized boundaries are usable. The preview
-may describe capabilities not yet authorized by this staged writer.
+`allow_new_scopes=True` permits new project proposals within the original write
+boundary. G3g freezes scope dependencies and registers missing nodes only after
+the associated memory head is applied; see `incremental-scope-registration.md`.
+The flag is false by default and cannot be changed on an existing authorization.
 
 ## Complete target groups, shared persistence
 
@@ -73,7 +74,8 @@ semantic same-entity classifier and cannot replace real-model recall testing.
 ## Recovery and visibility
 
 Versioned/checksummed receipts live under `incremental_commits` in the existing
-processed ledger. Markdown remains the permanent memory fact source. Limits
+processed ledger. New receipts use version 2 for G3g scope dependencies; version 1
+remains readable under its original contract. Markdown remains the permanent memory fact source. Limits
 are 8 MiB per work and 16 MiB for this receipt collection. Capacity overflow
 fails explicitly: there is no silent eviction, counter reset or unlimited
 historical replay guarantee. Full receipt-retention/GC is not yet implemented.
@@ -142,7 +144,7 @@ quality pass is inferred from complete coverage.
 G3c separately connects opt-in dispatch and the shared one-plus-one budget;
 G3d adds read-only native comparison through this same commit bridge. See their
 contracts. G3f adds explicit bounded partial recovery. Still not enabled: default agent-route
-replacement, general new-scope transactions, automatic unresolved-work closure,
+replacement, generalized scope renaming/merging, automatic unresolved-work closure,
 or real Flash/Windows/macOS host acceptance. These are not hidden behind an
 experimental success flag. Uncooperative external file writes are not made
 transactional by the Vault lock.

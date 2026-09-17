@@ -392,34 +392,36 @@ class Memleaf:
                              intent_id: str, selected_source_refs: list[str], retention_request: str,
                              scope: Any = None, priority_memory_ids: Iterable[str] = (),
                              candidate_limit: int = 12, model: Any = None, router: Any = None,
-                             recover: bool = False) -> dict[str, Any]:
+                             recover: bool = False, allow_new_scopes: bool = False) -> dict[str, Any]:
         """Opt-in selected retention; does not consume the automatic source turn."""
         from .incremental_runtime import remember_incremental
         return remember_incremental(self, source=source, session_id=session_id, turn_id=turn_id,
                                     intent_id=intent_id, selected_source_refs=selected_source_refs,
                                     retention_request=retention_request, scope=scope,
                                     priority_memory_ids=priority_memory_ids, candidate_limit=candidate_limit,
-                                    model=model, router=router, recover=recover)
+                                    model=model, router=router, recover=recover,
+                                    allow_new_scopes=allow_new_scopes)
 
     def process_incremental(self, *, source: str, session_id: str, turn_id: str,
                             scope: Any = None, priority_memory_ids: Iterable[str] = (),
                             candidate_limit: int = 12, model: Any = None, router: Any = None,
-                            recover: bool = False) -> dict[str, Any]:
+                            recover: bool = False, allow_new_scopes: bool = False) -> dict[str, Any]:
         """Configured fixed-API facade on the existing incremental runner."""
         from .incremental_runtime import process_incremental
         return process_incremental(self, source=source, session_id=session_id, turn_id=turn_id,
                                    scope=scope, priority_memory_ids=priority_memory_ids,
                                    candidate_limit=candidate_limit, model=model, router=router,
-                                   recover=recover)
+                                   recover=recover, allow_new_scopes=allow_new_scopes)
 
     def run_incremental(self, *, source: str, session_id: str, turn_id: str,
                         backend: Any = None, scope: Any = None,
-                        priority_memory_ids=(), candidate_limit: int = 12) -> dict[str, Any]:
+                        priority_memory_ids=(), candidate_limit: int = 12,
+                        allow_new_scopes: bool = False) -> dict[str, Any]:
         """Opt-in captured-turn model execution; legacy host routes are unchanged."""
         from .incremental_execution import run_incremental
         return run_incremental(self, source=source, session_id=session_id, turn_id=turn_id,
                                backend=backend, scope=scope, priority_memory_ids=priority_memory_ids,
-                               candidate_limit=candidate_limit)
+                               candidate_limit=candidate_limit, allow_new_scopes=allow_new_scopes)
 
     def recover_incremental_partial(self, run_id: str, *, mode: str = "replan",
                                     context_memory_ids=(), model: Any = None,

@@ -134,7 +134,7 @@ request counts are not provider billing measurements.
 
 No real Flash, production Vault, native Hermes installation or Windows/macOS
 acceptance is implied. G3f supplies explicit limited partial repair/replan.
-Native conflict coordination, new-scope transactions, generalized source-window
+Native conflict coordination, generalized scope merging, source-window
 GC and default host routing remain subsequent work. Do not activate the experimental route by changing old defaults.
 
 ## G3f recovery-state clarification
@@ -145,3 +145,7 @@ and cancelled outcomes, and the end of a partial round, remove this plaintext.
 This refines the earlier terminal-payload wording: a finished partial invocation
 is not a fully resolved work. Selection, intent and automatic-turn isolation remain
 unchanged during partial recovery. See `incremental-partial-recovery.md`.
+
+G3g connects bounded scope registration to the same shared commit path; see
+`incremental-scope-registration.md`. Discovery is opt-in and never expands an
+explicit write boundary.

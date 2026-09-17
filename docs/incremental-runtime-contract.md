@@ -54,3 +54,11 @@ for identity, privacy, retry and staged legacy-route limits.
 canonical run and remaining allowance. Ordinary `recover=True` keeps its existing
 transport behavior and does not silently replan partial results. See
 `incremental-partial-recovery.md` for the versioned partial basis and one-round limit.
+
+## Scope discovery (G3g)
+
+`process_incremental()` and `remember_incremental()` also accept the strict
+boolean `allow_new_scopes=False`. The canonical runner binds it into the original
+request; changing it during retry conflicts rather than granting new authority.
+Scope changes, shared post-head registration and zero-call recovery follow
+`incremental-scope-registration.md`. The default production routes do not change.

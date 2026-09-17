@@ -52,8 +52,8 @@ def _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidat
         raise ValueError("invalid_turn_id")
     if type(candidate_limit) is not int or not 1 <= candidate_limit <= 20:
         raise ValueError("invalid_candidate_limit")
-    if type(allow_new_scopes) is not bool or allow_new_scopes:
-        raise ValueError("new_scope_commit_not_enabled")
+    if type(allow_new_scopes) is not bool:
+        raise ValueError("invalid_context_flags")
     if isinstance(priority_memory_ids, (str, bytes)):
         raise ValueError("invalid_priority_ids")
     priority = list(dict.fromkeys(priority_memory_ids))
@@ -61,7 +61,7 @@ def _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidat
         safe_component(identity, "memory id")
     return {"source": source, "session_id": session_id, "turn_id": turn_id,
             "scope": normalize_scopes(scope) if scope is not None else None,
-            "priority_memory_ids": priority, "candidate_limit": candidate_limit, "allow_new_scopes": False,
+            "priority_memory_ids": priority, "candidate_limit": candidate_limit, "allow_new_scopes": allow_new_scopes,
             **({"selection": selection} if selection else {})}
 
 
@@ -108,6 +108,13 @@ def _freeze_operation(proposal: dict[str, Any], snapshot: Any, now: str, active:
         after.extra.pop("retraction_reason", None)
     op.update(before=before.to_markdown() if before else None, after=after.to_markdown(),
               replacement_revision=revision_digest(after))
+    from .incremental_scopes import freeze_registration
+    try:
+        freeze_registration(op, state)
+    except ValueError as error:
+        op.update(state="blocked", code=str(error))
+        strip_payload(op)
+        return op
     if before is not None:
         op["expected_revision"] = revision_digest(before)
     else:
@@ -164,6 +171,7 @@ def _settle_source(service, processed, work, *, source_valid):
 
 
 def _resume_unlocked(service, processed, work):
+    from .incremental_scopes import registry_view, guard_matches, applied_additions, finish_registration
     writer = MemoryWriter(service)
     source_valid = _source_valid(service, processed, work)
     native_valid = True
@@ -179,6 +187,7 @@ def _resume_unlocked(service, processed, work):
             if op["state"] == "prepared" and op["action"] in {"CREATE", "UPDATE"} and writer.frozen_state_applied_unlocked(op):
                 op["state"] = "applied"
             if op["state"] == "applied":
+                finish_registration(service, op)
                 op["state"] = "settled"
                 strip_payload(op); save_work(service, processed, work)
                 continue
@@ -187,10 +196,15 @@ def _resume_unlocked(service, processed, work):
                 strip_payload(op); save_work(service, processed, work)
                 continue
             try:
+                if work.get("scope_guard") is not None and op["action"] in {"CREATE", "UPDATE", "NO_CHANGE"}:
+                    _, current_guard, _ = registry_view(service.vault.config())
+                    if not guard_matches(current_guard, work["scope_guard"], applied_additions(work)):
+                        raise ValueError("scope_registry_changed")
                 if op["action"] in {"CREATE", "UPDATE"}:
                     writer.write_frozen_unlocked(op)
                     op["state"] = "applied"
                     save_work(service, processed, work)
+                    finish_registration(service, op)
                     op["state"] = "settled"
                     strip_payload(op)
                 elif op["action"] == "NO_CHANGE":
@@ -223,6 +237,10 @@ def _resume_unlocked(service, processed, work):
                     if writer.frozen_state_applied_unlocked(op): op["state"] = "applied"
                 except (OSError, ValueError):
                     pass
+        # A registration error is an applied business write with pending local
+        # projection, not a blocked/unapplied candidate. Preserve its diagnosis.
+        if any(op.get("scope_error") for op in work["operations"]):
+            save_work(service, processed, work)
         raise IncrementalCommitError(public_result(work)) from error
     return public_result(work)
 
@@ -310,6 +328,7 @@ def apply_incremental(service: Any, *, response: str, expected_snapshot: str, in
                 "evidence": evidence,
                 "operations": operations, "issues": issues, "receipt_settled": False,
                 "native_guard": snapshot.state().get("native_guard"),
+                "scope_guard": snapshot.state().get("scope_guard"),
                 "native_comparison": {"status": "available" if snapshot.state().get("native_guard") else "no_eligible_sources",
                                       "selected_fragments": sum("native" in t for t in snapshot.state()["targets"].values()),
                                       "selection": "bounded_candidates", "read_only": True},
