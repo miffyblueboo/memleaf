@@ -1260,6 +1260,8 @@ class MemleafMemoryProvider(MemoryProvider):
         turn_id: str,
         role: str,
         content: str,
+        source_sequence: int | None = None,
+        final: bool | None = None,
     ) -> bool:
         result = self._call(
             "capture",
@@ -1269,6 +1271,10 @@ class MemleafMemoryProvider(MemoryProvider):
                 "turn_id": turn_id,
                 "role": role,
                 "content": content,
+                "message_id": f"{turn_id}/{role}",
+                **({"previous_message_id": f"{turn_id}/user"} if role == "assistant" else {}),
+                **({"source_sequence": source_sequence} if source_sequence is not None else {}),
+                **({"final": final} if final is not None else {}),
                 "record": True,
                 "visible": True,
             },
@@ -1576,12 +1582,15 @@ class MemleafMemoryProvider(MemoryProvider):
                     self._last_retrieval_observation = observation
                     self._last_retrieval_audit = str(audit_state.get("status") or "SEARCH_UNKNOWN")
                 lineage_ready = self._retry_pending_lineage(effective_session)
-                for role, content in visible_events:
+                sequence_base = resolved_turn_number * 2 if isinstance(resolved_turn_number, int) else None
+                for offset, (role, content) in enumerate(visible_events):
                     if not self._capture_visible(
                         session_id=effective_session,
                         turn_id=turn_id,
                         role=role,
                         content=content,
+                        source_sequence=(sequence_base + offset if sequence_base is not None else None),
+                        final=True if role == "assistant" else None,
                     ):
                         return
                 if not self._auto_process:

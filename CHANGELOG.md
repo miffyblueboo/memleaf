@@ -8,7 +8,9 @@ All notable changes to memleaf are documented here.
 - Validate validity types before enum membership; keep malformed records from breaking unrelated reads. Retain pre-validity frozen UPDATE compatibility only for unchanged legacy-format targets.
 - Journal explicit retractions for bounded, revision-checked forward recovery; finish failed index work without duplicate history, preserve later edits, and cancel pending plaintext on forget.
 - Include public regressions in sdist, covering recovery boundaries, real subprocess exits, concurrency, old revisions and negative protocol cases. No model prompts, package version or release automation were changed.
-
+- Separate original `source_time` from local `captured_at`, persist stable message/revision/order metadata, use trusted final signals for new capture envelopes, and fence stale plans when a host message is revised.
+- Bind durable model-request budgets to source revisions plus explicit intent across synchronous/background transports. Completed authorization rows stay terminal, active rows are not age-evicted, and legacy over-limit counters remain exhausted instead of being reset.
+- Keep `completed_at` unknown unless evidence establishes an actual completion time; a message timestamp records observation, not the business event time.
 - Add a first-class `validity: valid|retracted` state. Deterministic retraction uses an expected revision, archives the previous valid body, keeps the stable current identity, and excludes retracted assertions from ordinary read/search/todo results while retaining explicit audit and forget paths.
 - Preserve completed and cancelled todo heads in `knowledge/` instead of retiring their stable identities by age. Add public deterministic contract tests to CI for legacy compatibility, retraction, revision conflicts, and closed-todo retention.
 

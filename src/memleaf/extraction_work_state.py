@@ -16,6 +16,8 @@ prompts, responses, evidence bodies, credentials, or exception text.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
 from pathlib import Path
@@ -75,19 +77,32 @@ def _normalize_turn_state(value: Any) -> dict[str, Any]:
     compatibility only; no request ordinal is reset and no expiry is inferred.
     """
 
-    if type(value) is int and 0 <= value <= MAX_MODEL_REQUESTS:
-        return {"requests": value, "started_at_epoch": None}
+    if type(value) is int and 0 <= value <= 1_000_000:
+        return {
+            "requests": value,
+            "started_at_epoch": None,
+            "request_limit_at_creation": max(value, MAX_MODEL_REQUESTS),
+            "completed": False,
+        }
     if not isinstance(value, Mapping):
         raise ExtractionWorkStateError("invalid extraction request budget counter")
     requests = value.get("requests")
     started = value.get("started_at_epoch")
-    if type(requests) is not int or not 0 <= requests <= MAX_MODEL_REQUESTS:
+    if type(requests) is not int or not 0 <= requests <= 1_000_000:
         raise ExtractionWorkStateError("invalid extraction request budget counter")
     if started is not None and not _valid_epoch(started):
         raise ExtractionWorkStateError("invalid extraction work start time")
+    stored_limit = value.get("request_limit_at_creation", max(requests, MAX_MODEL_REQUESTS))
+    if type(stored_limit) is not int or stored_limit < 1 or stored_limit > 1_000_000:
+        raise ExtractionWorkStateError("invalid extraction request budget limit")
+    completed = value.get("completed", False)
+    if not isinstance(completed, bool):
+        raise ExtractionWorkStateError("invalid extraction request budget completion")
     return {
         "requests": requests,
         "started_at_epoch": float(started) if started is not None else None,
+        "request_limit_at_creation": stored_limit,
+        "completed": completed,
     }
 
 
@@ -142,7 +157,20 @@ def _work_unlocked(state: dict[str, Any], *, work_id: str) -> dict[str, Any]:
             raise ExtractionWorkStateError("invalid extraction request budget work")
         return work
     if len(works) >= _MAX_WORKS:
-        oldest = next((item for item in order if item != work_id), None)
+        oldest = next(
+            (
+                item
+                for item in order
+                if item != work_id
+                and isinstance(works.get(item), Mapping)
+                and isinstance(works[item].get("turns"), Mapping)
+                and all(
+                    isinstance(turn, Mapping) and turn.get("completed") is True
+                    for turn in works[item]["turns"].values()
+                )
+            ),
+            None,
+        )
         if oldest is None:
             raise ExtractionWorkStateError("extraction request budget state is full")
         works.pop(oldest, None)
@@ -151,6 +179,31 @@ def _work_unlocked(state: dict[str, Any], *, work_id: str) -> dict[str, Any]:
     works[work_id] = work
     order.append(work_id)
     return work
+
+
+def extraction_work_id(turn: Any, *, request_kind: str, intent_id: str) -> str:
+    """Bind request budget to source revisions and trusted authorization."""
+
+    if request_kind not in {"automatic", "explicit_remember"}:
+        raise ExtractionWorkStateError("invalid extraction request kind")
+    if not _valid_identifier(intent_id, maximum=800):
+        raise ExtractionWorkStateError("invalid extraction intent id")
+    events = []
+    for event in getattr(turn, "events", ()):
+        events.append(
+            {
+                "event_key": getattr(event, "event_key", None),
+                "message_id": getattr(event, "message_id", None),
+                "message_revision": getattr(event, "message_revision", None),
+            }
+        )
+    payload = json.dumps(
+        [request_kind, intent_id, turn.source, turn.session_id, turn.turn_key, events],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "work-" + hashlib.sha256(payload).hexdigest()
 
 
 def active_background_work_id(
@@ -213,7 +266,13 @@ def active_background_work_id(
     return active_id
 
 
-def reserve_model_request(vault: Any, *, work_id: str, turn_id: str) -> int | None:
+def reserve_model_request(
+    vault: Any,
+    *,
+    work_id: str,
+    turn_id: str,
+    request_limit: int = MAX_MODEL_REQUESTS,
+) -> int | None:
     """Atomically reserve the next provider request and return its ordinal.
 
     ``None`` means this stable work+turn already consumed the request budget.  The
@@ -225,6 +284,8 @@ def reserve_model_request(vault: Any, *, work_id: str, turn_id: str) -> int | No
         raise ExtractionWorkStateError("invalid extraction work id")
     if not _valid_identifier(turn_id, maximum=800):
         raise ExtractionWorkStateError("invalid extraction turn id")
+    if type(request_limit) is not int or not 1 <= request_limit <= MAX_MODEL_REQUESTS:
+        raise ExtractionWorkStateError("invalid extraction request limit")
     with vault.lock():
         state = _read_budget_state_unlocked(vault)
         work = _work_unlocked(state, work_id=work_id)
@@ -235,13 +296,21 @@ def reserve_model_request(vault: Any, *, work_id: str, turn_id: str) -> int | No
                 raise ExtractionWorkStateError("extraction work turn budget is full")
             # Keep the existing on-disk shape. A timestamp is not required for
             # request accounting and must not become a hidden expiry again.
-            turn_state = {"requests": 0, "started_at_epoch": None}
+            turn_state = {
+                "requests": 0,
+                "started_at_epoch": None,
+                "request_limit_at_creation": request_limit,
+                "completed": False,
+            }
             turns[turn_id] = turn_state
         else:
             turn_state = _normalize_turn_state(turn_state)
             turns[turn_id] = turn_state
+        if turn_state.get("completed") is True:
+            return None
         count = turn_state["requests"]
-        if count >= MAX_MODEL_REQUESTS:
+        effective_limit = min(turn_state["request_limit_at_creation"], request_limit)
+        if count >= effective_limit:
             return None
         ordinal = count + 1
         turn_state["requests"] = ordinal
@@ -250,7 +319,7 @@ def reserve_model_request(vault: Any, *, work_id: str, turn_id: str) -> int | No
 
 
 def complete_turn_budget(vault: Any, *, work_id: str, turn_id: str) -> bool:
-    """Best-effort removal after the turn crossed its durable commit boundary."""
+    """Mark the authorization terminal without reopening its consumed budget."""
 
     if not _valid_identifier(work_id, maximum=200) or not _valid_identifier(turn_id, maximum=800):
         return False
@@ -260,10 +329,9 @@ def complete_turn_budget(vault: Any, *, work_id: str, turn_id: str) -> bool:
             work = state["works"].get(work_id)
             if not isinstance(work, dict) or turn_id not in work.get("turns", {}):
                 return False
-            work["turns"].pop(turn_id, None)
-            if not work["turns"]:
-                state["works"].pop(work_id, None)
-                state["order"] = [item for item in state["order"] if item != work_id]
+            turn_state = _normalize_turn_state(work["turns"][turn_id])
+            turn_state["completed"] = True
+            work["turns"][turn_id] = turn_state
             atomic_write_json(_budget_path(vault), state, mode=0o600)
             return True
     except (OSError, UnicodeError, TypeError, ValueError, ExtractionWorkStateError):
@@ -277,5 +345,6 @@ __all__ = [
     "ExtractionWorkStateError",
     "active_background_work_id",
     "complete_turn_budget",
+    "extraction_work_id",
     "reserve_model_request",
 ]

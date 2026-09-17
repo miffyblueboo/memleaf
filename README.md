@@ -310,6 +310,12 @@ stats()
 compact()             按阈值整理低优先级记忆，需要模型路由
 ```
 
+`capture()` 可接收 `message_id`、`message_revision`、`source_sequence`、
+`previous_message_id`、`source_time` 和可信 `final` 信号。`source_time` 是带时区的
+原消息时间，缺失时保持未知，不会用本地 `captured_at` 冒充。`remember()` 的重试应
+复用同一 `intent_id`；新的明确保留授权使用新 ID。完整合同见
+[`docs/source-work-contract.md`](docs/source-work-contract.md)。
+
 离线示例默认使用临时 Vault，不写入 `~/.memleaf`，也不访问网络：
 
 ```bash

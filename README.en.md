@@ -312,6 +312,13 @@ stats()
 compact()             Compact low-priority memories; requires a model route
 ```
 
+`capture()` accepts `message_id`, `message_revision`, `source_sequence`,
+`previous_message_id`, `source_time`, and a trusted `final` signal. `source_time`
+is the timezone-aware original message time; when absent it remains unknown and
+local `captured_at` is never substituted. Retries of one explicit `remember()`
+authorization should reuse its `intent_id`; a new authorization uses a new ID.
+See [`docs/source-work-contract.md`](docs/source-work-contract.md).
+
 The offline example uses a temporary Vault by default. It does not write to `~/.memleaf` or access the network:
 
 ```bash

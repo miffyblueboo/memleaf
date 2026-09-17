@@ -31,6 +31,14 @@ class InboxEvent:
     event_key: str
     content: str
     turn_id: Optional[str] = None
+    message_id: Optional[str] = None
+    message_revision: Optional[str] = None
+    previous_message_revision: Optional[str] = None
+    source_sequence: Optional[int] = None
+    previous_message_id: Optional[str] = None
+    source_time: Optional[str] = None
+    captured_at: Optional[str] = None
+    final: Optional[bool] = None
     timestamp: Optional[str] = None
     tool_evidence: tuple[dict[str, str], ...] = ()
     legacy: bool = False
@@ -62,11 +70,20 @@ class InboxTurn:
         if not self.processable or len(self.events) < 2:
             return False
         roles = [event.role for event in self.events]
-        # A host may receive several visible user messages before one final
-        # assistant response.  They form one logical turn; multiple assistant
-        # responses remain incomplete so an intermediate response cannot be
-        # mistaken for the turn boundary.
-        return roles.count("user") >= 1 and roles.count("assistant") == 1
+        if roles.count("user") < 1 or roles.count("assistant") < 1:
+            return False
+        assistants = [event for event in self.events if event.role == "assistant"]
+        declared = [event for event in assistants if event.final is not None]
+        if declared:
+            finals = [event for event in assistants if event.final is True]
+            # A trusted adapter may persist intermediate visible assistant
+            # messages. Exactly one declared final, ordered after every other
+            # event, is the processable turn boundary.
+            return len(finals) == 1 and self.events[-1] is finals[0]
+        # Legacy v2 inbox blocks did not carry a final signal. Preserve their
+        # old one-assistant compatibility path without treating a capture-time
+        # timestamp as proof of source time.
+        return len(assistants) == 1
 
     @property
     def is_complete(self) -> bool:
@@ -74,12 +91,21 @@ class InboxTurn:
 
     @property
     def processable(self) -> bool:
-        return (
+        structurally_processable = (
             not self.legacy
             and bool(self.turn_key)
             and isinstance(self.turn_index, int)
             and all(event.processable for event in self.events)
         )
+        if not structurally_processable:
+            return False
+        sequences = [event.source_sequence for event in self.events]
+        if any(sequence is not None for sequence in sequences):
+            return (
+                all(type(sequence) is int for sequence in sequences)
+                and len(sequences) == len(set(sequences))
+            )
+        return True
 
     @property
     def event_keys(self) -> tuple[str, ...]:
@@ -156,6 +182,14 @@ def parse_inbox_text(
         display_turn_id = metadata.get("turn_id")
         stable_turn_key = metadata.get("turn_key")
         turn_index = metadata.get("turn_index")
+        message_id = metadata.get("message_id")
+        message_revision = metadata.get("message_revision")
+        previous_message_revision = metadata.get("previous_message_revision")
+        source_sequence = metadata.get("source_sequence")
+        previous_message_id = metadata.get("previous_message_id")
+        source_time = metadata.get("source_time")
+        captured_at = metadata.get("captured_at")
+        final = metadata.get("final")
         valid_v2 = (
             role in ("user", "assistant")
             and isinstance(display_turn_id, str)
@@ -185,7 +219,17 @@ def parse_inbox_text(
                     event_key=key.casefold(),
                     content=str(metadata.get("content", "")),
                     turn_id=display_turn_id if isinstance(display_turn_id, str) else None,
-                    timestamp=metadata.get("timestamp") if isinstance(metadata.get("timestamp"), str) else None,
+                    message_id=message_id if isinstance(message_id, str) and message_id else None,
+                    message_revision=message_revision if isinstance(message_revision, str) and message_revision else None,
+                    previous_message_revision=previous_message_revision if isinstance(previous_message_revision, str) and previous_message_revision else None,
+                    source_sequence=source_sequence if type(source_sequence) is int and source_sequence >= 0 else None,
+                    previous_message_id=previous_message_id if isinstance(previous_message_id, str) and previous_message_id else None,
+                    source_time=source_time if isinstance(source_time, str) and source_time else None,
+                    captured_at=captured_at if isinstance(captured_at, str) and captured_at else (
+                        metadata.get("timestamp") if isinstance(metadata.get("timestamp"), str) else None
+                    ),
+                    final=final if isinstance(final, bool) else None,
+                    timestamp=source_time if isinstance(source_time, str) and source_time else None,
                     tool_evidence=_bounded_tool_evidence(metadata.get("tool_evidence")),
                     legacy=not groupable,
                 )
@@ -201,10 +245,41 @@ def parse_inbox_text(
                 event_key=key.casefold(),
                 content=str(metadata.get("content", "")),
                 turn_id=display_turn_id,
-                timestamp=metadata.get("timestamp") if isinstance(metadata.get("timestamp"), str) else None,
+                message_id=message_id if isinstance(message_id, str) and message_id else None,
+                message_revision=message_revision if isinstance(message_revision, str) and message_revision else None,
+                previous_message_revision=previous_message_revision if isinstance(previous_message_revision, str) and previous_message_revision else None,
+                source_sequence=source_sequence if type(source_sequence) is int and source_sequence >= 0 else None,
+                previous_message_id=previous_message_id if isinstance(previous_message_id, str) and previous_message_id else None,
+                source_time=source_time if isinstance(source_time, str) and source_time else None,
+                captured_at=captured_at if isinstance(captured_at, str) and captured_at else (
+                    metadata.get("timestamp") if isinstance(metadata.get("timestamp"), str) else None
+                ),
+                final=final if isinstance(final, bool) else None,
+                timestamp=source_time if isinstance(source_time, str) and source_time else None,
                 tool_evidence=_bounded_tool_evidence(metadata.get("tool_evidence")),
             )
         )
+
+    # A host revision replaces the older visible version of the same stable
+    # message. File order is the durable arrival order; revisions are opaque
+    # host identifiers and therefore are never compared lexically.
+    latest_message_index: dict[tuple[str, str, str], int] = {}
+    for index, event in enumerate(parsed_events):
+        if event.message_id:
+            latest_message_index[(event.source, event.session_id, event.message_id)] = index
+    parsed_events = [
+        event
+        for index, event in enumerate(parsed_events)
+        if not event.message_id
+        or latest_message_index[(event.source, event.session_id, event.message_id)] == index
+        # A reply captured before a newer revision of the message it directly
+        # answers is stale context. Keep the revised turn pending until the
+        # host supplies a final reply for the new revision.
+        if not event.previous_message_id
+        or latest_message_index.get(
+            (event.source, event.session_id, event.previous_message_id), -1
+        ) < index
+    ]
 
     groups: dict[tuple[str, str, str, int], list[InboxEvent]] = {}
     result: list[InboxTurn] = []
@@ -226,6 +301,8 @@ def parse_inbox_text(
 
     grouped = sorted(groups.items(), key=lambda item: (item[0][3], item[0][0], item[0][1], item[0][2]))
     for (group_source, group_session, group_key, group_index), events in grouped:
+        if events and all(type(event.source_sequence) is int for event in events):
+            events.sort(key=lambda event: event.source_sequence)  # type: ignore[arg-type]
         result.append(
             InboxTurn(
                 source=group_source,

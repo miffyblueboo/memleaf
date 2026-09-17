@@ -1,6 +1,7 @@
 """Public processing orchestration; one planner and one commit boundary."""
 from __future__ import annotations
 import hashlib
+import uuid
 from typing import Any, Mapping
 from .admission import analyze_turn_evidence, memory_writes_disabled
 from .evidence_policy import retain_tool_evidence
@@ -18,8 +19,8 @@ from .single_pass_memory_planner import SinglePassMemoryPlanner
 from .memory_commit import MemoryCommitter
 from .extraction_budget import ExtractionTiming, aggregate_extraction_metrics, budget_single_pass_backend
 from .extraction_work_state import (
-    active_background_work_id,
     complete_turn_budget,
+    extraction_work_id,
     reserve_model_request,
 )
 from .llm.router import freeze_model_route, limit_model_requests
@@ -200,11 +201,6 @@ class Processor:
             source = safe_component(source, "source")
         if session_id is not None:
             session_id = safe_component(session_id, "session id")
-        background_work_id = active_background_work_id(
-            self.service.vault,
-            source=source,
-            session_id=session_id,
-        )
         now = _now_value(getattr(self.service, "clock", None))
         cleanup_hours = self.journal._cleanup_hours()
         snapshots, cleaned = self.journal._snapshot(
@@ -269,6 +265,11 @@ class Processor:
                 self.audit._planned_related = []
                 self.audit._planned_settled_sources = set()
                 durable_turn_budget_id = self._turn_budget_id(snapshot)
+                durable_work_id = extraction_work_id(
+                    snapshot.turn,
+                    request_kind="automatic",
+                    intent_id="automatic",
+                )
                 turn_timing = ExtractionTiming()
 
                 with self.service.vault.lock():
@@ -293,13 +294,12 @@ class Processor:
                         backend = self.model._resolve_backend(model=model, router=router)
                     turn_backend = backend
                     if getattr(backend, "single_pass_safe", False) is True:
-                        reserve_request = None
-                        if background_work_id is not None:
-                            reserve_request = lambda work_id=background_work_id, turn_id=durable_turn_budget_id: reserve_model_request(
-                                self.service.vault,
-                                work_id=work_id,
-                                turn_id=turn_id,
-                            )
+                        reserve_request = lambda work_id=durable_work_id, turn_id=durable_turn_budget_id: reserve_model_request(
+                            self.service.vault,
+                            work_id=work_id,
+                            turn_id=turn_id,
+                            request_limit=3,
+                        )
                         turn_backend = budget_single_pass_backend(
                             backend,
                             reserve_request=reserve_request,
@@ -320,12 +320,11 @@ class Processor:
                         ref: self.audit._deferred_by_turn.get(ref, [])
                     },
                 )
-                if background_work_id is not None:
-                    complete_turn_budget(
-                        self.service.vault,
-                        work_id=background_work_id,
-                        turn_id=durable_turn_budget_id,
-                    )
+                complete_turn_budget(
+                    self.service.vault,
+                    work_id=durable_work_id,
+                    turn_id=durable_turn_budget_id,
+                )
                 all_ids.extend(ids)
                 metadata_merged += self.writer.last_metadata_merged
                 self._extraction_timings.append(turn_timing.finish())
@@ -373,6 +372,7 @@ class Processor:
         session_id: str = "remember",
         turn_id: str | None = None,
         event_id: str | None = None,
+        intent_id: str | None = None,
         scopes: Any = None,
         model: Any = None,
         router: Any = None,
@@ -382,16 +382,25 @@ class Processor:
             raise ValueError("remember content is required")
         source = safe_component(source, "source")
         session_id = safe_component(session_id, "session id")
+        if intent_id is None:
+            intent_id = f"intent-{uuid.uuid4().hex}"
+        if (
+            not isinstance(intent_id, str)
+            or not intent_id
+            or len(intent_id) > 800
+            or any(char in intent_id for char in "\x00\r\n")
+        ):
+            raise ValueError("invalid remember intent id")
         normalized_scopes = None
         if scopes is not None:
             try:
                 normalized_scopes = normalize_scopes(scopes, field="remember scopes")
             except ScopeError as error:
                 raise ValueError("invalid remember scopes") from error
-        raw_turn_id = turn_id or f"remember-{hashlib.sha256(value.encode('utf-8')).hexdigest()[:16]}"
+        raw_turn_id = turn_id or f"remember-{hashlib.sha256(intent_id.encode('utf-8')).hexdigest()[:16]}"
         if not isinstance(raw_turn_id, str) or not raw_turn_id or "\x00" in raw_turn_id or "\n" in raw_turn_id or "\r" in raw_turn_id:
             raise ValueError("invalid turn id")
-        raw_event_id = event_id or f"remember/{source}/{session_id}/{raw_turn_id}"
+        raw_event_id = event_id or f"remember/{source}/{session_id}/{intent_id}"
         if not isinstance(raw_event_id, str) or not raw_event_id or "\x00" in raw_event_id or "\n" in raw_event_id or "\r" in raw_event_id:
             raise ValueError("invalid event id")
         stable_event_key = event_key(raw_event_id)
@@ -413,6 +422,7 @@ class Processor:
                 "processed_turns": 0,
                 "memories_written": 0,
                 "memory_ids": ids,
+                "intent_id": intent_id,
                 "metadata_merged": 0,
                 "cleaned_turns": cleaned,
                 "deferred_candidates": 0,
@@ -422,6 +432,12 @@ class Processor:
                 "compaction": self._critical_path_compaction_status(),
             }
         backend = None
+        durable_turn_budget_id = self._turn_budget_id(snapshot)
+        durable_work_id = extraction_work_id(
+            turn,
+            request_kind="explicit_remember",
+            intent_id=intent_id,
+        )
         self.audit._planned_related = []
         self.audit._deferred_by_turn = {}
         try:
@@ -437,7 +453,15 @@ class Processor:
                 # Explicit remember has the same global request discipline as
                 # automatic extraction: no hidden host->API fallback and no
                 # more than two actual model dispatches (primary + one repair).
-                backend = limit_model_requests(freeze_model_route(backend), 2)
+                backend = budget_single_pass_backend(
+                    limit_model_requests(freeze_model_route(backend), 2),
+                    reserve_request=lambda: reserve_model_request(
+                        self.service.vault,
+                        work_id=durable_work_id,
+                        turn_id=durable_turn_budget_id,
+                        request_limit=2,
+                    ),
+                )
                 requests, turn_scopes = self.planner._collect_turn_outputs(
                     backend, turn, state, explicit=True,
                     explicit_candidate=candidate, scope=normalized_scopes,
@@ -453,10 +477,16 @@ class Processor:
                     (snapshot.turn.source, snapshot.turn.session_id, snapshot.turn.turn_key): turn_scopes
                 },
             )
+            complete_turn_budget(
+                self.service.vault,
+                work_id=durable_work_id,
+                turn_id=durable_turn_budget_id,
+            )
             return {
                 "processed_turns": 1,
                 "memories_written": len(ids),
                 "memory_ids": ids,
+                "intent_id": intent_id,
                 "metadata_merged": self.writer.last_metadata_merged,
                 "cleaned_turns": cleaned,
                 "deferred_candidates": 0,

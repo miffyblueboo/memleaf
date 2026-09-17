@@ -21,11 +21,56 @@ from .index import (
 from .locking import atomic_write_json, atomic_write_text, read_json
 from .models import CaptureResult
 from .redaction import redact_text
+from .turn_plan import turn_identity_key
 from .vault import Vault, safe_component
 
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _optional_identifier(value: Any, label: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value or len(value) > 800 or any(char in value for char in "\x00\r\n"):
+        raise ValueError(f"invalid {label}")
+    return value
+
+
+def _source_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value or len(value) > 80:
+        raise ValueError("invalid source time")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("invalid source time") from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("source time must include a timezone")
+    return value
+
+
+def _event_identity(
+    source: str,
+    session_id: str,
+    turn_id: str,
+    role: str,
+    event_id: Optional[str],
+    message_id: Optional[str],
+    message_revision: Optional[str],
+) -> tuple[str, str, str]:
+    resolved_event_id = _event_id(source, session_id, turn_id, role, event_id)
+    resolved_message_id = message_id or resolved_event_id
+    resolved_revision = message_revision or "1"
+    if message_id is not None or message_revision is not None:
+        identity = json.dumps(
+            [source, session_id, resolved_message_id, resolved_revision],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return resolved_event_id, resolved_message_id, event_key(identity)
+    return resolved_event_id, resolved_message_id, event_key(resolved_event_id)
 
 
 
@@ -155,12 +200,20 @@ def _append_event(
     event_digest: str,
     event_turn_key: str,
     turn_index: int,
+    *,
+    message_id: str,
+    message_revision: str,
+    previous_message_revision: str | None,
+    source_sequence: int | None,
+    previous_message_id: str | None,
+    source_time: str | None,
+    captured_at: str,
+    final: bool | None,
     tool_evidence: list[dict[str, str]] | None = None,
 ) -> str:
-    timestamp = _timestamp()
     if not existing:
-        existing = _new_session_text(source, session_id, timestamp)
-    updated = re.sub(r"(?m)^- updated:.*$", f"- updated: {timestamp}", existing, count=1)
+        existing = _new_session_text(source, session_id, captured_at)
+    updated = re.sub(r"(?m)^- updated:.*$", f"- updated: {captured_at}", existing, count=1)
     if updated == existing and not existing.endswith("\n"):
         updated += "\n"
     if not updated.endswith("\n\n"):
@@ -173,8 +226,21 @@ def _append_event(
         "turn_id": turn_id,
         "turn_key": event_turn_key,
         "turn_index": turn_index,
-        "timestamp": timestamp,
+        "timestamp": captured_at,
+        "captured_at": captured_at,
+        "message_id": message_id,
+        "message_revision": message_revision,
     }
+    if source_sequence is not None:
+        metadata["source_sequence"] = source_sequence
+    if previous_message_revision is not None:
+        metadata["previous_message_revision"] = previous_message_revision
+    if previous_message_id is not None:
+        metadata["previous_message_id"] = previous_message_id
+    if source_time is not None:
+        metadata["source_time"] = source_time
+    if final is not None:
+        metadata["final"] = final
     if tool_evidence:
         metadata["tool_evidence"] = [dict(item) for item in tool_evidence]
     metadata_line = json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -192,9 +258,13 @@ def _append_event(
 
 
 def _safe_event_entry(
-    *, source: str, session_id: str, turn_id: str, role: str, turn_index: int, captured_at: str
+    *, source: str, session_id: str, turn_id: str, role: str, turn_index: int,
+    captured_at: str, message_id: str, message_revision: str,
+    previous_message_revision: str | None,
+    source_sequence: int | None, previous_message_id: str | None,
+    source_time: str | None, final: bool | None,
 ) -> dict:
-    return {
+    result = {
         "event_key": "",
         "source": source,
         "session_id": session_id,
@@ -202,7 +272,111 @@ def _safe_event_entry(
         "role": role,
         "turn_index": turn_index,
         "captured_at": captured_at,
+        "message_id": message_id,
+        "message_revision": message_revision,
     }
+    if source_sequence is not None:
+        result["source_sequence"] = source_sequence
+    if previous_message_revision is not None:
+        result["previous_message_revision"] = previous_message_revision
+    if previous_message_id is not None:
+        result["previous_message_id"] = previous_message_id
+    if source_time is not None:
+        result["source_time"] = source_time
+    if final is not None:
+        result["final"] = final
+    return result
+
+
+def _invalidate_revised_message_unlocked(
+    processed: dict,
+    *,
+    source: str,
+    session_id: str,
+    turn_key_value: str,
+    turn_index: int,
+    message_id: str,
+    message_revision: str,
+) -> None:
+    """Fence old work and schedule committed targets for source coordination."""
+
+    events = processed.get("events")
+    if not isinstance(events, Mapping):
+        return
+    prior = [
+        entry
+        for entry in events.values()
+        if isinstance(entry, Mapping)
+        and entry.get("source") == source
+        and entry.get("session_id") == session_id
+        and entry.get("message_id") == message_id
+        and entry.get("message_revision") != message_revision
+    ]
+    if not prior:
+        return
+    prior_turn_keys = {
+        entry.get("turn_key")
+        for entry in prior
+        if isinstance(entry.get("turn_key"), str)
+    }
+    sessions = processed.setdefault("sessions", {})
+    state_key = _session_key(source, session_id)
+    state = sessions.get(state_key)
+    if not isinstance(state, dict):
+        state = {}
+    target_ids: set[str] = set()
+    entries = state.get("processed_turns")
+    if isinstance(entries, list):
+        for entry in entries:
+            if not isinstance(entry, Mapping) or entry.get("turn_key") not in prior_turn_keys:
+                continue
+            values = entry.get("memory_ids")
+            if isinstance(values, list):
+                target_ids.update(value for value in values if isinstance(value, str) and value)
+    revised = state.get("revised_turns")
+    if not isinstance(revised, list):
+        revised = []
+    marker = next(
+        (
+            item
+            for item in revised
+            if isinstance(item, dict) and item.get("turn_key") == turn_key_value
+        ),
+        None,
+    )
+    if marker is None:
+        marker = {"turn_key": turn_key_value, "turn_index": turn_index}
+        revised.append(marker)
+    marker["message_id"] = message_id
+    marker["message_revision"] = message_revision
+    marker["memory_ids"] = sorted(
+        set(marker.get("memory_ids", [])) | target_ids
+    )
+    state["revised_turns"] = revised[-64:]
+
+    affected_turn_keys = set(prior_turn_keys) | {turn_key_value}
+    processing = state.get("processing")
+    if isinstance(processing, Mapping) and affected_turn_keys.intersection(
+        value for value in processing.get("turn_keys", []) if isinstance(value, str)
+    ):
+        # The commit boundary checks this token. Replacing the marker fences a
+        # provider result produced from an older source revision.
+        state["processing"] = {"status": "idle", "reason": "source_revision_changed"}
+    sessions[state_key] = state
+
+    plans = processed.get("pending_turn_plans")
+    if isinstance(plans, dict):
+        for key in affected_turn_keys:
+            plans.pop(turn_identity_key(source, session_id, key), None)
+    operations = processed.get("pending_operations")
+    if isinstance(operations, dict):
+        for operation_id, operation in list(operations.items()):
+            if isinstance(operation, Mapping) and (
+                operation.get("source") == source
+                and operation.get("session_id") == session_id
+                and operation.get("turn_key") in affected_turn_keys
+            ):
+                operations.pop(operation_id, None)
 
 
 def capture_event(
@@ -217,6 +391,13 @@ def capture_event(
     record: bool = True,
     visible: bool = True,
     tool_evidence: Any = None,
+    source_time: Optional[str] = None,
+    source_sequence: Optional[int] = None,
+    message_id: Optional[str] = None,
+    message_revision: Optional[str] = None,
+    previous_message_revision: Optional[str] = None,
+    previous_message_id: Optional[str] = None,
+    final: Optional[bool] = None,
 ) -> CaptureResult:
     """Capture one visible event; all persisted text is redacted first."""
 
@@ -227,8 +408,21 @@ def capture_event(
     role = safe_component(str(role), "role")
     if not isinstance(content, str):
         raise TypeError("captured content must be text")
-    resolved_event_id = _event_id(source, session_id, turn_id, role, event_id)
-    resolved_event_key = event_key(resolved_event_id)
+    message_id = _optional_identifier(message_id, "message id")
+    message_revision = _optional_identifier(message_revision, "message revision")
+    previous_message_revision = _optional_identifier(
+        previous_message_revision, "previous message revision"
+    )
+    previous_message_id = _optional_identifier(previous_message_id, "previous message id")
+    source_time = _source_timestamp(source_time)
+    if source_sequence is not None and (type(source_sequence) is not int or source_sequence < 0):
+        raise ValueError("invalid source sequence")
+    if final is not None and not isinstance(final, bool):
+        raise ValueError("invalid final flag")
+    resolved_event_id, resolved_message_id, resolved_event_key = _event_identity(
+        source, session_id, turn_id, role, event_id, message_id, message_revision
+    )
+    resolved_message_revision = message_revision or "1"
     resolved_turn_key = turn_key(turn_id)
     persisted_turn_id = _safe_turn_id(turn_id)
     safe_content = escape_event_markers(redact_text(content))
@@ -250,15 +444,7 @@ def capture_event(
         if changed:
             atomic_write_json(vault.processed_state_path, processed)
         known_keys = _known_event_keys(vault, processed)
-        if resolved_event_key in known_keys:
-            path = vault.session_path(source, session_id)
-            return CaptureResult(
-                resolved_event_id,
-                stored=False,
-                duplicate=True,
-                path=path if path.exists() else None,
-                content=safe_content,
-            )
+        known_event = resolved_event_key in known_keys
 
         path = vault.session_path(source, session_id)
         if path.is_symlink():
@@ -267,8 +453,51 @@ def capture_event(
             existing = path.read_text(encoding="utf-8") if path.exists() else ""
         except (OSError, UnicodeError) as error:
             raise ValueError("cannot read inbox session") from error
-        if resolved_event_key in set(extract_event_keys(existing)):
+        existing_event = next(
+            (
+                metadata
+                for metadata in extract_event_metadata(existing)
+                if metadata.get("event_key") == resolved_event_key
+            ),
+            None,
+        )
+        if existing_event is not None:
+            if (
+                existing_event.get("role") != role
+                or existing_event.get("turn_key") != resolved_turn_key
+                or existing_event.get("message_id") not in {None, resolved_message_id}
+                or existing_event.get("message_revision") not in {None, resolved_message_revision}
+                or existing_event.get("content") != safe_content.rstrip("\n")
+            ):
+                raise ValueError("event revision identity reused with different payload")
             return CaptureResult(resolved_event_id, stored=False, duplicate=True, path=path, content=safe_content)
+        if known_event:
+            # The inbox block may already have crossed its cleanup boundary;
+            # the durable receipt still proves this delivery was accepted.
+            return CaptureResult(
+                resolved_event_id,
+                stored=False,
+                duplicate=True,
+                path=path if path.exists() else None,
+                content=safe_content,
+            )
+
+        prior_revisions = [
+            metadata.get("message_revision")
+            for metadata in extract_event_metadata(existing)
+            if metadata.get("source") == source
+            and metadata.get("session_id") == session_id
+            and metadata.get("message_id") == resolved_message_id
+            and isinstance(metadata.get("message_revision"), str)
+        ]
+        current_revision = prior_revisions[-1] if prior_revisions else None
+        if current_revision is None and previous_message_revision is not None:
+            raise ValueError("message revision predecessor does not exist")
+        if current_revision is not None and current_revision != resolved_message_revision:
+            if previous_message_revision != current_revision:
+                raise ValueError("message revision predecessor mismatch")
+        elif current_revision is not None and previous_message_revision not in {None, current_revision}:
+            raise ValueError("message revision predecessor mismatch")
 
         session_key = _session_key(source, session_id)
         turn_index, state = _turn_index(
@@ -278,6 +507,16 @@ def capture_event(
             turn_id,
             persisted_turn_id,
         )
+        _invalidate_revised_message_unlocked(
+            processed,
+            source=source,
+            session_id=session_id,
+            turn_key_value=resolved_turn_key,
+            turn_index=turn_index,
+            message_id=resolved_message_id,
+            message_revision=resolved_message_revision,
+        )
+        captured_at = _timestamp()
         updated = _append_event(
             existing,
             source,
@@ -288,7 +527,15 @@ def capture_event(
             resolved_event_key,
             resolved_turn_key,
             turn_index,
-            safe_tool_evidence,
+            message_id=resolved_message_id,
+            message_revision=resolved_message_revision,
+            previous_message_revision=previous_message_revision,
+            source_sequence=source_sequence,
+            previous_message_id=previous_message_id,
+            source_time=source_time,
+            captured_at=captured_at,
+            final=final,
+            tool_evidence=safe_tool_evidence,
         )
         atomic_write_text(path, updated)
 
@@ -300,7 +547,6 @@ def capture_event(
             for key, value in existing_events.items()
             if isinstance(key, str) and len(key) == 64 and isinstance(value, dict)
         } if isinstance(existing_events, dict) else {}
-        captured_at = _timestamp()
         entry = _safe_event_entry(
             source=source,
             session_id=session_id,
@@ -308,6 +554,13 @@ def capture_event(
             role=role,
             turn_index=turn_index,
             captured_at=captured_at,
+            message_id=resolved_message_id,
+            message_revision=resolved_message_revision,
+            previous_message_revision=previous_message_revision,
+            source_sequence=source_sequence,
+            previous_message_id=previous_message_id,
+            source_time=source_time,
+            final=final,
         )
         entry["turn_key"] = resolved_turn_key
         entry["event_key"] = resolved_event_key
@@ -315,12 +568,13 @@ def capture_event(
         sessions = processed.get("sessions", {})
         if not isinstance(sessions, dict):
             sessions = {}
-        # Merge only capture-owned fields.  In particular, do not replace a
-        # processer's in-flight ``processing`` state during concurrent capture.
-        new_state = dict(state)
+        # Merge only capture-owned turn-index fields. In particular, preserve
+        # revision coordination and a processor's in-flight ownership marker.
         old_state = sessions.get(session_key)
-        if isinstance(old_state, dict) and "processing" in old_state:
-            new_state["processing"] = old_state["processing"]
+        new_state = dict(old_state) if isinstance(old_state, dict) else {}
+        new_state["turns"] = dict(state.get("turns", {}))
+        if "next_turn_index" in state:
+            new_state["next_turn_index"] = state["next_turn_index"]
         sessions[session_key] = new_state
         atomic_write_json(
             vault.processed_state_path,

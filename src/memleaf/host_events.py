@@ -540,6 +540,8 @@ def _handle_antigravity(
                     role="user",
                     content=record.content,
                     event_id=_antigravity_event_id(session_id, record.step_index, "user"),
+                    message_id=_antigravity_event_id(session_id, record.step_index, "user"),
+                    source_sequence=record.step_index,
                 )
             except Exception:
                 capture_failed = True
@@ -612,6 +614,8 @@ def _handle_antigravity(
                     role="user",
                     content=record.content,
                     event_id=_antigravity_event_id(session_id, step_index, "user"),
+                    message_id=_antigravity_event_id(session_id, step_index, "user"),
+                    source_sequence=step_index,
                 )
             except Exception:
                 capture_failed = True
@@ -639,6 +643,12 @@ def _handle_antigravity(
                 role="assistant",
                 content=assistant.content,
                 event_id=_antigravity_event_id(session_id, assistant.step_index, "assistant"),
+                message_id=_antigravity_event_id(session_id, assistant.step_index, "assistant"),
+                previous_message_id=_antigravity_event_id(
+                    session_id, group["user_steps"][-1], "user"
+                ),
+                source_sequence=assistant.step_index,
+                final=True,
             )
         except Exception:
             remaining.append(group)

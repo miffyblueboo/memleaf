@@ -1608,8 +1608,6 @@ def validate_summarize_output(
         _string(item["completed_at"], "completed_at")
         if candidate_type != "todo" or item.get("status") != "completed":
             raise ModelOutputError("completed_at requires completed todo", validation_detail="todo_fields")
-    if item.get("status") == "completed" and "completed_at" not in item:
-        raise ModelOutputError("completed todo requires completed_at", validation_detail="todo_fields")
     if "due_date" in item and item["due_date"] is not None:
         if candidate_type != "todo":
             raise ModelOutputError("due_date requires todo", validation_detail="todo_fields")
@@ -1739,8 +1737,6 @@ def validate_compact_output(
             _string(item["completed_at"], "compact completed_at")
             if item.get("type") != "todo" or item.get("status") != "completed":
                 raise ModelOutputError("compact completed_at requires completed todo")
-        if item.get("status") == "completed" and "completed_at" not in item:
-            raise ModelOutputError("compact completed todo requires completed_at")
         if "due_date" in item and item["due_date"] is not None:
             if item["type"] != "todo":
                 raise ModelOutputError("compact due_date requires todo")

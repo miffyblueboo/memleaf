@@ -171,7 +171,11 @@ class PlanningContext:
             if priority_wanted:
                 available = scope_records
                 if available is None:
-                    available, _ = self._scope_records_unlocked(scope)
+                    # Source revision coordination is target-bound. The
+                    # previously affected ID must remain visible even if the
+                    # edited source now implies another conversational scope;
+                    # normal target/scope authorization still runs later.
+                    available = self.service._read_memories_unlocked("knowledge")
                 by_id = {
                     record.memory.memory_id.casefold(): record
                     for record in available
@@ -537,6 +541,7 @@ class PlanningContext:
         # the ordinary lexical strictness check, so allow the scoped local
         # search to return bounded existing bodies when a final assistant report is
         # present.  The native reader/index continue to receive visible text.
+        revision_target_ids = self._revision_target_ids(state, turn)
         return self._related_query(
             turn,
             state,
@@ -544,8 +549,29 @@ class PlanningContext:
             explicit_scope,
             overlay=overlay,
             strict_relevance=not scoped_reply_context,
+            priority_memory_ids=revision_target_ids,
             native_query=visible,
         )
+
+
+    @staticmethod
+    def _revision_target_ids(state: Mapping[str, Any], turn: InboxTurn) -> list[str]:
+        entries = state.get("revised_turns")
+        if not isinstance(entries, list):
+            return []
+        result: list[str] = []
+        for entry in entries:
+            if not isinstance(entry, Mapping) or entry.get("turn_key") != turn.turn_key:
+                continue
+            values = entry.get("memory_ids")
+            if not isinstance(values, list):
+                continue
+            for value in values:
+                if isinstance(value, str) and value and value.casefold() not in {
+                    item.casefold() for item in result
+                }:
+                    result.append(value)
+        return result
 
 
     def _single_pass_scope_correction_context(
@@ -637,6 +663,7 @@ class PlanningContext:
             explicit_scope,
             overlay=overlay,
             strict_relevance=not scoped_reply_context,
+            priority_memory_ids=self._revision_target_ids(state, turn),
             native_query=visible,
             return_bound_status=True,
         )

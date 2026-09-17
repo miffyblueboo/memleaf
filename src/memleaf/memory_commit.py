@@ -397,6 +397,8 @@ class MemoryCommitter:
                 if isinstance(existing_entry, dict):
                     entry = existing_entry
                     entry["memory_ids"] = sorted(set(entry.get("memory_ids", []) + ids))
+                    entry["event_keys"] = list(snapshot.turn.event_keys)
+                    entry["processed_at"] = now
                 else:
                     entry = {
                         "turn_key": snapshot.turn.turn_key,
@@ -479,6 +481,18 @@ class MemoryCommitter:
                 entry["candidate_dispositions"] = self.audit._candidate_dispositions([snapshot])
                 entry["evidence_dispositions"] = self.audit._evidence_by_turn.get(scope_key, [])
                 state["processed_turns"] = entries
+                revised_entries = state.get("revised_turns")
+                if isinstance(revised_entries, list):
+                    remaining_revisions = [
+                        item
+                        for item in revised_entries
+                        if not isinstance(item, Mapping)
+                        or item.get("turn_key") != snapshot.turn.turn_key
+                    ]
+                    if remaining_revisions:
+                        state["revised_turns"] = remaining_revisions
+                    else:
+                        state.pop("revised_turns", None)
                 watermark = max(_as_int(state.get("watermark"), 0), _as_int(snapshot.turn.turn_index, 0))
                 state["watermark"] = watermark
                 state["processed_watermark"] = watermark

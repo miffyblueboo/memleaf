@@ -391,6 +391,24 @@ class ProcessJournal:
                     if isinstance(entry, dict)
                     and (entry.get("deferred_candidates") or entry.get("deferred_evidence"))]
                 deferred.sort(key=lambda entry: _as_int(entry.get("turn_index"), 0))
+                revised_entries = state.get("revised_turns")
+                if not isinstance(revised_entries, list):
+                    revised_entries = []
+                revised_entries = sorted(
+                    (entry for entry in revised_entries if isinstance(entry, Mapping)),
+                    key=lambda entry: _as_int(entry.get("turn_index"), 0),
+                )
+                for entry in revised_entries:
+                    turn = next(
+                        (
+                            item
+                            for item in turns
+                            if item.turn_key == entry.get("turn_key") and item.complete
+                        ),
+                        None,
+                    )
+                    if turn is not None and turn not in selected:
+                        selected.append(turn)
                 automatic_retries = 0
                 for entry in deferred:
                     can_retry = self.retryable_deferred(entry)
@@ -403,7 +421,7 @@ class ProcessJournal:
                         if not explicit_retry:
                             entry["automatic_retry_count"] = _as_int(entry.get("automatic_retry_count"), 0) + 1
                             automatic_retries += 1
-                selected.extend(new_turns)
+                selected.extend(turn for turn in new_turns if turn not in selected)
                 if not selected:
                     continue
                 token = uuid.uuid4().hex
@@ -817,6 +835,10 @@ class ProcessJournal:
             event_key=event_key_value,
             content=redact_text(content),
             turn_id=_safe_turn_id(turn_id),
+            message_id=event_key_value,
+            message_revision="1",
+            source_time=now,
+            captured_at=now,
             timestamp=now,
         )
         turn = InboxTurn(source, session_id, stable_key, index, (event,))

@@ -688,13 +688,12 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             if isinstance(scope_source, str) and scope_source:
                 summary["scope_source"] = scope_source
             if memory_type == "todo" and summary.get("status") == "completed" and not summary.get("completed_at"):
-                # Completion is a state transition. Record when it was
-                # observed, without asking the model to invent a finish time.
-                observed = [event.get("timestamp") for event in candidate_date_evidence
-                            if _parse_time(event.get("timestamp")) is not None]
+                # Message/source time proves when the completion was reported,
+                # not when the task actually completed. Preserve an existing
+                # explicit completion time, otherwise keep it unknown.
                 prior = target_memory.completed_at if target_memory is not None and target_memory.status == "completed" else None
-                if prior or observed:
-                    summary["completed_at"] = prior or max(observed, key=_parse_time)
+                if prior:
+                    summary["completed_at"] = prior
             summary["sources"] = [{"event_key": key} for key in admitted_keys]
             summary["evidence_event_ids"] = list(admitted_keys)
 

@@ -217,6 +217,13 @@ class Memleaf:
         record: bool = True,
         visible: bool = True,
         tool_evidence: Any = None,
+        source_time: Optional[str] = None,
+        source_sequence: Optional[int] = None,
+        message_id: Optional[str] = None,
+        message_revision: Optional[str] = None,
+        previous_message_revision: Optional[str] = None,
+        previous_message_id: Optional[str] = None,
+        final: Optional[bool] = None,
     ) -> CaptureResult:
         """Capture one visible user/assistant event into inbox."""
 
@@ -231,6 +238,13 @@ class Memleaf:
             record=record,
             visible=visible,
             tool_evidence=tool_evidence,
+            source_time=source_time,
+            source_sequence=source_sequence,
+            message_id=message_id,
+            message_revision=message_revision,
+            previous_message_revision=previous_message_revision,
+            previous_message_id=previous_message_id,
+            final=final,
         )
 
     def session_lineage(

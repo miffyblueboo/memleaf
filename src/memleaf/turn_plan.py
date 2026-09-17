@@ -103,8 +103,19 @@ def input_digest(turn: Any) -> str:
     # Explicit remember may recreate an event with a fresh timestamp on retry.
     # Its content, role, provenance and identity must remain identical. The plan
     # already freezes any dates resolved from the original evidence timestamp.
-    events = [{"event_key": e.event_key, "role": e.role, "content": e.content,
-               "tool_evidence": list(getattr(e, "tool_evidence", ()))} for e in turn.events]
+    events = [{
+        "event_key": e.event_key,
+        "role": e.role,
+        "content": e.content,
+        "message_id": getattr(e, "message_id", None),
+        "message_revision": getattr(e, "message_revision", None),
+        "previous_message_revision": getattr(e, "previous_message_revision", None),
+        "source_sequence": getattr(e, "source_sequence", None),
+        "previous_message_id": getattr(e, "previous_message_id", None),
+        "source_time": getattr(e, "source_time", None),
+        "final": getattr(e, "final", None),
+        "tool_evidence": list(getattr(e, "tool_evidence", ())),
+    } for e in turn.events]
     return _digest([turn.source, turn.session_id, turn.turn_key, events])
 
 
