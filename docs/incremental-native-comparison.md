@@ -52,8 +52,10 @@ CREATE. Dispatch, accepted-response application and unapplied commit recovery
 recheck the current native context. File/locator or sharing changes invalidate
 old proposals; same-length edits cannot evade checks by retaining mtime.
 
-Guards store hashes and source locators, not native bodies. Terminal run receipts
-continue to discard request/response plaintext. A fully completed result is a
+Guards store hashes and source locators, not native bodies. Completed/failed/
+cancelled run receipts discard request/response plaintext. Recoverable G3f partial
+results retain a bounded snapshot capsule; revocation never permits resending its
+old native body, and completion or Forget erases the capsule. A fully completed result is a
 historical receipt: replay does not reopen native files, call a model or assert
 that today's native state is still identical. Old unguarded pending work is not
 allowed to ignore newly eligible native sources. Already-applied local operations
@@ -94,5 +96,6 @@ selection, same-mtime edits, revoked sharing, local/native ID collision, forbidd
 writes, same-call NO_CHANGE, partial local success, frozen recovery, real process
 exit, no re-dispatch and source-context cleanup. Native files are synthetic and
 all model responses are local substitutes. Real Hermes/Flash and native OS
-acceptance, legacy remember routing, limited partial repair/replan,
-new-scope transactions and default routing are still separate work.
+acceptance, legacy remember routing, new-scope transactions and default routing
+are still separate work. Limited explicit partial repair/replan is described in
+`incremental-partial-recovery.md`.

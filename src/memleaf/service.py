@@ -421,6 +421,15 @@ class Memleaf:
                                backend=backend, scope=scope, priority_memory_ids=priority_memory_ids,
                                candidate_limit=candidate_limit)
 
+    def recover_incremental_partial(self, run_id: str, *, mode: str = "replan",
+                                    context_memory_ids=(), model: Any = None,
+                                    router: Any = None) -> dict[str, Any]:
+        """Explicitly repair structure or replan unresolved sources; no new budget."""
+        from .incremental_partial import recover_incremental_partial
+        return recover_incremental_partial(self, run_id, mode=mode,
+                                           context_memory_ids=context_memory_ids,
+                                           model=model, router=router)
+
     def resume_incremental_run(self, run_id: str, *, backend: Any = None) -> dict[str, Any]:
         """Resume a frozen response/commit without another model request when possible."""
         from .incremental_execution import resume_incremental_run

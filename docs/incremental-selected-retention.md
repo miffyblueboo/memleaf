@@ -114,8 +114,9 @@ with no extra semantic request. Only the explicit work receipt is settled.
 Common run/commit validators check the request-kind and selection binding together;
 missing or contradictory control fields are not silently treated as automatic.
 The persisted terminal binding contains source IDs and the redacted request hash,
-not retention-request text. Existing terminal/cancel paths strip the request,
-response and retention_request. The chosen memory itself is retained as authorized.
+not retention-request text. Complete/failed/cancelled paths strip request,
+response and retention_request; recoverable partial state has the bounded G3f
+exception described below. The chosen memory itself is retained as authorized.
 Forget cancels existing dependent runs and their plaintext before removing targets;
 replaying the old intent remains cancelled. A truly new authorized retention request
 can start a new work when its selected source is still available and recording is
@@ -132,6 +133,15 @@ and commit/index recovery. Tests use temporary Vaults and deterministic backends
 request counts are not provider billing measurements.
 
 No real Flash, production Vault, native Hermes installation or Windows/macOS
-acceptance is implied. Native conflict coordination, selective partial repair/replan,
-new-scope transactions, generalized source-window GC and default host routing remain
-subsequent work. Do not activate the experimental route by changing old defaults.
+acceptance is implied. G3f supplies explicit limited partial repair/replan.
+Native conflict coordination, new-scope transactions, generalized source-window
+GC and default host routing remain subsequent work. Do not activate the experimental route by changing old defaults.
+
+## G3f recovery-state clarification
+
+New partial results may retain a bounded `partial_basis`, including the original
+redacted retention request, solely for explicit recovery. Fully complete, failed
+and cancelled outcomes, and the end of a partial round, remove this plaintext.
+This refines the earlier terminal-payload wording: a finished partial invocation
+is not a fully resolved work. Selection, intent and automatic-turn isolation remain
+unchanged during partial recovery. See `incremental-partial-recovery.md`.

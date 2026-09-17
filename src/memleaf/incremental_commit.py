@@ -269,24 +269,53 @@ def apply_incremental(service: Any, *, response: str, expected_snapshot: str, in
             raise ValueError("legacy_processing_busy")
         if turn_identity_key(source, session_id, selected.turn_key) in processed.get("pending_turn_plans", {}):
             raise ValueError("legacy_pending_plan")
-        snapshot = _prepare_incremental_unlocked(service, retention_request=retention_request, **args)
+        recovery_run = None
+        if _run_guard is not None:
+            from .incremental_run_state import load_run
+            candidate_run = load_run(processed, _run_guard[0])
+            if candidate_run.get("partial_used"):
+                if candidate_run["arguments"] != args or candidate_run["commit_intent"] != intent_id:
+                    raise ValueError("partial_commit_binding_changed")
+                recovery_run = candidate_run
+        if recovery_run is not None:
+            from .incremental_partial import recheck_snapshot
+            snapshot = recheck_snapshot(service, processed, recovery_run)
+        else:
+            snapshot = _prepare_incremental_unlocked(service, retention_request=retention_request, **args)
         if snapshot.snapshot_id != expected_snapshot:
             raise ValueError("stale_planning_snapshot")
         compiled = compile_incremental(response, snapshot)
         now = utc_now()
         active = [r.memory for r in service._read_memories_unlocked("knowledge")]
-        operations = [_freeze_operation(op, snapshot, now, active) for op in compiled["operations"]]
+        inherited, proposals, issues = [], compiled["operations"], compiled["issues"]
+        if recovery_run is not None:
+            from .incremental_recovery import cumulative_result
+            parent = load_work(processed, recovery_run["partial_recovery"]["parent_work_id"])
+            inherited, proposals, issues = cumulative_result(
+                compiled, parent, snapshot, set(recovery_run["partial_recovery"]["focus"]),
+                repair_rows=(recovery_run["partial_recovery"]["repair_rows"]
+                             if recovery_run["partial_recovery"]["mode"] == "repair" else None))
+        operations = inherited + [_freeze_operation(op, snapshot, now, active) for op in proposals]
+        evidence = [{k: e[k] for k in ("ref", "event_key", "use")} for e in snapshot.state()["evidence"]]
+        if recovery_run is not None:
+            # The compile view authorizes only unresolved new blocks. The source
+            # receipt still accounts for the original complete selected set.
+            original_new = {e["event_key"] for e in parent["evidence"] if e["use"] == "new"}
+            for e in evidence:
+                e["use"] = "new" if e["event_key"] in original_new else "context"
         work = {"version": VERSION, "work_id": identity, "intent_id": intent_id, "binding": binding,
                 "request_kind": "explicit_remember" if selection else "automatic",
                 "source": source, "session_id": session_id, "turn_id": turn_id, "turn_key": selected.turn_key,
                 "turn_index": selected.turn_index, "source_digest": input_digest(selected), "source_window": window,
-                "evidence": [{k: e[k] for k in ("ref", "event_key", "use")} for e in snapshot.state()["evidence"]],
-                "operations": operations, "issues": compiled["issues"], "receipt_settled": False,
+                "evidence": evidence,
+                "operations": operations, "issues": issues, "receipt_settled": False,
                 "native_guard": snapshot.state().get("native_guard"),
                 "native_comparison": {"status": "available" if snapshot.state().get("native_guard") else "no_eligible_sources",
                                       "selected_fragments": sum("native" in t for t in snapshot.state()["targets"].values()),
                                       "selection": "bounded_candidates", "read_only": True},
                 "index_status": "dirty" if any(op["action"] in {"CREATE", "UPDATE"} and op["state"] == "prepared" for op in operations) else "current"}
+        if recovery_run is not None:
+            work["recovery_parent"] = parent["work_id"]
         save_work(service, processed, work)
         return _resume_unlocked(service, processed, work)
 

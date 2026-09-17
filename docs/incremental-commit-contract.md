@@ -141,8 +141,15 @@ quality pass is inferred from complete coverage.
 
 G3c separately connects opt-in dispatch and the shared one-plus-one budget;
 G3d adds read-only native comparison through this same commit bridge. See their
-contracts. Still not enabled: semantic repair/replan, default agent-route
+contracts. G3f adds explicit bounded partial recovery. Still not enabled: default agent-route
 replacement, general new-scope transactions, automatic unresolved-work closure,
 or real Flash/Windows/macOS host acceptance. These are not hidden behind an
 experimental success flag. Uncooperative external file writes are not made
 transactional by the Vault lock.
+
+## Cumulative partial receipts
+
+G3f can add one cumulative recovery child linked by `recovery_parent`. Its inherited
+settled operations preserve their original IDs and are never rewritten. Only a
+validated fully resolved child releases parent context protection. The original
+receipt remains historical and unchanged. See `incremental-partial-recovery.md`.

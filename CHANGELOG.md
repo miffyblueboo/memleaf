@@ -4,6 +4,8 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Add explicit bounded partial continuation on the existing incremental runner: zero-call exact container repair or one remaining changed-context replan. Preserve accepted operation IDs, source/authorization boundaries and original budgets; carry cumulative recovery receipts, cancel retained partial plaintext on Forget, and release resolved parent context protection. Default routes and the fixed prompt remain unchanged.
+
 - Add opt-in selected-source explicit retention on the canonical incremental runner: bind user intent and exact captured sources, keep unselected text as context, preserve automatic settlement, and recover with the shared two-request allowance. No default routing, prompt, model-setting or version change.
 
 - Connect configured native notes to opt-in incremental comparison using existing fragment identities, read-only NO_CHANGE targets and content/sharing guards. Keep native files and shadow maps untouched; disclose bounded selection and unavailable sources instead of assuming deduplication.

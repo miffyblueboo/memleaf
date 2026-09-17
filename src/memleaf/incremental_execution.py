@@ -1,8 +1,8 @@
 """Opt-in, one-plus-one model dispatch on the shared incremental commit bridge.
 
-Only whole-response/transport failure is retryable in this increment. Parsed
-local errors and semantic DEFERRED are persisted with the successful decisions,
-not submitted to another full semantic pass. No legacy planner fallback exists.
+Whole-response retry and explicit partial recovery share the same allowance.
+Only partial recovery with actual changed context can replan unresolved sources;
+accepted decisions are immutable. No legacy planner fallback exists.
 """
 from __future__ import annotations
 
@@ -58,6 +58,9 @@ def _guard_legacy(service, processed):
 
 
 def _check_sources(service, processed, run):
+    if run.get("partial_used"):
+        from .incremental_partial import recheck_snapshot
+        return recheck_snapshot(service, processed, run)
     if not recording_allowed(processed, run["source"], run["session_id"], run["turn_key"]):
         raise ValueError("source_recording_revoked")
     turn, window = _window(service, run["source"], run["session_id"], run["turn_key"])
@@ -77,6 +80,8 @@ def _budget_count(service, run):
 
 def _finish(service, processed, run, status, code=None):
     run.update(status=status, code=code)
+    if status == "completed_with_unresolved" and "recovery_seed" in run and not run.get("partial_used"):
+        run["partial_basis"] = run.pop("recovery_seed")
     if status in TERMINAL:
         strip_payload(run)
     save_run(service, processed, run)
@@ -195,7 +200,13 @@ def _drive(service, run_id, token, backend, calls):
                 if run["status"] in {"response_ready", "committing"}:
                     try:
                         compile_incremental(run["response"], snapshot)
+                        if not run.get("partial_used"):
+                            from .incremental_recovery import seed
+                            run["recovery_seed"] = seed(snapshot, run["response"])
                     except ValueError:
+                        if run.get("partial_used"):
+                            _finish(service, processed, run, "failed", "invalid_partial_response")
+                            return public_result(run, calls=calls[0])
                         run["attempts"][-1]["outcome"] = "invalid_response"
                         run.pop("response", None)
                         _finish(service, processed, run, "retryable", "invalid_model_response")
@@ -265,7 +276,7 @@ def _drive(service, run_id, token, backend, calls):
             run["status"] = "dispatching"
             save_run(service, processed, run)
             request = dict(run["request"])
-            if ordinal > 1:
+            if ordinal > 1 and not run.get("partial_used"):
                 request["system"] += RETRY_SYSTEM
         error_code = None
         response = None
@@ -287,6 +298,9 @@ def _drive(service, run_id, token, backend, calls):
                 return public_result(run, calls=calls[0])
             if not isinstance(response, str) or not response.strip() or len(response.encode("utf-8")) > MAX_BYTES:
                 run["attempts"][-1]["outcome"] = "invalid_response"
+                if run.get("partial_used"):
+                    _finish(service, processed, run, "failed", "invalid_partial_response")
+                    return public_result(run, calls=calls[0])
                 _finish(service, processed, run, "retryable", "invalid_response_size")
                 continue
             run["attempts"][-1]["outcome"] = "response"

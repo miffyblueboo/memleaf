@@ -59,6 +59,10 @@ def load_work(processed: dict[str, Any], work_id: str) -> dict[str, Any] | None:
     kind = work.get("request_kind", "automatic")
     if not isinstance(kind, str) or kind not in {"automatic", "explicit_remember"} or (kind == "explicit_remember") != bool(selection):
         raise ValueError("invalid_incremental_intent")
+    if "recovery_parent" in work and (not isinstance(work["recovery_parent"], str)
+            or not work["recovery_parent"].startswith("inc-") or len(work["recovery_parent"]) != 68
+            or work["recovery_parent"] == work_id):
+        raise ValueError("invalid_partial_commit_parent")
     if work.get("native_guard") is not None:
         from .incremental_native import validate_guard
         validate_guard(work["native_guard"])
@@ -180,13 +184,46 @@ def referenced_turn_keys(processed: dict[str, Any], source: str, session_id: str
     return result
 
 
+def resolved_parent_ids(processed: dict[str, Any]) -> set[str]:
+    """A cumulative successful child releases only its own immutable parent.
+
+    No parent decision or identity is rewritten. The successful child receipt
+    is the durable resolution link, so a crash cannot leave a separate GC flag
+    ahead of business settlement.
+    """
+    works = {key: load_work(processed, key) for key in processed.get(KEY, {})}
+    resolved = set()
+    for child in works.values():
+        parent_id = child.get("recovery_parent")
+        if parent_id is None:
+            continue
+        parent = works.get(parent_id)
+        if (parent is None or parent_id == child["work_id"] or "recovery_parent" in parent
+                or any(parent[k] != child[k] for k in ("source", "session_id", "turn_key", "source_digest"))
+                or parent.get("request_kind", "automatic") != child.get("request_kind", "automatic")
+                or parent["binding"]["arguments"] != child["binding"]["arguments"]
+                or {e["event_key"] for e in parent["evidence"] if e["use"] == "new"} !=
+                   {e["event_key"] for e in child["evidence"] if e["use"] == "new"}):
+            raise ValueError("invalid_partial_commit_parent")
+        accepted = {op["operation_id"]: op for op in parent["operations"] if op["state"] == "settled"}
+        copied = {op["operation_id"]: op for op in child["operations"]}
+        if any(copied.get(key) != op for key, op in accepted.items()):
+            raise ValueError("partial_settled_operation_changed")
+        if public_result(child)["execution_status"] == "completed":
+            resolved.add(parent_id)
+    return resolved
+
+
 def protected_turn_keys(processed: dict[str, Any], source: str, session_id: str) -> set[str]:
     works = processed.get(KEY, {})
     if not isinstance(works, dict):
         raise ValueError("invalid_incremental_ledger")
     from .incremental_run_state import owned_turns
     result = owned_turns(processed, source, session_id, protect=True)
+    resolved = resolved_parent_ids(processed)
     for key in works:
+        if key in resolved:
+            continue
         work = load_work(processed, key)
         if work["source"] == source and work["session_id"] == session_id and public_result(work)["execution_status"] != "completed":
             result.add(work["turn_key"])

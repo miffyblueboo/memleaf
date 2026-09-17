@@ -30,9 +30,9 @@ The supplied backend's model, thinking controls, timeout and output limits are
 retained; this API does not discover credentials or choose a stronger model.
 Tests replace the HTTP boundary rather than consuming real model quota.
 
-This increment processes **one complete captured turn with automatic retention
-semantics**. It is not an implementation of the new explicit-remember selection
-protocol. Existing explicit remember is unaffected. `backend=None` can prepare a
+Automatic calls process **one complete captured turn with automatic retention
+semantics**. Selected explicit retention uses the same runner as described in
+`incremental-selected-retention.md`; default legacy remember is still unaffected. `backend=None` can prepare a
 bounded durable request, or finish an already received response without an LLM.
 The normal entry needs its raw source; resume by run ID can settle an already
 committed operation after raw-source cleanup.
@@ -64,12 +64,12 @@ or unused authorization decisions.
 | Knowledge/index/final receipt I/O failure | Resume stored response or frozen G3b operations; no model regeneration |
 | Explicit Forget | Cancel affected request/response before deletion; a returning callback cannot write it back |
 
-Selective structural `repair` and changed-context `replan` are **not enabled** in
-this increment. `completed_with_unresolved` is not quality success, and a repeated
-invocation does not re-extract its successful rows. It retains its original
-remaining allowance for a later explicitly implemented recovery contract rather
-than resetting counts. Native comparison is connected by G3d. Full G3 still requires selective recovery
-and host/model acceptance. No additional reviewer call is hidden under "recovery".
+Selective recovery is explicit through `recover_incremental_partial` (G3f):
+local exact-container repair or one remaining changed-context replan. Ordinary
+replay of `completed_with_unresolved` does not re-extract successful rows, reset
+counts or start a reviewer. See `incremental-partial-recovery.md` for eligibility,
+shared-source limits and stopping. Full G3 still requires host/model acceptance
+and remaining routing/migration work. Native comparison is connected by G3d.
 
 ## Durable phases and correlation
 
@@ -88,7 +88,9 @@ The entire model response is saved **before** knowledge mutation. On restart a
 saved response is consumed before any new request; an existing G3b commit receipt
 is resumed before comparing the old snapshot with its own already-applied writes.
 No regenerated memory IDs, operation IDs or NO_MEMORY decisions are needed.
-Terminal runtime receipts omit request/response bodies. G3b keeps its existing
+Fully resolved/cancelled/failed runtime receipts omit request/response bodies.
+New recoverable partial results retain a bounded versioned `partial_basis` until
+the explicit partial round ends or Forget cancels it. G3b keeps its existing
 bounded unresolved operation/issue contract.
 
 Budget reservation and runtime persistence are separate atomic files. A crash
@@ -141,8 +143,9 @@ The 128 KiB request cap reserves space for the short retry suffix. Existing
 compiler evidence/target/response bounds still apply without truncating facts.
 
 The normal fixed system prompt is unchanged from G3a: 1,861 Unicode code points,
-3,587 UTF-8 bytes, LF including the final newline. Recovery adds only a short
-same-input retry instruction. These are text sizes, not token or latency claims.
+3,587 UTF-8 bytes, LF including the final newline. Whole-response retry adds a
+short same-input instruction; G3f replan instead adds its separate 185-byte
+recovery instruction. The two suffixes are not stacked. These are text sizes, not token or latency claims.
 
 ## Acceptance performed for this increment
 
@@ -156,9 +159,17 @@ The built-in HTTP adapter is tested with its POST replaced: payload settings and
 one call are checked without real network traffic.
 
 Passing deterministic tests is not live Flash semantic acceptance. Do not enable
-this route as the default until selective unresolved recovery,
-new-scope transactions, explicit remember integration and the agreed real
-Hermes/Flash plus native Windows/macOS acceptance are complete.
+this route as the default until the remaining new-scope transactions,
+automatic/legacy host routing, migration and the agreed real Hermes/Flash plus
+native Windows/macOS acceptance are complete. G3f recovery retains explicit
+shared-block, missing-basis and finite-round limitations.
 
 Read-only native comparison and pending context retention are described in
 [incremental-native-comparison.md](incremental-native-comparison.md).
+
+## G3f partial continuation
+
+Partial continuation is now available explicitly via `recover_incremental_partial`.
+It replaces the earlier limitation on parsed partial recovery, not the ordinary
+whole-response retry path. See `incremental-partial-recovery.md` for the local
+repair whitelist, real-context replan gate, shared total budget and residual limits.

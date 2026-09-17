@@ -47,3 +47,10 @@ is connected by G3d; default host-route activation remains staged. There is no v
 captured source refs and the same canonical runner. It does not consume the whole
 automatic turn. See [selected-source retention](incremental-selected-retention.md)
 for identity, privacy, retry and staged legacy-route limits.
+
+## Explicit partial continuation
+
+`recover_incremental_partial(run_id, mode="repair" | "replan")` reuses the same
+canonical run and remaining allowance. Ordinary `recover=True` keeps its existing
+transport behavior and does not silently replan partial results. See
+`incremental-partial-recovery.md` for the versioned partial basis and one-round limit.

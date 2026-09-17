@@ -87,6 +87,8 @@ def load_run(processed: dict[str, Any], run_id: str) -> dict[str, Any] | None:
             raise ValueError("invalid_incremental_request")
     if "response" in run and not isinstance(run["response"], str):
         raise ValueError("invalid_incremental_response")
+    from .incremental_recovery import validate_recovery
+    validate_recovery(run)
     return run
 
 
@@ -108,8 +110,10 @@ def save_run(service: Any, processed: dict[str, Any], run: dict[str, Any]) -> No
 
 
 def strip_payload(run: dict[str, Any]) -> None:
-    for key in ("request", "response", "retention_request"):
+    for key in ("request", "response", "retention_request", "recovery_seed"):
         run.pop(key, None)
+    if run["status"] != "completed_with_unresolved" or run.get("partial_used"):
+        run.pop("partial_basis", None)
 
 
 def owner_live(processed: dict[str, Any]) -> bool:
@@ -173,9 +177,11 @@ def public_result(run: dict[str, Any], *, calls: int = 0) -> dict[str, Any]:
         "responses_observed": sum(a["outcome"] in {"response", "invalid_response"} for a in run["attempts"]),
         "uncertain_attempts": sum(a["outcome"] == "unknown" for a in run["attempts"]),
         "commit": run.get("commit_result"),
+        "partial_recovery_available": run["status"] == "completed_with_unresolved" and "partial_basis" in run and not run.get("partial_used"),
+        "partial_recovery_mode": run.get("partial_recovery", {}).get("mode"),
         "native_comparison": run.get("native_comparison", {"status": "not_evaluated"}),
         "limitations": ["opt_in_captured_turn_only", "native_conflict_coordination_not_automatic",
-                        "partial_replanning_not_enabled", "semantic_quality_not_verified"],
+                        "partial_recovery_requires_explicit_request", "semantic_quality_not_verified"],
     }
 
 
