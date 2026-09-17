@@ -4,6 +4,9 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Connect configured native notes to opt-in incremental comparison using existing fragment identities, read-only NO_CHANGE targets and content/sharing guards. Keep native files and shadow maps untouched; disclose bounded selection and unavailable sources instead of assuming deduplication.
+- Protect pending incremental source context as well as its selected turn from cleanup, without claiming context as a new processing owner. No production-route, prompt, model-setting or version changes.
+
 - Reconcile the configured `process_incremental()` facade with the committed run-ID API and existing receipt schema; preserve one source-work budget, explicit transport recovery and cached-response recovery without model configuration.
 
 - Add an opt-in captured-turn incremental model runner on the shared G3b commit bridge. Persist request/response receipts, reuse source-work budgets with a two-dispatch ceiling, and recover saved responses without model regeneration. Do not switch production process/remember/MCP routes.

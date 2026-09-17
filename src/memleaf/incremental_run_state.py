@@ -138,6 +138,9 @@ def owned_turns(processed: dict[str, Any], source: str, session_id: str, *, prot
         run = load_run(processed, key)
         if run["source"] == source and run["session_id"] == session_id and (not protect or run["status"] != "completed"):
             result.add(run["turn_key"])
+            if protect:
+                from .incremental_journal import referenced_turn_keys
+                result.update(referenced_turn_keys(processed, source, session_id, set(run["source_keys"])))
     return result
 
 
@@ -153,7 +156,8 @@ def public_result(run: dict[str, Any], *, calls: int = 0) -> dict[str, Any]:
         "responses_observed": sum(a["outcome"] in {"response", "invalid_response"} for a in run["attempts"]),
         "uncertain_attempts": sum(a["outcome"] == "unknown" for a in run["attempts"]),
         "commit": run.get("commit_result"),
-        "limitations": ["opt_in_captured_turn_only", "native_comparison_not_integrated",
+        "native_comparison": run.get("native_comparison", {"status": "not_evaluated"}),
+        "limitations": ["opt_in_captured_turn_only", "native_conflict_coordination_not_automatic",
                         "partial_replanning_not_enabled", "semantic_quality_not_verified"],
     }
 

@@ -18,11 +18,11 @@ budgets remain unchanged. There is no config switch silently routing automatic
 traffic here. The preview is a Python API, not an additional MCP tool. It has no
 new credentials, provider integration, automatic repair or background process.
 
-Native-memory comparison is **not** integrated in this increment. Preview
-results disclose that limitation. An ordinary result must not be described as
-having deduplicated against native notes. The next integration must also provide
-shared commit/recovery, persisted accepted decisions, operation identity, old-plan
-migration and the shared one-plus-one request budget before enabling production.
+Native-memory read-only comparison is now connected by the G3d follow-up; see
+[incremental-native-comparison.md](incremental-native-comparison.md). Commit and
+bounded model dispatch are separate opt-in APIs from G3b/G3c. Preview itself
+still makes no writes or model calls. Default activation, selective unresolved
+recovery and live host/model acceptance remain staged.
 
 ## Public workflow
 

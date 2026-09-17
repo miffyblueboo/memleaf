@@ -14,6 +14,7 @@ from .incremental_prompts import INCREMENTAL_SYSTEM
 from .index import turn_key
 from .inbox import parse_inbox_file, source_ordered_turns
 from .models import Memory
+from .incremental_native import read_comparison
 from .process_common import _read_processed
 from .retrieval import candidate_matches_query, fulltext_score
 from .scope_state import normalize_scopes
@@ -89,6 +90,11 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
         if key in records:
             raise ValueError("duplicate_memory_id")
         records[key] = memory
+    native = read_comparison(service, source)
+    native_keys = {key.casefold() for key in native.memories}
+    if native_keys.intersection(records):
+        raise ValueError("duplicate_memory_id")
+    records.update({key.casefold(): memory for key, memory in native.memories.items()})
     # A real source revision must still be compared to prior affected identities.
     prior_ids = set()
     for entry in state.get("revised_turns", []):
@@ -113,10 +119,13 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
     query_rows = []
     for event in evidence:
         query = event["text"]
-        scored = [(fulltext_score(memory, query), memory) for memory in records.values()
-                  if candidate_matches_query(memory, query)]
-        scored.sort(key=lambda item: (-item[0], item[1].memory_id))
-        query_rows.append([memory for _, memory in scored[:candidate_limit]])
+        # Separate local/native lanes so a long local topic cannot consume all
+        # candidate slots before a short native match gets a chance.
+        for is_native in (False, True):
+            scored = [(fulltext_score(memory, query), memory) for key, memory in records.items()
+                      if (key in native_keys) == is_native and candidate_matches_query(memory, query)]
+            scored.sort(key=lambda item: (-item[0], item[1].memory_id))
+            query_rows.append([memory for _, memory in scored[:candidate_limit]])
     # Reuse the pure retrieval functions, not service._search_unlocked(),
     # whose index accessor may rebuild files or recover compaction.
     seen = {memory.memory_id.casefold() for memory in chosen}
@@ -133,10 +142,14 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
     scopes = sorted({s for m in chosen for s in m.scopes} | set(boundary or []))
     scope_refs = {f"s{i}": s for i, s in enumerate(scopes, 1) if s not in {"global", "unscoped"}}
     targets = {f"m{i}": memory for i, memory in enumerate(chosen, 1)}
-    writable = {ref: boundary is None or set(memory.scopes) <= set(boundary) for ref, memory in targets.items()}
+    writable = {ref: memory.memory_id not in native.bindings and
+                (boundary is None or set(memory.scopes) <= set(boundary)) for ref, memory in targets.items()}
+    native_targets = {ref: native.bindings[memory.memory_id] for ref, memory in targets.items()
+                      if memory.memory_id in native.bindings}
     return PlanningSnapshot.build(evidence=evidence, targets=targets, scopes=scope_refs,
                                   write_scopes=boundary, writable=writable,
-                                  allow_new_scopes=allow_new_scopes)
+                                  allow_new_scopes=allow_new_scopes, native_targets=native_targets,
+                                  native_guard=native.guard if native.guard["sources"] else None)
 
 
 def prepare_incremental(service: Any, **arguments: Any) -> PlanningSnapshot:
@@ -164,4 +177,7 @@ def preview_incremental(service: Any, *, response: str | None = None,
     return {"mode": "preview", "snapshot_id": snapshot.snapshot_id,
             "request": {"system": INCREMENTAL_SYSTEM, "user": payload},
             "model_calls": 0, "memories_written": 0,
-            "limitations": ["native_comparison_not_integrated", "commit_not_integrated", "coverage_is_not_semantic_quality"]}
+            "native_comparison": {"status": "available" if snapshot.state().get("native_guard") else "no_eligible_sources",
+                                  "selected_fragments": sum("native" in t for t in snapshot.state()["targets"].values()),
+                                  "selection": "bounded_candidates", "read_only": True},
+            "limitations": ["native_conflict_coordination_not_automatic", "commit_not_integrated", "coverage_is_not_semantic_quality"]}

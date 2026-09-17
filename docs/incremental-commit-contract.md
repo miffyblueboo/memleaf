@@ -116,7 +116,7 @@ Staged turns cannot silently re-enter the legacy model pipeline on partial or
 I/O failure. Independent later turns remain schedulable. Source receipts use
 the common processed-turn ledger, contiguous local watermarks and configured
 `process.inbox_cleanup_hours`. Pending/partial work protects its source from old
-cleanup. Until G3c adds semantic closure, unresolved staged receipts retain this
+cleanup. Until selective recovery adds semantic closure, unresolved staged receipts retain this
 protection; old failures are not silently forgotten to make coverage complete.
 
 ## Retraction and Forget
@@ -139,8 +139,9 @@ counts and compiler-issue counts are distinct. `model_calls=0` refers to this
 Core API, not to the cost of a response generated externally. No semantic
 quality pass is inferred from complete coverage.
 
-Not enabled here: planner dispatch and shared normal-one-plus-one-recovery
-budget, semantic repair/replan, native-memory comparison, default agent-route
+G3c separately connects opt-in dispatch and the shared one-plus-one budget;
+G3d adds read-only native comparison through this same commit bridge. See their
+contracts. Still not enabled: semantic repair/replan, default agent-route
 replacement, general new-scope transactions, automatic unresolved-work closure,
 or real Flash/Windows/macOS host acceptance. These are not hidden behind an
 experimental success flag. Uncooperative external file writes are not made

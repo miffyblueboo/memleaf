@@ -54,6 +54,9 @@ def load_work(processed: dict[str, Any], work_id: str) -> dict[str, Any] | None:
             or type(work.get("receipt_settled")) is not bool
             or not isinstance(work.get("index_status"), str) or work["index_status"] not in {"dirty", "current"}):
         raise ValueError("invalid_incremental_work")
+    if work.get("native_guard") is not None:
+        from .incremental_native import validate_guard
+        validate_guard(work["native_guard"])
     refs, ids = set(), set()
     for e in work["evidence"]:
         if (not isinstance(e, dict) or not isinstance(e.get("ref"), str) or not e["ref"]
@@ -78,6 +81,11 @@ def load_work(processed: dict[str, Any], work_id: str) -> dict[str, Any] | None:
                 and (not isinstance(op.get("after"), str) or not op["after"]
                      or not isinstance(op.get("replacement_revision"), str))):
             raise ValueError("invalid_incremental_operation")
+        if "native" in op:
+            from .incremental_native import validate_binding
+            if op["action"] != "NO_CHANGE" or any(k in op for k in ("before", "after")):
+                raise ValueError("native_target_must_be_read_only")
+            validate_binding(op["native"], work.get("native_guard"), op["memory_id"])
         ids.add(op["operation_id"])
     return work
 
@@ -109,6 +117,8 @@ def public_result(work: dict[str, Any]) -> dict[str, Any]:
     operations = []
     for op in work["operations"]:
         operations.append({k: op[k] for k in ("operation_id", "action", "memory_id", "evidence", "state", "code") if k in op})
+        if "native" in op:
+            operations[-1]["native"] = True
         if op["state"] in {"applied", "settled"} and op["action"] in {"CREATE", "UPDATE"}:
             counts["applied"] += 1
         if op["state"] == "settled":
@@ -124,7 +134,8 @@ def public_result(work: dict[str, Any]) -> dict[str, Any]:
     return {"work_id": work["work_id"], "intent_id": work["intent_id"], "execution_status": status,
             "coverage_status": "partial" if unresolved else "complete", "operations": operations,
             "counts": counts, "issues": work["issues"], "index_status": work["index_status"], "model_calls": 0,
-            "limitations": ["native_comparison_not_integrated", "explicit_staged_commit", "semantic_quality_not_verified"]}
+            "native_comparison": work.get("native_comparison", {"status": "not_evaluated"}),
+            "limitations": ["native_conflict_coordination_not_automatic", "explicit_staged_commit", "semantic_quality_not_verified"]}
 
 
 def owned_turn_keys(processed: dict[str, Any], source: str, session_id: str) -> set[str]:
@@ -136,13 +147,44 @@ def owned_turn_keys(processed: dict[str, Any], source: str, session_id: str) -> 
             and w["session_id"] == session_id}
 
 
+def referenced_turn_keys(processed: dict[str, Any], source: str, session_id: str,
+                         event_keys: set[str]) -> set[str]:
+    """Protect actual context dependencies without claiming their ownership.
+
+    Old receipts have event keys but not per-event turn keys. Resolve them from
+    durable capture metadata; if a retained dependency has lost that mapping,
+    conservatively protect the known session instead of deleting its context.
+    """
+    events = processed.get("events", {})
+    if not isinstance(events, dict):
+        raise ValueError("invalid_capture_receipts")
+    result, unknown = set(), False
+    for key in event_keys:
+        event = events.get(key)
+        if (isinstance(event, dict) and event.get("source") == source
+                and event.get("session_id") == session_id and isinstance(event.get("turn_key"), str)):
+            result.add(event["turn_key"])
+        else:
+            unknown = True
+    if unknown:
+        state = processed.get("sessions", {}).get(f"{source}/{session_id}", {})
+        result.update(key for key in state.get("turns", {}) if isinstance(key, str))
+    return result
+
+
 def protected_turn_keys(processed: dict[str, Any], source: str, session_id: str) -> set[str]:
     works = processed.get(KEY, {})
     if not isinstance(works, dict):
         raise ValueError("invalid_incremental_ledger")
     from .incremental_run_state import owned_turns
-    return owned_turns(processed, source, session_id, protect=True) | {w["turn_key"] for key in works if (w := load_work(processed, key))["source"] == source
-            and w["session_id"] == session_id and public_result(w)["execution_status"] != "completed"}
+    result = owned_turns(processed, source, session_id, protect=True)
+    for key in works:
+        work = load_work(processed, key)
+        if work["source"] == source and work["session_id"] == session_id and public_result(work)["execution_status"] != "completed":
+            result.add(work["turn_key"])
+            result.update(referenced_turn_keys(processed, source, session_id,
+                                              {e["event_key"] for e in work["evidence"]}))
+    return result
 
 
 def reconcile_applied_unlocked(service: Any) -> None:

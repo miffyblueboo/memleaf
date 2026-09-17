@@ -69,7 +69,9 @@ class PlanningSnapshot:
     def build(cls, *, evidence: list[dict[str, Any]], targets: Mapping[str, Memory] | None = None,
               scopes: Mapping[str, str] | None = None, write_scopes: list[str] | None = None,
               writable: Mapping[str, bool] | None = None, request_kind: str = "automatic",
-              allow_new_scopes: bool = False, context_complete: bool = True) -> "PlanningSnapshot":
+              allow_new_scopes: bool = False, context_complete: bool = True,
+              native_targets: Mapping[str, dict[str, Any]] | None = None,
+              native_guard: dict[str, Any] | None = None) -> "PlanningSnapshot":
         if request_kind not in {"automatic", "explicit_remember"}:
             raise ValueError("invalid_request_kind")
         if type(allow_new_scopes) is not bool or type(context_complete) is not bool:
@@ -105,6 +107,9 @@ class PlanningSnapshot:
                 raise ValueError("invalid_write_boundary")
             for scope in write_scopes:
                 validate_scope_key(scope)
+        native_targets = native_targets or {}
+        if set(native_targets) - set(targets or {}):
+            raise ValueError("invalid_native_binding")
         target_values = {}
         identities = set()
         targets = targets or {}
@@ -125,9 +130,21 @@ class PlanningSnapshot:
             if type(permitted) is not bool:
                 raise ValueError("invalid_writable")
             target_values[ref] = {"memory": memory.to_dict(), "revision": revision_digest(memory), "writable": permitted}
+            if ref in native_targets:
+                from .incremental_native import validate_binding
+                validate_binding(native_targets[ref], native_guard, memory.memory_id)
+                if hashlib.sha256(memory.body.encode("utf-8")).hexdigest() != native_targets[ref]["content_hash"]:
+                    raise ValueError("invalid_native_content")
+                if permitted:
+                    raise ValueError("native_target_must_be_read_only")
+                target_values[ref]["native"] = deepcopy(native_targets[ref])
         state = {"protocol_version": PROTOCOL_VERSION, "evidence": evidence, "targets": target_values,
                  "scopes": scopes, "write_scopes": write_scopes, "request_kind": request_kind,
                  "allow_new_scopes": allow_new_scopes, "context_complete": context_complete}
+        if native_guard is not None:
+            from .incremental_native import validate_guard
+            validate_guard(native_guard)
+            state["native_guard"] = deepcopy(native_guard)
         payload = _json(state)
         if len(payload.encode("utf-8")) > MAX_BYTES:
             raise ValueError("blocked_context")
@@ -137,7 +154,8 @@ class PlanningSnapshot:
     def snapshot_id(self) -> str:
         state = self.state()
         # Read counters/formatting clocks are not business snapshot changes.
-        state["targets"] = {ref: {"revision": item["revision"], "writable": item["writable"]}
+        state["targets"] = {ref: {"revision": item["revision"], "writable": item["writable"],
+                                  **({"native": item["native"]} if "native" in item else {})}
                             for ref, item in state["targets"].items()}
         return hashlib.sha256(_json(state).encode("utf-8")).hexdigest()
 
@@ -157,6 +175,8 @@ class PlanningSnapshot:
             values = memory.get("scopes", ["global"])
             fields["scope"] = reverse_scope.get(values[0], values[0]) if len(values) == 1 else values
             fields.update(ref=ref, writable=target["writable"])
+            if "native" in target:
+                fields.update(native=True, agent=target["native"]["agent"])
             fields["observed"] = {
                 group: {key: value[key] for key in ("source_time", "source_sequence") if key in value}
                 for group, value in memory.get("field_basis", {}).items()
@@ -416,6 +436,8 @@ def compile_incremental(raw: str, snapshot: PlanningSnapshot) -> dict[str, Any]:
             if "target_ref" in row:
                 target = state["targets"][row["target_ref"]]
                 output.update(target=target["memory"]["memory_id"], expected_revision=target["revision"])
+                if "native" in target:
+                    output["native"] = deepcopy(target["native"])
             operations.append(output)
     supported = {ref for op in operations if op["action"] in {"CREATE", "UPDATE", "NO_CHANGE"} for ref in op["evidence"]}
     for op in list(operations):

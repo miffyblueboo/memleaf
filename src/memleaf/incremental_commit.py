@@ -12,6 +12,7 @@ import uuid
 from .incremental_journal import (VERSION, TERMINAL, digest, load_work, save_work, public_result, strip_payload)
 from .incremental_preview import _prepare_incremental_unlocked
 from .incremental_protocol import compile_incremental
+from .incremental_native import guard_current, validate_binding
 from .inbox import parse_inbox_file, source_ordered_turns
 from .index import turn_key
 from .memory_writer import MemoryWriter
@@ -133,7 +134,7 @@ def _settle_source(service, processed, work, *, source_valid):
     entry.update(pipeline="incremental-items-v1", processed_at=now)
     entry["incremental_work_ids"] = sorted(set(entry.get("incremental_work_ids", [])) | {work["work_id"]})
     entry["memory_ids"] = sorted(set(entry.get("memory_ids", [])) | {
-        op["memory_id"] for op in work["operations"] if op.get("memory_id") and op["state"] in {"applied", "settled"}})
+        op["memory_id"] for op in work["operations"] if op.get("memory_id") and "native" not in op and op["state"] in {"applied", "settled"}})
     keys = [e["event_key"] for e in work["evidence"] if e["use"] == "new"]
     if source_valid:
         entry["cleanup_event_keys"] = sorted(set(entry.get("cleanup_event_keys", [])) | set(entry.get("event_keys", [])) | set(keys))
@@ -158,6 +159,12 @@ def _settle_source(service, processed, work, *, source_valid):
 def _resume_unlocked(service, processed, work):
     writer = MemoryWriter(service)
     source_valid = _source_valid(service, processed, work)
+    native_valid = True
+    if any(op["state"] not in TERMINAL for op in work["operations"]):
+        try:
+            native_valid = guard_current(service, work["source"], work.get("native_guard"))
+        except ValueError:
+            native_valid = False
     try:
         for op in work["operations"]:
             if op["state"] in TERMINAL:
@@ -168,8 +175,8 @@ def _resume_unlocked(service, processed, work):
                 op["state"] = "settled"
                 strip_payload(op); save_work(service, processed, work)
                 continue
-            if not source_valid:
-                op.update(state="blocked", code="source_or_context_changed")
+            if not source_valid or not native_valid:
+                op.update(state="blocked", code="source_or_context_changed" if not source_valid else "native_context_changed")
                 strip_payload(op); save_work(service, processed, work)
                 continue
             try:
@@ -180,10 +187,15 @@ def _resume_unlocked(service, processed, work):
                     op["state"] = "settled"
                     strip_payload(op)
                 elif op["action"] == "NO_CHANGE":
-                    found = [r for r in service._read_memories_unlocked("knowledge")
-                             if r.memory.memory_id.casefold() == op["memory_id"].casefold()]
-                    if len(found) != 1 or revision_digest(found[0].memory) != op["expected_revision"]:
-                        raise MemoryVersionError("stale_incremental_target")
+                    if "native" in op:
+                        # Full-file and configuration guard was revalidated above.
+                        # Native fragments are never passed to MemoryWriter.
+                        validate_binding(op["native"], work.get("native_guard"), op["memory_id"])
+                    else:
+                        found = [r for r in service._read_memories_unlocked("knowledge")
+                                 if r.memory.memory_id.casefold() == op["memory_id"].casefold()]
+                        if len(found) != 1 or revision_digest(found[0].memory) != op["expected_revision"]:
+                            raise MemoryVersionError("stale_incremental_target")
                     op["state"] = "settled"
                 else:
                     op["state"] = "settled"
@@ -261,6 +273,10 @@ def apply_incremental(service: Any, *, response: str, expected_snapshot: str, in
                 "turn_index": selected.turn_index, "source_digest": input_digest(selected), "source_window": window,
                 "evidence": [{k: e[k] for k in ("ref", "event_key", "use")} for e in snapshot.state()["evidence"]],
                 "operations": operations, "issues": compiled["issues"], "receipt_settled": False,
+                "native_guard": snapshot.state().get("native_guard"),
+                "native_comparison": {"status": "available" if snapshot.state().get("native_guard") else "no_eligible_sources",
+                                      "selected_fragments": sum("native" in t for t in snapshot.state()["targets"].values()),
+                                      "selection": "bounded_candidates", "read_only": True},
                 "index_status": "dirty" if any(op["action"] in {"CREATE", "UPDATE"} and op["state"] == "prepared" for op in operations) else "current"}
         save_work(service, processed, work)
         return _resume_unlocked(service, processed, work)

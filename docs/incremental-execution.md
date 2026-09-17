@@ -68,8 +68,8 @@ Selective structural `repair` and changed-context `replan` are **not enabled** i
 this increment. `completed_with_unresolved` is not quality success, and a repeated
 invocation does not re-extract its successful rows. It retains its original
 remaining allowance for a later explicitly implemented recovery contract rather
-than resetting counts. Full G3 requires that contract, native comparison and
-host/model acceptance. No additional reviewer call is hidden under "recovery".
+than resetting counts. Native comparison is connected by G3d. Full G3 still requires selective recovery
+and host/model acceptance. No additional reviewer call is hidden under "recovery".
 
 ## Durable phases and correlation
 
@@ -156,6 +156,9 @@ The built-in HTTP adapter is tested with its POST replaced: payload settings and
 one call are checked without real network traffic.
 
 Passing deterministic tests is not live Flash semantic acceptance. Do not enable
-this route as the default until native comparison, selective unresolved recovery,
+this route as the default until selective unresolved recovery,
 new-scope transactions, explicit remember integration and the agreed real
 Hermes/Flash plus native Windows/macOS acceptance are complete.
+
+Read-only native comparison and pending context retention are described in
+[incremental-native-comparison.md](incremental-native-comparison.md).
