@@ -1,0 +1,84 @@
+name: Verify G3f reviewed batch (no release)
+on:
+  push:
+    branches: ['fix/g3f-import-20260917']
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      tree: ${{ steps.verify.outputs.tree }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --upgrade build
+      - name: Verify patch, source and distributions; upload Git objects only
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, bz2, hashlib, json, os, pathlib, subprocess, sys, tarfile, tempfile, urllib.request
+          root = pathlib.Path.cwd()
+          base = '9be3941b42daffc774e56c6c287f1591465d2e09'
+          expected = '6902a3d3234207ca973797d6772d549cb2787b93'
+          data = ''.join((root / '.g3f-review' / f'part{i}').read_text() for i in range(4))
+          patch = bz2.decompress(base64.b64decode(data, validate=True))
+          assert hashlib.sha256(patch).hexdigest() == '5b597532be12e585bfb06a31f63a281d599edb740de23fb1d31a19068dbc9bfe'
+          work = pathlib.Path(tempfile.mkdtemp()) / 'source'
+          subprocess.run(['git', 'worktree', 'add', '--detach', str(work), base], check=True)
+          def run(*args, cwd=work, env=None):
+              return subprocess.run(args, cwd=cwd, env=env, check=True)
+          subprocess.run(['git', 'apply', '--index', '-'], input=patch, cwd=work, check=True)
+          tree = subprocess.check_output(['git', 'write-tree'], cwd=work, text=True).strip()
+          assert tree == expected, (tree, expected)
+          def tests(code, testdir):
+              env = dict(os.environ, PYTHONPATH=str(code))
+              run(sys.executable, '-m', 'unittest', 'discover', '-s', str(testdir), '-p', 'test_*.py', env=env, cwd=work)
+          tests(work/'src', work/'tests_public')
+          run(sys.executable, '-m', 'build', '--wheel', '--sdist')
+          package = next((work/'dist').glob('*.tar.gz'))
+          unpacked = pathlib.Path(tempfile.mkdtemp())
+          with tarfile.open(package) as archive:
+              archive.extractall(unpacked, filter='data')
+          sdist = next(unpacked.iterdir())
+          tests(sdist/'src', sdist/'tests_public')
+          installed = pathlib.Path(tempfile.mkdtemp())
+          wheel = next((work/'dist').glob('*.whl'))
+          run(sys.executable, '-m', 'pip', 'install', '--no-deps', '--target', str(installed), str(wheel))
+          tests(installed, work/'tests_public')
+          for source in (work/'src/memleaf').rglob('*.py'):
+              rel=source.relative_to(work/'src')
+              assert source.read_bytes() == (installed/rel).read_bytes() == (sdist/'src'/rel).read_bytes()
+          prefix='https://api.github.com/repos/miffyblueboo/memleaf/git/'
+          def post(endpoint, payload):
+              req=urllib.request.Request(prefix+endpoint, data=json.dumps(payload).encode(), method='POST', headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'], 'Accept':'application/vnd.github+json', 'Content-Type':'application/json'})
+              with urllib.request.urlopen(req, timeout=60) as response: return json.load(response)
+          paths=subprocess.check_output(['git','diff','--cached','--name-only',base],cwd=work,text=True).splitlines()
+          assert len(paths)==17
+          entries=[]
+          for path in paths:
+              content=(work/path).read_bytes()
+              sha=hashlib.sha1(b'blob '+str(len(content)).encode()+b'\0'+content).hexdigest()
+              result=post('blobs', {'content':base64.b64encode(content).decode(), 'encoding':'base64'})
+              assert result['sha']==sha
+              entries.append({'path':path,'mode':'100644','type':'blob','sha':sha})
+          result=post('trees', {'base_tree':'dadcf03699c3bce714b389536b409a5f3dc0ad5a', 'tree':entries})
+          assert result['sha']==expected
+          with open(os.environ['GITHUB_OUTPUT'],'a') as output: output.write('tree='+expected+'\n')
+          print('438 tests passed on source, sdist and installed wheel; exact tree '+expected+'; no refs or releases modified.')
+          PY
+  verified:
+    needs: verify
+    runs-on: ubuntu-latest
+    name: verified-tree-${{ needs.verify.outputs.tree }}
+    steps:
+      - run: echo 'Verified G3f tree only. No publication.'
