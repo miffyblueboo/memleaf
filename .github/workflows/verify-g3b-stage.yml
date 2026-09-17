@@ -1,0 +1,65 @@
+name: Verify reviewed G3b (no release)
+on:
+  push:
+    branches: ["fix/g3b-push-staging-20260917"]
+permissions:
+  contents: write
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tree: ${{ steps.verify.outputs.tree }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 3d419e3c68334aaf582a891fc3202c935d742f60
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify reviewed patch, run tests and store tree only
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: src
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, json, base64, lzma, hashlib, subprocess, urllib.request
+          from pathlib import Path
+          repo = 'miffyblueboo/memleaf'
+          def api(path, data=None):
+              payload = None if data is None else json.dumps(data).encode()
+              req = urllib.request.Request('https://api.github.com/repos/'+repo+path, data=payload, headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'], 'Accept':'application/vnd.github+json', 'Content-Type':'application/json'})
+              with urllib.request.urlopen(req, timeout=60) as response:
+                  return json.load(response)
+          chunks = ['6e32a41cf8ed3633bc0468517a74d483e230bc4e','92205b724fb06bfcb8119b8169d695e47cdb893b','2728839c287293fb1886c67afd006e8868e422e7','a01ce9c085fc2114ccc794984cce267f1d51a7ac','688afa19e63d51d723fac450916ea2cc79ede3da']
+          encoded = b''.join(base64.b64decode(api('/git/blobs/'+sha)['content']) for sha in chunks)
+          patch = lzma.decompress(base64.b64decode(encoded, validate=True))
+          assert hashlib.sha256(patch).hexdigest() == '45bb0cf075e7dcb72d185f83f828f34e051029e0a00d8f73dcf4af9b60e3827b'
+          path = Path(os.environ['RUNNER_TEMP'])/'g3b.patch'; path.write_bytes(patch)
+          subprocess.run(['git','apply','--check','--index',str(path)],check=True)
+          subprocess.run(['git','apply','--index',str(path)],check=True)
+          tree = subprocess.check_output(['git','write-tree'],text=True).strip()
+          assert tree == 'd538af8d59fe872f60d46865df0f3a4620fd18dd', tree
+          subprocess.run(['python','-c', "import unittest,sys; s=unittest.defaultTestLoader.discover('tests_public',pattern='test_*.py'); assert s.countTestCases()==242; r=unittest.TextTestRunner(verbosity=2).run(s); sys.exit(not r.wasSuccessful())"], check=True)
+          paths = subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines()
+          assert len(paths)==15
+          entries=[]
+          for filename in paths:
+              content=Path(filename).read_bytes()
+              sha=api('/git/blobs',{'encoding':'base64','content':base64.b64encode(content).decode()})['sha']
+              assert sha==hashlib.sha1(('blob '+str(len(content))+'\0').encode()+content).hexdigest()
+              entries.append({'path':filename,'mode':'100644','type':'blob','sha':sha})
+          remote=api('/git/trees',{'base_tree':'5e51734c5e27b2999eef67291de3033edcbf11e4','tree':entries})['sha']
+          assert remote==tree
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out: out.write('tree='+tree+'\n')
+          print('242 tests passed. Exact reviewed tree stored; no branch, tag or release changed by this job.')
+          PY
+  verified:
+    needs: prepare
+    name: verified-tree-${{ needs.prepare.outputs.tree }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Reviewed G3b tree verified. No release requested.'
