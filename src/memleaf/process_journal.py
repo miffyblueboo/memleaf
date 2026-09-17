@@ -239,12 +239,17 @@ class ProcessJournal:
                 continue
             if self._processing_marker_live(state_value.get("processing"), now):
                 continue
+            from .incremental_journal import protected_turn_keys
+            state_source, _, state_session = state_key.partition("/")
+            protected = protected_turn_keys(processed, state_source, state_session)
             entries = state_value.get("processed_turns")
             if not isinstance(entries, list):
                 continue
             path = self._session_path_without_create(state_key)
             for entry_index, raw_entry in enumerate(entries):
                 if not isinstance(raw_entry, dict) or raw_entry.get("cleanup_done_at"):
+                    continue
+                if raw_entry.get("turn_key") in protected:
                     continue
                 if raw_entry.get("deferred_candidates") or raw_entry.get("deferred_evidence"):
                     continue
@@ -343,6 +348,9 @@ class ProcessJournal:
             sessions = processed.setdefault("sessions", {})
             snapshots: list[_Snapshot] = []
             for state_key, turns in grouped.items():
+                from .incremental_journal import owned_turn_keys
+                src, _, sid = state_key.partition("/")
+                owned = owned_turn_keys(processed, src, sid)
                 if source is not None and not state_key.startswith(f"{source}/"):
                     continue
                 if session_id is not None and state_key != _session_key(source or state_key.split("/", 1)[0], session_id):
@@ -361,6 +369,7 @@ class ProcessJournal:
                     for entry in processed_entries
                     if isinstance(entry, Mapping) and isinstance(entry.get("turn_key"), str)
                 }
+                processed_keys.update(owned)
                 processed_indices = {
                     _as_int(entry.get("turn_index"), -1)
                     for entry in processed_entries
@@ -402,13 +411,14 @@ class ProcessJournal:
                 )
                 deferred = [entry for entry in processed_entries
                     if isinstance(entry, dict)
+                    and entry.get("turn_key") not in owned
                     and (entry.get("deferred_candidates") or entry.get("deferred_evidence"))]
                 deferred.sort(key=lambda entry: _as_int(entry.get("turn_index"), 0))
                 revised_entries = state.get("revised_turns")
                 if not isinstance(revised_entries, list):
                     revised_entries = []
                 revised_entries = sorted(
-                    (entry for entry in revised_entries if isinstance(entry, Mapping)),
+                    (entry for entry in revised_entries if isinstance(entry, Mapping) and entry.get("turn_key") not in owned),
                     key=lambda entry: _as_int(entry.get("turn_index"), 0),
                 )
                 for entry in revised_entries:

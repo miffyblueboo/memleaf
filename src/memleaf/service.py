@@ -388,6 +388,22 @@ class Memleaf:
 
         return Compactor(self).compact(model=model, router=router)
 
+    def apply_incremental(self, *, response: str, expected_snapshot: str, intent_id: str,
+                          source: str, session_id: str, turn_id: str, scope: Any = None,
+                          priority_memory_ids=(), candidate_limit: int = 12,
+                          allow_new_scopes: bool = False) -> dict[str, Any]:
+        """Explicit staged commit; never calls a model or changes the default route."""
+        from .incremental_commit import apply_incremental
+        return apply_incremental(self, response=response, expected_snapshot=expected_snapshot,
+                                 intent_id=intent_id, source=source, session_id=session_id,
+                                 turn_id=turn_id, scope=scope, priority_memory_ids=priority_memory_ids,
+                                 candidate_limit=candidate_limit, allow_new_scopes=allow_new_scopes)
+
+    def resume_incremental(self, work_id: str) -> dict[str, Any]:
+        """Resume frozen operations of a known staged work, not a new model plan."""
+        from .incremental_commit import resume_incremental
+        return resume_incremental(self, work_id)
+
     @contextmanager
     def _mutation_boundary(self):
         """Serialize permanent changes after recovering interrupted maintenance.
@@ -398,6 +414,8 @@ class Memleaf:
         """
         with self.vault.lock():
             self._recover_compaction_unlocked()
+            from .incremental_journal import reconcile_applied_unlocked
+            reconcile_applied_unlocked(self)
             yield
 
     def _recover_compaction_unlocked(self) -> None:
@@ -496,6 +514,17 @@ class Memleaf:
 
     def _read_tags_index_unlocked(self) -> dict:
         self._recover_compaction_unlocked()
+        from .incremental_journal import KEY, load_work
+        from .process_common import _read_processed
+        processed = _read_processed(self.vault.processed_state_path)
+        works = processed.get(KEY, {})
+        if not isinstance(works, dict):
+            raise ValueError("invalid_incremental_ledger")
+        if any(load_work(processed, key)["index_status"] != "current" for key in works):
+            return build_tags_index(
+                [r.memory for r in self._read_memories_unlocked("knowledge") if r.memory.validity == "valid"],
+                [r.memory for r in self._read_memories_unlocked("history")],
+            )
         try:
             value = read_json(self.vault.tags_index_path)
             if not isinstance(value, dict):
@@ -754,7 +783,7 @@ class Memleaf:
                 "revision": revision or version,
             }
             structured_fields = structured_fields or {}
-            for name in ("assignee", "waiting_on", "due_text", "due_anchor"):
+            for name in ("assignee", "waiting_on", "due_text", "due_anchor", "due_status"):
                 if name in structured_fields:
                     result[name] = structured_fields[name]
             return result

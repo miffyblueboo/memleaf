@@ -152,7 +152,7 @@ class PlanningSnapshot:
             memory = target["memory"]
             fields = {key: deepcopy(memory[key]) for key in (
                 "type", "title", "body", "status", "validity", "assignee", "waiting_on",
-                "due_date", "due_text", "completed_at",
+                "due_date", "due_text", "due_status", "completed_at",
             ) if key in memory}
             values = memory.get("scopes", ["global"])
             fields["scope"] = reverse_scope.get(values[0], values[0]) if len(values) == 1 else values
@@ -401,8 +401,16 @@ def compile_incremental(raw: str, snapshot: PlanningSnapshot) -> dict[str, Any]:
                 for index, row in members:
                     problem(index, str(error) if isinstance(error, ValueError) else "invalid_target_state", row)
                 continue
+        updated = next((op for op in reversed(operations) if op["action"] == "UPDATE"
+                        and any(row.get("target_ref") in state["targets"]
+                                and state["targets"][row["target_ref"]]["memory"]["memory_id"] == op.get("target")
+                                for _, row in members)), None)
+        if updated is not None:
+            for _, row in members:
+                if row["action"] == "NO_CHANGE":
+                    updated["evidence"] = list(dict.fromkeys(updated["evidence"] + row["evidence"]))
         for index, row in members:
-            if row["action"] in {"CREATE", "UPDATE"}:
+            if row["action"] in {"CREATE", "UPDATE"} or (updated is not None and row["action"] == "NO_CHANGE"):
                 continue
             output = {k: v for k, v in row.items() if k not in {"target_ref", "basis"}}
             if "target_ref" in row:

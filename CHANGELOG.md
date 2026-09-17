@@ -4,6 +4,10 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Stage explicit incremental apply/resume APIs on the shared MemoryWriter, freezing target groups, source/revision checks and NO_MEMORY/NO_CHANGE decisions. Default model routes remain unchanged.
+- Recover interrupted history/head/index/source-receipt work without reallocating IDs; protect staged sources from legacy re-extraction/cleanup and cancel shared-source pending plaintext before Forget.
+- Add 55 public commit/recovery regressions, including real process exit, concurrent replay and ten receipt-write fault boundaries. Preserve 187 existing tests; native comparison, new-scope transactions and model dispatch remain separate stages.
+
 - Add the staged, read-only incremental-items-v1 request/response compiler and Python preview API. Preserve target state with grouped patches, explicit scope/lifecycle checks and evidence-anchored calendar conversion. This does not enable a new production planner, call models, settle evidence or change package version.
 
 - Order known, non-overlapping source-turn windows before processing without changing capture IDs; advance only contiguous local receipt watermarks so capped batches and interrupted runs do not skip pending turns.

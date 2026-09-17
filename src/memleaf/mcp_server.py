@@ -530,7 +530,7 @@ def _read_page_result(value: Any) -> dict[str, Any] | None:
         result["validity"] = validity
     if "revision" in value:
         result["revision"] = revision
-    for name in ("assignee", "waiting_on", "due_text"):
+    for name in ("assignee", "waiting_on", "due_text", "due_status"):
         field = value.get(name)
         if field is not None and not isinstance(field, str):
             raise ValueError(f"invalid read {name}")

@@ -557,6 +557,58 @@ class MemoryWriter:
         atomic_write_text(path, desired.to_markdown())
         return desired
 
+    def frozen_state_applied_unlocked(self, operation: Mapping[str, Any]) -> bool:
+        """Prove the complete frozen replacement; a source ID is not sufficient."""
+        from .turn_plan import revision_digest
+        after = Memory.from_markdown(operation["after"])
+        if (after.memory_id != operation["memory_id"]
+                or after.extra.get("incremental_operation_id") != operation["operation_id"]
+                or revision_digest(after) != operation["replacement_revision"]):
+            raise ValueError("invalid_frozen_state")
+        records = [r for r in self.service._read_memories_unlocked("knowledge")
+                   if r.memory.memory_id.casefold() == after.memory_id.casefold()]
+        # A duplicate ID is not proof. The per-target writer reports its conflict.
+        return len(records) == 1 and revision_digest(records[0].memory) == operation["replacement_revision"]
+
+    def write_frozen_unlocked(self, operation: Mapping[str, Any]) -> str:
+        """Use shared history/head primitives for one authorized frozen group.
+
+        Caller owns the Vault lock and durable operation receipt. Missing UPDATE
+        targets never become CREATEs; later edits never inherit stale patches.
+        """
+        from .turn_plan import revision_digest
+        from .models import MemoryVersionError
+        after = Memory.from_markdown(operation["after"])
+        before = Memory.from_markdown(operation["before"]) if operation.get("before") is not None else None
+        action = operation["action"]
+        if (action not in {"CREATE", "UPDATE"} or after.memory_id != operation["memory_id"]
+                or after.extra.get("incremental_operation_id") != operation["operation_id"]
+                or revision_digest(after) != operation["replacement_revision"]
+                or (action == "CREATE" and before is not None)
+                or (action == "UPDATE" and (before is None or before.memory_id != after.memory_id
+                    or revision_digest(before) != operation.get("expected_revision")))):
+            raise ValueError("invalid_frozen_state")
+        records = [r for r in self.service._read_memories_unlocked("knowledge")
+                   if r.memory.memory_id.casefold() == after.memory_id.casefold()]
+        if len(records) > 1:
+            raise ValueError("duplicate_memory_id")
+        record = records[0] if records else None
+        if record is not None and revision_digest(record.memory) == operation["replacement_revision"]:
+            return "applied"
+        if action == "UPDATE" and (record is None or revision_digest(record.memory) != operation["expected_revision"]):
+            raise MemoryVersionError("stale_incremental_target")
+        if action == "CREATE" and record is not None:
+            raise MemoryVersionError("incremental_create_collision")
+        path = record.path if record is not None else self.service.vault.memory_path(after.memory_id, "knowledge")
+        if path.is_symlink() or (record is None and path.exists()):
+            raise ValueError("unsafe_or_invalid_target_file")
+        if before is not None:
+            self._write_history(before, superseded_by=after.memory_id, archived_at=operation["prepared_at"],
+                                invalidated_reason="retracted" if after.validity == "retracted" else None)
+            after.hit_count, after.last_hit_at = record.memory.hit_count, record.memory.last_hit_at
+        atomic_write_text(path, after.to_markdown())
+        return "applied"
+
     def write_many_unlocked(self, requests: list[Mapping[str, Any]], *, now: str) -> list[Memory]:
         """Write a prevalidated batch; no index rebuild is performed here."""
 
