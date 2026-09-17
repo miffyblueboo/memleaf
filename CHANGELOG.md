@@ -4,6 +4,8 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Make public query completeness and Vault-wide pending progress explicit. Isolate malformed/duplicate records, use current Markdown for candidate lookup, freeze Todo query clocks across pages, and expose a read-only state-retention capacity inventory. No state collection, model calls, prompt changes or default pipeline activation.
+
 - Add opt-in incremental routing to existing text remember and MCP remember, using one typed user source and the shared selected-retention runner. Preserve caller policy, stable intent, source time, scope, cleanup isolation and zero-call recovery; retain legacy defaults.
 - Refuse damaged processed control state in both capture and execution instead of resetting authority and request evidence to an empty ledger.
 

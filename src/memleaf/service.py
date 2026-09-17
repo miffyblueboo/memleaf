@@ -43,6 +43,7 @@ from .retrieval import (
     filter_by_scope,
     fulltext_score,
     inherited_scopes,
+    memory_scope_rank,
     matching_index_terms,
     normalize_term,
     RetrievalError,
@@ -56,6 +57,8 @@ from .scope_state import (
     validate_scope_registry,
 )
 from .vault import Vault, safe_component
+from .query_scan import scan_memories, ensure_scan_current
+from .query_progress import observe_progress
 
 
 @dataclass
@@ -142,9 +145,9 @@ def _page_fingerprint(value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _encode_page_cursor(kind: str, fingerprint: str, offset: int) -> str:
+def _encode_page_cursor(kind: str, fingerprint: str, offset: int, clock: dict | None = None) -> str:
     payload = json.dumps(
-        {"kind": kind, "fingerprint": fingerprint, "offset": offset},
+        {"kind": kind, "fingerprint": fingerprint, "offset": offset, **({"clock": clock} if clock else {})},
         ensure_ascii=True,
         separators=(",", ":"),
     ).encode("ascii")
@@ -776,13 +779,15 @@ class Memleaf:
     def read(self, memory_id: str, *, include_history: bool = False) -> Optional[Memory]:
         safe_component(memory_id, "memory id")
         with self.vault.lock():
-            self._recover_compaction_unlocked()
-            matches = self._find_records_unlocked(memory_id, include_history=include_history)
+            snapshot = scan_memories(self.vault, include_history)
+            snapshot.require_identity(memory_id)
+            matches = [r for r in snapshot.records if r.memory.memory_id == memory_id]
             if not matches:
                 return None
             memory = matches[0].memory
             if memory.validity == "retracted" and not include_history:
                 return None
+            ensure_scan_current(self.vault, snapshot)
             return memory
 
     def read_page(
@@ -831,7 +836,9 @@ class Memleaf:
                 raise MemoryVersionError("memory version mismatch")
             display = directory_entry(DirectoryEntry(memory_id, title, list(scopes)))
             total_chars = len(body)
-            if offset >= total_chars:
+            if offset > total_chars:
+                raise RetrievalError("invalid_offset", "offset exceeds the memory body length")
+            if offset == total_chars:
                 page_body = ""
                 next_offset = None
                 has_more = False
@@ -841,10 +848,15 @@ class Memleaf:
                 has_more = next_offset < total_chars
                 if not has_more:
                     next_offset = None
+            hit_status = "not_counted"
             if count_hit and offset == 0 and page_body and record is not None:
                 record.memory.hit_count += 1
                 record.memory.last_hit_at = utc_now()
-                atomic_write_text(record.path, record.memory.to_markdown())
+                try:
+                    atomic_write_text(record.path, record.memory.to_markdown())
+                    hit_status = "counted"
+                except OSError:
+                    hit_status = "unavailable"
             result = {
                 "memory_id": memory_id,
                 "title": display.title,
@@ -860,6 +872,7 @@ class Memleaf:
                 "due_date": due_date,
                 "validity": validity,
                 "revision": revision or version,
+                "read_accounting": hit_status,
             }
             structured_fields = structured_fields or {}
             for name in ("assignee", "waiting_on", "due_text", "due_anchor", "due_status"):
@@ -868,8 +881,9 @@ class Memleaf:
             return result
 
         with self.vault.lock():
-            self._recover_compaction_unlocked()
-            matches = self._find_records_unlocked(memory_id, include_history=include_history)
+            snapshot = scan_memories(self.vault, include_history)
+            snapshot.require_identity(memory_id)
+            matches = [r for r in snapshot.records if r.memory.memory_id == memory_id]
             if matches:
                 record = matches[0]
                 memory = record.memory
@@ -877,12 +891,13 @@ class Memleaf:
                     return None
                 from .turn_plan import revision_digest
 
-                return _page(
+                ensure_scan_current(self.vault, snapshot)
+                return {**_page(
                     title=memory.title,
                     scopes=list(memory.scopes),
                     body=memory.body,
                     version=_memory_version(memory),
-                    count_hit=record.area == "knowledge",
+                    count_hit=record.area == "knowledge" and record.account_ready,
                     memory_type=memory.type,
                     status=(memory.status or "active") if memory.type == "todo" else memory.status,
                     due_date=memory.due_date,
@@ -890,7 +905,7 @@ class Memleaf:
                     revision=revision_digest(memory),
                     structured_fields=memory.extra,
                     record=record,
-                )
+                ), **self._query_envelope(snapshot, scope=memory.scopes)}
 
             from .native_index import NativeIndexer
 
@@ -900,13 +915,19 @@ class Memleaf:
             title = native["title"]
             scopes = list(native["scopes"])
             body = native["body"]
-            return _page(
+            ensure_scan_current(self.vault, snapshot)
+            return {**_page(
                 title=title,
                 scopes=scopes,
                 body=body,
                 version=_native_version(memory_id, title, scopes, body),
                 count_hit=False,
-            )
+            ), **self._query_envelope(snapshot)}
+
+    def _query_envelope(self, snapshot, *, scope=None) -> dict[str, Any]:
+        return {"knowledge_generation": snapshot.generation,
+                "scan_status": snapshot.report(scope, self.vault.config()),
+                "pipeline_status": observe_progress(self.vault)}
 
     @staticmethod
     def _page_limit(value: int | None, default: int, maximum: int) -> int:
@@ -916,7 +937,7 @@ class Memleaf:
             raise ValueError("limit must be a positive integer")
         return min(value, maximum)
 
-    def _scope_catalog_entries_unlocked(self) -> list[dict[str, Any]]:
+    def _scope_catalog_entries_unlocked(self, records=None) -> list[dict[str, Any]]:
         """Build the scope map from registry and memory metadata only."""
 
         try:
@@ -948,7 +969,7 @@ class Memleaf:
 
         # A manually-created memory can introduce a valid scope before the
         # registry is updated.  Only its scope metadata is exposed here.
-        for record in self._read_memories_unlocked("knowledge"):
+        for record in records if records is not None else self._read_memories_unlocked("knowledge"):
             if record.memory.validity != "valid":
                 continue
             for raw_scope in record.memory.scopes:
@@ -987,6 +1008,7 @@ class Memleaf:
         start: int,
         limit: int,
         fingerprint: str,
+        envelope: dict | None = None,
     ) -> dict[str, Any]:
         selected: list[dict[str, Any]] = []
         index = start
@@ -1000,6 +1022,7 @@ class Memleaf:
                 else None
             )
             proposed = {
+                **(envelope or {}),
                 "scopes": selected + [candidate],
                 "has_more": has_more,
                 "next_cursor": next_cursor,
@@ -1016,6 +1039,7 @@ class Memleaf:
 
         has_more = index < len(entries)
         return {
+            **(envelope or {}),
             "scopes": selected,
             "has_more": has_more,
             "next_cursor": _encode_page_cursor("scope_catalog", fingerprint, index)
@@ -1028,20 +1052,23 @@ class Memleaf:
 
         page_limit = self._page_limit(limit, MAX_SCOPE_CATALOG_ITEMS, MAX_SCOPE_CATALOG_ITEMS)
         with self.vault.lock():
-            self._recover_compaction_unlocked()
-            entries = self._scope_catalog_entries_unlocked()
-            fingerprint = _page_fingerprint(entries)
+            snapshot = scan_memories(self.vault)
+            entries = self._scope_catalog_entries_unlocked(snapshot.area("knowledge"))
+            envelope = self._query_envelope(snapshot)
+            fingerprint = _page_fingerprint([entries, snapshot.generation])
             start = _decode_page_cursor(
                 cursor,
                 kind="scope_catalog",
                 fingerprint=fingerprint,
                 maximum=len(entries),
             )
+            ensure_scan_current(self.vault, snapshot)
             return self._bounded_catalog_page(
                 entries,
                 start=start,
                 limit=page_limit,
                 fingerprint=fingerprint,
+                envelope=envelope,
             )
 
     @staticmethod
@@ -1096,6 +1123,7 @@ class Memleaf:
         start: int,
         limit: int,
         fingerprint: str,
+        envelope: dict | None = None,
     ) -> dict[str, Any]:
         selected: list[dict[str, Any]] = []
         index = start
@@ -1108,6 +1136,7 @@ class Memleaf:
                 else None
             )
             proposed = {
+                **(envelope or {}),
                 "status": "found",
                 "results": selected + [candidates[index]],
                 "has_more": has_more,
@@ -1125,6 +1154,7 @@ class Memleaf:
 
         has_more = index < len(candidates)
         return {
+            **(envelope or {}),
             "status": "found",
             "results": selected,
             "has_more": has_more,
@@ -1156,7 +1186,7 @@ class Memleaf:
             query_value = list(query)
         scope_value = self._scope_query_values(scope)
         with self.vault.lock():
-            self._recover_compaction_unlocked()
+            snapshot = scan_memories(self.vault, include_history)
             # The candidate-directory API is the strict public lookup
             # boundary.  Legacy ``search``/``context`` and the processing
             # pipeline deliberately retain their existing scope inference
@@ -1175,6 +1205,7 @@ class Memleaf:
                 limit=None,
                 stable=True,
                 strict_candidates=True,
+                query_snapshot=snapshot,
             )
             records = [
                 record
@@ -1189,6 +1220,9 @@ class Memleaf:
                 include_history=include_history,
                 todo_status=todo_status,
             )
+            fingerprint = _page_fingerprint([fingerprint, snapshot.generation])
+            envelope = self._query_envelope(snapshot, scope=scope_value)
+            ensure_scan_current(self.vault, snapshot)
             start = _decode_page_cursor(
                 cursor,
                 kind="search_candidates",
@@ -1198,12 +1232,13 @@ class Memleaf:
             if not candidates:
                 if cursor is not None and start != 0:
                     raise RetrievalError("invalid_cursor", "retrieval cursor is invalid")
-                return {"status": "no_match", "results": [], "has_more": False, "next_cursor": None}
+                return {**envelope, "status": "no_match", "results": [], "has_more": False, "next_cursor": None}
         return self._bounded_search_page(
                 candidates,
                 start=start,
                 limit=page_limit,
                 fingerprint=fingerprint,
+                envelope=envelope,
             )
 
     @staticmethod
@@ -1227,6 +1262,8 @@ class Memleaf:
         start: int,
         limit: int,
         fingerprint: str,
+        envelope: dict | None = None,
+        clock: dict | None = None,
     ) -> dict[str, Any]:
         selected: list[dict[str, Any]] = []
         index = start
@@ -1234,11 +1271,12 @@ class Memleaf:
             next_index = index + 1
             has_more = next_index < len(candidates)
             next_cursor = (
-                _encode_page_cursor("active_todos", fingerprint, next_index)
+                _encode_page_cursor("active_todos", fingerprint, next_index, clock)
                 if has_more
                 else None
             )
             proposed = {
+                **(envelope or {}),
                 "status": "found",
                 "results": selected + [candidates[index]],
                 "has_more": has_more,
@@ -1252,10 +1290,11 @@ class Memleaf:
             index = next_index
         has_more = index < len(candidates)
         return {
+            **(envelope or {}),
             "status": "found",
             "results": selected,
             "has_more": has_more,
-            "next_cursor": _encode_page_cursor("active_todos", fingerprint, index) if has_more else None,
+            "next_cursor": _encode_page_cursor("active_todos", fingerprint, index, clock) if has_more else None,
         }
 
     def list_todos(
@@ -1269,6 +1308,8 @@ class Memleaf:
         include_unscheduled: bool = True,
         cursor: str | None = None,
         limit: int | None = None,
+        as_of: str | None = None,
+        timezone: str | None = None,
     ) -> dict[str, Any]:
         """Enumerate current todo memories globally, independent of source session or agent."""
 
@@ -1282,22 +1323,24 @@ class Memleaf:
             raise ValueError("due_from must not be after due_to")
         page_limit = self._page_limit(limit, MAX_SEARCH_CANDIDATE_ITEMS, MAX_SEARCH_CANDIDATE_ITEMS)
         scope_value = self._scope_query_values(scope)
+        from .query_clock import query_clock
+        clock = query_clock(cursor, as_of, timezone)
         with self.vault.lock():
-            self._recover_compaction_unlocked()
+            snapshot = scan_memories(self.vault, status != "active")
             active_records = [
                 record
-                for record in self._read_memories_unlocked("knowledge")
+                for record in snapshot.area("knowledge")
                 if record.memory.type == "todo" and record.memory.validity == "valid"
             ]
-            active_ids = {record.memory.memory_id.casefold() for record in active_records}
+            active_ids = {record.memory.memory_id.casefold() for record in snapshot.area("knowledge")}
             records = list(active_records)
             if status in {"completed", "cancelled", "all"}:
                 records.extend(
                     record
-                    for record in self._read_memories_unlocked("history")
+                    for record in snapshot.area("history")
                     if record.memory.type == "todo"
                     and record.memory.extra.get("invalidated_reason") == "todo_closed"
-                    and str(record.memory.extra.get("active_memory_id", "")).casefold() not in active_ids
+                    and str(record.memory.extra.get("active_memory_id", "")).casefold() not in active_ids | snapshot.ambiguous
                 )
             if scope_value is not None:
                 try:
@@ -1306,11 +1349,12 @@ class Memleaf:
                     raise RetrievalError("invalid_scope", "todo scope is invalid") from error
                 if not requested:
                     raise RetrievalError("invalid_scope", "todo scope is invalid")
-                ranked = filter_by_scope([record.memory for record in records], requested, self.vault.config())
-                allowed_ids = {memory.memory_id for memory, _rank in ranked}
-                records = [record for record in records if record.memory.memory_id in allowed_ids]
+                # Complete enumeration is not a same-title relevance overlay.
+                allowed = inherited_scopes(requested, self.vault.config())
+                records = [r for r in records if memory_scope_rank(r.memory, allowed) >= 0]
 
-            today = date.today()
+            today = date.fromisoformat(clock["as_of"])
+            unresolved_dates = unscheduled_dates = 0
             filtered: list[tuple[tuple[Any, ...], _Record]] = []
             for record in records:
                 memory = record.memory
@@ -1319,6 +1363,10 @@ class Memleaf:
                     continue
                 parsed_due = self._todo_date(memory.due_date, "due_date") if memory.due_date is not None else None
                 if parsed_due is None:
+                    if memory.extra.get("due_text") and memory.extra.get("due_status") != "cleared":
+                        unresolved_dates += 1
+                    else:
+                        unscheduled_dates += 1
                     if not include_unscheduled:
                         continue
                     sort_key = (3, date.max, memory.title.casefold(), memory.memory_id)
@@ -1356,6 +1404,8 @@ class Memleaf:
                         "due_to": due_to,
                         "include_overdue": include_overdue,
                         "include_unscheduled": include_unscheduled,
+                        "clock": clock,
+                        "generation": snapshot.generation,
                     },
                     "records": [
                         {
@@ -1366,10 +1416,13 @@ class Memleaf:
                     ],
                 }
             )
+            envelope = {**self._query_envelope(snapshot, scope=scope_value), "query_clock": clock,
+                        "date_counts": {"unresolved": unresolved_dates, "unscheduled": unscheduled_dates}}
+            ensure_scan_current(self.vault, snapshot)
             start = _decode_page_cursor(cursor, kind="active_todos", fingerprint=fingerprint, maximum=len(candidates))
             if not candidates:
-                return {"status": "no_match", "results": [], "has_more": False, "next_cursor": None}
-            return self._bounded_todo_page(candidates, start=start, limit=page_limit, fingerprint=fingerprint)
+                return {**envelope, "status": "no_match", "results": [], "has_more": False, "next_cursor": None}
+            return self._bounded_todo_page(candidates, start=start, limit=page_limit, fingerprint=fingerprint, envelope=envelope, clock=clock)
 
     @staticmethod
     def _scope_query_values(scope: str | Iterable[str] | None) -> str | list[str] | None:
@@ -1419,6 +1472,7 @@ class Memleaf:
         stable: bool = False,
         strict_candidates: bool = False,
         include_retracted: bool = False,
+        query_snapshot=None,
     ) -> list[_Record]:
         if isinstance(query, str):
             query_value: str | list[str] = query
@@ -1433,11 +1487,20 @@ class Memleaf:
         if todo_status not in ("active", "completed", "cancelled", "all"):
             raise ValueError("invalid todo status")
 
-        index = self._read_tags_index_unlocked()
-        active_records = self._read_memories_unlocked("knowledge")
-        history_records = self._read_memories_unlocked("history") if include_history else []
+        if query_snapshot is None:
+            index = self._read_tags_index_unlocked()
+            active_records = self._read_memories_unlocked("knowledge")
+            history_records = self._read_memories_unlocked("history") if include_history else []
+        else:
+            active_records = query_snapshot.area("knowledge")
+            history_records = query_snapshot.area("history")
+            index = build_tags_index([r.memory for r in active_records], [r.memory for r in history_records])
+        from collections import Counter
+        claims = Counter(r.memory.memory_id.casefold() for r in active_records + history_records)
         by_id: dict[str, _Record] = {}
         for record in active_records + history_records:
+            if claims[record.memory.memory_id.casefold()] != 1:
+                continue
             if record.memory.validity == "retracted" and not include_retracted:
                 continue
             by_id.setdefault(record.memory.memory_id, record)

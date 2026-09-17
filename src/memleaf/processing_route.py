@@ -315,7 +315,9 @@ def health_view(vault) -> dict[str, Any]:
                 "reserved_requests": run["reserved_requests"]}
                for run in runs if run["status"] != "completed"]
     live = owner_live(state)
-    return {"configured_pipeline": select_pipeline(vault.config()),
+    from .query_progress import retention_inventory
+    return {"retention_inventory": retention_inventory(vault),
+            "configured_pipeline": select_pipeline(vault.config()),
             "incremental": {"retained_runs": len(runs), "retained_by_status": dict(statuses),
                             "owner_live": live, "pending_commits": pending_commits,
                             "unresolved_runs": details[:MAX_RESULT_ROWS],

@@ -248,6 +248,8 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                 "scope": _text_or_texts_schema(),
                 "due_from": {"type": "string"},
                 "due_to": {"type": "string"},
+                "as_of": {"type": "string", "description": "Fixed query date YYYY-MM-DD; continuation retains first-page date."},
+                "timezone": {"type": "string", "description": "IANA timezone; UTC when omitted on the first page."},
                 "include_overdue": {"type": "boolean"},
                 "include_unscheduled": {"type": "boolean"},
                 "cursor": {"type": "string"},
@@ -473,6 +475,46 @@ def _directory_result(value: Any) -> list[dict[str, Any]]:
     return result
 
 
+def _query_metadata(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the small observation envelope; never pass arbitrary state."""
+    result: dict[str, Any] = {}
+    generation = value.get("knowledge_generation")
+    if generation is not None:
+        if not isinstance(generation, str) or len(generation) != 64 or any(c not in "0123456789abcdef" for c in generation):
+            raise ValueError("invalid knowledge generation")
+        result["knowledge_generation"] = generation
+    scan = value.get("scan_status")
+    if scan is not None:
+        if (not isinstance(scan, Mapping) or not isinstance(scan.get("status"), str) or scan.get("status") not in {"complete", "partial"}
+                or type(scan.get("issue_count")) is not int or scan["issue_count"] < 0
+                or not isinstance(scan.get("codes"), Mapping) or len(scan["codes"]) > 8
+                or not isinstance(scan.get("areas"), list) or len(scan["areas"]) > 2
+                or any(not isinstance(a, str) or a not in {"knowledge", "history"} for a in scan["areas"])):
+            raise ValueError("invalid scan status")
+        allowed = {"unsafe_path", "unreadable_path", "scan_limit", "scan_changed", "invalid_memory", "duplicate_id"}
+        if any(k not in allowed or type(v) is not int or v < 1 for k, v in scan["codes"].items()):
+            raise ValueError("invalid scan diagnostic")
+        if sum(scan["codes"].values()) != scan["issue_count"] or (scan["status"] == "complete") != (scan["issue_count"] == 0):
+            raise ValueError("inconsistent scan status")
+        result["scan_status"] = {k: _jsonable(scan[k]) for k in ("status", "issue_count", "codes", "areas")}
+    pipeline = value.get("pipeline_status")
+    if pipeline is not None:
+        if not isinstance(pipeline, Mapping) or not isinstance(pipeline.get("status"), str) or pipeline.get("status") not in {"current", "pending", "unknown"} or pipeline.get("scope") != "vault":
+            raise ValueError("invalid pipeline status")
+        projection = {"status": pipeline["status"], "scope": "vault"}
+        for key in ("pending_turns", "incomplete_turns", "pending_commits", "unresolved_runs", "queued_jobs"):
+            if key in pipeline:
+                if type(pipeline[key]) is not int or pipeline[key] < 0:
+                    raise ValueError("invalid pipeline count")
+                projection[key] = pipeline[key]
+        if "code" in pipeline:
+            if pipeline["code"] != "control_state_unavailable":
+                raise ValueError("invalid pipeline code")
+            projection["code"] = pipeline["code"]
+        result["pipeline_status"] = projection
+    return result
+
+
 def _read_page_result(value: Any) -> dict[str, Any] | None:
     """Keep MCP read responses to the bounded page contract."""
 
@@ -543,6 +585,11 @@ def _read_page_result(value: Any) -> dict[str, Any] | None:
             result[name] = field
     if "due_anchor" in value:
         result["due_anchor"] = _jsonable(value.get("due_anchor"))
+    result.update(_query_metadata(value))
+    if "read_accounting" in value:
+        if not isinstance(value["read_accounting"], str) or value["read_accounting"] not in {"counted", "not_counted", "unavailable"}:
+            raise ValueError("invalid read accounting")
+        result["read_accounting"] = value["read_accounting"]
     return result
 
 
@@ -561,7 +608,7 @@ def _catalog_result(value: Any) -> dict[str, Any]:
         if not isinstance(aliases, list) or not all(isinstance(alias, str) for alias in aliases):
             raise ValueError("invalid scope aliases")
         entries.append({"scope": entry["scope"], "parent": parent, "aliases": aliases})
-    return {"scopes": entries, **_paging_fields(value)}
+    return {"scopes": entries, **_paging_fields(value), **_query_metadata(value)}
 
 
 def _paging_fields(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -595,7 +642,7 @@ def _search_result(value: Any) -> dict[str, Any]:
     paging = _paging_fields(value)
     if not results and paging["has_more"]:
         raise ValueError("empty page cannot have more results")
-    return {"status": value["status"], "results": results, **paging}
+    return {"status": value["status"], "results": results, **paging, **_query_metadata(value)}
 
 
 def _jsonable(value: Any) -> Any:
