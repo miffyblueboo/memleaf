@@ -4,6 +4,8 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Avoid reparsing unchanged validated Markdown during public-query rechecks. Re-enumerate and re-read current bytes before reusing immutable request-local fingerprints; retain malformed/duplicate isolation and all existing change/bound checks. Add an isolated synthetic query benchmark without model calls, persistent cache or default changes.
+
 - Add a plan-first, explicitly budgeted isolated multi-turn acceptance utility with twelve public synthetic regression trajectories. Keep expected assertions out of model inputs, preserve private evidence traces, and separate structural, semantic and host/migration gates; no default activation or live calls during delivery.
 - Expose bounded returned-model metadata from the configured compatible adapter for acceptance without changing its request route or retaining hidden reasoning. Replace obsolete acceptance requirements for the legacy Gate/review chain with the current incremental contract.
 

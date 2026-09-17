@@ -11,7 +11,7 @@ import json
 import os
 import stat
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +49,15 @@ class ScanIssue:
     identity: str | None = None
 
 
+@dataclass(frozen=True)
+class _ValidatedFile:
+    """Request-local proof for exact bytes, never a persisted or stat-only cache."""
+    raw_digest: str
+    token: str
+    scopes: tuple[str, ...]
+    identity: str
+
+
 @dataclass
 class QueryScan:
     records: list[ScanRecord]
@@ -56,6 +65,9 @@ class QueryScan:
     ambiguous: set[str]
     generation: str
     areas: tuple[str, ...]
+    # Immutable parse facts, not the mutable Memory/ScanRecord shown to callers.
+    # Retained only until this observation has been checked before returning.
+    _validated: dict[tuple[str, str], _ValidatedFile] = field(default_factory=dict, repr=False, compare=False)
 
     def area(self, name: str) -> list[ScanRecord]:
         return [r for r in self.records if r.area == name]
@@ -119,10 +131,21 @@ def markdown_paths(root: Path, area: str) -> tuple[list[Path], list[ScanIssue]]:
 
 
 def scan_memories(vault, include_history: bool = False) -> QueryScan:
+    return _scan_memories(vault, include_history)
+
+
+def _scan_memories(vault, include_history: bool, *,
+                   reuse: dict[tuple[str, str], _ValidatedFile] | None = None) -> QueryScan:
+    """Recheck every path and byte; reuse only a matching validated parse.
+
+    A verification scan needs fingerprints/claims, not a second set of Memory
+    objects. Changed bytes and every malformed record use the normal parser.
+    """
     areas = ("knowledge", "history") if include_history else ("knowledge",)
     records: list[ScanRecord] = []
     issues: list[ScanIssue] = []
     stamps = []
+    validated: dict[tuple[str, str], _ValidatedFile] = {}
     total = 0
     claims: dict[str, list[tuple[str, tuple[str, ...] | None]]] = defaultdict(list)
     for area in areas:
@@ -154,6 +177,13 @@ def scan_memories(vault, include_history: bool = False) -> QueryScan:
                 if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
                         after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
                     raise ValueError("scan_changed")
+                cached = reuse.get((area, locator)) if reuse is not None else None
+                if cached is not None and cached.raw_digest == raw_digest:
+                    # This shortcut occurs after all normal path, type, size,
+                    # open-file identity and before/after change checks.
+                    claims[cached.identity.casefold()].append((locator, cached.scopes))
+                    stamps.append((area, locator, cached.token))
+                    continue
                 meta, body = parse_frontmatter(raw.decode("utf-8"))
                 candidate = meta.get("memory_id", path.stem)
                 if isinstance(candidate, str):
@@ -184,7 +214,9 @@ def scan_memories(vault, include_history: bool = False) -> QueryScan:
                 stable.pop("hit_count", None)
                 stable.pop("last_hit_at", None)
                 token = digest(stable)
-                records.append(ScanRecord(memory, path, area, account_ready=ready))
+                if reuse is None:
+                    records.append(ScanRecord(memory, path, area, account_ready=ready))
+                    validated[(area, locator)] = _ValidatedFile(raw_digest, token, scopes, identity)
                 stamps.append((area, locator, token))
             except (OSError, UnicodeError, ValueError, TypeError, OverflowError, RecursionError) as error:
                 code = str(error) if str(error) in {"unsafe_path", "scan_limit", "scan_changed"} else "invalid_memory"
@@ -198,11 +230,11 @@ def scan_memories(vault, include_history: bool = False) -> QueryScan:
             issues.append(ScanIssue("duplicate_id", locator, scopes, identity))
     records = [r for r in records if r.memory.memory_id.casefold() not in ambiguous]
     generation = digest({"files": stamps, "issues": [(i.code, i.locator, i.scopes) for i in issues]})
-    return QueryScan(records, issues, ambiguous, generation, areas)
+    return QueryScan(records, issues, ambiguous, generation, areas, validated)
 
 
 def ensure_scan_current(vault, snapshot: QueryScan) -> None:
     """One bounded recheck, never an unbounded retry or repair."""
-    latest = scan_memories(vault, "history" in snapshot.areas)
+    latest = _scan_memories(vault, "history" in snapshot.areas, reuse=snapshot._validated)
     if latest.generation != snapshot.generation:
         raise RetrievalError("scan_changed", "memory files changed during retrieval; repeat query")
