@@ -223,23 +223,41 @@ def compact_runtime_state(service: Any, *, dry_run: bool = True, expected_revisi
             raise ValueError("runtime_state_changed")
         result.update(read_only=False, execution_status="completed", applied_files=[])
         paths = _paths(service)
+
+        def verify_current(expected):
+            # Once apply has started, preserve verified earlier replacements
+            # even when a later observation fails. Raw I/O details stay private.
+            try:
+                observed = {name: _bytes(path) for name, path in paths.items()}
+            except (OSError, ValueError) as error:
+                result.update(execution_status="interrupted", code="runtime_state_observation_failed")
+                raise RuntimeRetentionError(result) from error
+            if observed != expected:
+                result.update(execution_status="interrupted", code="runtime_state_changed")
+                raise RuntimeRetentionError(result)
+            return observed
+
         for key, value in changes.items():
             # Detect edits to either dependency before each replacement. This
             # does not claim atomicity against an uncooperative external editor.
             expected = {name: encoded[name] if name in result["applied_files"] else old for name, old in raw.items()}
-            if expected != {name: _bytes(path) for name, path in paths.items()}:
-                result.update(execution_status="interrupted", code="runtime_state_changed")
-                raise RuntimeRetentionError(result)
+            verify_current(expected)
             try:
                 atomic_write_json(paths[key], value)
             except OSError as error:
                 try:
-                    if _bytes(paths[key]) == encoded[key]:
+                    observed = _bytes(paths[key])
+                    if observed == encoded[key]:
                         result["applied_files"].append(key)
+                    elif observed != expected[key]:
+                        result.setdefault("uncertain_files", []).append(key)
                 except (OSError, ValueError):
-                    pass
+                    result.setdefault("uncertain_files", []).append(key)
                 result.update(execution_status="interrupted", code="runtime_state_write_failed")
                 raise RuntimeRetentionError(result) from error
             result["applied_files"].append(key)
-        result["state_revision"] = _plan_revision({key: _bytes(path) for key, path in paths.items()}, max_records)
+        # A final read is evidence, not just a new revision token: compare it
+        # with the exact intended state, including no-op applies.
+        expected = {name: encoded.get(name, old) for name, old in raw.items()}
+        result["state_revision"] = _plan_revision(verify_current(expected), max_records)
         return result

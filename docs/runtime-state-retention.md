@@ -131,6 +131,27 @@ changed. A second exact comparison before each write detects edits to either
 file during preparation. Uncooperative external editors can still write after
 that comparison; the existing Vault lock is not a universal OS write barrier.
 
+### Final observation and interrupted receipts
+
+After apply begins, read/validation failures between replacements or at final
+verification return `RuntimeRetentionError.result`, including already confirmed
+`applied_files`. They do not discard that history behind a plain I/O exception.
+The public code is `runtime_state_observation_failed`; raw exceptions, local paths
+and credentials are not copied into the CLI result.
+
+The final observation must equal the intended post-compaction bytes, including
+when there was no physical work to perform. A detected change reports
+`runtime_state_changed`; it is not accepted merely as a new completed revision.
+External bytes are preserved. This final comparison still cannot detect an edit
+after it completes, and it does not make the two files atomic.
+
+When a write raises and readback cannot establish its outcome, `uncertain_files`
+lists the affected control-file labels. An empty `applied_files` alone is not
+proof that nothing was written. `changed_files` remains the planned write set,
+not the confirmed set. On interruption, inspect again: `state_revision` does not
+certify a new completed state. Fresh preview/apply can finish only the remaining
+physical work, while original memory decisions and replay responses stay intact.
+
 ## Compatibility and verification
 
 New codecs are supported by all current run/commit readers, so the same public

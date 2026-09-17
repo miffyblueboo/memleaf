@@ -4,6 +4,8 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Preserve runtime-maintenance partial outcomes when dependency/final observation fails, verify the final intended control bytes instead of accepting any new revision, and report uncertain write outcomes explicitly. Reuse the existing lossless receipt codec, budget retirement and replay contracts; no extra cleanup policy or model calls.
+
 - Add explicit, preview-first lossless terminal control-state compaction. Seal only proven completed run/commit receipts, preserve their exact decisions and cancellation behavior, and release active slots without deleting authorization. Keep bounded historical receipts readable through versioned, size-limited encoding; leave unresolved work and source/permission state intact.
 - Retain completed source-work budget counts under capacity pressure instead of evicting them and reopening the same work. Preserve legacy job ambiguity and independent new authorization; bound retired counters and reject damaged or oversized state. Default extraction routes, main prompt and package version stay unchanged.
 
