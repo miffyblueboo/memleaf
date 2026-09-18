@@ -1,4 +1,4 @@
-"""Local, deterministic active-memory compaction."""
+"""Explicit body-only compaction with deterministic metadata and rollback."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,10 +15,9 @@ from typing import Any, Iterable, Mapping
 from .llm import CallableBackend, ModelError, ModelRouter, ModelUnavailable
 from .locking import atomic_unlink, atomic_write_json, atomic_write_text, read_json
 from .models import Memory, utc_now
-from .source_policy import merge_memory_provenance, merge_sources
-from .retention import RetentionManager, RetentionError
 from .prompts import COMPACT_SYSTEM, compact_prompt
-from .validation import ModelOutputError, parse_compact_output
+from .validation import COMPACT_MAX_BYTES, COMPACT_MAX_ITEMS, ModelOutputError, parse_compact_output
+from .query_scan import scan_memories, ensure_scan_current
 from .vault import safe_component
 
 
@@ -394,8 +394,11 @@ class Compactor:
 
     def _snapshot(self, threshold: int, ratio: float) -> tuple[list[_Candidate], list[_Candidate], int]:
         with self.service._mutation_boundary():
+            snapshot = scan_memories(self.service.vault)
+            if snapshot.issues:
+                raise CompactionError("compaction requires a complete current-memory scan")
             candidates: list[_Candidate] = []
-            for record in self.service._read_memories_unlocked("knowledge"):
+            for record in snapshot.area("knowledge"):
                 if record.memory.validity != "valid":
                     continue
                 try:
@@ -411,40 +414,24 @@ class Compactor:
                         tokens=estimate_memory_tokens(record.memory),
                     )
                 )
+            ensure_scan_current(self.service.vault, snapshot)
             active_tokens = sum(item.tokens for item in candidates)
             if active_tokens < threshold or not candidates:
                 return [], candidates, active_tokens
             ordered = sorted(candidates, key=self._candidate_sort_key)
-            count = max(1, math.ceil(len(ordered) * ratio))
+            count = min(COMPACT_MAX_ITEMS, max(1, math.ceil(len(ordered) * ratio)))
             return ordered[:count], candidates, active_tokens
 
     @staticmethod
     def _prompt_memory(candidate: _Candidate) -> dict[str, Any]:
         value = _content_mapping(candidate.memory)
         value["memory_id"] = candidate.memory.memory_id
+        value["validity"] = candidate.memory.validity
+        for key in ("assignee", "waiting_on", "due_text"):
+            if key in candidate.memory.extra:
+                value[key] = deepcopy(candidate.memory.extra[key])
         return value
 
-    @staticmethod
-    def _canonical_candidate(source_candidates: list[_Candidate]) -> _Candidate:
-        if not source_candidates:
-            raise CompactionError("compaction replacement has no sources")
-        # Preserve the identity with the strongest prior user/reference value.
-        # Ties choose the oldest stable identity, then lexical ID.
-        def key(candidate: _Candidate) -> tuple[int, int, datetime, str]:
-            memory = candidate.memory
-            created = _parse_time(memory.created) or datetime.max.replace(tzinfo=timezone.utc)
-            return (
-                0 if memory.extra.get("explicit_remember") is True else 1,
-                -memory.hit_count,
-                created,
-                memory.memory_id.casefold(),
-            )
-        return min(source_candidates, key=key)
-
-    @classmethod
-    def _replacement_id(cls, summary: Mapping[str, Any], source_candidates: list[_Candidate]) -> str:
-        del summary
-        return cls._canonical_candidate(source_candidates).memory.memory_id
 
     @staticmethod
     def _history_id(source: Memory, replacement_id: str, source_hash: str) -> str:
@@ -459,28 +446,6 @@ class Compactor:
         return f"hist-{digest[:24]}"
 
 
-    @staticmethod
-    def _merge_sources(memories: Iterable[Memory]) -> list[dict[str, Any]]:
-        """Compatibility projection using the shared bounded provenance policy."""
-
-        return merge_memory_provenance(memories)[0]
-
-    @staticmethod
-    def _first_created(memories: Iterable[Memory], now: str) -> str:
-        values = [memory.created for memory in memories if isinstance(memory.created, str) and memory.created]
-        return min(values) if values else now
-
-    @staticmethod
-    def _last_hit(memories: Iterable[Memory]) -> str | None:
-        values = [
-            (_parse_time(memory.last_hit_at), memory.last_hit_at)
-            for memory in memories
-            if isinstance(memory.last_hit_at, str) and _parse_time(memory.last_hit_at) is not None
-        ]
-        if not values:
-            return None
-        return max(values, key=lambda item: item[0])[1]
-
     def _build_replacement(
         self,
         summary: Mapping[str, Any],
@@ -488,74 +453,34 @@ class Compactor:
         *,
         now: str,
     ) -> _Replacement:
-        source_memories = [candidate.memory for candidate in source_candidates]
-        source_ids = tuple(memory.memory_id for memory in source_memories)
-        canonical = self._canonical_candidate(source_candidates).memory
-        replacement_id = self._replacement_id(summary, source_candidates)
-        status = summary.get("status")
-        if summary["type"] == "todo" and status is None:
-            status = "active"
-        sources, source_metadata = merge_memory_provenance(source_memories)
-        extra = dict(canonical.extra)
-        extra.update(source_metadata)
-        extra.update({
-            "compaction_source_ids": list(source_ids),
-            "compacted_at": now,
-        })
-        if any(memory.extra.get("explicit_remember") is True for memory in source_memories):
-            extra["explicit_remember"] = True
-        memory = Memory(
-            memory_id=replacement_id,
-            title=summary["title"],
-            body=summary["body"],
-            tags=list(summary["tags"]),
-            type=summary["type"],
-            scopes=list(summary["scopes"]),
-            scope_source=summary["scope_source"],
-            aliases=list(summary["aliases"]),
-            keywords=list(summary["keywords"]),
-            sources=sources,
-            created=canonical.created,
-            updated=now,
-            hit_count=sum(memory.hit_count for memory in source_memories),
-            last_hit_at=self._last_hit(source_memories),
-            status=status,
-            completed_at=summary.get("completed_at"),
-            due_date=summary.get("due_date"),
-            validity="valid",
-            extra=extra,
-        )
+        if len(source_candidates) != 1:
+            raise CompactionError("body compaction cannot merge memory identities")
+        source = source_candidates[0]
+        if source.memory.validity != "valid":
+            raise CompactionError("body compaction cannot restore a retracted memory")
+        # Clone the whole current record: never reconstruct state from a model
+        # summary or apply schema defaults to omitted protected fields.
+        memory = deepcopy(source.memory)
+        memory.body = summary["body"]
+        memory.updated = now
+        memory.extra["compaction_source_ids"] = [memory.memory_id]
+        memory.extra["compacted_at"] = now
         raw = memory.to_markdown()
         return _Replacement(
             memory=memory,
             raw=raw,
-            source_ids=source_ids,
-            source_tokens=sum(candidate.tokens for candidate in source_candidates),
-            replacement_tokens=estimate_memory_tokens(summary),
+            source_ids=(memory.memory_id,),
+            source_tokens=source.tokens,
+            replacement_tokens=estimate_memory_tokens(memory),
         )
 
     @staticmethod
-    def _memory_content_equal(left: Memory, right: Memory) -> bool:
-        ignored_extra = {"compacted_at", "archived_at"}
-        left_extra = {key: value for key, value in left.extra.items() if key not in ignored_extra}
-        right_extra = {key: value for key, value in right.extra.items() if key not in ignored_extra}
-        return (
-            left.memory_id == right.memory_id
-            and left.title == right.title
-            and left.body == right.body
-            and left.tags == right.tags
-            and left.type == right.type
-            and left.scopes == right.scopes
-            and left.scope_source == right.scope_source
-            and left.aliases == right.aliases
-            and left.keywords == right.keywords
-            and left.sources == right.sources
-            and left.status == right.status
-            and left.completed_at == right.completed_at
-            and left.due_date == right.due_date
-            and left.validity == right.validity
-            and left_extra == right_extra
-        )
+    def _protected_content(memory: Memory) -> dict[str, Any]:
+        value = deepcopy(memory.to_dict())
+        for key in ("body", "updated", "compacted_at", "compaction_source_ids"):
+            value.pop(key, None)
+        return value
+
 
     def _preflight(
         self,
@@ -571,6 +496,11 @@ class Compactor:
             if replacement.memory.memory_id in replacement_ids:
                 raise CompactionError("duplicate compaction replacement id")
             replacement_ids.add(replacement.memory.memory_id)
+            if len(replacement.source_ids) != 1:
+                raise CompactionError("body compaction cannot merge memory identities")
+            source = selected_by_id.get(replacement.source_ids[0])
+            if source is None or self._protected_content(source.memory) != self._protected_content(replacement.memory):
+                raise CompactionError("compaction changed protected memory metadata")
             if replacement.memory.memory_id not in replacement.source_ids:
                 raise CompactionError("compaction replacement must preserve one source identity")
             if replacement.memory.memory_id not in active_ids:
@@ -607,15 +537,17 @@ class Compactor:
         replacements: list[_Replacement] = []
         for summary in output["memories"]:
             source_ids = tuple(summary["source_memory_ids"])
-            if summary.get("type") == "todo" and len(source_ids) != 1:
-                raise CompactionError("independent todos cannot be merged by compaction")
+            if len(source_ids) != 1:
+                raise CompactionError("body compaction cannot merge memory identities")
             try:
                 source_candidates = [by_id[source_id.casefold()] for source_id in source_ids]
             except KeyError as error:
                 raise CompactionError("compaction source is outside the snapshot") from error
-            if any(candidate.memory.type != summary.get("type") for candidate in source_candidates):
-                raise CompactionError("compaction cannot change memory type")
+            if summary["body"] == source_candidates[0].memory.body:
+                continue
             replacement = self._build_replacement(summary, source_candidates, now=now)
+            if len(replacement.raw.encode("utf-8")) >= len(source_candidates[0].raw.encode("utf-8")):
+                raise CompactionError("compaction replacement does not reduce stored bytes")
             if replacement.replacement_tokens >= replacement.source_tokens:
                 raise CompactionError("compaction replacement is not smaller than its sources")
             replacements.append(replacement)
@@ -629,9 +561,8 @@ class Compactor:
         now: str,
     ) -> tuple[str, Memory, str]:
         history_id = self._history_id(source.memory, replacement.memory.memory_id, source.raw_hash)
-        extra = dict(source.memory.extra)
-        history_sources, source_metadata = merge_sources([], source.memory.sources, extra=extra)
-        extra.update(source_metadata)
+        extra = deepcopy(source.memory.extra)
+        history_sources = deepcopy(source.memory.sources)
         extra.update(
             {
                 "reason": "compaction",
@@ -666,21 +597,6 @@ class Compactor:
         )
         return history_id, historical, historical.to_markdown()
 
-    def _write_history(self, source: _Candidate, replacement: _Replacement, *, now: str) -> str:
-        history_id, historical, raw = self._history_payload(source, replacement, now=now)
-        path = self.service.vault.memory_path(history_id, "history")
-        if path.is_symlink():
-            raise CompactionError("unsafe compaction history path")
-        if path.exists():
-            try:
-                current = Memory.from_markdown(path.read_text(encoding="utf-8"), path)
-            except (OSError, UnicodeError, ValueError) as error:
-                raise CompactionError("existing compaction history is invalid") from error
-            if not self._memory_content_equal(current, historical):
-                raise CompactionError("compaction history id collision")
-        else:
-            atomic_write_text(path, raw)
-        return history_id
 
     def _commit(
         self,
@@ -693,11 +609,14 @@ class Compactor:
         replacement_ids = [replacement.memory.memory_id for replacement in replacements]
         selected_by_id = {candidate.memory.memory_id: candidate for candidate in selected}
         with self.service._mutation_boundary():
-            current_active = self.service._read_memories_unlocked("knowledge")
+            current_scan = scan_memories(self.service.vault)
+            if current_scan.issues:
+                raise CompactionError("current-memory scan changed during compaction")
+            current_active = current_scan.area("knowledge")
             current_by_id = {record.memory.memory_id: record for record in current_active}
             for candidate in selected:
                 record = current_by_id.get(candidate.memory.memory_id)
-                if record is None:
+                if record is None or record.path != candidate.path:
                     raise CompactionError("active memory changed during compaction")
                 try:
                     raw = record.path.read_text(encoding="utf-8")
@@ -705,6 +624,7 @@ class Compactor:
                     raise CompactionError("cannot read active memory during commit") from error
                 if _sha256(raw) != candidate.raw_hash:
                     raise CompactionError("active memory changed during compaction")
+            ensure_scan_current(self.service.vault, current_scan)
             self._preflight(selected, all_active, replacements)
 
             history_payloads: list[tuple[_Candidate, _Replacement, str, str]] = []
@@ -820,21 +740,26 @@ class Compactor:
     def _run(self, *, model: Any = None, router: Any = None, explicit: bool) -> dict[str, Any]:
         threshold, ratio = self._config()
         now = _clock_now(getattr(self.service, "clock", None))
-        try:
-            retention = RetentionManager(self.service).maintain(now)
-        except RetentionError as error:
-            if explicit:
-                raise CompactionError("retention maintenance failed") from error
-            return {"status": "failed", "error": "retention maintenance failed"}
         selected, all_active, active_tokens = self._snapshot(threshold, ratio)
         result = self._base_result(selected, all_active, active_tokens, threshold, ratio)
-        result["retention"] = retention
+        result["retention"] = {"status": "not_run", "reason": "separate_maintenance"}
+        result["backend_calls"] = 0
         if not selected:
             return result
         try:
-            backend = self._resolve_backend(model=model, router=router)
+            # The rollback journal stores canonical paths. Reject relocated
+            # targets before dispatch rather than writing another copy by ID.
+            for candidate in selected:
+                if candidate.path != self.service.vault.memory_path(candidate.memory.memory_id, "knowledge"):
+                    raise CompactionError("compaction target has a noncanonical path")
             prompt = compact_prompt([self._prompt_memory(candidate) for candidate in selected])
+            request_bytes = len(prompt.encode("utf-8")) + len(COMPACT_SYSTEM.encode("utf-8"))
+            if request_bytes > COMPACT_MAX_BYTES:
+                raise CompactionError("compaction input exceeds size limit")
+            result["request_bytes"] = request_bytes
+            backend = self._resolve_backend(model=model, router=router)
             try:
+                result["backend_calls"] += 1
                 raw = backend.complete(
                     prompt,
                     system=COMPACT_SYSTEM,
@@ -854,6 +779,9 @@ class Compactor:
                 result["status"] = "noop"
                 return result
             replacements = self._build_plan(output, selected, now=now)
+            if not replacements:
+                result["status"] = "noop"
+                return result
             self._preflight(selected, all_active, replacements)
             history_ids, replacement_ids = self._commit(
                 selected,
@@ -870,6 +798,9 @@ class Compactor:
                     "compacted": sum(len(replacement.source_ids) for replacement in replacements),
                     "replacements": replacement_ids,
                     "history_written": history_ids,
+                    "record_bytes_before": sum(len(c.raw.encode("utf-8")) for c in selected
+                        if c.memory.memory_id in replacement_ids),
+                    "record_bytes_after": sum(len(r.raw.encode("utf-8")) for r in replacements),
                 }
             )
             return result

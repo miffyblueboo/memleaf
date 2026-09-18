@@ -379,18 +379,13 @@ SCOPE_GROUNDING_CORRECTION = (
 )
 
 
-COMPACT_SYSTEM = """You are memleaf's memory compactor. Return JSON only.
-Merge only the supplied low-priority memories when they express compatible
-information. Return an object with a memories array; [] is a safe no-op.
-Each replacement must contain title, body, tags, type, scopes, scope_source,
-aliases, keywords, and source_memory_ids. A todo may also contain status, completed_at,
-and due_date; never merge multiple independent todo source memories into one replacement. source_memory_ids must be a
-non-empty, non-overlapping subset of the supplied memory IDs. Do not include
-memory IDs, sources, timestamps, counters, or history fields; the core creates
-those. Never consume or alter a supplied memory that is not named by a
-replacement, and only propose a replacement whose local token estimate is
-smaller than its consumed sources."""
-
+COMPACT_SYSTEM = """Shorten each supplied memory body independently, preserving its meaning,
+including qualifications, negation, quantities and unresolved points. Metadata
+is read-only context. Do not merge memories or infer new facts. Omit a memory
+when its body cannot be safely shortened.
+Return only {"memories":[{"source_memory_ids":["exact supplied ID"],"body":"shorter body"}]}.
+Each item names exactly one supplied ID, used at most once. No other fields.
+An empty memories array means no change."""
 
 
 def _gate_event_metadata(events: list[dict]) -> list[dict]:
@@ -508,7 +503,7 @@ def summarize_prompt(
 
 def compact_prompt(memories: list[dict]) -> str:
     return (
-        "Only these selected active memories are visible to this compaction call:\n"
+        "These selected current memories are available for independent body shortening:\n"
         + _json(memories)
         + "\nReturn the strict compaction JSON object with a memories array."
     )

@@ -4,6 +4,8 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Restrict explicit memory compaction to independent body-only proposals. Preserve the complete original identity, state, deadlines, responsibility, provenance and custom fields; remove multi-ID merging and unrelated pre-compaction retention. Bound model inputs and keep existing rollback journals compatible.
+
 - Compare native-file ctime stability within path and descriptor observations separately: Windows CPython 3.12 can report creation time and metadata-change time through different APIs. Preserve cross-API identity/size/mtime checks, whole-content guards, and per-file bounded reads. Repair the LF-to-CRLF test fixture without skipping native platforms or weakening change detection.
 
 - Size inspection reads from each opened regular file, not the entire remaining Vault budget. Keep full-byte snapshot comparisons and reject detected growth, truncation or in-read metadata changes; avoid a roughly 256 MiB temporary allocation for tiny files during migration/audit/backup checks. No model calls, schema/default changes or release.
