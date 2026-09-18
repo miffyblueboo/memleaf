@@ -405,17 +405,19 @@ s.update_memory('m',expected_revision=sys.argv[2],patch={'status':'completed'})
 
     def test_process_exit_after_head_does_not_duplicate_on_restart(self):
         code='''import os,sys
+from pathlib import Path
 from memleaf import Memleaf
 import memleaf.memory_writer as m
 s=Memleaf(sys.argv[1]);original=m.atomic_write_text
 def stop(*a,**k):
  original(*a,**k)
- if str(a[0]).endswith("knowledge/m.md"): os._exit(72)
+ if Path(a[0]) == s.vault.memory_path('m'): os._exit(72)
 m.atomic_write_text=stop
 s.update_memory('m',expected_revision=sys.argv[2],patch={'status':'completed'})
 '''
         result=subprocess.run([sys.executable,'-c',code,str(self.s.vault.root),self.rev],capture_output=True,timeout=30)
         self.assertEqual(result.returncode,72,result.stderr.decode(errors='replace'))
+        self.assertTrue(self.journal().exists())
         self.assertEqual(self.head().status,'completed')
         self.s=Memleaf(self.s.vault.root);self.call({'status':'completed'})
         self.assertEqual(len(self.history()),1);self.assertFalse(self.journal().exists())
