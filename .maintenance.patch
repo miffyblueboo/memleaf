@@ -1,0 +1,213 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,6 +3,10 @@
+ All notable changes to memleaf are documented here.
+ 
+ ## Unreleased
++
++- Fix native-file observation on Windows by comparing ctime within path and handle observations, while preserving cross-observation identity/size/mtime checks. Normalize the CRLF test fixture before converting line endings; do not skip Windows checks.
++
++- Narrow explicit business-body compaction to one existing record per replacement. Copy the complete protected snapshot; do not default completed tasks to active or erase deadlines. Accept unchanged legacy echoes, reject identity merges and protected-field drift, and retain version-1 rollback recovery.
+ 
+ - Gate future releases on native installed-artifact contract checks: build once, bind wheel/sdist and test inventory, then verify independent installations on Ubuntu/Python 3.11-3.13 and Windows/macOS Python 3.12. Include packaged Provider resources, real stdio/lock/restart checks and explicit failure on skipped or source-shadowed tests. This is deterministic validation, not live-model or installed-Hermes acceptance; defaults, prompt and version stay unchanged.
+ 
+diff --git a/src/memleaf/compaction.py b/src/memleaf/compaction.py
+--- a/src/memleaf/compaction.py
++++ b/src/memleaf/compaction.py
+@@ -1,4 +1,4 @@
+-"""Local, deterministic active-memory compaction."""
++"""Explicit body-only compaction with deterministic commit and legacy recovery."""
+ 
+ from __future__ import annotations
+ 
+@@ -16,8 +16,10 @@
+ from .models import Memory, utc_now
+ from .source_policy import merge_memory_provenance, merge_sources
+ from .retention import RetentionManager, RetentionError
+-from .prompts import COMPACT_SYSTEM, compact_prompt
+-from .validation import ModelOutputError, parse_compact_output
++from .body_compaction import (
++    BODY_COMPACT_SYSTEM, body_compact_prompt, parse_body_compact_output, replacement_memory,
++)
++from .validation import ModelOutputError
+ from .vault import safe_component
+ 
+ 
+@@ -395,7 +397,12 @@
+     def _snapshot(self, threshold: int, ratio: float) -> tuple[list[_Candidate], list[_Candidate], int]:
+         with self.service._mutation_boundary():
+             candidates: list[_Candidate] = []
++            seen_ids: set[str] = set()
+             for record in self.service._read_memories_unlocked("knowledge"):
++                identity = record.memory.memory_id.casefold()
++                if identity in seen_ids:
++                    raise CompactionError("ambiguous compaction memory identity")
++                seen_ids.add(identity)
+                 if record.memory.validity != "valid":
+                     continue
+                 try:
+@@ -422,6 +429,9 @@
+     def _prompt_memory(candidate: _Candidate) -> dict[str, Any]:
+         value = _content_mapping(candidate.memory)
+         value["memory_id"] = candidate.memory.memory_id
++        for field in ("assignee", "waiting_on", "due_text"):
++            if field in candidate.memory.extra:
++                value[field] = candidate.memory.extra[field]
+         return value
+ 
+     @staticmethod
+@@ -488,50 +498,18 @@
+         *,
+         now: str,
+     ) -> _Replacement:
+-        source_memories = [candidate.memory for candidate in source_candidates]
+-        source_ids = tuple(memory.memory_id for memory in source_memories)
+-        canonical = self._canonical_candidate(source_candidates).memory
+-        replacement_id = self._replacement_id(summary, source_candidates)
+-        status = summary.get("status")
+-        if summary["type"] == "todo" and status is None:
+-            status = "active"
+-        sources, source_metadata = merge_memory_provenance(source_memories)
+-        extra = dict(canonical.extra)
+-        extra.update(source_metadata)
+-        extra.update({
+-            "compaction_source_ids": list(source_ids),
+-            "compacted_at": now,
+-        })
+-        if any(memory.extra.get("explicit_remember") is True for memory in source_memories):
+-            extra["explicit_remember"] = True
+-        memory = Memory(
+-            memory_id=replacement_id,
+-            title=summary["title"],
+-            body=summary["body"],
+-            tags=list(summary["tags"]),
+-            type=summary["type"],
+-            scopes=list(summary["scopes"]),
+-            scope_source=summary["scope_source"],
+-            aliases=list(summary["aliases"]),
+-            keywords=list(summary["keywords"]),
+-            sources=sources,
+-            created=canonical.created,
+-            updated=now,
+-            hit_count=sum(memory.hit_count for memory in source_memories),
+-            last_hit_at=self._last_hit(source_memories),
+-            status=status,
+-            completed_at=summary.get("completed_at"),
+-            due_date=summary.get("due_date"),
+-            validity="valid",
+-            extra=extra,
+-        )
++        if len(source_candidates) != 1:
++            raise CompactionError("body compaction cannot merge memory identities")
++        canonical = source_candidates[0].memory
++        source_ids = (canonical.memory_id,)
++        memory = replacement_memory(canonical, summary, now=now)
+         raw = memory.to_markdown()
+         return _Replacement(
+             memory=memory,
+             raw=raw,
+             source_ids=source_ids,
+             source_tokens=sum(candidate.tokens for candidate in source_candidates),
+-            replacement_tokens=estimate_memory_tokens(summary),
++            replacement_tokens=estimate_memory_tokens(memory),
+         )
+ 
+     @staticmethod
+@@ -607,15 +585,15 @@
+         replacements: list[_Replacement] = []
+         for summary in output["memories"]:
+             source_ids = tuple(summary["source_memory_ids"])
+-            if summary.get("type") == "todo" and len(source_ids) != 1:
+-                raise CompactionError("independent todos cannot be merged by compaction")
++            if len(source_ids) != 1:
++                raise CompactionError("body compaction cannot merge memory identities")
+             try:
+                 source_candidates = [by_id[source_id.casefold()] for source_id in source_ids]
+             except KeyError as error:
+                 raise CompactionError("compaction source is outside the snapshot") from error
+-            if any(candidate.memory.type != summary.get("type") for candidate in source_candidates):
+-                raise CompactionError("compaction cannot change memory type")
+             replacement = self._build_replacement(summary, source_candidates, now=now)
++            if replacement.memory.body == source_candidates[0].memory.body:
++                continue
+             if replacement.replacement_tokens >= replacement.source_tokens:
+                 raise CompactionError("compaction replacement is not smaller than its sources")
+             replacements.append(replacement)
+@@ -694,6 +672,9 @@
+         selected_by_id = {candidate.memory.memory_id: candidate for candidate in selected}
+         with self.service._mutation_boundary():
+             current_active = self.service._read_memories_unlocked("knowledge")
++            identities = [record.memory.memory_id.casefold() for record in current_active]
++            if len(identities) != len(set(identities)):
++                raise CompactionError("ambiguous compaction memory identity")
+             current_by_id = {record.memory.memory_id: record for record in current_active}
+             for candidate in selected:
+                 record = current_by_id.get(candidate.memory.memory_id)
+@@ -833,11 +814,11 @@
+             return result
+         try:
+             backend = self._resolve_backend(model=model, router=router)
+-            prompt = compact_prompt([self._prompt_memory(candidate) for candidate in selected])
++            prompt = body_compact_prompt([self._prompt_memory(candidate) for candidate in selected])
+             try:
+                 raw = backend.complete(
+                     prompt,
+-                    system=COMPACT_SYSTEM,
++                    system=BODY_COMPACT_SYSTEM,
+                     purpose="compact",
+                     temperature=0.0,
+                 )
+@@ -849,11 +830,14 @@
+                 raise ModelError("compaction model failed") from error
+             if not isinstance(raw, str):
+                 raise ModelError("compaction model returned non-text output")
+-            output = parse_compact_output(raw, [candidate.memory.memory_id for candidate in selected])
++            output = parse_body_compact_output(raw, [candidate.memory.memory_id for candidate in selected])
+             if not output["memories"]:
+                 result["status"] = "noop"
+                 return result
+             replacements = self._build_plan(output, selected, now=now)
++            if not replacements:
++                result["status"] = "noop"
++                return result
+             self._preflight(selected, all_active, replacements)
+             history_ids, replacement_ids = self._commit(
+                 selected,
+diff --git a/src/memleaf/incremental_native.py b/src/memleaf/incremental_native.py
+--- a/src/memleaf/incremental_native.py
++++ b/src/memleaf/incremental_native.py
+@@ -48,10 +48,15 @@
+         raise ValueError("native_source_missing") from None
+     except OSError:
+         raise ValueError("native_source_unreadable") from None
+-    signature = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
++    # Windows may expose creation time via lstat and metadata-change time
++    # via fstat as ctime. Compare each clock only to its same-origin sample;
++    # file identity, size and last-write time must still agree across all four.
++    signature = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns)
+     if len(data) > MAX_NATIVE_BYTES:
+         raise ValueError("native_source_too_large")
+     if (any(signature(s) != signature(before) for s in (opened, finished, after))
++            or before.st_ctime_ns != after.st_ctime_ns
++            or opened.st_ctime_ns != finished.st_ctime_ns
+             or len(data) != before.st_size or not stat.S_ISREG(after.st_mode)):
+         raise ValueError("native_source_changed_during_read")
+     return data
+diff --git a/tests_public/test_query_scan_reuse.py b/tests_public/test_query_scan_reuse.py
+--- a/tests_public/test_query_scan_reuse.py
++++ b/tests_public/test_query_scan_reuse.py
+@@ -84,8 +84,11 @@
+         self.assertEqual(self.snapshot().generation, before.generation)
+ 
+     def test_format_only_change_is_reparsed_with_existing_equivalence(self):
+-        before = self.snapshot(); path = self.paths[0]
+-        path.write_bytes(path.read_bytes().replace(b'\n',b'\r\n'))
++        path = self.paths[0]
++        path.write_bytes(path.read_bytes().replace(b'\r\n', b'\n'))
++        before = self.snapshot()
++        # Start from one LF representation, even if the native writer used CRLF.
++        path.write_bytes(path.read_bytes().replace(b'\r\n', b'\n').replace(b'\n', b'\r\n'))
+         with patch.object(qs, 'parse_frontmatter', wraps=qs.parse_frontmatter) as parse:
+             qs.ensure_scan_current(self.s.vault, before)
+         self.assertEqual(parse.call_count, 1)
