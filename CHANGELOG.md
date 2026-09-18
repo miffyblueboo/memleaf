@@ -4,6 +4,8 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Gate future releases on native installed-artifact contract checks: build once, bind wheel/sdist and test inventory, then verify independent installations on Ubuntu/Python 3.11-3.13 and Windows/macOS Python 3.12. Include packaged Provider resources, real stdio/lock/restart checks and explicit failure on skipped or source-shadowed tests. This is deterministic validation, not live-model or installed-Hermes acceptance; defaults, prompt and version stay unchanged.
+
 - Avoid reparsing unchanged validated Markdown during public-query rechecks. Re-enumerate and re-read current bytes before reusing immutable request-local fingerprints; retain malformed/duplicate isolation and all existing change/bound checks. Add an isolated synthetic query benchmark without model calls, persistent cache or default changes.
 
 - Add a plan-first, explicitly budgeted isolated multi-turn acceptance utility with twelve public synthetic regression trajectories. Keep expected assertions out of model inputs, preserve private evidence traces, and separate structural, semantic and host/migration gates; no default activation or live calls during delivery.

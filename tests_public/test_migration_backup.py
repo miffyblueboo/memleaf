@@ -215,7 +215,8 @@ class BackupTests(MigrationFixture):
         with self.assertRaises(migration.MigrationError):self.backup()
         self.assertEqual((self.dest/'keep').read_text(),'keep')
 
-    @unittest.skipUnless(os.name=='posix','symlink setup exercised on POSIX')
+    # Hosted Windows runners must exercise this too; lack of link capability is
+    # a visible test prerequisite failure, not a successful platform acceptance.
     def test_source_and_destination_links_rejected(self):
         original=self.s.vault.config_path.read_bytes()
         self.s.vault.config_path.unlink()

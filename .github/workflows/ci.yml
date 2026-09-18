@@ -20,6 +20,9 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      manifest_sha256: ${{ steps.bind.outputs.manifest_sha256 }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -28,29 +31,111 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install build tools
-        run: |
-          python -m pip install --upgrade pip build
-      - name: Run public deterministic contract tests
-        env:
-          PYTHONPATH: src
-        run: python -m unittest discover -s tests_public -p 'test_*.py'
-      - name: Build wheel and source distribution
+        run: python -m pip install --upgrade pip build "setuptools>=77"
+      - name: Run complete source contracts and record test inventory
+        run: >-
+          python -I -X utf8 tests_public/run_contracts.py
+          --tests tests_public --source-root src --report source-results.json
+      - name: Build wheel and source distribution once
         run: python -m build --wheel --sdist
-      - name: Verify wheel installation and entry points
-        run: |
-          python -m pip install --force-reinstall dist/*.whl
-          python -c "import memleaf; print(memleaf.__version__)"
-          memleaf --help
-          memleaf --version
-          memleaf-mcp --version
+      - name: Obtain test-only timezone data for native Windows
+        run: >-
+          python -m pip download --only-binary=:all: --no-deps --dest dist/test-dependencies tzdata
+      - name: Bind exact distributions and test inventory to this commit
+        id: bind
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: >-
+          python tests_public/verify_distribution.py manifest
+          --dist dist --source-report source-results.json --commit "$CANDIDATE_SHA"
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
           name: memleaf-distributions
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+      - name: Upload verification inputs separately from release payloads
+        uses: actions/upload-artifact@v4
+        with:
+          name: memleaf-verification-inputs
+          path: |
+            dist/verification-manifest.json
+            dist/test-dependencies/
+          if-no-files-found: error
+      - name: Upload source contract report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-contract-report
+          path: source-results.json
+          if-no-files-found: warn
+
+  verify-artifacts:
+    name: Installed artifacts (${{ matrix.os }}, Python ${{ matrix.python }})
+    needs: [build]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: windows-latest
+            python: "3.12"
+          - os: macos-latest
+            python: "3.12"
+    steps:
+      - name: Check out exact verification helpers
+        uses: actions/checkout@v4
+      - name: Set up native Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install sdist build backend only
+        run: python -m pip install "setuptools>=77"
+      - name: Download the same candidate distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: memleaf-distributions
           path: dist/
+      - name: Download bound test-only inputs
+        uses: actions/download-artifact@v4
+        with:
+          name: memleaf-verification-inputs
+          path: dist/
+      - name: Verify wheel and sdist in separate isolated installations
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+          CANDIDATE_MANIFEST: ${{ needs.build.outputs.manifest_sha256 }}
+        # Use Python expansion on every OS, not POSIX variables in PowerShell.
+        shell: python
+        run: |
+          import os
+          import subprocess
+          import sys
+          subprocess.run([
+              sys.executable, "tests_public/verify_distribution.py", "verify",
+              "--dist", "dist", "--output", "artifact-verification",
+              "--commit", os.environ["CANDIDATE_SHA"],
+              "--manifest-sha256", os.environ["CANDIDATE_MANIFEST"],
+          ], check=True)
+      - name: Upload verification evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-contracts-${{ matrix.os }}-py${{ matrix.python }}
+          path: artifact-verification/
+          if-no-files-found: warn
 
   release:
-    needs: [build]
+    needs: [build, verify-artifacts]
     if: >-
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&

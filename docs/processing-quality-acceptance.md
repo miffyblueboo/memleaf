@@ -151,6 +151,12 @@ inference time. Detailed stage timing/performance remains a separate measurement
 
 ## Separate acceptance gates
 
+The [installed artifact verification](installed-artifact-verification.md) gate
+runs the complete inventory from wheel and sdist in isolated native environments.
+Its OS matrix and explicit import/skip checks strengthen gate 1, not gates 2 or 4.
+A workflow definition alone is not a passed native run; retain the per-commit
+reports and keep actual Hermes installation and live semantics separate.
+
 1. **Deterministic contracts and artifact consistency.** Run `tests_public/` on
    source, sdist and an actually installed wheel, verifying import paths. Fixed
    oracle responses test the harness/runtime, not the model. Source and artifact
