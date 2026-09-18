@@ -133,12 +133,13 @@ class IncrementalPreviewTests(unittest.TestCase):
         self.assertEqual(out["mode"],"preview")
         self.assertEqual(self.files(),before)
 
-    def test_prior_and_following_messages_are_context_not_new(self):
+    def test_later_messages_are_recovery_context_but_previous_turn_is_not_projected(self):
         self.capture("next","another topic",offset=4)
         payload=json.loads(self.preview()["request"]["user"])
         self.assertEqual([e["use"] for e in payload["evidence"]],["new","new","context","context"])
         payload=json.loads(self.preview(turn_id="next")["request"]["user"])
-        self.assertEqual([e["use"] for e in payload["evidence"]],["new","new","context","context"])
+        self.assertEqual([e["use"] for e in payload["evidence"]],["new","new"])
+        self.assertEqual([e["text"] for e in payload["evidence"]],["another topic","Acknowledged"])
 
     def test_missing_following_window_is_reported(self):
         path=self.service.vault.processed_state_path

@@ -8,8 +8,8 @@ from memleaf.incremental_protocol import PlanningSnapshot, compile_incremental
 from memleaf.turn_plan import revision_digest
 
 
-def evidence(ref="e1", text="明天下班前完成任务", *, seq=2, use="new", time="2026-09-17T10:00:00+08:00"):
-    return {"ref": ref, "use": use, "role": "user", "text": text, "source": "hermes", "session_id": "s",
+def evidence(ref="e1", text="明天下班前完成任务", *, seq=2, use="new", time="2026-09-17T10:00:00+08:00", role="user"):
+    return {"ref": ref, "use": use, "role": role, "text": text, "source": "hermes", "session_id": "s",
             "event_key": ref + "-event", "source_time": time, "source_sequence": seq}
 
 
@@ -122,15 +122,29 @@ class IncrementalProtocolTests(unittest.TestCase):
         self.assertEqual(out["operations"][0]["target"], "mem-1")
         self.assertNotIn("memory", out["operations"][0])
 
-    def test_no_memory_needs_no_fake_id(self):
-        out = self.run_rows({"action": "NO_MEMORY", "evidence": ["e1"]})
+    def test_turn_level_no_memory_needs_no_fake_id_or_evidence(self):
+        out = self.run_rows({"action": "NO_MEMORY"})
         self.assertEqual(out["coverage"]["status"], "complete")
+        self.assertEqual(out["operations"][0]["evidence"], ["e1"])
         self.assertNotIn("target", out["operations"][0])
 
-    def test_no_memory_cannot_claim_block_with_action(self):
-        out = self.run_rows(self.create(), {"action": "NO_MEMORY", "evidence": ["e1"]})
+    def test_legacy_evidence_bound_no_memory_remains_accepted(self):
+        out = self.run_rows({"action": "NO_MEMORY", "evidence": ["e1"]})
+        self.assertEqual(out["coverage"]["status"], "complete")
+
+    def test_turn_level_no_memory_cannot_coexist_with_memory_action(self):
+        out = self.run_rows(self.create(), {"action": "NO_MEMORY"})
         self.assertEqual([o["action"] for o in out["operations"]], ["CREATE"])
         self.assertEqual(out["coverage"]["status"], "partial")
+        self.assertIn("conflicting_turn_disposition", [i["code"] for i in out["issues"]])
+
+    def test_unreferenced_assistant_message_does_not_make_turn_partial(self):
+        snap = PlanningSnapshot.build(evidence=[
+            evidence(), evidence("e2", text="已了解。", seq=3, role="assistant")
+        ])
+        out = self.run_rows(self.create(scope="global"), snapshot=snap)
+        self.assertFalse(out["issues"])
+        self.assertEqual(out["coverage"]["status"], "complete")
 
     def test_deferred_requires_concrete_need(self):
         out = self.run_rows({"action": "DEFERRED", "evidence": ["e1"], "reason": "conflict", "need": "Which task?"})
@@ -140,7 +154,7 @@ class IncrementalProtocolTests(unittest.TestCase):
 
     def test_explicit_remember_cannot_be_automatic_discard(self):
         snap = PlanningSnapshot.build(evidence=[evidence()], request_kind="explicit_remember")
-        out = self.run_rows({"action": "NO_MEMORY", "evidence": ["e1"]}, snapshot=snap)
+        out = self.run_rows({"action": "NO_MEMORY"}, snapshot=snap)
         self.assertEqual(out["issues"][0]["code"], "explicit_retention_required")
 
     def test_context_only_cannot_assert_new_fact(self):
@@ -219,10 +233,10 @@ class IncrementalProtocolTests(unittest.TestCase):
     def test_retract_cannot_keep_assertion_body(self):
         self.assertEqual(self.run_rows(self.update(validity="retracted", body="still a fact"))["issues"][0]["code"], "retracted_body_must_be_empty")
 
-    def test_missing_evidence_is_not_implicit_no_memory(self):
+    def test_empty_items_is_not_implicit_no_memory(self):
         out = self.run_rows()
         self.assertEqual(out["coverage"]["unresolved_evidence"], ["e1"])
-        self.assertEqual(out["issues"][0]["code"], "unprocessed_evidence")
+        self.assertEqual(out["issues"][0]["code"], "missing_turn_disposition")
 
     def test_strict_envelope_rejects_unparseable_results(self):
         for raw in ('', '```json\n{}\n```', '{"items":[],"items":[]}', '{"items":NaN}', '{"items": {}}', '{"items":[],"deferred":[]}'):

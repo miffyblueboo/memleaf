@@ -27,8 +27,7 @@ class EchoBackend:
     def complete(self, prompt, **kwargs):
         value = json.loads(prompt)
         self.calls.append(value)
-        return output(*[{"action": "NO_MEMORY", "evidence": [e["ref"]]}
-                        for e in value["evidence"] if e["use"] == "new"])
+        return output({"action": "NO_MEMORY"})
 
 
 class ProcessingRouteTests(IncrementalFixture):
@@ -243,7 +242,8 @@ class ProcessingRouteTests(IncrementalFixture):
         self.assertEqual(r['model_calls'],0)
 
     def test_partial_is_not_cleaned(self):
-        self.process(Backend(output(self.create())))
+        self.process(Backend(output(self.create(), {"action":"UPDATE","target":"missing",
+                                                   "evidence":["e2"],"patch":{"body":"bad"}})))
         state=self.ledger();state['sessions']['hermes/s']['processed_turns'][0]['eligible_cleanup_at']='2000-01-01T00:00:00Z'
         atomic_write_json(self.s.vault.processed_state_path,state)
         r=self.process()

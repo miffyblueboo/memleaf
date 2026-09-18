@@ -299,8 +299,21 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
     if action not in _BRANCHES:
         raise ValueError("invalid_action")
     required, optional = _BRANCHES[action]
-    _keys(row, {"action", "evidence"} | required, {"action", "evidence"} | optional)
+    required_keys = {"action"} | required
+    if action != "NO_MEMORY":
+        required_keys.add("evidence")
+    _keys(row, required_keys, {"action", "evidence"} | optional)
     evidence = {e["ref"]: e for e in state["evidence"]}
+    if action == "NO_MEMORY" and state["request_kind"] == "explicit_remember":
+        raise ValueError("explicit_retention_required")
+    if action == "NO_MEMORY" and "evidence" not in row:
+        # Turn-level NO_MEMORY: the model judged the complete selected turn as
+        # having no long-term value. Bind all new source messages mechanically
+        # for provenance/cleanup, not as per-message semantic dispositions.
+        refs = [e["ref"] for e in state["evidence"] if e["use"] == "new"]
+        if not refs:
+            raise ValueError("missing_new_evidence")
+        return {"action": action, "evidence": refs, "_turn_wide": True}
     if not isinstance(row["evidence"], list) or not 1 <= len(row["evidence"]) <= MAX_ITEMS:
         raise ValueError("invalid_reference")
     refs = list(dict.fromkeys(_ref(ref, evidence) for ref in row["evidence"]))
@@ -322,8 +335,6 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
         if row["reason"] not in ("missing_identity", "missing_context", "conflict"):
             raise ValueError("invalid_reason")
         result.update(reason=row["reason"], need=_text(row["need"], 512))
-    if action == "NO_MEMORY" and state["request_kind"] == "explicit_remember":
-        raise ValueError("explicit_retention_required")
     if action in {"CREATE", "UPDATE"}:
         fields = deepcopy(row["memory"] if action == "CREATE" else row["patch"])
         _keys(fields, {"type", "scope", "title", "body"} if action == "CREATE" else set(),
@@ -518,16 +529,27 @@ def compile_incremental(raw: str, snapshot: PlanningSnapshot) -> dict[str, Any]:
                     output["native"] = deepcopy(target["native"])
             operations.append(output)
     supported = {ref for op in operations if op["action"] in {"CREATE", "UPDATE", "NO_CHANGE"} for ref in op["evidence"]}
+    turn_wide = [op for op in operations if op["action"] == "NO_MEMORY" and op.get("_turn_wide")]
+    if turn_wide and (len(turn_wide) != 1 or len(operations) != 1):
+        operations = [op for op in operations if not op.get("_turn_wide")]
+        problem(None, "conflicting_turn_disposition", {"evidence": sorted(new)})
     for op in list(operations):
+        if op.get("_turn_wide"):
+            continue
         if op["action"] == "NO_MEMORY" and supported.intersection(op["evidence"]):
             operations.remove(op)
             problem(None, "conflicting_disposition", op)
-    covered = {ref for op in operations for ref in op["evidence"]} & new
-    missing = sorted(new - covered - {r for issue in issues for r in issue["evidence"]})
-    for ref in missing:
-        issues.append({"row": None, "code": "unprocessed_evidence", "evidence": [ref]})
+    for op in operations:
+        op.pop("_turn_wide", None)
+    # Completeness is turn-level. Evidence refs support particular operations;
+    # they are not a checklist requiring every user/assistant message to receive
+    # its own disposition. An empty response is still not implicit NO_MEMORY.
+    if not operations and not issues:
+        issues.append({"row": None, "code": "missing_turn_disposition", "evidence": sorted(new)})
     deferred = {r for op in operations if op["action"] == "DEFERRED" for r in op["evidence"]}
-    unresolved = sorted(new & (deferred | {r for issue in issues for r in issue["evidence"]}))
+    issue_refs = {r for issue in issues for r in issue["evidence"]}
+    unresolved = sorted(new if any(not issue["evidence"] for issue in issues)
+                        else new & (deferred | issue_refs))
     return {"protocol_version": PROTOCOL_VERSION, "snapshot_id": snapshot.snapshot_id, "mode": "preview",
             "operations": operations, "issues": issues,
             "coverage": {"status": "partial" if issues or deferred else "complete", "unresolved_evidence": unresolved}}

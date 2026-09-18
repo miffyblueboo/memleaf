@@ -41,7 +41,10 @@ def _window(service: Any, source: str, session_id: str, selected_key: str):
     if selected is None or not (selected.complete or explicit_turn(selected)):
         raise ValueError("source_not_complete")
     check_origin(service, selected)
-    relevant = turns[max(0, turns.index(selected) - 1):]
+    # The semantic unit starts at the selected complete turn. Later turns stay
+    # in the immutable source fence only to prevent stale delayed work from
+    # reviving superseded state; the previous turn is not normal input.
+    relevant = turns[turns.index(selected):]
     return selected, digest([(t.turn_key, input_digest(t)) for t in relevant])
 
 
@@ -176,6 +179,7 @@ def _settle_source(service, processed, work, *, source_valid):
         entry["cleanup_event_keys"] = sorted(set(entry.get("cleanup_event_keys", [])) | set(entry.get("event_keys", [])) | set(keys))
         entry["event_keys"] = keys
     entry["incremental_coverage"] = result["coverage_status"]
+    entry["incremental_disposition"] = result["turn_disposition"]
     if source_valid and result["execution_status"] == "completed":
         hours = service.vault.config().get("process", {}).get("inbox_cleanup_hours", 24)
         entry["eligible_cleanup_at"] = _add_hours(now, hours)

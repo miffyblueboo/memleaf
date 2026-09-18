@@ -84,7 +84,11 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
     )
     if missing_window:
         raise ValueError("blocked_context")
-    contexts = ([turns[selected_index - 1]] if selected_index else []) + later
+    # Normal automatic extraction is one complete turn: the selected user
+    # input plus its final assistant reply. Later turns are retained only as
+    # delayed/recovery safety context; never pull the previous turn into a
+    # normal model request merely to resolve conversational shorthand.
+    contexts = later
     evidence = []
     for t, use in [(selected, "new"), *[(t, "context") for t in contexts]]:
         for event in t.events:

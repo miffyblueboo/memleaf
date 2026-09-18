@@ -59,6 +59,23 @@ class ExecutionTests(IncrementalFixture):
         self.assertNotIn("request", self.runs()[0]); self.assertNotIn("response", self.runs()[0])
         self.assertNotIn(OWNER, self.ledger())
 
+    def test_turn_level_create_does_not_require_assistant_disposition(self):
+        result = self.execute(Backend(output(self.create())))
+        self.assertEqual(result["execution_status"], "completed")
+        self.assertEqual(result["coverage_status"], "complete")
+        self.assertEqual(result["commit"]["turn_disposition"], "memory")
+        entry = self.ledger()["sessions"]["hermes/s"]["processed_turns"][0]
+        self.assertEqual(entry["incremental_disposition"], "memory")
+
+    def test_turn_level_no_memory_without_evidence_settles_and_is_persisted(self):
+        result = self.execute(Backend(output({"action": "NO_MEMORY"})))
+        self.assertEqual(result["execution_status"], "completed")
+        self.assertEqual(result["commit"]["counts"]["no_memory"], 1)
+        self.assertEqual(result["commit"]["turn_disposition"], "no_memory")
+        entry = self.ledger()["sessions"]["hermes/s"]["processed_turns"][0]
+        self.assertEqual(entry["incremental_disposition"], "no_memory")
+        self.assertEqual(len(self.s.vault.list_markdown("knowledge")), 0)
+
     def test_update_same_id_preserves_fields(self):
         self.target()
         result = self.execute(Backend(output(self.update(), self.no_memory())), priority_memory_ids=["mem-old"])

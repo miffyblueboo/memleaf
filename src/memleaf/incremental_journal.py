@@ -174,8 +174,13 @@ def public_result(work: dict[str, Any]) -> dict[str, Any]:
     unresolved = bool(work["issues"] or counts["unresolved"])
     status = "recovery_required" if active or work["index_status"] != "current" or not work["receipt_settled"] else (
         "completed_with_unresolved" if unresolved else "completed")
+    settled_actions = [op["action"] for op in work["operations"] if op["state"] == "settled"]
+    disposition = ("deferred" if unresolved else
+                   "memory" if any(action in {"CREATE", "UPDATE"} for action in settled_actions) else
+                   "no_change" if "NO_CHANGE" in settled_actions else
+                   "no_memory" if "NO_MEMORY" in settled_actions else "unknown")
     return {"work_id": work["work_id"], "intent_id": work["intent_id"], "execution_status": status,
-            "request_kind": work.get("request_kind", "automatic"),
+            "request_kind": work.get("request_kind", "automatic"), "turn_disposition": disposition,
             "coverage_status": "partial" if unresolved else "complete", "operations": operations,
             "counts": counts, "issues": work["issues"], "index_status": work["index_status"], "model_calls": 0,
             "native_comparison": work.get("native_comparison", {"status": "not_evaluated"}),
