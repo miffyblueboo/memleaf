@@ -43,6 +43,26 @@ except (ImportError, ValueError):
     _BUDGET_SPEC.loader.exec_module(_BUDGET_MODULE)
     apply_evidence_budget = _BUDGET_MODULE.apply_evidence_budget
 
+# Load the same dependency-free helper from this standalone copy, never Core.
+try:
+    from .provider_compatibility import (
+        BUILD_META, READ_ONLY_TOOLS, COMPATIBILITY_CODES,
+        provider_build, valid_build, compatibility,
+    )
+except (ImportError, ValueError):
+    _identity_path = Path(__file__).with_name("provider_compatibility.py")
+    _identity_name = "_memleaf_provider_identity_" + sha256(str(_identity_path.resolve()).encode()).hexdigest()[:16]
+    _identity_spec = importlib.util.spec_from_file_location(_identity_name, _identity_path)
+    if _identity_spec is None or _identity_spec.loader is None:
+        raise ImportError("Hermes provider identity helper is unavailable")
+    _identity_module = importlib.util.module_from_spec(_identity_spec)
+    _identity_spec.loader.exec_module(_identity_module)
+    for _field in ("BUILD_META", "READ_ONLY_TOOLS", "COMPATIBILITY_CODES", "provider_build", "valid_build", "compatibility"):
+        globals()[_field] = getattr(_identity_module, _field)
+
+# Never refresh this to new on-disk bytes in a long-lived host. Restart is needed.
+_LOADED_PROVIDER_BUILD = provider_build(Path(__file__).parent)
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_VAULT = "~/.memleaf"
@@ -86,7 +106,8 @@ _MODEL_ERROR_CODES = frozenset(
         "model_failed",
     }
 )
-_MODEL_ERROR_STAGES = frozenset({"gate", "summarize"})
+_MODEL_ERROR_CODES = _MODEL_ERROR_CODES | COMPATIBILITY_CODES
+_MODEL_ERROR_STAGES = frozenset({"gate", "summarize", "compatibility"})
 _MODEL_VALIDATION_REASONS = frozenset(
     {"empty_content", "invalid_json", "schema_violation", "response_shape"}
 )

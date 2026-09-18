@@ -49,6 +49,8 @@ class _MCPClient:
         self._next_id = 1
         self._lock = threading.RLock()
         self.server_version: Optional[str] = None
+        self.server_provider_build: Optional[dict[str, Any]] = None
+        self._compatibility = "core_build_unverified"
 
     def _resolve_command(self) -> str:
         path = Path(self.command).expanduser()
@@ -114,6 +116,7 @@ class _MCPClient:
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
                 "clientInfo": {"name": "hermes-memleaf", "version": "0.1.0"},
+                "_meta": {BUILD_META: dict(_LOADED_PROVIDER_BUILD)},
             },
         )
         server_info = (
@@ -123,6 +126,10 @@ class _MCPClient:
         )
         if isinstance(server_info, Mapping):
             self.server_version = _version_value(server_info.get("version"))
+        meta = initialize_result.get("_meta") if isinstance(initialize_result, Mapping) else None
+        build = meta.get(BUILD_META) if isinstance(meta, Mapping) else None
+        self.server_provider_build = dict(build) if valid_build(build) else None
+        self.compatibility_status()
         self._send_locked({"jsonrpc": "2.0", "method": "notifications/initialized"})
 
     def _send_locked(self, message: Mapping[str, Any]) -> None:
@@ -178,6 +185,7 @@ class _MCPClient:
         self._stdout_queue = None
         self._stdout_thread = None
         self.server_version = None
+        self.server_provider_build = None
         if process is None:
             return
         if process.stdin is not None:
@@ -204,10 +212,21 @@ class _MCPClient:
         with self._lock:
             self._close_locked()
 
+    def compatibility_status(self) -> dict[str, Any]:
+        """Bounded local status; never starts MCP, writes state or calls a model."""
+        self._compatibility = compatibility(
+            _LOADED_PROVIDER_BUILD, provider_build(Path(__file__).parent), self.server_provider_build)
+        return {"status": self._compatibility,
+                "writes_allowed": self._compatibility == "compatible"}
+
     def call_tool(self, name: str, arguments: Mapping[str, Any]) -> Any:
         with self._lock:
             try:
                 self._start_locked()
+                if name not in READ_ONLY_TOOLS:
+                    state = self.compatibility_status()
+                    if not state["writes_allowed"]:
+                        raise _MCPToolError(state["status"], "compatibility")
                 result = self._request_locked(
                     "tools/call",
                     {"name": name, "arguments": dict(arguments)},

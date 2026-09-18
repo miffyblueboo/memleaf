@@ -712,6 +712,7 @@ class MemleafMemoryProvider(MemoryProvider):
             "timeout": config["timeout"],
             "process_timeout": config["process_timeout"],
             "capture": _capture_policy_status(config, vault),
+            "runtime_compatibility": self._runtime_compatibility_status(),
         }
 
     @staticmethod
@@ -746,6 +747,22 @@ class MemleafMemoryProvider(MemoryProvider):
             _safe_component(turn_id, "none") if turn_id else "none",
         )
 
+    def _runtime_compatibility_status(self) -> dict[str, Any]:
+        client = self._client
+        if client is None or not callable(getattr(client, "compatibility_status", None)):
+            return {"status": "not_connected", "writes_allowed": False}
+        return client.compatibility_status()
+
+    def _runtime_compatibility_notice(self) -> str:
+        state = self._runtime_compatibility_status()
+        if state["status"] not in COMPATIBILITY_CODES:
+            return ""
+        return ("<memleaf-runtime-status>\n"
+                "Provider/Core compatibility is not verified; automatic capture/process is blocked. "
+                "This does not confirm an inbox receipt. Local retrieval remains available. "
+                "Install matching Provider/Core files and restart the host and MCP before writing.\n"
+                "</memleaf-runtime-status>")
+
     def _check_version_sync(self) -> None:
         """Warn when the copied provider and MCP core came from different releases."""
 
@@ -762,6 +779,10 @@ class MemleafMemoryProvider(MemoryProvider):
             isinstance(client_fields, Mapping) and "server_version" in client_fields
         ):
             return
+        state = self._runtime_compatibility_status()
+        if state["status"] in COMPATIBILITY_CODES and not self._version_warning_emitted:
+            logger.warning("memleaf automatic writes blocked (%s); install matching Provider/Core and restart", state["status"])
+            self._version_warning_emitted = True
         provider_version = _provider_manifest_version()
         core_version = _version_value(getattr(client, "server_version", None))
         if provider_version is None or core_version is None:
@@ -1075,14 +1096,15 @@ class MemleafMemoryProvider(MemoryProvider):
         # test providers or an unconfigured default path.
         if _config_path(self._hermes_home).is_file():
             self._gate_enabled = True
-        self._log_stage(
-            "initialize",
-            started_at=started_at,
-            status="ready",
-            session_id=self._session_id,
-        )
         self._call("stats", {}, stage="stats", session_id=self._session_id)
         self._check_version_sync()
+        observed = self._runtime_compatibility_status()
+        self._log_stage(
+            "initialize", started_at=started_at,
+            status="ready" if observed["writes_allowed"] else "read_only",
+            session_id=self._session_id,
+            error_type="none" if observed["writes_allowed"] else "ProviderCompatibility",
+        )
 
     def system_prompt_block(self) -> str:
         if not self._write_enabled:
@@ -1501,7 +1523,7 @@ class MemleafMemoryProvider(MemoryProvider):
         if not self._write_enabled or not query:
             return ""
         safe_session = self._canonical_session_id(session_id or self._session_id)
-        failure_notice = self._auto_process_failure_notice(safe_session)
+        failure_notice = self._runtime_compatibility_notice() or self._auto_process_failure_notice(safe_session)
         deferred_notice = self._auto_process_deferred_notice(safe_session)
         external_evidence_notice = self._auto_process_external_evidence_notice(safe_session)
         turn_number = self._current_turn_number(safe_session)

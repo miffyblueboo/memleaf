@@ -19,6 +19,12 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from . import __version__
+from .provider_compatibility import (
+    BUILD_META, READ_ONLY_TOOLS, provider_build, valid_build, compatibility,
+)
+
+_PROVIDER_DIRECTORY = Path(__file__).with_name("hermes_provider")
+_SERVER_PROVIDER_BUILD = provider_build(_PROVIDER_DIRECTORY)
 from .evidence_policy import capture_policy_status
 from .host_runtime import HostRuntime
 from .llm import MODEL_ERROR_CODES, MODEL_VALIDATION_REASONS, ModelError, ModelUnavailable
@@ -1094,7 +1100,8 @@ def _negotiated_version(params: Mapping[str, Any]) -> str:
     return LEGACY_VERSIONS[0]
 
 
-def _dispatch(message: Any, service: Memleaf) -> dict[str, Any] | None:
+def _dispatch(message: Any, service: Memleaf, *,
+              connection: dict[str, Any] | None = None) -> dict[str, Any] | None:
     if not isinstance(message, dict):
         return _error_response(None, -32600, "Invalid Request")
 
@@ -1117,7 +1124,14 @@ def _dispatch(message: Any, service: Memleaf) -> dict[str, Any] | None:
             if modern:
                 return fail(-32601, "Method not found")
             params = _params_object(message)
+            if connection is not None:
+                client = params.get("clientInfo")
+                connection["provider_client"] = isinstance(client, Mapping) and client.get("name") == "hermes-memleaf"
+                meta = params.get("_meta")
+                supplied = meta.get(BUILD_META) if isinstance(meta, Mapping) else None
+                connection["provider_build"] = dict(supplied) if valid_build(supplied) else None
             result = {
+                "_meta": {BUILD_META: dict(_SERVER_PROVIDER_BUILD)},
                 "protocolVersion": _negotiated_version(params),
                 "capabilities": {"tools": {}},
                 "serverInfo": dict(SERVER_INFO),
@@ -1130,6 +1144,7 @@ def _dispatch(message: Any, service: Memleaf) -> dict[str, Any] | None:
                 return fail(-32601, "Method not found")
             _params_object(message)
             result = {
+                "_meta": {BUILD_META: dict(_SERVER_PROVIDER_BUILD)},
                 "supportedVersions": [MODERN_VERSION],
                 "capabilities": {"tools": {}},
                 "ttlMs": DISCOVERY_TTL_MS,
@@ -1156,6 +1171,13 @@ def _dispatch(message: Any, service: Memleaf) -> dict[str, Any] | None:
             if not isinstance(name, str) or name not in _TOOL_BY_NAME:
                 raise _InvalidParams
             arguments = params.get("arguments", {})
+            if connection and connection.get("provider_client") and name not in READ_ONLY_TOOLS:
+                status = compatibility(_SERVER_PROVIDER_BUILD, provider_build(_PROVIDER_DIRECTORY),
+                                       connection.get("provider_build"))
+                if status != "compatible":
+                    result = _tool_result({"error": {"code": status, "stage": "compatibility",
+                        "message": "Provider/Core build not verified; reinstall matching files and restart."}}, is_error=True)
+                    return None if notification else _success_response(request_id, result, modern=modern)
             result = _invoke_tool(service, name, arguments, request_id=request_id)
             return None if notification else _success_response(request_id, result, modern=modern)
 
@@ -1204,6 +1226,7 @@ def serve(service: Memleaf, *, input_stream: Any = None, output_stream: TextIO =
     """Serve newline-delimited JSON-RPC messages until EOF or a broken pipe."""
 
     stream = input_stream if input_stream is not None else getattr(sys.stdin, "buffer", sys.stdin)
+    connection: dict[str, Any] = {}
     for raw_line in stream:
         if not raw_line or not raw_line.strip():
             continue
@@ -1214,7 +1237,7 @@ def serve(service: Memleaf, *, input_stream: Any = None, output_stream: TextIO =
                 return 0
             continue
         try:
-            response = _dispatch(message, service)
+            response = _dispatch(message, service, connection=connection)
         except Exception:
             response = _error_response(
                 message.get("id") if isinstance(message, dict) else None,
@@ -1230,12 +1253,17 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="memleaf-mcp")
     parser.add_argument("--vault", metavar="PATH", help="memleaf vault path")
     parser.add_argument("--version", action="version", version=SERVER_INFO["version"])
+    parser.add_argument("--provider-build", action="store_true",
+                        help="print packaged Provider identity without opening a Vault")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     _configure_stdio_utf8()
     args = _parser().parse_args(argv)
+    if args.provider_build:
+        print(json.dumps(_SERVER_PROVIDER_BUILD, sort_keys=True))
+        return 0 if valid_build(_SERVER_PROVIDER_BUILD) else 1
     vault = args.vault if args.vault is not None else os.environ.get("MEMLEAF_VAULT") or None
     try:
         service = Memleaf(vault)

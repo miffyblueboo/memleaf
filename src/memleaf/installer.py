@@ -18,6 +18,7 @@ import tempfile
 from typing import Any, Mapping
 
 from . import __version__
+from .provider_compatibility import PROVIDER_FILES, provider_build, valid_build
 from .adapters.base import (
     ConfigureResult,
     atomic_replace_bytes,
@@ -274,7 +275,17 @@ def _copy_provider(hermes_home: Path) -> Path:
     plugins.mkdir(parents=True, exist_ok=True)
 
     package = resources.files("memleaf").joinpath("hermes_provider")
-    required = ("__init__.py", "_shared.py", "_mcp_client.py", "_provider.py", "evidence_budget.py", "plugin.yaml", "README.md")
+    required = (*PROVIDER_FILES, "README.md")
+    expected_build = provider_build(Path(__file__).with_name("hermes_provider"))
+    if not valid_build(expected_build):
+        raise RuntimeError("packaged Hermes Provider identity is unavailable")
+
+    def checked_copy() -> Path:
+        if (provider_build(Path(__file__).with_name("hermes_provider")) != expected_build
+                or provider_build(target) != expected_build):
+            raise RuntimeError("copied Hermes Provider build does not match packaged resources")
+        return target
+
     with tempfile.TemporaryDirectory(prefix=".memleaf-provider-", dir=plugins) as temporary:
         staging = Path(temporary)
         for name in required:
@@ -285,7 +296,7 @@ def _copy_provider(hermes_home: Path) -> Path:
 
         if not target.exists():
             os.replace(staging, target)
-            return target
+            return checked_copy()
         if not target.is_dir():
             raise RuntimeError(f"refusing to overwrite non-directory Hermes provider path: {target}")
         manifest = target / "plugin.yaml"
@@ -303,7 +314,7 @@ def _copy_provider(hermes_home: Path) -> Path:
             temporary_file = target / f".{name}.{os.getpid()}.tmp"
             temporary_file.write_bytes(staging.joinpath(name).read_bytes())
             os.replace(temporary_file, destination)
-    return target
+    return checked_copy()
 
 
 def _provider_manifest_version(provider_path: Path) -> str | None:
@@ -419,6 +430,21 @@ def _probe_memleaf_runtime_version(command: str) -> tuple[str | None, str | None
     if len(lines) != 1:
         return None, "the configured MCP runtime returned an invalid version response"
     return lines[0], None
+
+
+def _probe_memleaf_provider_build(command: str) -> dict | None:
+    """Explicit installer probe; the selected CLI must not open a Vault."""
+    from .validation import parse_strict_json
+
+    try:
+        result = _run([command, "--provider-build"], timeout=10)
+        raw = result.stdout
+        if result.returncode != 0 or not isinstance(raw, str) or len(raw) > 1024:
+            return None
+        build = parse_strict_json(raw)
+        return dict(build) if valid_build(build) else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
 
 
 def _choose_hermes_mcp_command(
@@ -927,6 +953,16 @@ def install_hermes(
             "public_command": str(public_command),
         }
     )
+
+    expected_build = provider_build(Path(__file__).with_name("hermes_provider"))
+    observed_build = _probe_memleaf_provider_build(str(provider_command))
+    if not valid_build(expected_build) or observed_build != expected_build:
+        return _failure_result(
+            stage="provider_build", reason="selected MCP runtime does not verify this Provider build",
+            core_version=core_version, vault=selected_vault, vault_source=vault_source,
+            mcp_runtime=runtime_details,
+            user_action="Install matching Core and Provider files, then restart all supported host/MCP processes.")
+    runtime_details["provider_build"] = dict(expected_build)
 
     vault = Vault.initialize(selected_vault)
     model = _prepare_model_route(

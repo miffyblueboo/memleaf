@@ -4,6 +4,8 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Verify copied Hermes Provider behavior resources through the existing MCP handshake and explicit installer probe; reject mismatched/unverified bridge mutations while retaining local reads. Detect in-place copy changes without refreshing a live host, validate both copy paths, and preserve safe compatibility errors. No model calls, prompt/default/version changes or automatic activation.
+
 - Restrict explicit memory compaction to independent body-only proposals. Preserve the complete original identity, state, deadlines, responsibility, provenance and custom fields; remove multi-ID merging and unrelated pre-compaction retention. Bound model inputs and keep existing rollback journals compatible.
 
 - Compare native-file ctime stability within path and descriptor observations separately: Windows CPython 3.12 can report creation time and metadata-change time through different APIs. Preserve cross-API identity/size/mtime checks, whole-content guards, and per-file bounded reads. Repair the LF-to-CRLF test fixture without skipping native platforms or weakening change detection.
