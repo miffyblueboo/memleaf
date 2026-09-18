@@ -1,0 +1,54 @@
+name: One-off verified Provider integration transport
+on:
+  push:
+    branches: [work/memleaf-provider-transfer-3f471eb5]
+permissions:
+  contents: write
+jobs:
+  transfer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Apply the frozen patch to its exact parent and publish only a candidate branch
+        shell: python
+        run: |
+          import base64, gzip, hashlib, json, os, pathlib, subprocess
+          base = "064761ef1dbac0c14c4ac92a6d48f0468d291200"
+          tree = "3f471eb5ad8c0048519d77e6ebd85aa36e6d162c"
+          digest = "3c52ef758c08d0fabc204d7add870075eeb3c85c19b648517d8c799f99e874ae"
+          branch = "work/memleaf-provider-candidate-3f471eb5"
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+          assert git("rev-parse", "HEAD^") == base, "unexpected transport parent"
+          assert git("ls-remote", "--heads", "origin", "refs/heads/main").split()[0] == base, "main advanced"
+          assert not git("ls-remote", "--heads", "origin", "refs/heads/" + branch), "candidate branch already exists"
+          payload = "".join(pathlib.Path(f".memleaf-transfer/payload-{i}.b64").read_text().strip() for i in range(4))
+          patch = gzip.decompress(base64.b64decode(payload, validate=True))
+          assert len(patch) == 58144 and hashlib.sha256(patch).hexdigest() == digest, "patch transport mismatch"
+          patch_path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "verified-provider-integration.patch"
+          patch_path.write_bytes(patch)
+          git("checkout", "--detach", base)
+          assert not git("status", "--porcelain"), "checkout is not clean"
+          git("apply", "--check", str(patch_path))
+          git("apply", "--index", str(patch_path))
+          assert git("write-tree") == tree, "integrated product tree mismatch"
+          assert len(git("diff", "--cached", "--name-only").splitlines()) == 10, "unexpected changed files"
+          git("diff", "--cached", "--check")
+          git("config", "user.name", "github-actions[bot]")
+          git("config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com")
+          git("commit", "-m", "fix: integrate Hermes provider build compatibility without reverting compaction", "-m", "Apply the reviewed handoff patch on 064761ef and preserve body-only compaction. Local Linux source contracts: 1036/1036, focused contracts: 66/66. Native installed-artifact verification remains required. No version, default pipeline, prompt, release, or production Vault changes.")
+          commit = git("rev-parse", "HEAD")
+          assert git("rev-parse", "HEAD^") == base and git("rev-parse", "HEAD^{tree}") == tree
+          git("push", "origin", "HEAD:refs/heads/" + branch)
+          assert git("ls-remote", "--heads", "origin", "refs/heads/" + branch).split()[0] == commit
+          evidence = {"base": base, "commit": commit, "tree": tree, "patch_sha256": digest, "candidate_branch": branch, "main_updated": False, "release_authorized": False}
+          (pathlib.Path(os.environ["RUNNER_TEMP"]) / "provider-transfer-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
+          print(json.dumps(evidence, indent=2))
+      - uses: actions/upload-artifact@v4
+        with:
+          name: provider-integration-transfer-evidence
+          path: ${{ runner.temp }}/provider-transfer-evidence.json
+          if-no-files-found: error
