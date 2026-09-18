@@ -121,12 +121,21 @@ remain the existing separate policy; this is not unlimited exactly-once storage.
 ## Damaged control state
 
 Integration testing exposed a shared reader that converted invalid processed JSON
-into an empty state. Capture and execution now share strict root reading. An absent
-file is still the historical first-use case, but malformed JSON, duplicate keys,
-unsupported versions, invalid session/event containers, symlinks and IO failures
-are not silently repaired or overwritten. Payload-specific run/commit validators
-continue checking their own checksums and versions. Minimal older dictionaries
-receive the same in-memory missing-field defaults; custom keys are preserved.
+into an empty state. Capture and execution now share strict root reading. Missing
+state on a genuinely unused path is not equivalent to a missing required ledger
+in an established Vault. Established layout/authority checks reject the latter;
+reopening, capturing or changing routes must not reconstruct empty authority and
+reissue an old work budget. A read-only query of valid committed Markdown may
+remain available while progress is reported as unknown.
+
+Malformed JSON, duplicate keys, unsupported versions, invalid session/event
+containers, symlinks and IO failures are likewise not silently repaired or
+overwritten. Payload-specific run/commit validators continue checking their own
+checksums and versions. Minimal supported older dictionaries receive in-memory
+missing-field defaults; custom keys are preserved. This compatibility does not
+authorize manufacturing an entirely missing required control file. See
+[the closeout scope](development-closeout.md) and the processed-state/lost-authority
+regressions for the distinction.
 
 This deliberately changes corrupted-state behavior on both routes: operations
 requiring that control authority fail visibly, retain the original file and make

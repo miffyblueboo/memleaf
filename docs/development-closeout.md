@@ -3,8 +3,12 @@
 This document is the current engineering scope for the v4.1 design closeout.
 Historical phase documents remain provenance, not additional online prompts.
 The accompanying candidate manifest, test inventory and requirements ledger bind
-implementation to its exact local tree/commit; this file alone is not a passing
-CI, semantic or production acceptance certificate. Version remains 0.2.65.
+implementation to an exact tree/commit. Once a candidate is submitted, use the
+actual remote commit and that run's distribution manifest; a local reference SHA
+or another candidate's result is not interchangeable evidence. This file alone
+is not a passing CI, semantic or production acceptance certificate. Version
+remains 0.2.65. Use the [acceptance evidence guide](acceptance-evidence-guide.md)
+to separate code, native-package, real-host and live-model conclusions.
 
 ## Supported entry points
 
@@ -21,7 +25,8 @@ CI, semantic or production acceptance certificate. Version remains 0.2.65.
 | retention / maintain-state | Explicit maintenance or existing bounded mechanical path | Pending dependency protection; no business-identity deletion or destructive TTL |
 | forget / forget_about | Exact confirmed logical target; fuzzy candidate is not confirmation | Cancel pending plaintext and old source replay before deleting authorized memory copies |
 | search / read / list_todos | Shared committed Markdown, query integrity and pending freshness | No model dispatch; read statistics are not write revisions |
-| migration_preflight / migration_backup | Operator-declared stopped writers; private full snapshot | Verify only; no automatic production switch/restore or owner rebinding |
+| migration_preflight / CLI migration-check | Readiness observation of an existing Vault; no stopped-writer declaration required | No initialization, repair, model call or switch permission |
+| backup_for_migration / CLI migration-backup | Explicit destination, matching snapshot and operator-declared stopped writers; known live work still blocks | Writes a private backup; does not stop processes, restore a Vault or switch a route |
 
 ## Closed engineering gaps
 
@@ -39,7 +44,8 @@ daemon, vector service, new host adapter or new dependency is introduced.
 General cross-Vault merge/import, multi-ID semantic merge/redirect creation,
 automatic native-memory contradiction resolution, cross-machine synchronization,
 full historical semantic repair and new multi-instance host routing are not
-first-scope enabled features. Trusted raw import is explicit replacement only.
+first-scope enabled features. Trusted raw writing uses explicit create-only or whole-record replacement semantics,
+not an automatic cross-Vault merge or a normal revision/history-protected update.
 Old retired records without reliable unique current ownership stay history-only.
 No arbitrary old record is resurrected by mtime. Full TTL deletion of authority
 is disabled; finite retained receipts and backpressure are the supported policy.
@@ -49,8 +55,9 @@ acceptance and authorized cutover; legacy pending recovery remains supported.
 
 ## What final testing must still establish
 
-1. Place the exact accumulated candidate in the authorized writable repository;
-   obtain the same-commit existing five native installed-artifact CI cells.
+1. Record the exact candidate in the authorized repository and obtain its existing
+   five native installed-artifact CI cells. When a remote commit is already
+   recorded, verify it rather than creating another candidate or reapplying patches.
    An older green main, Linux-only runs or a local commit do not substitute.
 2. Freeze the user's real Flash provider/endpoint/model configuration, disabled
    thinking request settings, permitted synthetic/private holdout suites and
@@ -70,3 +77,8 @@ Real semantic, native-host, private-data and performance rows remain explicit
 final-test gates. Checksums and receipts prove byte consistency, not semantic
 truth, multi-user authorization, an atomic multi-file transaction or protection
 from arbitrary uncooperative filesystem writers.
+
+For the no-model inventory and the later isolated host run, use the
+[host acceptance runbook](host-acceptance-runbook.md). Keep changing run status
+and private evidence outside this contract; a completed repository gate should
+not revert to an implementation task because an older phase note says pending.

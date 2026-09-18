@@ -170,9 +170,24 @@ old queue compatibility, safe summaries, native NO_CHANGE, index/cleanup failure
 source/target edits, Forget, concurrent dispatch, and a real child process exiting
 after its saved response. All Vaults and model responses in tests are synthetic.
 
-Not completed here: default production activation, the legacy text remember
-selection bridge, universal lifecycle/receipt GC, migration tooling and mixed-old-
-binary prevention, true live Flash semantic/latency/holdout evaluation, native
-Windows/macOS/Hermes acceptance, or all G4 public retrieval completeness work.
-The fixed 1,861-codepoint/3,587-byte main prompt is unchanged. This batch modifies
-execution coordination, not business-specific semantic rules.
+### Phase history versus current implementation
+
+The preceding tests describe the original G4a increment, not a permanent list of
+missing features. Later work implemented the existing text `remember` bridge
+([contract](remember-incremental-route.md)), bounded public query integrity and
+freshness ([contract](public-query-integrity.md)), and migration preflight with
+private backup verification ([contract](migration-preflight.md)). These paths
+reuse the existing runtime; do not reimplement them from this historical list.
+
+Still separate are actual Flash semantic/latency/holdout acceptance, real
+Hermes/Codex lifecycle checks, authorized production activation, and any full
+restore or destructive receipt-TTL feature outside the first-release scope.
+Native installed-artifact results must come from the exact candidate's CI
+reports, not from a phase document or a prior green build. A native package test
+with a host-interface stub is not actual host acceptance.
+
+The automatic and text-remember routes both remain default-legacy and are
+selected independently. `--dry-run` may still call the configured model;
+acceptance plan-only mode is the no-model preparation path. See
+[the acceptance evidence guide](acceptance-evidence-guide.md) for the remaining
+gates. The fixed 1,861-codepoint/3,587-byte main prompt is unchanged.
