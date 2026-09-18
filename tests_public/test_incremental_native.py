@@ -344,7 +344,7 @@ class NativeBoundaryTests(NativeFixture):
         self.assertEqual(entry["memory_ids"], [])
         self.assertEqual(result["commit"]["counts"]["committed"], 0)
 
-    def test_pending_runtime_keeps_prior_context_from_due_cleanup(self):
+    def test_pending_runtime_does_not_make_previous_settled_turn_a_dependency(self):
         self.configure()
         self.execute(Backend(output(self.no_memory("e1"), self.no_memory())))
         self.capture("next", seq=3)
@@ -353,7 +353,7 @@ class NativeBoundaryTests(NativeFixture):
         from memleaf.index import turn_key
         from memleaf.incremental_journal import protected_turn_keys, owned_turn_keys
         state = self.ledger()
-        self.assertIn(turn_key("t"), protected_turn_keys(state, "hermes", "s"))
+        self.assertNotIn(turn_key("t"), protected_turn_keys(state, "hermes", "s"))
         self.assertIn(turn_key("next"), owned_turn_keys(state, "hermes", "s"))
         with self.s.vault.lock():
             cleaned = ProcessJournal(self.s)._cleanup_due_unlocked(state, "2030-01-01T00:00:00Z", 24)
@@ -362,14 +362,14 @@ class NativeBoundaryTests(NativeFixture):
         self.assertEqual(result["execution_status"], "completed")
         self.assertEqual(protected_turn_keys(self.ledger(), "hermes", "s"), set())
 
-    def test_commit_only_recovery_also_protects_context_not_just_selected_turn(self):
+    def test_commit_only_recovery_does_not_claim_previous_turn_as_context(self):
         self.capture("next", seq=3)
         params = self.request([self.create(), self.no_memory()], turn_id="next")
         with patch("memleaf.incremental_commit._resume_unlocked", side_effect=OSError("frozen")):
             with self.assertRaises(OSError): self.s.apply_incremental(**params)
         from memleaf.incremental_journal import protected_turn_keys, owned_turn_keys
         from memleaf.index import turn_key
-        self.assertIn(turn_key("t"), protected_turn_keys(self.ledger(), "hermes", "s"))
+        self.assertNotIn(turn_key("t"), protected_turn_keys(self.ledger(), "hermes", "s"))
         self.assertNotIn(turn_key("t"), owned_turn_keys(self.ledger(), "hermes", "s"))
 
     def test_lost_context_locator_is_conservative_not_an_empty_dependency(self):

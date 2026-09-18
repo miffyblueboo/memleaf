@@ -203,7 +203,9 @@ class ProcessingEntrypointTests(IncrementalFixture):
                 self.assertTrue(result.get('isError')); called.assert_not_called()
 
     def test_mcp_status_is_read_only_even_after_partial(self):
-        self.s.process(pipeline='incremental',source='hermes',session_id='s',model=Backend(output(self.create())))
+        self.s.process(pipeline='incremental',source='hermes',session_id='s',
+                       model=Backend(output(self.create(), {'action':'DEFERRED','evidence':['e2'],
+                                                           'reason':'missing_context','need':'Clarify.'})))
         before={str(p):p.read_bytes() for p in self.s.vault.root.rglob('*') if p.is_file()}
         result=self.payload(_invoke_tool(self.s,'process_status',{}))
         self.assertEqual(result['status'],'deferred'); self.assertFalse(result['switch_permission'])
@@ -252,7 +254,8 @@ class ProcessingEntrypointTests(IncrementalFixture):
 
     def test_final_worker_partial_carries_successful_memory_ids(self):
         accepted=self.enqueue(pipeline='incremental')
-        result=self.start(accepted['job_id'], Backend(output(self.create())))
+        result=self.start(accepted['job_id'], Backend(output(self.create(),
+            {'action':'DEFERRED','evidence':['e2'],'reason':'missing_context','need':'Clarify.'})))
         self.assertEqual(result['status'],'deferred')
         self.assertEqual(result['result']['memories_written'],1)
         self.assertEqual(len(result['result']['memory_ids']),1)

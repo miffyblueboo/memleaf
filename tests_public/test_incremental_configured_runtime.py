@@ -94,7 +94,8 @@ class ConfiguredRuntimeTests(IncrementalFixture):
         self.assertEqual(len(backend.calls), 1)
 
     def test_partial_does_not_retry(self):
-        backend = Backend(output(self.create()))
+        backend = Backend(output(self.create(), {"action":"DEFERRED","evidence":["e2"],
+                                                  "reason":"missing_context","need":"Clarify."}))
         first = self.process(model=backend)
         self.assertEqual(first["execution_status"], "completed_with_unresolved")
         self.assertFalse(first["retry_available"])

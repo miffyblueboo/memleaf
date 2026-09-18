@@ -62,7 +62,7 @@ class ExecutionTests(IncrementalFixture):
     def test_turn_level_create_does_not_require_assistant_disposition(self):
         result = self.execute(Backend(output(self.create())))
         self.assertEqual(result["execution_status"], "completed")
-        self.assertEqual(result["coverage_status"], "complete")
+        self.assertEqual(result["commit"]["coverage_status"], "complete")
         self.assertEqual(result["commit"]["turn_disposition"], "memory")
         entry = self.ledger()["sessions"]["hermes/s"]["processed_turns"][0]
         self.assertEqual(entry["incremental_disposition"], "memory")

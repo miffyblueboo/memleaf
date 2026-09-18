@@ -546,10 +546,18 @@ def compile_incremental(raw: str, snapshot: PlanningSnapshot) -> dict[str, Any]:
     # its own disposition. An empty response is still not implicit NO_MEMORY.
     if not operations and not issues:
         issues.append({"row": None, "code": "missing_turn_disposition", "evidence": sorted(new)})
+    # A malformed row can lose its evidence container before validation can
+    # bind a ref (for example evidence:"e1"). Preserve bounded local-repair
+    # focus without restoring the old rule that every unreferenced message is
+    # an error. Only an actual unlocalized protocol issue enables this fallback.
+    if any(not issue["evidence"] for issue in issues):
+        claimed = {ref for op in operations for ref in op["evidence"]}
+        issue_refs = {r for issue in issues for r in issue["evidence"]}
+        for ref in sorted(new - claimed - issue_refs):
+            issues.append({"row": None, "code": "unprocessed_evidence", "evidence": [ref]})
     deferred = {r for op in operations if op["action"] == "DEFERRED" for r in op["evidence"]}
     issue_refs = {r for issue in issues for r in issue["evidence"]}
-    unresolved = sorted(new if any(not issue["evidence"] for issue in issues)
-                        else new & (deferred | issue_refs))
+    unresolved = sorted(new & (deferred | issue_refs))
     return {"protocol_version": PROTOCOL_VERSION, "snapshot_id": snapshot.snapshot_id, "mode": "preview",
             "operations": operations, "issues": issues,
             "coverage": {"status": "partial" if issues or deferred else "complete", "unresolved_evidence": unresolved}}

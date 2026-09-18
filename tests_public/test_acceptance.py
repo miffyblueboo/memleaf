@@ -40,7 +40,6 @@ class Oracle:
         if isinstance(script, str):
             return script
         users = [e['ref'] for e in value['evidence'] if e['use'] == 'new' and e['role'] == 'user']
-        assistants = [e['ref'] for e in value['evidence'] if e['use'] == 'new' and e['role'] == 'assistant']
         def replace(obj):
             if isinstance(obj, dict): return {k: replace(v) for k, v in obj.items()}
             if isinstance(obj, list): return [replace(v) for v in obj]
@@ -52,7 +51,6 @@ class Oracle:
                 candidates = [m for m in value['memories'] if m['title'] == title]
                 if len(candidates) != 1: raise AssertionError('fixture target missing or ambiguous')
                 item['target'] = candidates[0]['ref']
-        items += [{'action':'NO_MEMORY','evidence':[ref]} for ref in assistants]
         return json.dumps({'items':items}, ensure_ascii=False)
 
 

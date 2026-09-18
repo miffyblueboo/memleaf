@@ -136,7 +136,8 @@ Memleaf(sys.argv[1]).process(source='hermes',session_id='s',pipeline='incrementa
         self.assertEqual(first['results'][0]['run_id'],second['run_id'])
 
     def test_repeated_partial_preserves_unresolved_gauge(self):
-        first=self.call(Backend(output(self.create())))
+        first=self.call(Backend(output(self.create(),
+            {'action':'DEFERRED','evidence':['e2'],'reason':'missing_context','need':'Clarify.'})))
         second=self.call()
         self.assertGreater(first['unresolved_evidence_count'],0)
         self.assertEqual(first['unresolved_evidence_count'],second['unresolved_evidence_count'])
