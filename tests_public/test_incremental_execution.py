@@ -8,7 +8,7 @@ from unittest.mock import patch
 from incremental_test_support import IncrementalFixture
 from memleaf import Memleaf
 from memleaf.incremental_execution import IncrementalRunError
-from memleaf.incremental_run_state import KEY, OWNER, load_run
+from memleaf.incremental_run_state import KEY, OWNER, load_run, save_run
 from memleaf.extraction_work_state import extraction_work_id, reserve_model_request, _budget_path
 from memleaf.incremental_commit import _window
 from memleaf.index import turn_key
@@ -169,6 +169,21 @@ class ExecutionTests(IncrementalFixture):
         self.assertEqual(result["code"], "backend_not_single_dispatch")
         self.assertEqual(result["reserved_requests"], 0)
         self.assertFalse(_budget_path(self.s.vault).exists())
+
+    def test_old_precommit_protocol_is_blocked_without_dispatch(self):
+        first = self.execute()
+        self.assertEqual(first["code"], "backend_required")
+        with self.s.vault.lock():
+            state = self.ledger()
+            run = load_run(state, first["run_id"])
+            run.pop("protocol_digest", None)
+            save_run(self.s, state, run)
+        backend = Backend(output(self.create()))
+        final = self.s.resume_incremental_run(first["run_id"], backend=backend)
+        self.assertEqual(final["execution_status"], "blocked")
+        self.assertEqual(final["code"], "protocol_upgrade_required")
+        self.assertEqual(backend.calls, [])
+        self.assertEqual(final["reserved_requests"], 0)
 
     def test_changing_arguments_cannot_refresh_allowance(self):
         self.execute(Backend(ModelError(code="model_timeout")))

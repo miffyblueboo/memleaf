@@ -90,6 +90,9 @@ def load_run(processed: dict[str, Any], run_id: str) -> dict[str, Any] | None:
                 or any(not isinstance(v, str) for v in request.values())
                 or digest(request) != run.get("request_digest")):
             raise ValueError("invalid_incremental_request")
+    if "protocol_digest" in run and (not isinstance(run["protocol_digest"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", run["protocol_digest"]) is None):
+        raise ValueError("invalid_incremental_protocol_digest")
     if "response" in run and not isinstance(run["response"], str):
         raise ValueError("invalid_incremental_response")
     from .incremental_recovery import validate_recovery

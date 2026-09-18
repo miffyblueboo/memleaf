@@ -8,7 +8,7 @@ from incremental_test_support import IncrementalFixture
 from test_incremental_execution import Backend, output
 from memleaf import Memleaf
 from memleaf.incremental_journal import load_work
-from memleaf.incremental_run_state import load_run
+from memleaf.incremental_run_state import load_run, save_run
 
 
 class PartialTests(IncrementalFixture):
@@ -42,6 +42,19 @@ class PartialTests(IncrementalFixture):
         self.assertEqual(again["commit"]["operations"], final["commit"]["operations"])
         self.assertEqual(len(self.s.vault.list_markdown("knowledge")), 1)
         self.assertNotIn("partial_basis", load_run(self.ledger(), first["run_id"]))
+
+    def test_old_partial_protocol_is_not_replanned_under_new_semantics(self):
+        first = self.execute(self.create(), self.deferred("e2"))
+        with self.s.vault.lock():
+            state = self.ledger()
+            run = load_run(state, first["run_id"])
+            run.pop("protocol_digest", None)
+            save_run(self.s, state, run)
+        self.add_context()
+        backend = Backend(output(self.create()))
+        with self.assertRaisesRegex(ValueError, "partial_protocol_upgrade_required"):
+            self.s.recover_incremental_partial(first["run_id"], model=backend)
+        self.assertEqual(backend.calls, [])
 
     def test_replan_unchanged_context_does_not_call_or_mutate(self):
         first = self.execute(self.create(), self.deferred("e2"))

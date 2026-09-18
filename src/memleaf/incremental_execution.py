@@ -21,7 +21,7 @@ from .incremental_commit import _arguments, _window, apply_incremental, resume_i
 from .incremental_journal import digest, load_work, public_result as commit_result
 from .incremental_preview import _prepare_incremental_unlocked
 from .incremental_prompts import INCREMENTAL_SYSTEM
-from .incremental_protocol import compile_incremental, MAX_BYTES
+from .incremental_protocol import compile_incremental, MAX_BYTES, PROTOCOL_VERSION, SEMANTIC_PROTOCOL
 from .incremental_run_state import (
     VERSION, OWNER, TERMINAL, load_run, save_run, strip_payload, owner_live, public_result,
     register_owner, unregister_owner,
@@ -38,6 +38,16 @@ from .turn_plan import input_digest, turn_identity_key
 
 RETRY_SYSTEM = "\n上次请求未获得可用 JSON 决议。按同一输入和原协议返回结果，不补造缺失事实。\n"
 TRANSIENT = frozenset({"model_timeout", "model_rate_limited", "model_network_error", "model_invalid_response"})
+
+
+def _protocol_digest():
+    """Bind in-flight model bytes to the semantic compiler contract.
+
+    Existing commit journals are already frozen operations and remain resumable.
+    A pre-commit response from an older prompt/protocol must never be silently
+    reinterpreted after an upgrade.
+    """
+    return digest({"wire": PROTOCOL_VERSION, "semantic": SEMANTIC_PROTOCOL, "system": INCREMENTAL_SYSTEM})
 
 
 class IncrementalRunError(RuntimeError):
@@ -160,7 +170,7 @@ def run_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
                    "budget_id": budget_id, "turn_budget_id": f"{source}/{session_id}/{turn.turn_key}",
                    "legacy_source_unchanged": all(getattr(e, k, None) is None for e in turn.events for k in fields),
                    "source_digest": input_digest(turn), "source_window": window, "snapshot_id": snapshot.snapshot_id,
-                   "request": request, "request_digest": digest(request),
+                   "request": request, "request_digest": digest(request), "protocol_digest": _protocol_digest(),
                    "source_keys": [e["event_key"] for e in snapshot.state()["evidence"]],
                    "target_ids": [t["memory"]["memory_id"] for t in snapshot.state()["targets"].values()],
                    "native_comparison": {"status": "available" if snapshot.state().get("native_guard") else "no_eligible_sources",
@@ -194,6 +204,9 @@ def _drive(service, run_id, token, backend, calls):
                 return public_result(run, calls=calls[0])
             stored_commit = load_work(processed, run["commit_work_id"])
             phase = "resume_commit" if stored_commit is not None else "dispatch"
+            if stored_commit is None and run.get("protocol_digest") != _protocol_digest():
+                _finish(service, processed, run, "blocked", "protocol_upgrade_required")
+                return public_result(run, calls=calls[0])
             if stored_commit is None:
                 try:
                     snapshot = _check_sources(service, processed, run)

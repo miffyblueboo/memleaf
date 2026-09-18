@@ -81,7 +81,7 @@ def recover_incremental_partial(service: Any, run_id: str, *, mode: str = "repla
     No-context/no-repair calls leave the durable run unchanged. A second model
     call is never authorized by a mode switch, argument nonce or a new run ID.
     """
-    from .incremental_execution import _guard_legacy, resume_incremental_run, _budget_count
+    from .incremental_execution import _guard_legacy, resume_incremental_run, _budget_count, _protocol_digest
     from .incremental_runtime import _resolve
     if not isinstance(mode, str) or mode not in {"repair", "replan"}:
         raise ValueError("invalid_partial_mode")
@@ -102,6 +102,8 @@ def recover_incremental_partial(service: Any, run_id: str, *, mode: str = "repla
         run = load_run(processed, run_id)
         if run is None:
             raise ValueError("incremental_run_not_found")
+        if run.get("protocol_digest") != _protocol_digest():
+            raise ValueError("partial_protocol_upgrade_required")
         if run.get("partial_used"):
             if (run["partial_recovery"]["mode"] != mode
                     or run["partial_recovery"]["context_memory_ids"] != extra):
