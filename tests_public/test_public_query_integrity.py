@@ -83,7 +83,14 @@ class PublicQueryIntegrityTests(unittest.TestCase):
         self.assertEqual(self.s.search_candidates('Delivery')['results'],[])
 
     def test_case_variant_duplicate_portable_identity_conflict(self):
-        self.memory('Task');self.memory('task')
+        self.memory('Task')
+        original = self.s.vault.memory_path('Task')
+        # Distinct paths on case-insensitive filesystems; the ID, not the path, conflicts.
+        duplicate = self.s.vault.knowledge_path / 'independent-copy.md'
+        duplicate.write_text(original.read_text(encoding='utf-8').replace(
+            'memory_id: Task', 'memory_id: task'), encoding='utf-8')
+        self.assertNotEqual(original.resolve(), duplicate.resolve())
+        self.assertEqual(len(list(self.s.vault.knowledge_path.glob('*.md'))), 2)
         self.assertEqual(self.s.list_todos()['results'],[])
         with self.assertRaises(RetrievalError):self.s.read_page('Task')
 
