@@ -11,7 +11,7 @@ from typing import Any, Iterable
 
 from .incremental_protocol import PlanningSnapshot, compile_incremental, MAX_BYTES
 from .incremental_prompts import INCREMENTAL_SYSTEM
-from .index import turn_key
+from .index import turn_key, normalize_term
 from .inbox import parse_inbox_file, source_ordered_turns, captured_turn_selector
 from .models import Memory
 from .incremental_native import read_comparison
@@ -142,14 +142,33 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
         if identity.casefold() not in records:
             raise ValueError("required_target_unavailable")
         chosen.append(records[identity.casefold()])
+    def update_candidate_score(memory, query):
+        # Public directory search deliberately rejects short local substrings.
+        # Update planning has a different recall obligation: if this complete
+        # turn explicitly contains an existing non-ASCII title, the full title
+        # is strong target evidence even inside a longer sentence. Keep generic
+        # two-character titles on the stricter rule; never pull a previous turn
+        # merely to make target recall succeed.
+        title = normalize_term(memory.title)
+        text = normalize_term(query)
+        exact_title = bool(title and len(title) >= 3 and not title.isascii() and title in text)
+        if not exact_title and not candidate_matches_query(memory, query):
+            return None
+        return fulltext_score(memory, query) + (1000 + len(title) if exact_title else 0)
+
     query_rows = []
     for event in evidence:
         query = event["text"]
         # Separate local/native lanes so a long local topic cannot consume all
         # candidate slots before a short native match gets a chance.
         for is_native in (False, True):
-            scored = [(fulltext_score(memory, query), memory) for key, memory in records.items()
-                      if (key in native_keys) == is_native and candidate_matches_query(memory, query)]
+            scored = []
+            for key, memory in records.items():
+                if (key in native_keys) != is_native:
+                    continue
+                score = update_candidate_score(memory, query)
+                if score is not None:
+                    scored.append((score, memory))
             scored.sort(key=lambda item: (-item[0], item[1].memory_id))
             query_rows.append([memory for _, memory in scored[:candidate_limit]])
     # Reuse the pure retrieval functions, not service._search_unlocked(),

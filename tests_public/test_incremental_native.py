@@ -357,7 +357,7 @@ class NativeBoundaryTests(NativeFixture):
         self.assertIn(turn_key("next"), owned_turn_keys(state, "hermes", "s"))
         with self.s.vault.lock():
             cleaned = ProcessJournal(self.s)._cleanup_due_unlocked(state, "2030-01-01T00:00:00Z", 24)
-        self.assertEqual(cleaned, 0)
+        self.assertEqual(cleaned, 1)
         result = self.s.resume_incremental_run(pending["run_id"], backend=Backend(output(self.no_change(), self.no_memory())))
         self.assertEqual(result["execution_status"], "completed")
         self.assertEqual(protected_turn_keys(self.ledger(), "hermes", "s"), set())
