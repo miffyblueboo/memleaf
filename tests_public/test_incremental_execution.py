@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from incremental_test_support import IncrementalFixture
@@ -75,6 +76,49 @@ class ExecutionTests(IncrementalFixture):
         entry = self.ledger()["sessions"]["hermes/s"]["processed_turns"][0]
         self.assertEqual(entry["incremental_disposition"], "no_memory")
         self.assertEqual(len(self.s.vault.list_markdown("knowledge")), 0)
+
+    def test_orion_choice_uses_only_current_complete_turn_after_prior_no_memory(self):
+        service = Memleaf.initialize(Path(self.temp.name) / "orion-vault")
+        service.capture("hermes", "choice", "options", "user", "Orion用什么数据库好？",
+                        message_id="o-u", source_sequence=1)
+        service.capture("hermes", "choice", "options", "assistant",
+                        "A. MySQL；B. Oracle。", message_id="o-a", source_sequence=2, final=True)
+        first = service.run_incremental(source="hermes", session_id="choice", turn_id="options",
+                                        backend=Backend(output({"action": "NO_MEMORY"})))
+        self.assertEqual(first["execution_status"], "completed")
+        self.assertEqual(first["commit"]["turn_disposition"], "no_memory")
+        self.assertEqual(len(service.vault.list_markdown("knowledge")), 0)
+
+        service.capture("hermes", "choice", "chosen", "user", "那就用A吧。",
+                        message_id="c-u", source_sequence=3)
+        service.capture("hermes", "choice", "chosen", "assistant",
+                        "好的，Orion数据库就使用MySQL。", message_id="c-a", source_sequence=4, final=True)
+
+        outer = self
+        class InspectBackend:
+            single_pass_safe = True
+            def __init__(self):
+                self.calls = []
+            def complete(self, prompt, **kwargs):
+                self.calls.append((prompt, kwargs))
+                payload = json.loads(prompt)
+                outer.assertEqual([(e["role"], e["text"]) for e in payload["evidence"]],
+                                  [("user", "那就用A吧。"), ("assistant", "好的，Orion数据库就使用MySQL。")])
+                outer.assertNotIn("Oracle", prompt)
+                return output({"action": "CREATE", "evidence": ["e1", "e2"], "at": "e1",
+                               "memory": {"type": "fact", "scope": "global",
+                                          "title": "Orion 数据库", "body": "Orion 数据库使用 MySQL。"}})
+
+        backend = InspectBackend()
+        result = service.run_incremental(source="hermes", session_id="choice", turn_id="chosen", backend=backend)
+        self.assertEqual(result["execution_status"], "completed")
+        self.assertEqual(result["commit"]["turn_disposition"], "memory")
+        self.assertEqual(len(backend.calls), 1)
+        identity = result["commit"]["operations"][0]["memory_id"]
+        self.assertEqual(service.read(identity).body, "Orion 数据库使用 MySQL。")
+        ledger = json.loads(service.vault.processed_state_path.read_text(encoding="utf-8"))
+        entries = ledger["sessions"]["hermes/choice"]["processed_turns"]
+        self.assertEqual([e["incremental_disposition"] for e in entries], ["no_memory", "memory"])
 
     def test_update_same_id_preserves_fields(self):
         self.target()

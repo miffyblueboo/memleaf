@@ -14,7 +14,7 @@ to separate code, native-package, real-host and live-model conclusions.
 
 | Entry | Authority and state | Recovery / side effects |
 |---|---|---|
-| process / worker / CLI / MCP incremental | Trusted captured source revision, fixed scopes and durable work | One normal request; total at most two, frozen response/commit recovery uses zero new requests |
+| process / worker / CLI / MCP incremental | One trusted complete current turn (user + final assistant), fixed scopes and durable work; delayed old work may include only its required later-source safety window | One normal request; total at most two; NO_MEMORY durably settles the turn; frozen commit recovery uses zero new requests |
 | remember / selected retention incremental | Real explicit intent and selected sources, not global source-terminal reuse | Same-request replay, new actual intent distinct, no bypass of target/scope checks |
 | preview_incremental / apply_incremental | Bounded complete current snapshot; explicit selected proposed output | Same target group atomic intent; full revision and source/scope revalidation |
 | update_memory (Python) | Exact whitelist patch, expected_revision and old/new authorized_scopes | Frozen explicit journal, shared history/head writer; never upsert |
@@ -32,6 +32,12 @@ to separate code, native-package, real-host and live-model conclusions.
 
 The cumulative candidate retains Provider late-rejection feedback, create-only
 identity checks and strict revision/retraction recovery from previous batches.
+Automatic incremental extraction settles one complete turn rather than individual
+messages: assistant text participates in understanding the current turn but is
+not a separate coverage obligation. Normal processing does not pull the previous
+turn into the prompt; insufficient shorthand is deferred. In-flight pre-commit
+model bytes are fenced by semantic protocol identity so an upgrade cannot silently
+reinterpret an older response.
 The final closeout adds exact structured edits, shared writer target rechecks,
 case-insensitive Forget cancellation, confirmed deletion boundaries, journal
 inventory/freshness/retention protection, missing-authority invariants, persistent

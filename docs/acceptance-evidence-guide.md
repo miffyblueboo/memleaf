@@ -95,10 +95,15 @@ real chat archive merely to make a fixture. Use synthetic native files for initi
 share/read-only tests. Private incident material must be separately approved.
 
 For real acceptance, source labels alone (`hermes`/`codex`) do not prove the actual
-host ran. Record actual process/configuration and behavior. Test one capture per
-turn, authentic available source metadata, final versus intermediate messages,
-stop-recording and late callbacks, shared search/read, repeat/new intent, same-ID
-state changes and restarts. Missing original time stays unknown, not fabricated.
+host ran. Record actual process/configuration and behavior. Test one complete
+automatic turn as user input plus trusted final assistant reply; prove that a
+previous settled turn is not silently copied into the normal prompt, while the
+assistant's current-turn restatement can resolve a user's shorthand choice. Also
+test a genuinely non-self-contained turn and require conservative deferral rather
+than guessed history. Verify durable NO_MEMORY settlement, authentic available
+source metadata, final versus intermediate messages, stop-recording and late
+callbacks, shared search/read, repeat/new intent, same-ID state changes and
+restarts. Missing original time stays unknown, not fabricated.
 
 ## Migration and release boundaries
 

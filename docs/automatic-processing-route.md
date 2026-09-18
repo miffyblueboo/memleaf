@@ -72,6 +72,16 @@ inside that ordered window. Unknown/overlapping order retains existing conservat
 behavior; unseen messages cannot be ordered. Later independent work can still be
 attempted after an earlier terminal partial, subject to the runner's context guard.
 
+For normal automatic extraction, the semantic unit is exactly one complete
+captured turn: the selected visible user input(s) plus the trusted final assistant
+reply. The previous turn is not automatically copied into the model request.
+A later source turn appears as context only when an older/delayed turn is being
+recovered and the existing stale-source safety contract requires that later
+window. If the current turn itself is not sufficient to support a reliable
+memory, the planner must defer rather than guess or silently reconstruct earlier
+conversation. A clean turn-level NO_MEMORY is a durable processed outcome: it
+writes no knowledge but prevents the same source turn from being extracted again.
+
 The remaining backlog is returned rather than drained in an unbounded loop. A
 subsequent legitimate process trigger can continue it. The host pending hint
 identifies fresh work/zero-call saved-result recovery separately from a transport
@@ -97,7 +107,11 @@ transport recovery and any explicitly requested partial replan share the same
 existing maximum of two durable reservations for that work, not two per batch or
 per enqueue. This integration does not change the single-turn recovery contract.
 
-Saved responses and prepared commits resume without a model. A repeat automatic
+Saved responses and prepared commits resume without a model. Frozen commit
+journals remain recoverable across upgrades. Pre-commit model requests/responses,
+however, are bound to a semantic-protocol digest (wire contract + prompt): an
+older in-flight response is refused with an explicit protocol-upgrade status
+rather than being recompiled under newer turn semantics. A repeat automatic
 trigger does not spend a remaining transport attempt. Parsed partial content is
 not automatically repaired/replanned by polling or by setting `recover=True`;
 use the existing bounded `recover_incremental_partial` contract when applicable.
