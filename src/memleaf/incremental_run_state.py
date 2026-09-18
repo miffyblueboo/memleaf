@@ -201,10 +201,13 @@ def cancel_forgotten_unlocked(service: Any, processed: dict[str, Any], ids: set[
     runs = processed.get(KEY, {})
     if not isinstance(runs, dict):
         raise ValueError("invalid_incremental_runs")
+    folded = {identity.casefold() for identity in ids}
     for key in list(runs):
         run = load_run(processed, key)
-        committed_ids = {op.get("memory_id") for op in (run.get("commit_result") or {}).get("operations", [])}
-        if (ids.intersection(run["target_ids"]) or ids.intersection(committed_ids)
+        committed_ids = {identity.casefold() for op in (run.get("commit_result") or {}).get("operations", [])
+                         if isinstance(identity := op.get("memory_id"), str)}
+        targets = {identity.casefold() for identity in run["target_ids"]}
+        if (folded.intersection(targets) or folded.intersection(committed_ids)
                 or source_keys.intersection(run["source_keys"])):
             run.update(status="cancelled", code="explicit_forget")
             strip_payload(run)

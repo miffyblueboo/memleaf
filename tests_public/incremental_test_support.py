@@ -27,7 +27,9 @@ class IncrementalFixture(unittest.TestCase):
                     status="active", scopes=["global"], assignee="user", waiting_on="approval",
                     due_date="2026-09-20", custom={"keep": True})
         args.update(kwargs)
-        return self.s.create_memory(**args)
+        # This fixture also simulates a later trusted edit of an existing target.
+        # Use the raw replacement API explicitly, not the create-only API.
+        return self.s.write_memory(Memory.new(**args), overwrite=True)
 
     def request(self, items, **args):
         params = dict(source="hermes", session_id="s", turn_id="t")

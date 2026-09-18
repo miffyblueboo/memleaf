@@ -90,13 +90,16 @@ is accepted only when the actual events contain no new source metadata; known
 source time, revision or final cannot be discarded to make an old digest match.
 This is separate from target-memory revision compatibility.
 
-## Staged integration, not full redesign completion
+## Route-specific request limits
 
-These changes do not replace the legacy extraction/maintenance model protocol.
-The current automatic path retains its existing three-dispatch ceiling; explicit
-remember retains two. The planned normal-one-plus-one-recovery budget belongs to
-the later unified planner and must not be claimed here. No extra dispatches were
-introduced by these fixes.
+The legacy automatic single-pass route retains its existing three-dispatch
+ceiling and legacy explicit remember retains two. They are compatibility paths.
+The implemented opt-in incremental route uses one normal planning request and
+one shared recovery allowance, at most two durable reservations for the same
+work across synchronous/background/restart entry points. Saved-result commit
+recovery does not dispatch again. Defaults remain legacy until separately
+authorized final acceptance and cutover. Do not change the legacy constant to
+two or claim the legacy route has become the incremental route.
 
 Core can accept original message timestamps, but an adapter must actually provide
 them to obtain that guarantee. Missing Hermes source timestamps remain unknown;
@@ -142,3 +145,34 @@ only evidence of actual completion time (or a trusted existing value) supplies
 `completed_at`. The report's observation timestamp alone is not enough. This
 changes no normal model-call count and does not switch to the future items
 planner.
+
+## Local binding and loss of durable authority
+
+A genuinely new empty Vault gets persistent random `vault_id` and local
+`principal_id` metadata in `_state/layout.json`, under its normal lock. Two
+agents opening it share that binding; moving a complete copy does not infer a
+new owner from its path. This is a single trusted local owner's binding, not
+multi-user authentication or a cross-device lock guarantee. An older Vault stays
+`legacy_unbound` until the local operator explicitly calls
+`service.vault.bind_identity(principal_id)` after migration preflight permits it.
+Opening old content does not guess identity, migrate user ownership, rekey old
+work or regenerate consumed request budgets. Binding a busy/damaged old Vault
+is blocked. Rebinding an established owner is not an implicit supported migration.
+
+Trusted `source` is the source-instance namespace. Different sources may reuse
+session/message strings without collisions. Existing default Hermes/Codex
+adapters retain their singleton-per-source contract; multiple instances must
+supply distinct trusted source namespaces. No multi-tenant/adapter registry is
+introduced. Bound identity participates in new frozen snapshot consistency, not
+in permanent-memory visibility filtering, and is not sent to the model. Legacy
+unbound v1 partial/frozen recovery remains valid without inventing a binding.
+
+The layout records required durable controls before their first reservation.
+An established missing processed ledger is not an empty fresh ledger. A required
+missing request budget, or old run reservations without their budget, cannot
+obtain a new allowance. State corruption and required absence fail closed while
+ordinary readable Markdown can remain available. `Vault.ensure()` does not
+silently recreate lost required permission/receipt state. Lossless maintenance
+may observe a genuinely absent old budget but cannot write a replacement or
+claim restored request authority. This invariant does not recover arbitrarily
+erased files, prove malicious tampering, or implement a time-based retention horizon.

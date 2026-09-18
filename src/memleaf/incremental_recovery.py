@@ -32,6 +32,8 @@ def restore_snapshot(state: Any) -> PlanningSnapshot:
             retention_request=state.get("retention_request"),
             allow_new_scopes=state["allow_new_scopes"], context_complete=state["context_complete"],
             scope_guard=state.get("scope_guard"), scope_aliases=state.get("scope_aliases"),
+            basis_statuses={r: t["basis_status"] for r, t in targets.items() if "basis_status" in t},
+            vault_binding=state.get("vault_binding"),
         )
     except (KeyError, TypeError) as error:
         raise ValueError("invalid_partial_snapshot") from error
@@ -187,6 +189,8 @@ def context_changed(original: PlanningSnapshot, current: PlanningSnapshot, work:
 def recovery_snapshot(original: PlanningSnapshot, current: PlanningSnapshot, work: dict[str, Any],
                       focus: set[str], *, mode: str) -> PlanningSnapshot:
     old, new = original.state(), current.state()
+    if old.get("vault_binding") != new.get("vault_binding"):
+        raise ValueError("partial_vault_binding_changed")
     from .incremental_scopes import guard_matches, applied_additions
     if mode == "repair" and not guard_matches(new.get("scope_guard"), old.get("scope_guard"), applied_additions(work)):
         raise ValueError("partial_scope_context_changed")
@@ -215,7 +219,7 @@ def recovery_snapshot(original: PlanningSnapshot, current: PlanningSnapshot, wor
         evidence.append(e)
     old_targets = {t["memory"]["memory_id"]: r for r, t in old["targets"].items()}
     next_target = max((int(r[1:]) for r in old_targets.values()), default=0) + 1
-    targets, writable, natives = {}, {}, {}
+    targets, writable, natives, statuses = {}, {}, {}, {}
     readonly_ids = settled_ids(work)
     for t in new["targets"].values():
         mid = t["memory"]["memory_id"]
@@ -223,6 +227,8 @@ def recovery_snapshot(original: PlanningSnapshot, current: PlanningSnapshot, wor
         if ref is None:
             ref = f"m{next_target}"; next_target += 1
         targets[ref] = Memory.from_mapping(t["memory"])
+        if "basis_status" in t:
+            statuses[ref] = t["basis_status"]
         writable[ref] = t["writable"] and mid not in readonly_ids
         if "native" in t:
             natives[ref] = t["native"]
@@ -252,7 +258,8 @@ def recovery_snapshot(original: PlanningSnapshot, current: PlanningSnapshot, wor
                                   native_targets=natives, native_guard=new.get("native_guard"),
                                   request_kind=old["request_kind"], retention_request=old.get("retention_request"),
                                   allow_new_scopes=old["allow_new_scopes"], context_complete=new["context_complete"],
-                                  scope_guard=new.get("scope_guard"), scope_aliases=new.get("scope_aliases"))
+                                  scope_guard=new.get("scope_guard"), scope_aliases=new.get("scope_aliases"),
+                                  basis_statuses=statuses, vault_binding=new.get("vault_binding"))
 
 
 def new_revision(memory: Memory) -> str:

@@ -13,10 +13,40 @@ from typing import Any, Iterable, Mapping
 
 from .locking import atomic_unlink, atomic_write_json, atomic_write_text, read_json
 from .memory_writer import MemoryWriter
+from .query_scan import ensure_scan_current
 from .models import Memory, MemoryVersionError, utc_now
 from .turn_plan import MAX_PLAN_BYTES, revision_digest
 from .validation import parse_strict_json
 from .vault import safe_component
+
+
+def journal_identities(vault: Any, directory: str) -> list[str]:
+    """Bounded, non-mutating inventory of the two explicit mutation journals.
+
+    Presence is not permission to replay. Unknown entries are never discarded.
+    """
+    if directory not in {"retractions", "explicit_updates"}:
+        raise ValueError("invalid mutation journal directory")
+    root = vault.state_path / directory
+    if root.is_symlink() or (root.exists() and not root.is_dir()):
+        raise ValueError("unsafe mutation journal directory")
+    if not root.exists():
+        return []
+    identities = []
+    total = 0
+    for path in root.iterdir():
+        if len(identities) >= 128:
+            raise ValueError("mutation journal inventory exceeds limit")
+        if path.is_symlink() or not path.is_file() or path.suffix != ".json":
+            raise ValueError("invalid mutation journal entry")
+        safe_component(path.stem, "memory id")
+        total += path.stat().st_size
+        if path.stat().st_size > MAX_PLAN_BYTES * 2 or total > 16 * 1024 * 1024:
+            raise ValueError("mutation journal inventory exceeds byte limit")
+        identities.append(path.stem)
+    if len({i.casefold() for i in identities}) != len(identities):
+        raise ValueError("duplicate mutation journal identity")
+    return sorted(identities)
 
 
 class RetractionCommitError(OSError):
@@ -81,6 +111,9 @@ class RetractionManager:
         return plan
 
     def _prepare(self, current: Memory, expected: str, reason: str | None) -> dict[str, Any]:
+        identities = journal_identities(self.service.vault, "retractions")
+        if current.memory_id not in identities and len(identities) >= 128:
+            raise ValueError("retraction journal capacity exhausted")
         now = utc_now()
         operation_id = self._operation_id(current.memory_id, expected, reason)
         value = current.to_dict()
@@ -92,6 +125,12 @@ class RetractionManager:
                      retracted_at=now, retraction_operation_id=operation_id)
         if reason is not None:
             value["retraction_reason"] = reason
+        from copy import deepcopy
+        bases = deepcopy(value.get("field_basis", {}))
+        if not isinstance(bases, dict) or any(not isinstance(item, dict) for item in bases.values()):
+            raise ValueError("invalid_target_basis")
+        bases["validity"] = {"source": "explicit_retraction", "source_time": now}
+        value["field_basis"] = bases
         after = Memory.from_mapping(value)
         # The receipt validates replay after the journal is settled. It is
         # computed before adding itself; later authored edits invalidate it.
@@ -112,15 +151,19 @@ class RetractionManager:
 
     def retract_unlocked(self, memory_id: str, expected_revision: str, reason: str | None) -> Memory:
         """Caller holds the Vault mutation lock; no model is involved."""
-        matches = self.service._find_records_unlocked(memory_id, include_history=False)
-        if not matches:
-            # Do not revive a removed target from the recovery snapshot.
+        record, snapshot = self.service._revision_target_unlocked(memory_id)
+        ensure_scan_current(self.service.vault, snapshot)
+        if record is None:
+            # Only proven absence permits cancellation. Preserve corrupt state
+            # for inspection rather than deleting it as a missing-target retry.
+            self._load(memory_id)
+            ensure_scan_current(self.service.vault, snapshot)
             atomic_unlink(self._path(memory_id))
             raise ValueError("memory does not exist")
-        if len(matches) != 1:
-            raise ValueError("duplicate current memory id")
-        record = matches[0]
         current = record.memory
+        # Case aliases resolve to the on-disk identity, not another journal or
+        # operation receipt. Renaming a file does not change that identity.
+        memory_id = current.memory_id
         current_revision = revision_digest(current)
         plan = self._load(memory_id)
         if plan is not None and current_revision not in {
@@ -128,6 +171,7 @@ class RetractionManager:
         }:
             # A later authorized edit wins. Cancel this stale plan; never apply
             # its old snapshot, even if the original caller retries afterwards.
+            ensure_scan_current(self.service.vault, snapshot)
             atomic_unlink(self._path(memory_id))
             self.service._rebuild_index_unlocked()
             plan = None
@@ -151,20 +195,31 @@ class RetractionManager:
             if current.validity == "retracted":
                 # Also repairs pre-journal retractions when retried with their
                 # current revision. No new history or business write is needed.
+                ensure_scan_current(self.service.vault, snapshot)
                 self.service._rebuild_index_unlocked()
                 return current
             plan = self._prepare(current, expected_revision, reason)
         try:
             before = Memory.from_markdown(plan["before"])
             after = Memory.from_markdown(plan["after"])
+            # Preparing the journal and writing history take time. An external
+            # edit need not use our lock, so recheck the bounded current scan at
+            # both boundaries. A stale prepared plan is not permission to write.
+            ensure_scan_current(self.service.vault, snapshot)
             MemoryWriter(self.service)._write_history(
                 before, superseded_by=memory_id, archived_at=plan["archived_at"],
                 invalidated_reason="retracted",
             )
+            ensure_scan_current(self.service.vault, snapshot)
             if current_revision == plan["expected_revision"]:
                 if record.path.is_symlink():
                     raise ValueError("unsafe memory path")
-                atomic_write_text(record.path, plan["after"])
+                # Reads since the original preparation do not invalidate CAS.
+                # Keep their accounting without changing the frozen assertion,
+                # history identity or protected replacement revision.
+                after.hit_count = current.hit_count
+                after.last_hit_at = current.last_hit_at
+                atomic_write_text(record.path, after.to_markdown())
             self.service._rebuild_index_unlocked()
             atomic_unlink(self._path(memory_id))
             return after if current_revision == plan["expected_revision"] else current
@@ -172,7 +227,13 @@ class RetractionManager:
             applied = None
             try:
                 head = Memory.from_markdown(record.path.read_text(encoding="utf-8"), record.path)
-                applied = head.extra.get("retraction_operation_id") == plan["operation_id"] and head.validity == "retracted"
+                head_revision = revision_digest(head)
+                if head_revision == plan["replacement_revision"]:
+                    applied = True
+                elif head_revision == plan["expected_revision"]:
+                    applied = False
+                # Another authored revision may have followed the write. Its
+                # copied operation marker alone cannot prove the current result.
             except (OSError, ValueError, UnicodeError):
                 pass
             raise RetractionCommitError(applied=applied) from error
@@ -187,5 +248,7 @@ class RetractionManager:
                 value = memory.extra.get(key)
                 if isinstance(value, str) and value:
                     ids.add(value)
-        for memory_id in ids:
-            atomic_unlink(self._path(memory_id))
+        folded = {identity.casefold() for identity in ids}
+        for memory_id in journal_identities(self.service.vault, "retractions"):
+            if memory_id.casefold() in folded:
+                atomic_unlink(self._path(memory_id))

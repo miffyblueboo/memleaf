@@ -508,7 +508,7 @@ def _query_metadata(value: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(pipeline, Mapping) or not isinstance(pipeline.get("status"), str) or pipeline.get("status") not in {"current", "pending", "unknown"} or pipeline.get("scope") != "vault":
             raise ValueError("invalid pipeline status")
         projection = {"status": pipeline["status"], "scope": "vault"}
-        for key in ("pending_turns", "incomplete_turns", "pending_commits", "unresolved_runs", "queued_jobs"):
+        for key in ("pending_turns", "incomplete_turns", "pending_commits", "unresolved_runs", "queued_jobs", "pending_explicit_mutations"):
             if key in pipeline:
                 if type(pipeline[key]) is not int or pipeline[key] < 0:
                     raise ValueError("invalid pipeline count")

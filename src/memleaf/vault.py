@@ -136,6 +136,9 @@ class Vault:
         return candidate
 
     def ensure(self) -> None:
+        # Only a genuinely new/empty directory gets an automatic local owner.
+        # Opening an existing Vault must not guess ownership or split its state.
+        fresh = not self.root.exists() or not any(self.root.iterdir())
         self.root.mkdir(parents=True, exist_ok=True)
         if self.root.is_symlink():
             self.root = self.root.resolve()
@@ -151,6 +154,9 @@ class Vault:
         with self.lock():
             from .state_layout import migrate_state_layout
             migrate_state_layout(self)
+            if fresh and self.identity_status()["status"] != "bound":
+                import uuid
+                self._bind_identity_unlocked("local-" + uuid.uuid4().hex)
 
             empty_tags = {
                 "version": 1,
@@ -179,7 +185,19 @@ class Vault:
                     if path.is_symlink() or not path.is_file():
                         raise ValueError("unsafe vault managed path")
                 else:
+                    if path == self.processed_state_path:
+                        from .state_layout import control_required
+                        if control_required(path):
+                            # Preserve the missing-authority condition. Public
+                            # read-only APIs can still inspect Markdown; mutation
+                            # readers reject instead of manufacturing permission.
+                            continue
                     atomic_write_json(path, value)
+            from .state_layout import require_control
+            if self.processed_state_path.is_file():
+                require_control(self, "processed.json")
+            if (self.state_path / "extraction_request_budget.json").is_file():
+                require_control(self, "extraction_request_budget.json")
             if not self.config_path.exists():
                 save_config(self.config_path, default_config(self.root))
             if not self._inside("README.md").exists():
@@ -196,6 +214,43 @@ class Vault:
 
     def config(self) -> dict:
         return load_config(self.config_path, vault=self.root)
+
+    def identity_status(self) -> dict:
+        """Local binding metadata, not a multi-user authentication mechanism."""
+        from .state_layout import _read_layout
+        layout = _read_layout(self.state_layout_path)
+        binding = layout.get("binding") if layout else None
+        return ({"status": "bound", **binding} if binding is not None
+                else {"status": "legacy_unbound", "requires_explicit_binding": True})
+
+    def _bind_identity_unlocked(self, principal_id: str) -> dict:
+        from .state_layout import _read_layout, StateLayoutError
+        import uuid
+        safe_component(principal_id, "principal id")
+        if len(principal_id) > 160 or principal_id.strip() != principal_id:
+            raise ValueError("invalid principal id")
+        layout = _read_layout(self.state_layout_path)
+        if layout is None:
+            raise StateLayoutError("binding requires an established layout")
+        previous = layout.get("binding")
+        if previous is not None:
+            if previous["principal_id"] != principal_id:
+                raise ValueError("Vault already bound; rebinding and cross-user merging are unsupported")
+            return {"status": "bound", **previous}
+        layout["binding"] = {"version": 1, "vault_id": "vault-" + uuid.uuid4().hex,
+                             "principal_id": principal_id}
+        atomic_write_json(self.state_layout_path, layout, mode=0o600)
+        return self.identity_status()
+
+    def bind_identity(self, principal_id: str) -> dict:
+        """Explicit first binding only; keeps all existing work/receipt keys."""
+        with self.lock():
+            if self.identity_status()["status"] != "bound":
+                from .service import Memleaf
+                report = Memleaf(self).migration_preflight()
+                if set(report["blockers"]) - {"legacy_vault_requires_explicit_binding"}:
+                    raise ValueError("resolve pending migration checks before binding an existing Vault")
+            return self._bind_identity_unlocked(principal_id)
 
     def lock(self) -> VaultLock:
         return VaultLock(self.lock_path)

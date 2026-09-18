@@ -158,7 +158,50 @@ def _read_layout(path: Path) -> dict[str, Any] | None:
     migrated = value.get("migrated")
     if not isinstance(migrated, list) or not all(isinstance(item, str) for item in migrated):
         raise StateLayoutError("invalid state layout marker")
+    required = value.get("required_controls", [])
+    if (not isinstance(required, list) or any(not isinstance(name, str) or name not in
+            {"processed.json", "extraction_request_budget.json"} for name in required)
+            or len(required) != len(set(required))):
+        raise StateLayoutError("invalid required control invariant")
+    binding = value.get("binding")
+    if binding is not None:
+        if (not isinstance(binding, dict) or set(binding) != {"version", "vault_id", "principal_id"}
+                or type(binding.get("version")) is not int or binding["version"] != 1
+                or any(not isinstance(binding.get(k), str) or not binding[k] or binding[k].strip() != binding[k] or len(binding[k]) > 160
+                       or any(c in binding[k] for c in "\x00\r\n/\\") for k in ("vault_id", "principal_id"))):
+            raise StateLayoutError("invalid local Vault binding")
     return value
+
+
+
+def control_required(path: Path) -> bool:
+    """Distinguish first-use absence from a lost durable authority file.
+
+    This is an existence invariant, not a reconstructed receipt or new budget.
+    Reads never create a marker. Legacy established processed state is required
+    even before the optional invariant list was introduced.
+    """
+    if path.name not in {"processed.json", "extraction_request_budget.json"}:
+        raise StateLayoutError("unknown durable control")
+    marker = path.parent / "layout.json"
+    layout = _read_layout(marker)
+    if layout is not None and path.name in layout.get("required_controls", []):
+        return True
+    return path.name == "processed.json" and (path.parent.parent / "config.yaml").exists()
+
+
+def require_control(vault: Any, name: str) -> None:
+    """Caller holds the Vault lock. Persist the invariant before reserving IO."""
+    if name not in {"processed.json", "extraction_request_budget.json"}:
+        raise StateLayoutError("unknown durable control")
+    marker = Path(vault.state_layout_path)
+    layout = _read_layout(marker)
+    if layout is None:
+        raise StateLayoutError("durable control requires an established state layout")
+    required = set(layout.get("required_controls", []))
+    if name not in required:
+        layout["required_controls"] = sorted(required | {name})
+        atomic_write_json(marker, layout, mode=0o600)
 
 
 def _cleanup_legacy(index_root: Path) -> None:

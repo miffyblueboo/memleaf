@@ -374,6 +374,114 @@ class ClientCompatibilityTests(unittest.TestCase):
         self.assertIn('Local retrieval remains available',text)
         self.assertNotIn('captured turn remains pending',text)
 
+    def _reject_from_server(self, code='provider_restart_required', stage='compatibility'):
+        result = {'isError': True, 'structuredContent': {
+            'error': {'code': code, 'stage': stage, 'message': 'private diagnostic'}}}
+        with patch.object(self.client, '_start_locked'), patch.object(
+                self.client, '_request_locked', return_value=result):
+            with self.assertRaises(self.module._MCPToolError) as error:
+                self.client.call_tool('capture', {})
+        return error.exception
+
+    def test_server_rejection_updates_observed_client_status(self):
+        for code in COMPATIBILITY_CODES:
+            with self.subTest(code=code):
+                self.client.close()
+                self.client.server_provider_build = self.good
+                self._reject_from_server(code)
+                self.assertEqual(self.client.compatibility_status(),
+                                 {'status': code, 'writes_allowed': False})
+
+    def test_server_rejection_survives_successful_read(self):
+        self._reject_from_server()
+        with patch.object(self.client, '_start_locked'), patch.object(
+                self.client, '_request_locked', return_value={'structuredContent': {'ok': True}}):
+            self.assertEqual(self.client.call_tool('stats', {}), {'ok': True})
+        self.assertEqual(self.client.compatibility_status(),
+                         {'status': 'provider_restart_required', 'writes_allowed': False})
+
+    def test_refused_writes_retain_status_without_transport_restart(self):
+        self._reject_from_server()
+        with patch.object(self.client, '_start_locked'), patch.object(
+                self.client, '_request_locked') as request, patch.object(
+                self.client, '_close_locked', wraps=self.client._close_locked) as close:
+            for _ in range(3):
+                with self.assertRaises(self.module._MCPToolError) as error:
+                    self.client.call_tool('capture', {})
+                self.assertEqual(error.exception.code, 'provider_restart_required')
+            request.assert_not_called()
+            close.assert_not_called()
+        self.assertFalse(self.client.compatibility_status()['writes_allowed'])
+
+    def test_unrelated_server_error_does_not_revoke_compatibility(self):
+        for code, stage in [('model_failed', 'summarize'),
+                            ('provider_core_mismatch', 'summarize'),
+                            ('private unknown error', 'compatibility')]:
+            with self.subTest(code=code, stage=stage):
+                self._reject_from_server(code, stage)
+                self.assertEqual(self.client.compatibility_status(),
+                                 {'status': 'compatible', 'writes_allowed': True})
+
+    def test_close_clears_observed_peer_rejection(self):
+        self._reject_from_server()
+        self.client.close()
+        self.assertEqual(self.client.compatibility_status()['status'], 'core_build_unverified')
+        self.client.server_provider_build = self.good
+        self.assertEqual(self.client.compatibility_status(),
+                         {'status': 'compatible', 'writes_allowed': True})
+
+    def test_local_build_problem_takes_precedence_over_peer_rejection(self):
+        self._reject_from_server('provider_core_mismatch')
+        with patch.object(self.module, 'provider_build',
+                          return_value={**self.good, 'digest': '0' * 64}):
+            self.assertEqual(self.client.compatibility_status()['status'],
+                             'provider_restart_required')
+
+    def test_provider_notice_reflects_late_server_rejection(self):
+        base = types.ModuleType('agent.memory_provider')
+        base.MemoryProvider = type('MemoryProvider', (), {})
+        base.RecallStatus = type('RecallStatus', (), {})
+        with patch.dict(sys.modules, {'agent': types.ModuleType('agent'), 'agent.memory_provider': base}):
+            module = importlib.import_module('memleaf.hermes_provider._provider')
+        provider = module.MemleafMemoryProvider()
+        provider._client = self.client
+        self.assertEqual(provider._runtime_compatibility_notice(), '')
+        self._reject_from_server()
+        text = provider._runtime_compatibility_notice()
+        self.assertIn('does not confirm an inbox receipt', text)
+        self.assertIn('Local retrieval remains available', text)
+        self.assertNotIn('private diagnostic', text)
+        self.assertNotIn('captured turn remains pending', text)
+
+    def test_real_stdio_reconnect_clears_observed_peer_rejection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = Memleaf.initialize(Path(directory) / '库')
+            client = self.module._MCPClient(sys.executable, str(service.vault.root), 10)
+            popen = subprocess.Popen
+            def start(args, **kwargs):
+                return popen([sys.executable, '-m', 'memleaf.mcp_server', *args[1:]], **kwargs)
+            try:
+                with patch.object(self.module.subprocess, 'Popen', side_effect=start):
+                    client.call_tool('stats', {})
+                    original_process = client._process
+                    rejection = {'isError': True, 'structuredContent': {'error': {
+                        'code': 'provider_restart_required', 'stage': 'compatibility'}}}
+                    with patch.object(client, '_request_locked', return_value=rejection):
+                        with self.assertRaises(self.module._MCPToolError):
+                            client.call_tool('capture', {})
+                    client.call_tool('stats', {})
+                    self.assertIs(client._process, original_process)
+                    self.assertFalse(client.compatibility_status()['writes_allowed'])
+                    client.close()
+                    client.call_tool('stats', {})
+                    self.assertIsNot(client._process, original_process)
+                    self.assertTrue(client.compatibility_status()['writes_allowed'])
+                    result = client.call_tool('capture', {'source': 'hermes', 'session_id': 's',
+                        'role': 'user', 'content': '事实', 'turn_id': '1'})
+                    self.assertTrue(result['stored'])
+            finally:
+                client.close()
+
     def test_real_stdio_bridge_capture_and_reconnect(self):
         with tempfile.TemporaryDirectory() as directory:
             service=Memleaf.initialize(Path(directory)/'库')

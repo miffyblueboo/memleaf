@@ -526,6 +526,9 @@ def _read_processed(path: Path) -> dict[str, Any]:
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
+        from .state_layout import control_required
+        if control_required(path):
+            raise ValueError("required_processed_state_missing") from None
         return _empty_processed()
     try:
         value = parse_strict_json(raw)

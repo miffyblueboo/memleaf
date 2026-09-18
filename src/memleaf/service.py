@@ -57,7 +57,7 @@ from .scope_state import (
     validate_scope_registry,
 )
 from .vault import Vault, safe_component
-from .query_scan import scan_memories, ensure_scan_current
+from .query_scan import QueryScan, ScanRecord, scan_memories, ensure_scan_current
 from .query_progress import observe_progress
 
 
@@ -555,36 +555,27 @@ class Memleaf:
                     matches.append(record)
         return matches
 
-    def _find_forget_records_unlocked(self, memory_id: str) -> list[_Record]:
-        """Return an active target and its linked history, or an exact history file."""
+    def _forget_scan_unlocked(self) -> QueryScan:
+        """A deletion must be able to account for linked historical copies."""
+        snapshot = scan_memories(self.vault, include_history=True)
+        if any(issue.code != "duplicate_id" for issue in snapshot.issues):
+            raise RetrievalError("memory_unreadable", "cannot enumerate all deletion copies")
+        return snapshot
 
-        knowledge = self._read_memories_unlocked("knowledge")
-        history = self._read_memories_unlocked("history")
-        direct = [record for record in knowledge + history if record.memory.memory_id == memory_id]
-        if not direct:
-            # A retired active identity (for example a closed todo) may exist
-            # only as historical Markdown. Resolve that stable identity without
-            # guessing across unrelated history records.
-            linked = [
-                record for record in history
-                if record.memory.extra.get("active_memory_id") == memory_id
-                or record.memory.extra.get("original_memory_id") == memory_id
-            ]
-            return linked
-        if not any(record.area == "knowledge" for record in direct):
-            # A history memory id is an independent, directly addressable
-            # artifact.  Never infer deletion of its active counterpart from
-            # the history id alone.
-            return direct
-        return [
-            record
-            for record in knowledge + history
-            if record.memory.memory_id == memory_id
-            or (
-                record.area == "history"
-                and record.memory.extra.get("active_memory_id") == memory_id
-            )
-        ]
+    def _find_forget_records_unlocked(self, memory_id: str) -> list[_Record]:
+        """Resolve an exact current/retired ID, or only an addressed history ID."""
+        snapshot = self._forget_scan_unlocked()
+        identity = memory_id.casefold()
+        direct = [r for r in snapshot._all_records if r.memory.memory_id.casefold() == identity]
+        current = any(r.area == "knowledge" for r in direct)
+        if direct and not current:
+            targets = direct
+        else:
+            targets = [r for r in snapshot._all_records if r in direct or (r.area == "history" and any(
+                isinstance(r.memory.extra.get(k), str) and r.memory.extra[k].casefold() == identity
+                for k in ("active_memory_id", "original_memory_id")))]
+        ensure_scan_current(self.vault, snapshot)
+        return targets
 
     def _forget_target_records_unlocked(self, record: _Record) -> list[_Record]:
         if record.area == "knowledge":
@@ -701,9 +692,24 @@ class Memleaf:
 
     read_native_locator = read_native_segment
 
-    def write_memory(self, memory: Memory | Mapping[str, Any], area: str = "knowledge") -> Memory:
-        """Persist one Markdown memory and rebuild derived indexes."""
+    def write_memory(
+        self,
+        memory: Memory | Mapping[str, Any],
+        area: str = "knowledge",
+        *,
+        overwrite: bool = True,
+    ) -> Memory:
+        """Trusted full-document write, not a revision-checked business update.
 
+        The historical overwrite default is retained for existing raw import and
+        administrator scripts. It does not merge fields or create history.
+        Set overwrite=False for create-only identity and destination checks;
+        create_memory always uses that policy. Automatic planners do not use
+        this raw entry point for updates.
+        """
+
+        if type(overwrite) is not bool:
+            raise TypeError("overwrite must be a boolean")
         if not isinstance(memory, Memory):
             memory = Memory.from_mapping(memory)
         if area not in ("knowledge", "history"):
@@ -719,6 +725,20 @@ class Memleaf:
         with self._mutation_boundary():
             if path.is_symlink():
                 raise ValueError("unsafe memory path")
+            if not overwrite:
+                # A renamed file still owns its frontmatter identity. Use the
+                # existing bounded, case-insensitive scan across both areas;
+                # skipped or ambiguous files must not be treated as absence.
+                snapshot = scan_memories(self.vault, include_history=True)
+                snapshot.require_identity(memory.memory_id)
+                if path.exists() or any(
+                    record.memory.memory_id.casefold() == memory.memory_id.casefold()
+                    for record in snapshot.records
+                ):
+                    raise FileExistsError("memory identity or destination already exists")
+                if any(issue.identity is None for issue in snapshot.issues):
+                    raise ValueError("memory creation requires a complete identity scan")
+                ensure_scan_current(self.vault, snapshot)
             atomic_write_text(path, memory.to_markdown())
             self._rebuild_index_unlocked()
         return memory
@@ -740,6 +760,12 @@ class Memleaf:
         area: str = "knowledge",
         **metadata: Any,
     ) -> Memory:
+        """Create a new identity; never replace an existing current/history file.
+
+        Repeating an explicit ID is a conflict, even with identical content.
+        For a trusted full-document replacement use write_memory explicitly;
+        ordinary business updates require the existing revision/history path.
+        """
         memory = Memory.new(
             title=title,
             body=body,
@@ -751,20 +777,71 @@ class Memleaf:
             keywords=keywords,
             **metadata,
         )
-        return self.write_memory(memory, area=area)
+        return self.write_memory(memory, area=area, overwrite=False)
+
+    def _revision_target_unlocked(self, memory_id: str) -> tuple[ScanRecord | None, QueryScan]:
+        """Resolve a current write target without treating unreadable files as absent.
+
+        Caller holds the Vault lock and rechecks the returned snapshot at its
+        observation/commit boundary. Unknown identities prevent proving unique
+        ownership; unrelated, identifiable bad records retain local isolation.
+        """
+        snapshot = scan_memories(self.vault, include_history=False)
+        snapshot.require_identity(memory_id)
+        if any(issue.identity is None for issue in snapshot.issues):
+            raise RetrievalError("memory_unreadable", "current memory identity scan is incomplete")
+        record = next((record for record in snapshot.records
+                       if record.memory.memory_id.casefold() == memory_id.casefold()), None)
+        return record, snapshot
 
     def memory_revision(self, memory_id: str) -> str | None:
-        """Return the protected-state revision for one current memory."""
+        """Return a protected revision; None means proven absence, not unreadability."""
 
         from .turn_plan import revision_digest
 
         safe_component(memory_id, "memory id")
         with self.vault.lock():
             self._recover_compaction_unlocked()
-            matches = self._find_records_unlocked(memory_id, include_history=False)
-            if len(matches) > 1:
-                raise ValueError("duplicate current memory id")
-            return revision_digest(matches[0].memory) if matches else None
+            record, snapshot = self._revision_target_unlocked(memory_id)
+            ensure_scan_current(self.vault, snapshot)
+            return revision_digest(record.memory) if record is not None else None
+
+    def update_memory(
+        self,
+        memory_id: str,
+        *,
+        expected_revision: str,
+        patch: Mapping[str, Any],
+        authorized_scopes: list[str] | None = None,
+        source_time: str | None = None,
+        reopen: bool = False,
+        restore: bool = False,
+        allow_type_change: bool = False,
+    ) -> dict[str, Any]:
+        """Apply an explicit structured edit, never an inferred or upsert write.
+
+        Omitted authorized_scopes permits only the selected current scopes.
+        A scope move requires both old and new scopes. Omitted fields are kept;
+        only documented nullable fields may be cleared. The shared writer saves
+        history and an explicit retry resumes the same frozen operation.
+        """
+        from .memory_update import ExplicitUpdateManager, _request
+        safe_component(memory_id, "memory id")
+        if (not isinstance(expected_revision, str) or len(expected_revision) != 64
+                or any(c not in "0123456789abcdef" for c in expected_revision)):
+            raise ValueError("expected_revision must be a protected revision")
+        with self._mutation_boundary():
+            if authorized_scopes is None:
+                # The trusted caller selects this exact current target. Moving
+                # it to another scope still requires explicit old/new scopes.
+                record, snapshot = self._revision_target_unlocked(memory_id)
+                ensure_scan_current(self.vault, snapshot)
+                if record is None:
+                    raise ValueError("memory does not exist")
+                authorized_scopes = list(record.memory.scopes)
+            request = _request(patch, authorized_scopes, reopen=reopen, restore=restore,
+                               allow_type_change=allow_type_change, source_time=source_time)
+            return ExplicitUpdateManager(self).update_unlocked(memory_id, expected_revision, request)
 
     def retract_memory(
         self,
@@ -1830,18 +1907,20 @@ class Memleaf:
             return ForgetAboutResult(status="not_found")
         normalized = normalize_term(query)
         with self._mutation_boundary():
+            # An explicit stable ID (including a retired ID) needs no second
+            # confirmation. A single fuzzy hit, however, is not authorization.
+            snapshot = self._forget_scan_unlocked()
             exact = []
             if "\n" not in query and "\r" not in query:
                 try:
-                    exact = self._find_records_unlocked(query, include_history=True)
-                except ValueError:
-                    exact = []
+                    safe_component(query, "memory id")
+                    exact = self._find_forget_records_unlocked(query)
+                except ValueError as error:
+                    if isinstance(error, RetrievalError):
+                        raise
             if exact:
-                if any(record.area == "knowledge" for record in exact):
-                    targets = self._find_forget_records_unlocked(query)
-                else:
-                    targets = exact
-                deleted = self._delete_records_unlocked(targets)
+                ensure_scan_current(self.vault, snapshot)
+                deleted = self._delete_records_unlocked(exact)
                 return ForgetAboutResult(status="deleted", deleted=deleted)
 
             records = self._search_unlocked(
@@ -1852,15 +1931,16 @@ class Memleaf:
                 limit=None,
                 include_retracted=True,
             )
-            title_matches = [record for record in records if normalize_term(record.memory.title) == normalized]
+            if any(r.memory.memory_id.casefold() in snapshot.ambiguous and normalize_term(r.memory.title) == normalized
+                   for r in snapshot._all_records):
+                raise RetrievalError("memory_id_conflict", "use an exact identity to forget conflicting copies")
+            title_matches = [record for record in snapshot.records if normalize_term(record.memory.title) == normalized]
             title_groups = self._forget_groups_unlocked(title_matches)
             if len(title_groups) == 1:
+                ensure_scan_current(self.vault, snapshot)
                 deleted = self._delete_records_unlocked(self._forget_target_records_unlocked(title_groups[0][0]))
                 return ForgetAboutResult(status="deleted", deleted=deleted)
             groups = self._forget_groups_unlocked(records)
-            if len(groups) == 1:
-                deleted = self._delete_records_unlocked(self._forget_target_records_unlocked(groups[0][0]))
-                return ForgetAboutResult(status="deleted", deleted=deleted)
             if records:
                 return ForgetAboutResult(
                     status="ambiguous",

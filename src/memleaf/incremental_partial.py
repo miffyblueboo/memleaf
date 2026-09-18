@@ -131,7 +131,11 @@ def recover_incremental_partial(service: Any, run_id: str, *, mode: str = "repla
                 response, repair_indices = None, []
                 # Inspect the same durable counter before changing the receipt.
                 # The canonical dispatcher still atomically reserves later.
-                consumed = _budget_count(service, run)
+                from .extraction_work_state import ExtractionWorkStateError
+                try:
+                    consumed = _budget_count(service, run)
+                except ExtractionWorkStateError as error:
+                    raise ValueError("partial_budget_state_lost") from error
                 if consumed < run["reserved_requests"]:
                     raise ValueError("partial_budget_state_lost")
                 if consumed >= 2:

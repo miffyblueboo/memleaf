@@ -557,20 +557,31 @@ class MemoryWriter:
         atomic_write_text(path, desired.to_markdown())
         return desired
 
-    def frozen_state_applied_unlocked(self, operation: Mapping[str, Any]) -> bool:
+    def frozen_state_applied_unlocked(self, operation: Mapping[str, Any], *,
+                                      receipt_key: str = "incremental_operation_id") -> bool:
         """Prove the complete frozen replacement; a source ID is not sufficient."""
         from .turn_plan import revision_digest
+        if receipt_key not in {"incremental_operation_id", "explicit_operation_id", "explicit_update_operation_id"}:
+            raise ValueError("invalid_receipt_key")
         after = Memory.from_markdown(operation["after"])
         if (after.memory_id != operation["memory_id"]
-                or after.extra.get("incremental_operation_id") != operation["operation_id"]
+                or after.extra.get(receipt_key) != operation["operation_id"]
                 or revision_digest(after) != operation["replacement_revision"]):
             raise ValueError("invalid_frozen_state")
-        records = [r for r in self.service._read_memories_unlocked("knowledge")
-                   if r.memory.memory_id.casefold() == after.memory_id.casefold()]
-        # A duplicate ID is not proof. The per-target writer reports its conflict.
-        return len(records) == 1 and revision_digest(records[0].memory) == operation["replacement_revision"]
+        from .query_scan import ensure_scan_current
+        from .retrieval import RetrievalError
+        try:
+            record, snapshot = self.service._revision_target_unlocked(after.memory_id)
+            ensure_scan_current(self.service.vault, snapshot)
+        except RetrievalError:
+            # Failed identity/consistency checks cannot prove an applied head.
+            # Let the per-target writer report the conflict without discarding
+            # unrelated operations in the same frozen work.
+            return False
+        return record is not None and revision_digest(record.memory) == operation["replacement_revision"]
 
-    def write_frozen_unlocked(self, operation: Mapping[str, Any]) -> str:
+    def write_frozen_unlocked(self, operation: Mapping[str, Any], *,
+                              receipt_key: str = "incremental_operation_id") -> str:
         """Use shared history/head primitives for one authorized frozen group.
 
         Caller owns the Vault lock and durable operation receipt. Missing UPDATE
@@ -578,34 +589,54 @@ class MemoryWriter:
         """
         from .turn_plan import revision_digest
         from .models import MemoryVersionError
+        if receipt_key not in {"incremental_operation_id", "explicit_operation_id", "explicit_update_operation_id"}:
+            raise ValueError("invalid_receipt_key")
         after = Memory.from_markdown(operation["after"])
         before = Memory.from_markdown(operation["before"]) if operation.get("before") is not None else None
         action = operation["action"]
         if (action not in {"CREATE", "UPDATE"} or after.memory_id != operation["memory_id"]
-                or after.extra.get("incremental_operation_id") != operation["operation_id"]
+                or after.extra.get(receipt_key) != operation["operation_id"]
                 or revision_digest(after) != operation["replacement_revision"]
                 or (action == "CREATE" and before is not None)
                 or (action == "UPDATE" and (before is None or before.memory_id != after.memory_id
                     or revision_digest(before) != operation.get("expected_revision")))):
             raise ValueError("invalid_frozen_state")
-        records = [r for r in self.service._read_memories_unlocked("knowledge")
-                   if r.memory.memory_id.casefold() == after.memory_id.casefold()]
-        if len(records) > 1:
-            raise ValueError("duplicate_memory_id")
-        record = records[0] if records else None
+        from .query_scan import ensure_scan_current, scan_memories
+        record, snapshot = self.service._revision_target_unlocked(after.memory_id)
+        ensure_scan_current(self.service.vault, snapshot)
         if record is not None and revision_digest(record.memory) == operation["replacement_revision"]:
             return "applied"
         if action == "UPDATE" and (record is None or revision_digest(record.memory) != operation["expected_revision"]):
             raise MemoryVersionError("stale_incremental_target")
-        if action == "CREATE" and record is not None:
-            raise MemoryVersionError("incremental_create_collision")
+        if action == "CREATE":
+            # New generated IDs must not reuse a historical identity either.
+            snapshot = scan_memories(self.service.vault, include_history=True)
+            snapshot.require_identity(after.memory_id)
+            if any(issue.identity is None for issue in snapshot.issues):
+                raise ValueError("incomplete_create_identity_scan")
+            if any(r.memory.memory_id.casefold() == after.memory_id.casefold() for r in snapshot.records):
+                raise MemoryVersionError("incremental_create_collision")
         path = record.path if record is not None else self.service.vault.memory_path(after.memory_id, "knowledge")
         if path.is_symlink() or (record is None and path.exists()):
             raise ValueError("unsafe_or_invalid_target_file")
+        def check_scope_guard() -> None:
+            guard = operation.get("scope_guard")
+            if guard is not None:
+                from .incremental_scopes import registry_view
+                _, current_guard, _ = registry_view(self.service.vault.config())
+                if current_guard != guard:
+                    raise MemoryVersionError("scope_registry_changed during frozen write")
+
+        check_scope_guard()
+        ensure_scan_current(self.service.vault, snapshot)
         if before is not None:
             self._write_history(before, superseded_by=after.memory_id, archived_at=operation["prepared_at"],
                                 invalidated_reason="retracted" if after.validity == "retracted" else None)
             after.hit_count, after.last_hit_at = record.memory.hit_count, record.memory.last_hit_at
+        # History IO is an intervening mutation boundary. Recheck the current
+        # view, not just the version read before the history write.
+        ensure_scan_current(self.service.vault, snapshot)
+        check_scope_guard()
         atomic_write_text(path, after.to_markdown())
         return "applied"
 

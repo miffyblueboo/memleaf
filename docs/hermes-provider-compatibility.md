@@ -50,6 +50,14 @@ memory. A refused capture is **not** described as an already captured pending
 turn. `writes_allowed` reports only this compatibility gate; normal recording
 permission, scope, source identity, revision and budget checks still apply.
 
+A compatibility refusal returned by the server after a matching handshake is
+retained for that connection. Status and prefetch do not become compatible again
+just because a subsequent read succeeds or the local files still match the old
+handshake. Further writes fail locally without another tool request or forced
+transport restart; reads stay usable. Only closing/reconnecting clears this peer
+observation, followed by a fresh handshake. Local missing/changed resources still
+take precedence. Other tool/model errors do not latch a compatibility refusal.
+
 A new Provider talking to an older server without metadata can read but cannot
 write. A new server also blocks an old bridge declaring `hermes-memleaf` without
 a verifiable descriptor. Unrelated MCP clients and direct Core APIs are not

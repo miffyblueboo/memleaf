@@ -106,6 +106,16 @@ def _normalize_turn_state(value: Any) -> dict[str, Any]:
 def _read_budget_state_unlocked(vault: Any) -> dict[str, Any]:
     path = _budget_path(vault)
     if not path.exists() and not path.is_symlink():
+        from .state_layout import control_required
+        if control_required(path):
+            raise ExtractionWorkStateError("required extraction request budget state missing")
+        # Legacy builds had no existence invariant. Their persisted run counters
+        # still prove that this is not an unused first-allocation ledger.
+        from .process_common import _read_processed
+        from .incremental_run_state import KEY, load_run
+        processed = _read_processed(vault.processed_state_path)
+        if any(load_run(processed, key)["reserved_requests"] for key in processed.get(KEY, {})):
+            raise ExtractionWorkStateError("extraction request budget evidence missing")
         return _empty_state()
     if path.is_symlink() or not path.is_file():
         raise ExtractionWorkStateError("unsafe extraction request budget state")
@@ -161,6 +171,8 @@ def _save_budget_state_unlocked(vault: Any, state: dict[str, Any]) -> None:
     encoded = (json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True, separators=(",", ": ")) + "\n").encode("utf-8")
     if len(encoded) > _MAX_BUDGET_BYTES:
         raise ExtractionWorkStateError("extraction request budget state exceeds byte bound")
+    from .state_layout import require_control
+    require_control(vault, "extraction_request_budget.json")
     atomic_write_json(_budget_path(vault), state, mode=0o600)
 
 

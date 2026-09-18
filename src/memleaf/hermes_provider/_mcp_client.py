@@ -51,6 +51,7 @@ class _MCPClient:
         self.server_version: Optional[str] = None
         self.server_provider_build: Optional[dict[str, Any]] = None
         self._compatibility = "core_build_unverified"
+        self._peer_compatibility_error: Optional[str] = None
 
     def _resolve_command(self) -> str:
         path = Path(self.command).expanduser()
@@ -186,6 +187,7 @@ class _MCPClient:
         self._stdout_thread = None
         self.server_version = None
         self.server_provider_build = None
+        self._peer_compatibility_error = None
         if process is None:
             return
         if process.stdin is not None:
@@ -216,6 +218,10 @@ class _MCPClient:
         """Bounded local status; never starts MCP, writes state or calls a model."""
         self._compatibility = compatibility(
             _LOADED_PROVIDER_BUILD, provider_build(Path(__file__).parent), self.server_provider_build)
+        # A later server refusal supersedes a successful handshake observation.
+        # A successful read does not re-verify the server's running resource copy.
+        if self._compatibility == "compatible" and self._peer_compatibility_error:
+            self._compatibility = self._peer_compatibility_error
         return {"status": self._compatibility,
                 "writes_allowed": self._compatibility == "compatible"}
 
@@ -232,12 +238,20 @@ class _MCPClient:
                     {"name": name, "arguments": dict(arguments)},
                     timeout=self.process_timeout if name == "process" else self.timeout,
                 )
+            except _MCPToolError as error:
+                # A local compatibility gate refusal is not a transport failure.
+                # Keep the read channel and its rejection until an actual reconnect.
+                if error.stage != "compatibility":
+                    self._close_locked()
+                raise
             except Exception:
                 self._close_locked()
                 raise
 
             if result.get("isError"):
                 error_fields = _mcp_error_fields(result) or ("model_failed", None, None, None, None)
+                if error_fields[0] in COMPATIBILITY_CODES and error_fields[1] == "compatibility":
+                    self._peer_compatibility_error = error_fields[0]
                 raise _MCPToolError(*error_fields)
             structured = result.get("structuredContent")
             # The core wraps scalar tool results as {"result": value}. A

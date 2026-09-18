@@ -105,18 +105,13 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
         evidence = select_evidence(evidence, selection)
     elif retention_request is not None:
         raise ValueError("unexpected_retention_request")
-    records = {}
-    for file_path in sorted(service.vault.knowledge_path.rglob("*.md")):
-        if file_path.is_symlink():
-            raise ValueError("incomplete_library")
-        try:
-            memory = Memory.from_markdown(file_path.read_text(encoding="utf-8"), file_path)
-        except (OSError, UnicodeError, ValueError, TypeError) as error:
-            raise ValueError("incomplete_library") from error
-        key = memory.memory_id.casefold()
-        if key in records:
-            raise ValueError("duplicate_memory_id")
-        records[key] = memory
+    from .query_scan import scan_memories, ensure_scan_current
+    library = scan_memories(service.vault)
+    if library.ambiguous:
+        raise ValueError("duplicate_memory_id")
+    if library.issues:
+        raise ValueError("incomplete_library")
+    records = {record.memory.memory_id.casefold(): record.memory for record in library.records}
     native = read_comparison(service, source)
     native_keys = {key.casefold() for key in native.memories}
     if native_keys.intersection(records):
@@ -173,13 +168,19 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
                 (boundary is None or set(memory.scopes) <= set(boundary)) for ref, memory in targets.items()}
     native_targets = {ref: native.bindings[memory.memory_id] for ref, memory in targets.items()
                       if memory.memory_id in native.bindings}
+    from .incremental_protocol import applied_revision_index, basis_status
+    proofs = applied_revision_index(processed)
+    statuses = {ref: basis_status(memory, proofs) for ref, memory in targets.items() if ref not in native_targets}
+    ensure_scan_current(service.vault, library)
+    binding = service.vault.identity_status()
     return PlanningSnapshot.build(evidence=evidence, targets=targets, scopes=scope_refs,
                                   write_scopes=boundary, writable=writable,
                                   allow_new_scopes=allow_new_scopes, native_targets=native_targets,
                                   native_guard=native.guard if native.guard["sources"] else None,
                                   request_kind="explicit_remember" if selection else "automatic",
                                   retention_request=retention_request, scope_guard=scope_guard,
-                                  scope_aliases=scope_aliases)
+                                  scope_aliases=scope_aliases, basis_statuses=statuses,
+                                  vault_binding=binding if binding["status"] == "bound" else None)
 
 
 def prepare_incremental(service: Any, **arguments: Any) -> PlanningSnapshot:

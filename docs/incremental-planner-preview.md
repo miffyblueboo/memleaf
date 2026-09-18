@@ -161,3 +161,21 @@ read-only service boundary and old 110 regressions. They are not live semantic
 or native Hermes/Windows/macOS acceptance. Before G3 production activation, finish
 commit/recovery integration and bounded dispatch, test the installed artifacts,
 and run the agreed isolated multi-turn Flash acceptance set.
+
+## Development closeout: bounded identity and provenance
+
+Planner maintenance snapshots use the existing bounded validated Markdown
+scanner and a final byte recheck. An ambiguous, unidentifiable, changing or
+incompletely enumerated library is not treated as an empty candidate catalog.
+Known targets retain protected current revisions; history/current identity and
+case variants follow the public query contract. The conservative planner can
+block while unrelated ordinary reads still return partial, diagnosed results.
+
+Each catalog record has an evidence-provenance status derived from available
+exact operation/commit proofs: verified_revision, external_change_detected or
+legacy_unverified. Unknown/changed bases are not presented as trusted original
+field times to the model. See memory-state-contract.md. The projection status
+is not included in legacy snapshot hashing: persisted content revision already
+fences content changes, preserving supported v1 capsules. New bound Vaults add
+a local binding guard to frozen identity; old unbound capsules retain their old
+shape until a controlled binding operation. Owner IDs never enter model input.

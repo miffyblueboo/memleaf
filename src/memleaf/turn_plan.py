@@ -295,6 +295,7 @@ def cancel_frozen_targets(stored: Mapping[str, Any], memory_ids: set[str]) -> tu
     if not isinstance(value, dict) or not isinstance(value.get("requests"), list):
         raise _error("invalid pending requests during forget")
     kept, removed = [], set()
+    identities = {identity.casefold() for identity in memory_ids}
     for request in value["requests"]:
         if not isinstance(request, dict) or not isinstance(request.get("summary"), dict):
             raise _error("invalid pending request during forget")
@@ -302,7 +303,7 @@ def cancel_frozen_targets(stored: Mapping[str, Any], memory_ids: set[str]) -> tu
         references = {request.get("memory_id"), request.get("duplicate_memory_id"),
             request["summary"].get("update_memory_id"), correction.get("target_memory_id"),
             correction.get("survivor_memory_id")}
-        if references.intersection(memory_ids):
+        if {ref.casefold() for ref in references if isinstance(ref, str)}.intersection(identities):
             removed.update(row["candidate_id"] for row in contributing_candidates(request))
         else:
             kept.append(request)

@@ -28,7 +28,8 @@ class IncrementalPreviewTests(unittest.TestCase):
     def target(self, identity="mem-task", **kw):
         args = {"memory_id": identity, "title": "Atlas task", "body": "Deliver the report.", "type": "todo", "status":"active", "scopes":["project:Atlas"]}
         args.update(kw)
-        return self.service.create_memory(**args)
+        # This fixture intentionally replaces targets to test stale snapshots.
+        return self.service.write_memory(Memory.new(**args), overwrite=True)
 
     def preview(self, **kw):
         args = {"source": "hermes", "session_id": "s", "turn_id": "t"}

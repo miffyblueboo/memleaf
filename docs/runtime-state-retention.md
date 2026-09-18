@@ -171,3 +171,20 @@ source replay, concurrent applies and real process exits between file replacemen
 Model responses are deterministic substitutes. Real Flash semantic acceptance,
 Windows/macOS/Hermes installation, full time-window erasure and default activation
 remain separate acceptance work. Do not convert test count into a quality rate.
+
+## Development closeout invariants
+
+An absent budget in a legacy preview is an observation (`budget_present=false`),
+not permission to construct new authority. Maintenance reports
+`request_authority_restored=false` and cannot reset the same-work allowance.
+Required missing controls fail at write/reservation boundaries. Time-based
+removal of authorization, NO_MEMORY and suppression receipts remains disabled;
+at finite bounds, backpressure is the supported outcome. Window-outside
+admission after destructive TTL deletion is therefore not an enabled feature.
+
+Memory/history retention validates all explicit and incremental mutation
+journals. Any unresolved dependency defers the optional retention pass. A corrupt
+journal is retained and blocks that pass. This can delay unrelated cleanup; it
+is preferable to discarding the only proof needed to finish a committed write.
+Explicit pending journals also appear in query freshness and migration preflight,
+without causing status reads to resume operations or contact a model.

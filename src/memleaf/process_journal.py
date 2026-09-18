@@ -925,6 +925,7 @@ class ProcessJournal:
         processed = _read_processed(self.service.vault.processed_state_path)
         changed = False
         revoked = set()
+        identities = {identity.casefold() for identity in memory_ids}
         plans = processed.get("pending_turn_plans", {})
         for key, stored in list(plans.items()):
             replacement, removed = cancel_frozen_targets(stored, memory_ids)
@@ -937,7 +938,7 @@ class ProcessJournal:
             correction = operation.get("scope_correction") or {}
             refs = {operation.get("memory_id"), correction.get("target_memory_id"),
                     correction.get("survivor_memory_id")}
-            if refs.intersection(memory_ids):
+            if {ref.casefold() for ref in refs if isinstance(ref, str)}.intersection(identities):
                 revoked.add(turn_identity_key(operation["source"], operation["session_id"], operation["turn_key"]))
                 del operations[operation_id]
                 changed = True
@@ -950,8 +951,8 @@ class ProcessJournal:
                 changed = True
             for entry in state.get("processed_turns", []):
                 ids = entry.get("memory_ids", [])
-                if memory_ids.intersection(ids):
-                    entry["memory_ids"] = [mid for mid in ids if mid not in memory_ids]
+                if identities.intersection(mid.casefold() for mid in ids):
+                    entry["memory_ids"] = [mid for mid in ids if mid.casefold() not in identities]
                     changed = True
         if changed:
             self._write_processed_unlocked(processed)

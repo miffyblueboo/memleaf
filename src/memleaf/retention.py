@@ -49,6 +49,21 @@ class RetentionManager:
     def __init__(self, service: Any):
         self.service = service
 
+    @staticmethod
+    def _current_record(record: Any) -> Memory:
+        from .query_scan import MAX_FILE_BYTES
+        from .turn_plan import revision_digest
+        if record.path.is_symlink():
+            raise RetentionError("unsafe maintenance target")
+        with record.path.open("rb") as stream:
+            raw = stream.read(MAX_FILE_BYTES + 1)
+        if len(raw) > MAX_FILE_BYTES:
+            raise RetentionError("maintenance target exceeds byte limit")
+        current = Memory.from_markdown(raw.decode("utf-8"), record.path)
+        if revision_digest(current) != revision_digest(record.memory):
+            raise RetentionError("maintenance target changed")
+        return current
+
     def _settings(self) -> tuple[int, str, int, int]:
         config = self.service.vault.config()
         process = config.get("process") if isinstance(config, Mapping) else None
@@ -67,7 +82,7 @@ class RetentionManager:
             raise RetentionError("invalid history max versions")
         return closed_days, policy, retention_days, max_versions
 
-    def _bound_legacy_provenance_unlocked(self, pending: Mapping[str, Any]) -> int:
+    def _bound_legacy_provenance_unlocked(self, pending: Mapping[str, Any], protected=frozenset()) -> int:
         """Compact oversized pre-policy source lists without changing memory content.
 
         Active targets referenced by frozen/pending writes are left untouched so
@@ -79,12 +94,16 @@ class RetentionManager:
         for area in ("knowledge", "history"):
             for record in self.service._read_memories_unlocked(area):
                 memory = record.memory
+                if self._history_group(memory) in protected or memory.memory_id.casefold() in protected:
+                    continue
                 if len(memory.sources) <= MAX_MEMORY_SOURCES:
                     continue
                 if area == "knowledge" and _references_target(pending, memory.memory_id):
                     continue
                 if record.path.is_symlink():
                     raise RetentionError("unsafe memory path during provenance maintenance")
+                latest = self._current_record(record)
+                memory.hit_count, memory.last_hit_at = latest.hit_count, latest.last_hit_at
                 bounded_sources, source_metadata = merge_sources([], memory.sources, extra=memory.extra)
                 memory.sources = bounded_sources
                 memory.extra.update(source_metadata)
@@ -109,7 +128,7 @@ class RetentionManager:
         return 0
 
     def _prune_history_unlocked(
-        self, now: datetime, policy: str, retention_days: int, max_versions: int
+        self, now: datetime, policy: str, retention_days: int, max_versions: int, protected=frozenset()
     ) -> int:
         if policy == "keep_all":
             return 0
@@ -117,7 +136,9 @@ class RetentionManager:
         for record in self.service._read_memories_unlocked("history"):
             groups.setdefault(self._history_group(record.memory), []).append(record)
         removed = 0
-        for records in groups.values():
+        for identity, records in groups.items():
+            if identity in protected:
+                continue
             records.sort(
                 key=lambda record: (
                     _parse_time(record.memory.extra.get("archived_at"))
@@ -138,6 +159,7 @@ class RetentionManager:
                     continue
                 if record.path.is_symlink():
                     raise RetentionError("unsafe history path")
+                self._current_record(record)
                 atomic_unlink(record.path)
                 removed += 1
         return removed
@@ -153,9 +175,38 @@ class RetentionManager:
                 "pending_operations": processed.get("pending_operations", {}),
                 "pending_turn_plans": processed.get("pending_turn_plans", {}),
             }
-            provenance_rewritten = self._bound_legacy_provenance_unlocked(pending)
+            # History/provenance are recovery inputs, not merely display data.
+            # Defer this optional pass while any retained mutation may need them.
+            # The conservative whole-pass hold is bounded and has no new model IO.
+            from .incremental_journal import KEY as COMMIT_KEY, load_work, public_result, resolved_parent_ids
+            from .incremental_run_state import KEY as RUN_KEY, load_run, TERMINAL
+            from .memory_update import pending_explicit_mutations
+            try:
+                resolved = resolved_parent_ids(processed)
+                works = [load_work(processed, key) for key in processed.get(COMMIT_KEY, {})]
+                runs = [load_run(processed, key) for key in processed.get(RUN_KEY, {})]
+                explicit, _, protected = pending_explicit_mutations(self.service.vault)
+                unresolved = (any(pending.values()) or any(
+                    w["work_id"] not in resolved and public_result(w)["execution_status"] != "completed"
+                    for w in works) or any(run["status"] not in TERMINAL for run in runs)
+                    )
+            except (OSError, ValueError, TypeError, KeyError, RuntimeError, RecursionError) as error:
+                raise RetentionError("cannot validate pending mutation dependencies") from error
+            if unresolved:
+                return {"provenance_rewritten": 0, "closed_todos_retired": 0, "history_pruned": 0,
+                        "history_policy": policy, "maintenance_status": "deferred",
+                        "code": "pending_mutation_dependencies", "cleanup_deferred_for_recovery": True,
+                        "protected_history_groups": len(protected)}
+            from .query_scan import scan_memories, ensure_scan_current
+            snapshot = scan_memories(self.service.vault, include_history=True)
+            if snapshot.issues:
+                return {"provenance_rewritten": 0, "closed_todos_retired": 0, "history_pruned": 0,
+                        "history_policy": policy, "maintenance_status": "deferred",
+                        "code": "memory_scan_incomplete"}
+            ensure_scan_current(self.service.vault, snapshot)
+            provenance_rewritten = self._bound_legacy_provenance_unlocked(pending, protected)
             retired = self._retire_closed_todos_unlocked(now, closed_days)
-            pruned = self._prune_history_unlocked(now, policy, retention_days, max_versions)
+            pruned = self._prune_history_unlocked(now, policy, retention_days, max_versions, protected)
             if provenance_rewritten or retired or pruned:
                 self.service._rebuild_index_unlocked()
         return {
@@ -163,6 +214,9 @@ class RetentionManager:
             "closed_todos_retired": retired,
             "history_pruned": pruned,
             "history_policy": policy,
+            "cleanup_deferred_for_recovery": False,
+            "protected_history_groups": len(protected),
+            **({"code": "pending_mutation_dependencies", "maintenance_status": "partial"} if protected else {}),
         }
 
 

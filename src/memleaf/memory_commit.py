@@ -562,6 +562,8 @@ class MemoryCommitter:
         from .incremental_journal import cancel_forgotten_unlocked
         cancel_forgotten_unlocked(service, unique)
         RetractionManager(service).cancel_unlocked(unique)
+        from .memory_update import ExplicitUpdateManager
+        ExplicitUpdateManager(service).cancel_unlocked(unique)
         ProcessJournal(service).cancel_forgotten_unlocked({record.memory.memory_id for record in unique})
         deleted: list[str] = []
         try:

@@ -70,7 +70,10 @@ def _view(service):
     paths = _paths(service)
     raw = {key: _bytes(path) for key, path in paths.items()}
     processed = _read_processed(paths["processed"])
-    budget = budgets._read_budget_state_unlocked(service.vault)
+    # Lossless receipt encoding may inspect an absent budget, but must never
+    # recreate it or grant allocation. The normal dispatch reader rejects a
+    # missing required ledger; this observation leaves all run budgets unretired.
+    budget = budgets._empty_state() if raw["budget"] is None else budgets._read_budget_state_unlocked(service.vault)
     loaded_runs = {key: runs.load_run(processed, key) for key in processed.get(runs.KEY, {})}
     loaded_works = {key: commits.load_work(processed, key) for key in processed.get(commits.KEY, {})}
     # Validates every cumulative parent link, including settled-operation copies.
@@ -194,6 +197,7 @@ def _prepare(service, max_records):
               "bytes_before": sum(len(v) for v in raw.values() if v is not None),
               "bytes_after": sum(len(encoded.get(k, v) or b"") for k, v in raw.items()),
               "model_calls": 0, "decisions_deleted": 0, "sources_deleted": 0,
+              "budget_present": raw["budget"] is not None, "request_authority_restored": False,
               "limits": {"full_runs": runs.MAX_RUNS, "compact_receipts_per_kind": MAX_COMPACT_RECEIPTS,
                          "retired_budgets": budgets._MAX_RETIRED_WORKS, "batch_per_kind": max_records},
               "limitations": ["lossless_compaction_not_time_window_erasure", "bounded_retained_suppression",

@@ -60,6 +60,41 @@ def _ref(value: Any, table: Mapping[str, Any]) -> str:
     return value.strip()
 
 
+def basis_status(memory: Memory, applied_revisions: Mapping[tuple[str, str], set[str]] | None = None) -> str:
+    """Whether retained field observations still describe the same authored state.
+
+    Receipts certify bytes/revision, not truth. Missing legacy proof is unknown;
+    a proven different authored revision must not borrow old source times.
+    """
+    known = False
+    for prefix in ("explicit", "explicit_update", "retraction"):
+        state = memory.to_dict()
+        receipt = state.pop(prefix + "_result_digest", None)
+        if isinstance(receipt, str) and len(receipt) == 64:
+            known = True
+            if receipt == revision_digest(state):
+                return "verified_revision"
+    operation = memory.extra.get("incremental_operation_id")
+    versions = (applied_revisions or {}).get((memory.memory_id.casefold(), operation), set()) if isinstance(operation, str) else set()
+    if versions:
+        known = True
+        if revision_digest(memory) in versions:
+            return "verified_revision"
+    return "external_change_detected" if known else "legacy_unverified"
+
+
+def applied_revision_index(processed: Mapping[str, Any]) -> dict[tuple[str, str], set[str]]:
+    from .incremental_journal import KEY, load_work
+    result: dict[tuple[str, str], set[str]] = {}
+    for key in processed.get(KEY, {}):
+        work = load_work(processed, key)
+        for op in work["operations"]:
+            if (op["state"] in {"applied", "settled"} and op["action"] in {"CREATE", "UPDATE"}
+                    and isinstance(op.get("replacement_revision"), str)):
+                result.setdefault((op["memory_id"].casefold(), op["operation_id"]), set()).add(op["replacement_revision"])
+    return result
+
+
 @dataclass(frozen=True)
 class PlanningSnapshot:
     """An immutable canonical byte snapshot, not references to mutable Memory."""
@@ -73,7 +108,9 @@ class PlanningSnapshot:
               native_targets: Mapping[str, dict[str, Any]] | None = None,
               native_guard: dict[str, Any] | None = None,
               retention_request: str | None = None, scope_guard: dict[str, Any] | None = None,
-              scope_aliases: Mapping[str, list[str]] | None = None) -> "PlanningSnapshot":
+              scope_aliases: Mapping[str, list[str]] | None = None,
+              basis_statuses: Mapping[str, str] | None = None,
+              vault_binding: Mapping[str, Any] | None = None) -> "PlanningSnapshot":
         if request_kind not in {"automatic", "explicit_remember"}:
             raise ValueError("invalid_request_kind")
         if type(allow_new_scopes) is not bool or type(context_complete) is not bool:
@@ -114,6 +151,10 @@ class PlanningSnapshot:
             raise ValueError("invalid_native_binding")
         target_values = {}
         identities = set()
+        if basis_statuses is not None and (set(basis_statuses) - set(targets or {}) or any(
+                status not in {"verified_revision", "external_change_detected", "legacy_unverified"}
+                for status in basis_statuses.values())):
+            raise ValueError("invalid_basis_status")
         targets = targets or {}
         if len(targets) > 20 or (writable and set(writable) - set(targets)):
             raise ValueError("invalid_targets")
@@ -132,6 +173,8 @@ class PlanningSnapshot:
             if type(permitted) is not bool:
                 raise ValueError("invalid_writable")
             target_values[ref] = {"memory": memory.to_dict(), "revision": revision_digest(memory), "writable": permitted}
+            if basis_statuses is not None and ref in basis_statuses:
+                target_values[ref]["basis_status"] = basis_statuses[ref]
             if ref in native_targets:
                 from .incremental_native import validate_binding
                 validate_binding(native_targets[ref], native_guard, memory.memory_id)
@@ -143,6 +186,11 @@ class PlanningSnapshot:
         state = {"protocol_version": PROTOCOL_VERSION, "evidence": evidence, "targets": target_values,
                  "scopes": scopes, "write_scopes": write_scopes, "request_kind": request_kind,
                  "allow_new_scopes": allow_new_scopes, "context_complete": context_complete}
+        if vault_binding is not None:
+            if (not isinstance(vault_binding, Mapping) or vault_binding.get("status") not in {"bound", "legacy_unbound"}
+                    or len(_json(dict(vault_binding)).encode("utf-8")) > 1024):
+                raise ValueError("invalid_vault_binding")
+            state["vault_binding"] = deepcopy(dict(vault_binding))
         if retention_request is not None:
             from .incremental_selection import validate_request
             if request_kind != "explicit_remember":
@@ -198,6 +246,10 @@ class PlanningSnapshot:
                 group: {key: value[key] for key in ("source_time", "source_sequence") if key in value}
                 for group, value in memory.get("field_basis", {}).items()
             }
+            if "basis_status" in target:
+                fields["provenance_status"] = target["basis_status"]
+                if target["basis_status"] != "verified_revision":
+                    fields["observed"] = {}
             # No real memory IDs, revisions, local paths, source lists or journals.
             memories.append(fields)
         return {
@@ -325,6 +377,8 @@ def _compile_group(rows: list[dict[str, Any]], state: Mapping[str, Any]) -> dict
     first = rows[0]
     target = state["targets"].get(first.get("target_ref"))
     old = deepcopy(target["memory"]) if target else {}
+    if target and target.get("basis_status") == "external_change_detected":
+        old["field_basis"] = {}
     fields: dict[str, Any] = {}
     bases: dict[str, dict[str, Any]] = {}
     effective = None

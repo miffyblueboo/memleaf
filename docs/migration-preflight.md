@@ -208,3 +208,27 @@ snapshot: uncooperative edits after the final check and undetectable edit/revert
 cycles remain outside the guarantee. Source links, nonregular paths, failed
 reads, total size/path bounds and final manifest checks retain their existing
 failure behavior. No model/default/prompt change or production activation occurs.
+
+## Development closeout: binding, mutations and rollback choice
+
+Preflight now includes persistent local binding state, required-but-missing
+request/processed controls, and validated explicit update/retraction journals.
+Pending mutations block cutover; malformed authority is not discarded. Older
+unbound Vaults remain usable on their compatibility route, but final incremental
+cutover requires explicit local binding after other preflight blockers are
+resolved. A provided `writers_stopped` value is still the operator's declaration,
+not independent process discovery or proof that arbitrary programs have stopped.
+
+The first release scope remains a controlled cold procedure, not an automatic
+migration/restore engine. Stop and wait for each known old host/MCP/worker;
+finish or explicitly quarantine pending work; verify a complete current backup;
+upgrade Core and copied Provider together; restart; inspect actual binary,
+resource digest, binding, configuration and Vault; then test a new permitted
+work. Restarting an old writer against newer state is not supported.
+
+For rollback, keep current data and use a tested read-only compatibility path
+when possible. Restoring a pre-Forget backup is not safe merely because its
+checksums match: later suppression and deleted-content requirements must also
+be available and applied under separate authorization. No restore command was
+added by this closeout. A private Core-only stop/backup/reopen exercise is not
+real Hermes/Codex lifecycle verification or a production recovery claim.

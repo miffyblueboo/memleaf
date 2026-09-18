@@ -297,6 +297,7 @@ def cancel_forgotten_unlocked(service: Any, records: list[Any]) -> None:
         ids.update(v for k in ("active_memory_id", "original_memory_id")
                    if isinstance((v := memory.extra.get(k)), str))
         sources.update(s["event_key"] for s in memory.sources if isinstance(s.get("event_key"), str))
+    ids = {identity.casefold() for identity in ids}
     processed = _read_processed(service.vault.processed_state_path)
     works = processed.get(KEY, {})
     if not isinstance(works, dict):
@@ -306,7 +307,8 @@ def cancel_forgotten_unlocked(service: Any, records: list[Any]) -> None:
         shared = {e["ref"] for e in work["evidence"] if e["event_key"] in sources}
         changed = False
         for op in work["operations"]:
-            target = op.get("memory_id") in ids
+            target_id = op.get("memory_id")
+            target = isinstance(target_id, str) and target_id.casefold() in ids
             if target or (bool(shared.intersection(op["evidence"])) and op["state"] not in TERMINAL):
                 op.update(state="cancelled", code="explicit_forget" if target else "shared_source_forgotten")
                 strip_payload(op)

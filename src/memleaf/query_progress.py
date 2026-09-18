@@ -39,6 +39,8 @@ def _control_stamp(path):
 def observe_progress(vault) -> dict:
     """Return only counts/codes; unknown control state cannot hide local facts."""
     try:
+        from .memory_update import explicit_mutation_inventory
+        explicit_before = explicit_mutation_inventory(vault)
         before = _control_stamp(vault.processed_state_path)
         state = _read_processed(vault.processed_state_path)
         runs = [load_run(state, key) for key in state.get(RUN_KEY, {})]
@@ -118,12 +120,17 @@ def observe_progress(vault) -> dict:
         final_paths, final_issues = markdown_paths(vault.root, "inbox")
         unknown = unknown or paths != final_paths or bool(final_issues)
         changed = before != _control_stamp(vault.processed_state_path) or job_before != _control_stamp(jobs_path)
+        explicit_after = explicit_mutation_inventory(vault)
+        changed = changed or explicit_before != explicit_after
+        pending_explicit = explicit_after["retractions"] + explicit_after["explicit_updates"]
+        pending_commits += pending_explicit
         unresolved = unresolved_runs + len(state.get("pending_turn_plans", {}))
         status = "unknown" if unknown or changed else "pending" if (
             pending or incomplete or pending_runs or pending_commits or queued or unresolved) else "current"
         return {"status": status, "scope": "vault", "pending_turns": pending,
                 "incomplete_turns": incomplete, "pending_commits": pending_commits,
-                "unresolved_runs": unresolved, "queued_jobs": queued}
+                "unresolved_runs": unresolved, "queued_jobs": queued,
+                "pending_explicit_mutations": pending_explicit}
     except (OSError, UnicodeError, ValueError, TypeError, KeyError, RecursionError, RuntimeError):
         return {"status": "unknown", "scope": "vault", "code": "control_state_unavailable"}
 

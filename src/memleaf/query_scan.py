@@ -68,6 +68,10 @@ class QueryScan:
     # Immutable parse facts, not the mutable Memory/ScanRecord shown to callers.
     # Retained only until this observation has been checked before returning.
     _validated: dict[tuple[str, str], _ValidatedFile] = field(default_factory=dict, repr=False, compare=False)
+    # Exact Forget must enumerate all valid copies of an authorized ID, not
+    # select a winner from the public query quarantine. Ordinary consumers use
+    # records only; invalid files remain failures, never deletion candidates.
+    _all_records: list[ScanRecord] = field(default_factory=list, repr=False, compare=False)
 
     def area(self, name: str) -> list[ScanRecord]:
         return [r for r in self.records if r.area == name]
@@ -228,9 +232,10 @@ def _scan_memories(vault, include_history: bool, *,
     for identity in sorted(ambiguous):
         for locator, scopes in claims[identity]:
             issues.append(ScanIssue("duplicate_id", locator, scopes, identity))
+    all_records = records
     records = [r for r in records if r.memory.memory_id.casefold() not in ambiguous]
     generation = digest({"files": stamps, "issues": [(i.code, i.locator, i.scopes) for i in issues]})
-    return QueryScan(records, issues, ambiguous, generation, areas, validated)
+    return QueryScan(records, issues, ambiguous, generation, areas, validated, all_records)
 
 
 def ensure_scan_current(vault, snapshot: QueryScan) -> None:

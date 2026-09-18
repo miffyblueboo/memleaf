@@ -119,6 +119,9 @@ def _freeze_operation(proposal: dict[str, Any], snapshot: Any, now: str, active:
                                                extra=before.extra if before else {})
     after.extra.update(source_meta)
     after.extra["incremental_operation_id"] = op["operation_id"]
+    if any(t["memory"]["memory_id"] == op["memory_id"] and t.get("basis_status") == "external_change_detected"
+           for t in state["targets"].values()):
+        after.extra["external_edit_observed_at"] = now
     if after.validity == "retracted":
         after.extra["retracted_at"] = now
     elif before is not None and before.validity == "retracted":
@@ -220,7 +223,10 @@ def _resume_unlocked(service, processed, work):
                     if not guard_matches(current_guard, work["scope_guard"], applied_additions(work)):
                         raise ValueError("scope_registry_changed")
                 if op["action"] in {"CREATE", "UPDATE"}:
-                    writer.write_frozen_unlocked(op)
+                    # Pin the configuration already authorized above through
+                    # the shared writer's history/head boundary as well.
+                    guarded_op = {**op, "scope_guard": current_guard} if work.get("scope_guard") is not None else op
+                    writer.write_frozen_unlocked(guarded_op)
                     op["state"] = "applied"
                     save_work(service, processed, work)
                     finish_registration(service, op)
@@ -232,10 +238,11 @@ def _resume_unlocked(service, processed, work):
                         # Native fragments are never passed to MemoryWriter.
                         validate_binding(op["native"], work.get("native_guard"), op["memory_id"])
                     else:
-                        found = [r for r in service._read_memories_unlocked("knowledge")
-                                 if r.memory.memory_id.casefold() == op["memory_id"].casefold()]
-                        if len(found) != 1 or revision_digest(found[0].memory) != op["expected_revision"]:
+                        from .query_scan import ensure_scan_current
+                        found, snapshot = service._revision_target_unlocked(op["memory_id"])
+                        if found is None or revision_digest(found.memory) != op["expected_revision"]:
                             raise MemoryVersionError("stale_incremental_target")
+                        ensure_scan_current(service.vault, snapshot)
                     op["state"] = "settled"
                 else:
                     op["state"] = "settled"

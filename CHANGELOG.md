@@ -4,6 +4,47 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+### Reconcile divergent local candidates
+
+- Integrate the 1147-test closeout and 1128-test update candidates without losing
+  either test inventory, control-loss guards, binding, shared Writer or Forget.
+- Use one explicit-update writer with strict scope/restore flags, caller source
+  time, canonical deadline forms, retained stale evidence and settlement recheck.
+- Preserve exact recovery for both earlier v1 layouts; reject conflicting copies.
+  Expose pending counts and protect only proven retention dependencies when safe.
+- Resolve provisional API/test disagreements explicitly; no release, default
+  route, production Vault or model-request-budget changes.
+
+
+### Development closeout contracts
+
+- Add a bounded, exact Python `update_memory` with expected revision, field/scope
+  whitelist, explicit reopen/restore/type correction and forward recovery.
+- Reuse strict target scans for shared writes; preserve newer edits and read
+  counters, protect pending journals from retention, and expose their freshness.
+- Make logical-ID Forget/cancellation case-insensitive without treating a lone
+  fuzzy candidate as confirmation or damaged files as absent.
+- Refuse lost durable authority as a fresh budget; bind genuinely new local
+  Vaults without guessing the owner of legacy data. Keep supported old capsules.
+- Use bounded planner snapshots and explicit provenance status after direct
+  edits. No additional model phase, default-route switch, release or production
+  migration; external semantic and native-host final tests remain separate.
+
+
+- Validate revision lookups and explicit retractions against bounded current-ID
+  scans; reject duplicate/unreadable ownership instead of silently skipping it.
+  Recheck before history/head writes, preserve recovery journals for unreadable
+  targets, keep read accounting on retry, and qualify interrupted-write results
+  using the full protected revision. Existing v1 recovery and raw APIs remain.
+
+
+- Make `create_memory` create-only: reject existing frontmatter identities across
+  current/history files, renamed or case-variant IDs, occupied destinations and
+  unverifiable scans instead of silently replacing records. Keep trusted raw
+  `write_memory`/`save_memory`/`add_memory` overwrite compatibility, with an
+  explicit `overwrite=False` create-only option. No model or default pipeline
+  changes; general revision-checked raw updates are not introduced.
+
 - Verify copied Hermes Provider behavior resources through the existing MCP handshake and explicit installer probe; reject mismatched/unverified bridge mutations while retaining local reads. Detect in-place copy changes without refreshing a live host, validate both copy paths, and preserve safe compatibility errors. No model calls, prompt/default/version changes or automatic activation.
 
 - Restrict explicit memory compaction to independent body-only proposals. Preserve the complete original identity, state, deadlines, responsibility, provenance and custom fields; remove multi-ID merging and unrelated pre-compaction retention. Bound model inputs and keep existing rollback journals compatible.

@@ -67,6 +67,13 @@ def _checks(service: Any, snapshot: dict[str, bytes]) -> dict:
     warnings: set[str] = set()
     counts: dict[str, int] = {}
     config = None
+    binding = {"status": "unknown"}
+    try:
+        binding = service.vault.identity_status()
+        if binding["status"] != "bound":
+            blockers.add("legacy_vault_requires_explicit_binding")
+    except (OSError, ValueError, RuntimeError):
+        blockers.add("invalid_vault_binding")
     try:
         config = service.vault.config()
     except (OSError, ValueError, UnicodeError, TypeError):
@@ -102,6 +109,10 @@ def _checks(service: Any, snapshot: dict[str, bytes]) -> dict:
                 blockers.add(key)
         if counts["unresolved_runs"]:
             blockers.add("unresolved_runs_require_review")
+        from .state_layout import control_required
+        if ("_state/extraction_request_budget.json" not in snapshot and
+                (control_required(budgets._budget_path(service.vault)) or any(r["reserved_requests"] for r in loaded_runs))):
+            blockers.add("request_budget_evidence_missing")
         budget = budgets._read_budget_state_unlocked(service.vault)
         for r in loaded_runs:
             row = budget["works"].get(r["budget_id"], {}).get("turns", {}).get(r["turn_budget_id"])
@@ -109,6 +120,14 @@ def _checks(service: Any, snapshot: dict[str, bytes]) -> dict:
                 blockers.add("request_budget_evidence_missing")
         if Compactor(service)._read_journal_unlocked() is not None:
             blockers.add("compaction_recovery_pending")
+        from .memory_update import explicit_mutation_inventory
+        explicit = explicit_mutation_inventory(service.vault)
+        for name in ("retractions", "explicit_updates"):
+            counts["pending_" + name] = explicit[name]
+            if explicit[name]:
+                blockers.add("pending_" + name)
+                # Preserve both already documented machine-readable aliases.
+                blockers.add("explicit_" + ("updates" if name == "explicit_updates" else "retractions") + "_recovery_pending")
     except (OSError, ValueError, UnicodeError, TypeError, KeyError, RuntimeError, RecursionError):
         blockers.add("invalid_runtime_controls")
     try:
@@ -145,7 +164,7 @@ def _checks(service: Any, snapshot: dict[str, bytes]) -> dict:
             "blockers": sorted(blockers),
             "backup_blockers": sorted(blockers & {"processing_owner_live", "queue_not_quiescent"}),
             "required_external_checks": sorted(warnings),
-            "counts": counts, "scan_status": scanned, "pipeline_status": progress,
+            "vault_binding": binding, "counts": counts, "scan_status": scanned, "pipeline_status": progress,
             "configured_pipelines": configured}
 
 

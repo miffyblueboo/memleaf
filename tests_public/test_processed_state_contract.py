@@ -21,8 +21,12 @@ class ProcessedStateReadTests(unittest.TestCase):
         self.path.unlink(missing_ok=True)
 
     def test_missing_and_minimal_legacy_state_can_be_read_without_writes(self):
-        self.assertEqual(_read_processed(self.path)['version'], 1)
+        with self.assertRaises(ValueError):
+            _read_processed(self.path)
+        virgin = self.path.parent.parent.parent / "unused" / "processed.json"
+        self.assertEqual(_read_processed(virgin)['version'], 1)
         self.assertFalse(self.path.exists())
+        self.assertFalse(virgin.exists())
         raw = '{"sessions":{},"custom":{"preserve":true}}'
         self.path.write_text(raw)
         result = _read_processed(self.path)
