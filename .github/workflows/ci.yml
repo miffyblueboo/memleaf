@@ -203,20 +203,9 @@ jobs:
           )
 
           verify_existing_release() {
-            local release_target
-            local target_sha
-            release_target="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq '.targetCommitish')"
-            target_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TAG}" --jq '.sha')"
-            test "$target_sha" = "$RELEASE_SHA" || {
-              echo "Release ${TAG} target ${release_target} resolves to ${target_sha}, expected ${RELEASE_SHA}" >&2
-              return 1
-            }
-            gh release upload "$TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --clobber \
-              "dist/memleaf-${VERSION}-py3-none-any.whl" \
-              "dist/memleaf-${VERSION}.tar.gz" \
-              dist/SHA256SUMS
+            python tests_public/release_assets.py \
+              --repository "$GITHUB_REPOSITORY" --version "$VERSION" \
+              --commit "$RELEASE_SHA" --dist dist
           }
 
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -230,7 +219,7 @@ jobs:
               "dist/memleaf-${VERSION}-py3-none-any.whl" \
               "dist/memleaf-${VERSION}.tar.gz" \
               dist/SHA256SUMS; then
-            :
+            verify_existing_release
           else
             # Another release attempt may have won the create race.  Only
             # continue after resolving and validating that release's target.
