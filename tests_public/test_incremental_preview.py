@@ -147,8 +147,8 @@ class IncrementalPreviewTests(unittest.TestCase):
         payload = json.loads(self.preview(turn_id="update")["request"]["user"])
         self.assertEqual([e["text"] for e in payload["evidence"]],
                          ["验收报告原定截止日期取消，等待重新确定日期。", "Acknowledged"])
-        self.assertEqual([(m["memory_id"], m["title"]) for m in payload["memories"]],
-                         [("mem-report", "验收报告")])
+        self.assertEqual([(m["ref"], m["title"]) for m in payload["memories"]],
+                         [("m1", "验收报告")])
 
     def test_generic_two_character_title_is_not_promoted_by_sentence_containment(self):
         self.target("mem-generic", title="项目", body="某个项目。", scopes=["global"])
