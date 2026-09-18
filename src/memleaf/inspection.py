@@ -80,7 +80,17 @@ def _snapshot(root: Path) -> dict[str, bytes]:
                 if (not stat.S_ISREG(opened.st_mode)
                         or (stamp.st_dev, stamp.st_ino) != (opened.st_dev, opened.st_ino)):
                     raise InspectionError("Vault file changed while opening")
-                data = stream.read(MAX_SNAPSHOT_BYTES - total + 1)
+                # The total Vault budget is a validation ceiling, not a per-file
+                # allocation size. Read only this file's observed bytes plus one
+                # sentinel so growth cannot be accepted as a complete prefix.
+                if opened.st_size != stamp.st_size:
+                    raise InspectionError("Vault file changed while opening")
+                data = stream.read(opened.st_size + 1)
+                after = os.fstat(stream.fileno())
+                if (len(data) != opened.st_size
+                        or (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                        != (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)):
+                    raise InspectionError("Vault file changed while reading")
             total += len(data)
             if total > MAX_SNAPSHOT_BYTES:
                 raise InspectionError("Vault changed beyond inspection budget")

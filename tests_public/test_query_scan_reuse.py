@@ -84,8 +84,17 @@ class QueryScanReuseTests(unittest.TestCase):
         self.assertEqual(self.snapshot().generation, before.generation)
 
     def test_format_only_change_is_reparsed_with_existing_equivalence(self):
-        before = self.snapshot(); path = self.paths[0]
-        path.write_bytes(path.read_bytes().replace(b'\n',b'\r\n'))
+        path = self.paths[0]
+        # Establish actual LF bytes first. Windows write_text already emits
+        # CRLF; replacing those LFs directly would create CRCRLF, not a
+        # formatting-only change, and correctly invalidate the snapshot.
+        original = path.read_bytes().replace(b'\r\n', b'\n')
+        self.assertNotIn(b'\r', original)
+        path.write_bytes(original)
+        before = self.snapshot()
+        changed = original.replace(b'\n', b'\r\n')
+        self.assertNotEqual(changed, original)
+        path.write_bytes(changed)
         with patch.object(qs, 'parse_frontmatter', wraps=qs.parse_frontmatter) as parse:
             qs.ensure_scan_current(self.s.vault, before)
         self.assertEqual(parse.call_count, 1)

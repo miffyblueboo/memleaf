@@ -4,6 +4,10 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+- Compare native-file ctime stability within path and descriptor observations separately: Windows CPython 3.12 can report creation time and metadata-change time through different APIs. Preserve cross-API identity/size/mtime checks, whole-content guards, and per-file bounded reads. Repair the LF-to-CRLF test fixture without skipping native platforms or weakening change detection.
+
+- Size inspection reads from each opened regular file, not the entire remaining Vault budget. Keep full-byte snapshot comparisons and reject detected growth, truncation or in-read metadata changes; avoid a roughly 256 MiB temporary allocation for tiny files during migration/audit/backup checks. No model calls, schema/default changes or release.
+
 - Gate future releases on native installed-artifact contract checks: build once, bind wheel/sdist and test inventory, then verify independent installations on Ubuntu/Python 3.11-3.13 and Windows/macOS Python 3.12. Include packaged Provider resources, real stdio/lock/restart checks and explicit failure on skipped or source-shadowed tests. This is deterministic validation, not live-model or installed-Hermes acceptance; defaults, prompt and version stay unchanged.
 
 - Avoid reparsing unchanged validated Markdown during public-query rechecks. Re-enumerate and re-read current bytes before reusing immutable request-local fingerprints; retain malformed/duplicate isolation and all existing change/bound checks. Add an isolated synthetic query benchmark without model calls, persistent cache or default changes.

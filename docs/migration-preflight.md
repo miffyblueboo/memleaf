@@ -180,3 +180,31 @@ read/write failures, traversal/links/bounds, backup tampering, CLI codes, Forget
 concurrent creation and a real process exit before manifest publication. All
 existing tests remain. Real Flash semantics, native OS/host installation, actual
 shutdown discovery, restoration and production activation are not claimed.
+
+## Per-file inspection allocation (native-validation follow-up)
+
+The 256 MiB selected-content bound is a **whole snapshot limit**, not a request
+buffer for each small file. Inspection checks the path and opened regular-file
+identity/size, then reads the observed file size plus one sentinel byte. The
+sentinel and a descriptor metadata recheck reject detected growth/truncation or
+in-read modification rather than accepting a prefix as a complete backup file.
+The original second enumeration/read and final exact-byte comparison remain.
+No persistent cache, index shortcut, file omission, source rewriting or extra
+model phase is introduced. Snapshot fingerprints and manifests for unchanged
+files are byte-for-byte compatible; no data or schema migration is required.
+
+A local Linux/Python 3.13.5 synthetic measurement (five warm-cache repetitions,
+1,001 files / 12,003 payload bytes) kept the same snapshot fingerprint while
+reducing median tracemalloc peak from 268,627,603 to 204,981 bytes. This is Python
+allocation tracking, not process RSS, native Windows latency, a production-Vault
+benchmark or a guarantee that arbitrary backup sizes use constant memory. The
+snapshot still retains all selected bytes within its original total bound.
+
+The preceding interrupted Windows test trace was in this reader. That identifies
+an avoidable allocation at the observed point, not proof that it is the only
+reason for the platform run's duration. Native installation checks must be rerun
+on the resulting candidate. Read metadata is also not an atomic filesystem-wide
+snapshot: uncooperative edits after the final check and undetectable edit/revert
+cycles remain outside the guarantee. Source links, nonregular paths, failed
+reads, total size/path bounds and final manifest checks retain their existing
+failure behavior. No model/default/prompt change or production activation occurs.

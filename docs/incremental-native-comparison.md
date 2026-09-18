@@ -103,3 +103,43 @@ are still separate work. Limited explicit partial repair/replan is described in
 G3g connects bounded scope registration to the same shared commit path; see
 `incremental-scope-registration.md`. Discovery is opt-in and never expands an
 explicit write boundary.
+
+
+## Native Windows observation correction
+
+The first installed-artifact Windows run of `5e707c2f` executed 932 contracts,
+with two failures and seven errors. Eight unsuccessful cases shared an early
+`native_source_changed_during_read`; another was a CRLF test-fixture error.
+This is not a successful native validation and is not explained away by a slow
+runner or by the independent migration-inspection allocation optimization.
+
+In CPython v3.12.10, `win32_xstat()` in `Modules/posixmodule.c` maps ctime back
+to birthtime for `stat`/`lstat`, whereas `_Py_fstat_noraise()` in
+`Python/fileutils.c` obtains metadata ChangeTime through the handle. Once a file
+has been edited those values can differ for the same stable file. Requiring all
+four ctimes to be identical incorrectly rejects legitimate native content.
+Reference implementation (the version recorded by that Windows runner):
+
+- https://github.com/python/cpython/blob/v3.12.10/Modules/posixmodule.c
+- https://github.com/python/cpython/blob/v3.12.10/Python/fileutils.c
+
+The reader now checks path-before against path-after, and handle-before against
+handle-after, retaining both timestamp checks without equating their ctime
+meaning. Device/inode, size and mtime must still agree at open. A path or handle
+change, nonregular file, unexpected length, growth, truncation or changed
+metadata remains an error. Reads request the opened file size plus one growth
+sentinel, never the entire file allowance for every tiny note. Source hashes,
+sharing guards and commit-time snapshot validation are unchanged. There is no
+sleep, ignored error, automatic retry or fallback to a stale native index.
+
+The newline-only reuse test explicitly establishes LF bytes before converting
+to CRLF. A Windows text write may already create CRLF; blindly replacing those
+LFs creates CRCRLF and is not a formatting-only transformation. The test keeps
+its inventory ID, one-reparse assertion and snapshot-equivalence check.
+
+Focused regressions simulate only differing timestamp observations and retain
+real file I/O. They also test real edits, errors, sizes and changes through
+either observation channel. Passing these on Linux does not establish native
+Windows acceptance. The corrected exact candidate must complete the existing
+five-cell installed-artifact matrix. Production Vaults, real models, schemas,
+prompts, request allowances and default routing are not changed by this fix.

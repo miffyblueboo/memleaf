@@ -41,7 +41,14 @@ def _read_file(path: Path) -> bytes:
             opened = os.fstat(stream.fileno())
             if not stat.S_ISREG(opened.st_mode):
                 raise ValueError("native_source_unsafe")
-            data = stream.read(MAX_NATIVE_BYTES + 1)
+            # Compare identity, size and mtime across APIs, but not ctime:
+            # CPython 3.12 on Windows can expose creation time via lstat and
+            # metadata-change time via fstat. Each ctime is still checked
+            # against a second observation through the same API below.
+            if ((opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
+                    != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)):
+                raise ValueError("native_source_changed_during_read")
+            data = stream.read(opened.st_size + 1)
             finished = os.fstat(stream.fileno())
         after = path.lstat()
     except FileNotFoundError:
@@ -51,8 +58,9 @@ def _read_file(path: Path) -> bytes:
     signature = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
     if len(data) > MAX_NATIVE_BYTES:
         raise ValueError("native_source_too_large")
-    if (any(signature(s) != signature(before) for s in (opened, finished, after))
-            or len(data) != before.st_size or not stat.S_ISREG(after.st_mode)):
+    if (signature(after) != signature(before) or signature(finished) != signature(opened)
+            or len(data) != before.st_size
+            or not stat.S_ISREG(after.st_mode) or not stat.S_ISREG(finished.st_mode)):
         raise ValueError("native_source_changed_during_read")
     return data
 
