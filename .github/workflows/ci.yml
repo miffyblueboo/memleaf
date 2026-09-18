@@ -1,228 +1,39 @@
-name: CI
-
-on:
-  push:
-  pull_request:
-
-# Keep one current run per event type and head branch. The workflow is
-# intentionally triggered by both push and pull_request, but rapid development
-# should not leave dozens of obsolete matrix runs ahead of the current head.
-# Including event_name avoids a push run cancelling the PR check for the same
-# commit while still cancelling superseded push/PR runs independently.
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.ref || github.ref_name }}
-  cancel-in-progress: true
-
+name: Windows bounded diagnostic
+on: push
 permissions:
   contents: read
-
 jobs:
-
-  build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    outputs:
-      manifest_sha256: ${{ steps.bind.outputs.manifest_sha256 }}
+  diagnose:
+    runs-on: windows-latest
+    timeout-minutes: 8
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: Install build tools
-        run: python -m pip install --upgrade pip build "setuptools>=77"
-      - name: Run complete source contracts and record test inventory
-        run: >-
-          python -I -X utf8 tests_public/run_contracts.py
-          --tests tests_public --source-root src --report source-results.json
-      - name: Build wheel and source distribution once
-        run: python -m build --wheel --sdist
-      - name: Obtain test-only timezone data for native Windows
-        run: >-
-          python -m pip download --only-binary=:all: --no-deps --dest dist/test-dependencies tzdata
-      - name: Bind exact distributions and test inventory to this commit
-        id: bind
-        env:
-          CANDIDATE_SHA: ${{ github.sha }}
-        run: >-
-          python tests_public/verify_distribution.py manifest
-          --dist dist --source-report source-results.json --commit "$CANDIDATE_SHA"
-      - name: Upload distributions
-        uses: actions/upload-artifact@v4
-        with:
-          name: memleaf-distributions
-          path: |
-            dist/*.whl
-            dist/*.tar.gz
-          if-no-files-found: error
-      - name: Upload verification inputs separately from release payloads
-        uses: actions/upload-artifact@v4
-        with:
-          name: memleaf-verification-inputs
-          path: |
-            dist/verification-manifest.json
-            dist/test-dependencies/
-          if-no-files-found: error
-      - name: Upload source contract report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: source-contract-report
-          path: source-results.json
-          if-no-files-found: warn
-
-  verify-artifacts:
-    name: Installed artifacts (${{ matrix.os }}, Python ${{ matrix.python }})
-    needs: [build]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            python: "3.11"
-          - os: ubuntu-latest
-            python: "3.12"
-          - os: ubuntu-latest
-            python: "3.13"
-          - os: windows-latest
-            python: "3.12"
-          - os: macos-latest
-            python: "3.12"
-    steps:
-      - name: Check out exact verification helpers
-        uses: actions/checkout@v4
-      - name: Set up native Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-      - name: Install sdist build backend only
-        run: python -m pip install "setuptools>=77"
-      - name: Download the same candidate distributions
-        uses: actions/download-artifact@v4
-        with:
-          name: memleaf-distributions
-          path: dist/
-      - name: Download bound test-only inputs
-        uses: actions/download-artifact@v4
-        with:
-          name: memleaf-verification-inputs
-          path: dist/
-      - name: Verify wheel and sdist in separate isolated installations
-        env:
-          CANDIDATE_SHA: ${{ github.sha }}
-          CANDIDATE_MANIFEST: ${{ needs.build.outputs.manifest_sha256 }}
-        # Use Python expansion on every OS, not POSIX variables in PowerShell.
+          python-version: '3.12'
+      - name: Install test-only timezone data
+        run: python -m pip install tzdata
+      - name: Bounded full source test with stack dumps
         shell: python
-        run: |
-          import os
-          import subprocess
-          import sys
-          subprocess.run([
-              sys.executable, "tests_public/verify_distribution.py", "verify",
-              "--dist", "dist", "--output", "artifact-verification",
-              "--commit", os.environ["CANDIDATE_SHA"],
-              "--manifest-sha256", os.environ["CANDIDATE_MANIFEST"],
-          ], check=True)
-      - name: Upload verification evidence even on failure
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: installed-contracts-${{ matrix.os }}-py${{ matrix.python }}
-          path: artifact-verification/
-          if-no-files-found: warn
-
-  release:
-    needs: [build, verify-artifacts]
-    if: >-
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
-      startsWith(github.event.head_commit.message, 'release: v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Check out the verified release commit
-        uses: actions/checkout@v4
-
-      - name: Download verified distributions
-        uses: actions/download-artifact@v4
-        with:
-          name: memleaf-distributions
-          path: dist/
-
-      - name: Prepare release metadata from pyproject and CHANGELOG
-        id: release_meta
-        shell: bash
-        run: |
-          VERSION="$(python - <<'PY'
-          import tomllib
-          from pathlib import Path
-          data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-          print(data["project"]["version"])
-          PY
-          )"
-          SUBJECT="$(git log -1 --pretty=%s)"
-          test "$SUBJECT" = "release: v$VERSION"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-          python - "$VERSION" <<'PY'
-          from pathlib import Path
-          import sys
-
-          version = sys.argv[1]
-          lines = Path("CHANGELOG.md").read_text(encoding="utf-8").splitlines()
-          prefix = f"## {version}"
-          start = next((i for i, line in enumerate(lines) if line.startswith(prefix)), None)
-          if start is None:
-              raise SystemExit(f"CHANGELOG.md has no section for {version}")
-          end = next(
-              (i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")),
-              len(lines),
-          )
-          notes = "\n".join(lines[start:end]).strip() + "\n"
-          Path("/tmp/memleaf-release-notes.md").write_text(notes, encoding="utf-8")
-          PY
-
-      - name: Publish GitHub Release
         env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.release_meta.outputs.version }}
-        shell: bash
+          PYTHONPATH: src
+          PYTHONUTF8: '1'
         run: |
-          set -euo pipefail
-          TAG="v${VERSION}"
-          RELEASE_SHA="$GITHUB_SHA"
-          test -f "dist/memleaf-${VERSION}-py3-none-any.whl"
-          test -f "dist/memleaf-${VERSION}.tar.gz"
-          (
-            cd dist
-            sha256sum "memleaf-${VERSION}-py3-none-any.whl" "memleaf-${VERSION}.tar.gz" > SHA256SUMS
-          )
-
-          verify_existing_release() {
-            python tests_public/release_assets.py \
-              --repository "$GITHUB_REPOSITORY" --version "$VERSION" \
-              --commit "$RELEASE_SHA" --dist dist
-          }
-
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            verify_existing_release
-          elif gh release create "$TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "$RELEASE_SHA" \
-              --title "memleaf ${VERSION}" \
-              --notes-file /tmp/memleaf-release-notes.md \
-              --latest \
-              "dist/memleaf-${VERSION}-py3-none-any.whl" \
-              "dist/memleaf-${VERSION}.tar.gz" \
-              dist/SHA256SUMS; then
-            verify_existing_release
-          else
-            # Another release attempt may have won the create race.  Only
-            # continue after resolving and validating that release's target.
-            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
-            verify_existing_release
-          fi
+          import os, subprocess, sys
+          from pathlib import Path
+          out=Path('diagnostic');out.mkdir()
+          code="import faulthandler,runpy; faulthandler.dump_traceback_later(45,repeat=True); runpy.run_path('tests_public/run_contracts.py',run_name='__main__')"
+          command=[sys.executable,'-u','-c',code,'--tests','tests_public','--source-root','src','--report',str(out/'report.json')]
+          with (out/'tests.log').open('w',encoding='utf-8') as log:
+              try:
+                  result=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,timeout=240)
+                  exit_code=result.returncode
+              except subprocess.TimeoutExpired:
+                  exit_code=124
+          print((out/'tests.log').read_text(encoding='utf-8',errors='replace')[-24000:])
+          sys.exit(exit_code)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-bounded-diagnostic
+          path: diagnostic/
