@@ -70,6 +70,40 @@ class MigrationPreflightTests(MigrationFixture):
         self.assertFalse(self.s.vault.lock_path.exists())
         self.assertEqual(before,self.snapshot())
 
+    def test_missing_enabled_native_source_blocks_cutover_readiness(self):
+        from memleaf.config import save_config
+        value = self.s.vault.config()
+        value["native_sources"] = {
+            "hermes_memory": {
+                "agent": "hermes",
+                "path": str(self.home / "missing-MEMORY.md"),
+                "share": False,
+                "format": "markdown",
+            }
+        }
+        save_config(self.s.vault.config_path, value)
+        report = self.inspect()
+        self.assertIn("native_sources_unavailable", report["blockers"])
+        self.assertEqual(report["counts"]["unavailable_native_sources"], 1)
+        self.assertFalse(report["switch_authorized"])
+
+    def test_disabled_missing_native_source_does_not_block_cutover(self):
+        from memleaf.config import save_config
+        value = self.s.vault.config()
+        value["native_sources"] = {
+            "optional": {
+                "agent": "hermes",
+                "path": str(self.home / "missing.md"),
+                "share": False,
+                "format": "markdown",
+                "enabled": False,
+            }
+        }
+        save_config(self.s.vault.config_path, value)
+        report = self.inspect()
+        self.assertNotIn("native_sources_unavailable", report["blockers"])
+        self.assertEqual(report["counts"]["unavailable_native_sources"], 0)
+
     def test_missing_processed_is_not_fresh_authority(self):
         self.s.vault.processed_state_path.unlink()
         r = self.inspect()

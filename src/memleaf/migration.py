@@ -52,6 +52,33 @@ def _runtime() -> dict:
             "installed_host_verification": "not_performed"}
 
 
+def _native_source_readiness(service: Any, config: Any) -> tuple[int, list[str]]:
+    """Inspect configured native-source path readiness without reading content."""
+
+    if not isinstance(config, dict):
+        return 0, ["native_source_configuration_invalid"]
+    try:
+        from .native_index import validate_native_sources
+        sources = validate_native_sources(config.get("native_sources", {}), base_dir=service.vault.root)
+    except (OSError, ValueError, RuntimeError):
+        return 0, ["native_source_configuration_invalid"]
+
+    unavailable = 0
+    for source in sources.values():
+        if not source["enabled"]:
+            continue
+        path = Path(source["resolved_path"])
+        try:
+            if path.is_symlink() or not path.is_file():
+                unavailable += 1
+                continue
+            with path.open("rb"):
+                pass
+        except OSError:
+            unavailable += 1
+    return unavailable, (["native_sources_unavailable"] if unavailable else [])
+
+
 def _checks(service: Any, snapshot: dict[str, bytes]) -> dict:
     from . import extraction_work_state as budgets
     from . import incremental_journal as commits
@@ -78,6 +105,10 @@ def _checks(service: Any, snapshot: dict[str, bytes]) -> dict:
         config = service.vault.config()
     except (OSError, ValueError, UnicodeError, TypeError):
         blockers.add("invalid_configuration")
+    if config is not None:
+        native_unavailable, native_blockers = _native_source_readiness(service, config)
+        counts["unavailable_native_sources"] = native_unavailable
+        blockers.update(native_blockers)
     try:
         if "_state/processed.json" not in snapshot:
             blockers.add("processed_state_missing")

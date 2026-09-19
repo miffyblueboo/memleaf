@@ -150,8 +150,13 @@ Production cutover still requires the approved cold procedure: pause supported
 write triggers; finish or explicitly isolate old plans; stop known workers and old
 MCP/Provider processes; take a consistent backup respecting Forget; upgrade copies
 together; verify installed capabilities and rerun acceptance; only then select
-the route under separate authorization. Reading `process_status` is not a
-migration permit. Do not erase old plans or budget records to make a switch pass.
+the route under separate authorization. The Hermes installer prepares missing
+standard `memories/MEMORY.md` and `memories/USER.md` files before registering
+them as native sources. Existing files are never rewritten; unsafe or unreadable
+paths fail closed. Older installations should rerun the matching installer before
+incremental activation, and migration preflight reports unavailable enabled native
+sources as a blocker. Reading `process_status` is not a migration permit. Do not
+erase old plans or budget records to make a switch pass.
 
 ## Result and status contract
 

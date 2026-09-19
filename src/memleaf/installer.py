@@ -61,6 +61,13 @@ class _PathSnapshot:
     mode: int = 0o600
 
 
+@dataclass(frozen=True)
+class _HermesNativeProvision:
+    created_files: tuple[Path, ...]
+    memories_dir: Path
+    directory_created: bool
+
+
 class _HermesInstallFailure(Exception):
     """Expected host-transaction failure with safe, structured diagnostics."""
 
@@ -94,6 +101,103 @@ def _hermes_home(
         os.environ if env is None else env,
         platform=platform,
     )
+
+
+def _ensure_hermes_native_files(hermes_home: Path | str) -> tuple[dict[str, Any], _HermesNativeProvision]:
+    """Prepare only missing standard Hermes native-memory files.
+
+    Existing files are never rewritten. Unsafe path shapes fail closed.
+    Native registration remains read-only with respect to host memory content.
+    """
+
+    home = Path(hermes_home).expanduser().resolve(strict=False)
+    if home.is_symlink():
+        raise RuntimeError("refusing symlinked Hermes home")
+    memories = home / "memories"
+    directory_created = False
+    created: list[Path] = []
+    try:
+        if memories.exists():
+            if memories.is_symlink() or not memories.is_dir():
+                raise RuntimeError("unsafe Hermes memories directory")
+        else:
+            memories.mkdir(parents=True, exist_ok=False)
+            directory_created = True
+
+        existing: list[str] = []
+        created_names: list[str] = []
+        for name in ("MEMORY.md", "USER.md"):
+            path = memories / name
+            if path.is_symlink():
+                raise RuntimeError(f"unsafe Hermes native memory file: {name}")
+            if path.exists():
+                if not path.is_file():
+                    raise RuntimeError(f"Hermes native memory path is not a file: {name}")
+                try:
+                    with path.open("rb"):
+                        pass
+                except OSError as error:
+                    raise RuntimeError(f"Hermes native memory file is unreadable: {name}") from error
+                existing.append(name)
+                continue
+
+            flags = (
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            )
+            fd = os.open(path, flags, 0o600)
+            try:
+                with os.fdopen(fd, "wb") as stream:
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except Exception:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+                raise
+            try:
+                os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+            except OSError:
+                pass
+            created.append(path)
+            created_names.append(name)
+
+        return (
+            {"status": "ready", "created": created_names, "existing": existing},
+            _HermesNativeProvision(tuple(created), memories, directory_created),
+        )
+    except Exception:
+        for path in reversed(created):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        if directory_created:
+            try:
+                memories.rmdir()
+            except OSError:
+                pass
+        raise
+
+
+def _rollback_hermes_native_files(provision: _HermesNativeProvision | None) -> str:
+    if provision is None:
+        return "not_needed"
+    failed = False
+    for path in reversed(provision.created_files):
+        try:
+            if path.exists() or path.is_symlink():
+                path.unlink()
+        except OSError:
+            failed = True
+    if provision.directory_created:
+        try:
+            provision.memories_dir.rmdir()
+        except OSError:
+            if provision.memories_dir.exists():
+                failed = True
+    return "failed" if failed else "completed"
 
 
 def _resolve_vault_path(value: str, home: Path) -> Path:
@@ -989,6 +1093,8 @@ def install_hermes(
     provider_version: str | None = None
     configured: ConfigureResult | None = None
     native_registration: dict[str, Any] | None = None
+    native_files: dict[str, Any] | None = None
+    native_provision: _HermesNativeProvision | None = None
 
     try:
         transaction = tempfile.TemporaryDirectory(prefix=".memleaf-hermes-transaction-")
@@ -1107,6 +1213,13 @@ def install_hermes(
                     "Hermes MemoryProvider could not be activated",
                 )
             try:
+                native_files, native_provision = _ensure_hermes_native_files(hermes_home)
+            except Exception as error:
+                raise _HermesInstallFailure(
+                    "native_files",
+                    "Hermes native memory files could not be prepared safely",
+                ) from error
+            try:
                 native_registration = ensure_hermes_native_sources(vault, hermes_home)
             except Exception as error:
                 raise _HermesInstallFailure(
@@ -1123,7 +1236,10 @@ def install_hermes(
             )
 
         if failure is not None:
+            native_rollback = _rollback_hermes_native_files(native_provision)
             rollback = _rollback_snapshots(snapshots)
+            if native_rollback == "failed":
+                rollback = "failed"
             if failure.mark_mcp_failed:
                 update_agents_state(
                     vault.agents_state_path,
@@ -1177,6 +1293,7 @@ def install_hermes(
         "provider_mcp_command": str(provider_command),
         "mcp_runtime": runtime_details,
         "model": model,
+        "native_files": native_files,
         "native_sources": native_registration,
         "capture": capture_policy_status(vault.config()),
         "processing_status": processing_status,

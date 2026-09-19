@@ -21,7 +21,9 @@ Preflight requires an existing Vault with `config.yaml`. It does not initialize
 or migrate the layout, create a lock, repair an index, expire an owner, launch a
 worker or call a model. It validates known configuration, processing, request
 budget and job contracts, inspects pending legacy plans and compaction journals,
-and reuses the public Markdown scan and pipeline-progress observation. Compact
+checks that enabled native-source paths needed by incremental planning are present
+as readable regular files, and reuses the public Markdown scan and pipeline-progress
+observation. It never reads or copies native-source content during this check. Compact
 G4d receipts are decoded through their original validators, not approximated by
 status names. A loaded run with missing consumption evidence is blocked rather
 than assigned fresh allowance. Unknown control extensions remain opaque; this
