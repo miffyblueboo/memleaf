@@ -110,9 +110,10 @@ def _ensure_hermes_native_files(hermes_home: Path | str) -> tuple[dict[str, Any]
     Native registration remains read-only with respect to host memory content.
     """
 
-    home = Path(hermes_home).expanduser().resolve(strict=False)
-    if home.is_symlink():
+    raw_home = Path(hermes_home).expanduser()
+    if raw_home.is_symlink():
         raise RuntimeError("refusing symlinked Hermes home")
+    home = raw_home.resolve(strict=False)
     memories = home / "memories"
     directory_created = False
     created: list[Path] = []
