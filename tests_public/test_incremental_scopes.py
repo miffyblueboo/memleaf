@@ -40,12 +40,14 @@ class ScopeContractTests(IncrementalFixture):
         self.assertEqual(len(self.s.vault.list_markdown('knowledge')), 1)
         self.assertFalse(self.hist())
 
-    def test_new_scope_permission_defaults_off(self):
+    def test_new_scope_permission_defaults_to_unscoped_without_registration(self):
         result = self.s.apply_incremental(**self.request([self.create(scope='project:Atlas'), self.no_memory()]))
-        self.assertEqual(result['coverage_status'], 'partial')
+        self.assertEqual(result['coverage_status'], 'complete')
         self.assertEqual(self.s.vault.config()['scopes'], {})
-        self.assertFalse(self.s.vault.list_markdown('knowledge'))
+        self.assertEqual(result['counts']['committed'], 1)
         self.assertEqual(result['counts']['no_memory'], 1)
+        created = self.s.read(result['operations'][0]['memory_id'])
+        self.assertEqual(created.scopes, ['unscoped'])
 
     def test_explicit_named_boundary_authorizes_that_name_only(self):
         result = self.s.apply_incremental(**self.request([self.create(scope='s1'), self.no_memory()], scope='project:Atlas'))
