@@ -358,7 +358,7 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
         if action == "CREATE" and (not isinstance(kind, str) or kind not in _TYPES):
             raise ValueError("invalid_type")
         if action == "CREATE" and kind == "todo" and "status" not in fields:
-            raise ValueError("missing_status")
+            fields["status"] = "active"
         if kind != "todo":
             if action == "CREATE" and fields.get("status") == "active":
                 fields.pop("status")

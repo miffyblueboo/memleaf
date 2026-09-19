@@ -61,10 +61,10 @@ class IncrementalProtocolTests(unittest.TestCase):
         self.assertNotIn("memory_id", op["memory"])
         self.assertNotIn("operation_id", op)
 
-    def test_new_todo_requires_status(self):
+    def test_new_todo_defaults_active(self):
         out = self.run_rows(self.create(type="todo"))
-        self.assertEqual(out["issues"][0]["code"], "missing_status")
-        self.assertFalse(out["operations"])
+        self.assertFalse(out["issues"])
+        self.assertEqual(out["operations"][0]["memory"]["status"], "active")
 
     def test_new_todo_accepts_optional_fields(self):
         op = self.run_rows(self.create(type="todo", status="active", assignee="user:1", waiting_on=None))["operations"][0]
