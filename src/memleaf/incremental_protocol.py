@@ -22,10 +22,11 @@ from .turn_plan import revision_digest
 from .validation import ModelOutputError, parse_strict_json
 
 PROTOCOL_VERSION = "incremental-items-v1"
-SEMANTIC_PROTOCOL = "incremental-turn-v2"
+SEMANTIC_PROTOCOL = "incremental-turn-v3"
 MAX_BYTES = 128 * 1024
 MAX_ITEMS = 64
 _TYPES = frozenset(("fact", "todo", "preference", "project", "event", "identity", "other"))
+_TYPE_ALIASES = {"decision": "fact", "task": "todo", "action": "todo", "action_item": "todo", "note": "other"}
 _PATCH = frozenset(("title", "body", "scope", "status", "assignee", "waiting_on", "deadline", "validity"))
 _CREATE = (_PATCH - {"validity"}) | {"type"}
 _BRANCHES = {
@@ -59,6 +60,15 @@ def _ref(value: Any, table: Mapping[str, Any]) -> str:
     if not isinstance(value, str) or value.strip() not in table:
         raise ValueError("invalid_reference")
     return value.strip()
+
+
+def _normalize_type(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("invalid_type")
+    kind = value.strip().casefold().replace("-", "_").replace(" ", "_")
+    if kind in _TYPES:
+        return kind
+    return _TYPE_ALIASES.get(kind, "other")
 
 
 def basis_status(memory: Memory, applied_revisions: Mapping[tuple[str, str], set[str]] | None = None) -> str:
@@ -354,9 +364,9 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
               _CREATE if action == "CREATE" else _PATCH)
         if not fields:
             raise ValueError("empty_patch")
+        if action == "CREATE":
+            fields["type"] = _normalize_type(fields.get("type"))
         kind = fields.get("type") if action == "CREATE" else state["targets"][result["target_ref"]]["memory"]["type"]
-        if action == "CREATE" and (not isinstance(kind, str) or kind not in _TYPES):
-            raise ValueError("invalid_type")
         if action == "CREATE" and kind == "todo" and "status" not in fields:
             fields["status"] = "active"
         if kind != "todo":

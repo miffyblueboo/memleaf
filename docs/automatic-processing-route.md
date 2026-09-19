@@ -102,7 +102,7 @@ resume path; this router does not invent an automatic authorization for it.
 
 ## Recovery and immutable acceptance
 
-Model output is intentionally narrower than the commit contract. Provenance anchor selection is Core-owned and optional in model output. Harmless schema noise that cannot change business meaning is normalized locally: a non-todo CREATE may drop a generic status=active, and an otherwise valid new project scope without registration authority falls back to unscoped. Unknown targets, invalid evidence, read-only writes, UPDATE scope expansion, stale revisions and other authority/identity ambiguity remain fail-closed.
+Memory `type` is classification metadata rather than write authority. Core normalizes common aliases (for example `decision` to `fact`, task/action labels to `todo`) and falls back unknown non-empty string labels to `other`; non-string types remain invalid. Model output is intentionally narrower than the commit contract. Provenance anchor selection is Core-owned and optional in model output. Harmless schema noise that cannot change business meaning is normalized locally: a non-todo CREATE may drop a generic status=active, and an otherwise valid new project scope without registration authority falls back to unscoped. Unknown targets, invalid evidence, read-only writes, UPDATE scope expansion, stale revisions and other authority/identity ambiguity remain fail-closed.
 
 A normal new turn uses one model call. Top-level unusable response handling,
 transport recovery and any explicitly requested partial replan share the same

@@ -61,6 +61,53 @@ class IncrementalProtocolTests(unittest.TestCase):
         self.assertNotIn("memory_id", op["memory"])
         self.assertNotIn("operation_id", op)
 
+    def test_type_aliases_and_unknown_strings_are_core_normalized(self):
+        cases = {
+            "decision": "fact",
+            "Decision": "fact",
+            "task": "todo",
+            "action-item": "todo",
+            "note": "other",
+            "custom_model_label": "other",
+        }
+        for offered, expected in cases.items():
+            with self.subTest(offered=offered):
+                row = self.create(type=offered, scope="global")
+                if expected == "todo":
+                    row["memory"]["status"] = "active"
+                out = self.run_rows(row)
+                self.assertFalse(out["issues"])
+                self.assertEqual(out["operations"][0]["memory"]["type"], expected)
+
+    def test_non_string_type_still_fails_closed(self):
+        for offered in (None, 7, [], {}):
+            with self.subTest(offered=offered):
+                out = self.run_rows(self.create(type=offered, scope="global"))
+                self.assertEqual(out["issues"][0]["code"], "invalid_type")
+
+    def test_exact_live_decision_shape_is_normalized(self):
+        snap = PlanningSnapshot.build(evidence=[
+            evidence("e1", text="那就用A吧。", seq=3, role="user"),
+            evidence("e2", text="好的，Orion数据库就使用MySQL。", seq=4, role="assistant"),
+        ])
+        row = {
+            "action": "CREATE",
+            "evidence": ["e1", "e2"],
+            "memory": {
+                "type": "decision",
+                "scope": "project:Orion",
+                "title": "Orion 数据库选型",
+                "body": "Orion 项目的数据库确定使用 MySQL（用户选择方案 A）。",
+                "status": "active",
+            },
+        }
+        out = self.run_rows(row, snapshot=snap)
+        self.assertFalse(out["issues"])
+        op = out["operations"][0]
+        self.assertEqual(op["memory"]["type"], "fact")
+        self.assertEqual(op["memory"]["scopes"], ["unscoped"])
+        self.assertNotIn("status", op["memory"])
+
     def test_new_todo_defaults_active(self):
         out = self.run_rows(self.create(type="todo"))
         self.assertFalse(out["issues"])
