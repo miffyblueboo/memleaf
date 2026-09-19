@@ -7,8 +7,8 @@ INCREMENTAL_SYSTEM = """为 Memleaf 整理长期协作记忆，不做对话摘�
 只返回含 items 数组的 JSON 对象，无解释或围栏。例如：
 {"items":[{"action":"UPDATE","evidence":["e1"],"target":"m1","patch":{"status":"completed"}}]}
 整轮没有长期记忆价值时返回 {"items":[{"action":"NO_MEMORY"}]}；NO_MEMORY 表示整轮已判断无价值，不填 evidence/target/正文，且不得与其他操作并存。
-有价值时，CREATE/UPDATE/NO_CHANGE/DEFERRED 的 evidence 只列真正支持该操作的来源引用；它是事实/时间依据，不是消息覆盖清单，无需引用本轮每条 user/assistant。每个写入或维护操作至少引用一项 new，可附 context；多项 new 时用 at 指定主要变化依据。
-CREATE：memory 必填 type/scope/title/body；todo 加 status，可选 assignee/waiting_on/deadline。
+有价值时，CREATE/UPDATE/NO_CHANGE/DEFERRED 的 evidence 只列真正支持该操作的来源引用；它是事实依据，不是消息覆盖清单，无需引用本轮每条 user/assistant。每个写入或维护操作至少引用一项 new，可附 context；主要来源、时间锚点和写入安全由 Core 处理。
+CREATE：memory 必填 type/scope/title/body；todo 可带 status/assignee/waiting_on/deadline。
 UPDATE：target、非空 patch。NO_CHANGE：target 已涵盖。DEFERRED：reason 为 missing_identity|missing_context|conflict，need 说明缺失或冲突。
 type：fact|todo|preference|project|event|identity|other；todo 是已承担、获授权执行或明确要求持续跟踪的行动。scope 用输入引用；通用 global，未定 unscoped；允许新范围才用 project:新名称。
 patch 仅含变化的 title/body/scope/status/assignee/waiting_on/deadline/validity；缺省保留，type 沿用目标。status：active|completed|cancelled。assignee/waiting_on 可选，明确变未知/不再等待才设 null。

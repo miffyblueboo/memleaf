@@ -22,7 +22,7 @@ from .turn_plan import revision_digest
 from .validation import ModelOutputError, parse_strict_json
 
 PROTOCOL_VERSION = "incremental-items-v1"
-SEMANTIC_PROTOCOL = "incremental-turn-v1"
+SEMANTIC_PROTOCOL = "incremental-turn-v2"
 MAX_BYTES = 128 * 1024
 MAX_ITEMS = 64
 _TYPES = frozenset(("fact", "todo", "preference", "project", "event", "identity", "other"))
@@ -278,7 +278,7 @@ def _selected(value: Any, evidence: Mapping[str, Any], refs: list[str], *, clear
     return selected_calendar(value["text"], evidence[ref])
 
 
-def _scope(value: Any, state: Mapping[str, Any]) -> str:
+def _scope(value: Any, state: Mapping[str, Any], *, create: bool = False) -> str:
     value = _text(value, 160)
     if value in state["scopes"]:
         return state["scopes"][value]
@@ -288,9 +288,14 @@ def _scope(value: Any, state: Mapping[str, Any]) -> str:
     existing = resolve_scope(value, state["scopes"], state.get("scope_aliases", {}))
     if existing is not None:
         return existing
-    if not state["allow_new_scopes"] or not value.startswith("project:"):
+    if not value.startswith("project:"):
         raise ValueError("invalid_scope")
-    return validate_scope_key(value)
+    value = validate_scope_key(value)
+    if state["allow_new_scopes"]:
+        return value
+    if create:
+        return "unscoped"
+    raise ValueError("invalid_scope")
 
 
 def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
@@ -323,7 +328,14 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("missing_new_evidence")
     result = {"action": action, "evidence": refs}
     if action in {"CREATE", "UPDATE", "NO_CHANGE"}:
-        at = row.get("at", new[0] if len(new) == 1 else None)
+        at = row.get("at")
+        if at is None:
+            users = [ref for ref in new if evidence[ref].get("role") == "user"]
+            pool = users or new
+            at = max(pool, key=lambda ref: (
+                evidence[ref].get("source_sequence") if type(evidence[ref].get("source_sequence")) is int else -1,
+                evidence[ref].get("source_time") or "",
+            ))
         if at not in new:
             raise ValueError("invalid_at")
         result["basis"] = source_basis(evidence[at])
@@ -347,8 +359,11 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("invalid_type")
         if action == "CREATE" and kind == "todo" and "status" not in fields:
             raise ValueError("missing_status")
-        if kind != "todo" and set(fields) & {"status", "assignee", "waiting_on", "deadline"}:
-            raise ValueError("todo_fields_on_non_todo")
+        if kind != "todo":
+            if action == "CREATE" and fields.get("status") == "active":
+                fields.pop("status")
+            if set(fields) & {"status", "assignee", "waiting_on", "deadline"}:
+                raise ValueError("todo_fields_on_non_todo")
         for key in ("title", "body"):
             if key in fields:
                 _text(fields[key], 256 if key == "title" else 16384,
@@ -361,7 +376,7 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
             if key in fields and fields[key] is not None:
                 _text(fields[key], 512)
         if "scope" in fields:
-            fields["scopes"] = [_scope(fields.pop("scope"), state)]
+            fields["scopes"] = [_scope(fields.pop("scope"), state, create=action == "CREATE")]
         if "deadline" in fields:
             fields["deadline"] = _selected(fields["deadline"], evidence, refs, clear=action == "UPDATE")
         if "effective" in row:

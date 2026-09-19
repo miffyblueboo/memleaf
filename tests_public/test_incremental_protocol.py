@@ -162,12 +162,56 @@ class IncrementalProtocolTests(unittest.TestCase):
         row = self.create(scope="global"); row["evidence"] = ["e2"]
         self.assertEqual(self.run_rows(row, snapshot=snap)["issues"][0]["code"], "missing_new_evidence")
 
-    def test_multiple_new_require_at(self):
-        snap = PlanningSnapshot.build(evidence=[evidence(), evidence("e2")])
+    def test_multiple_new_do_not_require_at(self):
+        snap = PlanningSnapshot.build(evidence=[
+            evidence("e1", seq=2, role="user"),
+            evidence("e2", text="已确认。", seq=3, role="assistant"),
+        ])
         row = self.create(scope="global"); row["evidence"] = ["e1", "e2"]
+        out = self.run_rows(row, snapshot=snap)
+        self.assertFalse(out["issues"])
+        self.assertEqual(out["operations"][0]["memory"]["field_basis"]["content"]["source_sequence"], 2)
+
+    def test_explicit_invalid_at_is_still_rejected(self):
+        snap = PlanningSnapshot.build(evidence=[evidence(), evidence("e2")])
+        row = self.create(scope="global"); row.update(evidence=["e1", "e2"], at="missing")
         self.assertEqual(self.run_rows(row, snapshot=snap)["issues"][0]["code"], "invalid_at")
-        row["at"] = "e2"
-        self.assertFalse(self.run_rows(row, snapshot=snap)["issues"])
+
+    def test_non_todo_default_active_is_schema_noise_not_failure(self):
+        row = self.create(type="project", scope="global", status="active")
+        out = self.run_rows(row)
+        self.assertFalse(out["issues"])
+        self.assertNotIn("status", out["operations"][0]["memory"])
+
+    def test_non_todo_meaningful_lifecycle_fields_remain_rejected(self):
+        for fields in ({"status":"completed"}, {"assignee":"user:1"}, {"deadline":{"ref":"e1","text":"明天"}}):
+            with self.subTest(fields=fields):
+                out = self.run_rows(self.create(type="project", scope="global", **fields))
+                self.assertEqual(out["issues"][0]["code"], "todo_fields_on_non_todo")
+
+    def test_live_orion_shape_is_normalized_without_losing_memory(self):
+        snap = PlanningSnapshot.build(evidence=[
+            evidence("e1", text="那就用A吧。", seq=3, role="user"),
+            evidence("e2", text="好的，Orion数据库就使用MySQL。", seq=4, role="assistant"),
+        ])
+        row = {
+            "action": "CREATE",
+            "evidence": ["e1", "e2"],
+            "memory": {
+                "type": "project",
+                "scope": "project:Orion",
+                "title": "Orion 数据库选型",
+                "body": "Orion 项目的数据库确定使用 MySQL（用户选择方案 A）。",
+                "status": "active",
+            },
+        }
+        out = self.run_rows(row, snapshot=snap)
+        self.assertFalse(out["issues"])
+        op = out["operations"][0]
+        self.assertEqual(op["memory"]["body"], "Orion 项目的数据库确定使用 MySQL（用户选择方案 A）。")
+        self.assertEqual(op["memory"]["scopes"], ["unscoped"])
+        self.assertNotIn("status", op["memory"])
+        self.assertEqual(op["memory"]["field_basis"]["content"]["source_sequence"], 3)
 
     def test_explicit_scope_is_write_boundary(self):
         snap = PlanningSnapshot.build(evidence=[evidence()], scopes={"s1": "project:Atlas", "s2": "project:Beacon"}, write_scopes=["project:Atlas"])
@@ -185,10 +229,17 @@ class IncrementalProtocolTests(unittest.TestCase):
         op = self.run_rows(self.create(scope="unscoped"))["operations"][0]
         self.assertEqual(op["memory"]["scopes"], ["unscoped"])
 
-    def test_new_scope_requires_explicit_permission(self):
-        self.assertEqual(self.run_rows(self.create(scope="project:Fresh"))["issues"][0]["code"], "invalid_scope")
+    def test_new_create_scope_without_permission_falls_back_unscoped(self):
+        out = self.run_rows(self.create(scope="project:Fresh"))
+        self.assertFalse(out["issues"])
+        self.assertEqual(out["operations"][0]["memory"]["scopes"], ["unscoped"])
         snap = PlanningSnapshot.build(evidence=[evidence()], allow_new_scopes=True)
-        self.assertFalse(self.run_rows(self.create(scope="project:Fresh"), snapshot=snap)["issues"])
+        self.assertEqual(self.run_rows(self.create(scope="project:Fresh"), snapshot=snap)["operations"][0]["memory"]["scopes"], ["project:Fresh"])
+
+    def test_update_scope_without_permission_still_fails_closed(self):
+        row = self.update(scope="project:Fresh")
+        out = self.run_rows(row)
+        self.assertEqual(out["issues"][0]["code"], "invalid_scope")
 
     def test_read_only_target_allows_no_change_not_update(self):
         snap = PlanningSnapshot.build(evidence=[evidence()], targets={"m1": self.target}, writable={"m1": False})
