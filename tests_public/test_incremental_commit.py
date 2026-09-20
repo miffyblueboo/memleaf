@@ -158,7 +158,7 @@ class IncrementalCommitTests(IncrementalFixture):
 
     def test_explicit_clears_are_not_omission(self):
         self.revise('Remove the deadline and responsibility');self.target()
-        result=self.s.apply_incremental(**self.request([self.update(deadline={'ref':'e1','clear':True},assignee=None,waiting_on=None),self.no_memory()],priority_memory_ids=['mem-old']))
+        result=self.s.apply_incremental(**self.request([self.update(deadline={'ref':'e1','clear':True,'text':'Remove the deadline'},assignee=None,waiting_on=None),self.no_memory()],priority_memory_ids=['mem-old']))
         self.assertEqual(result['counts']['committed'],1);current=self.s.read('mem-old')
         self.assertIsNone(current.due_date);self.assertIsNone(current.extra['assignee']);self.assertEqual(current.extra['due_status'],'cleared')
 
