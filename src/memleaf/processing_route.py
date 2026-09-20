@@ -1,8 +1,8 @@
-"""Bounded automatic inbox routing on the existing incremental runner.
+"""Bounded automatic inbox routing on the sole incremental processing engine.
 
-This module owns selection and a compatibility result envelope, not model
-planning, request budgets or writes. Defaults remain legacy until explicitly
-selected for an isolated evaluation. Switching config is not a cold migration.
+This module owns compatibility selection, scheduling and the public result
+envelope.  Legacy configuration and retained legacy state can still be
+recognized for migration, but no legacy execution path exists.
 """
 from __future__ import annotations
 
@@ -25,16 +25,29 @@ from .scope_state import normalize_scopes
 from .turn_plan import input_digest, turn_identity_key
 from .vault import safe_component
 
-PIPELINES = frozenset({"legacy", "incremental"})
+PIPELINES = frozenset({"incremental"})
 MAX_BATCH_TURNS = 4
 MAX_RESULT_ROWS = 100
 
 
-def select_pipeline(config: Mapping[str, Any], pipeline: str | None = None) -> str:
-    value = config.get("process", {}).get("automatic_pipeline", "legacy") if pipeline is None else pipeline
+def _select_pipeline(config: Mapping[str, Any], key: str, pipeline: str | None = None) -> str:
+    process = config.get("process", {})
+    value = process.get(key, "incremental") if isinstance(process, Mapping) and pipeline is None else pipeline
+    if value == "legacy":
+        raise ValueError("legacy_pipeline_removed")
     if not isinstance(value, str) or value not in PIPELINES:
         raise ValueError("invalid_processing_pipeline")
-    return value
+    return "incremental"
+
+
+def select_pipeline(config: Mapping[str, Any], pipeline: str | None = None) -> str:
+    """Return the sole executable automatic route, rejecting legacy explicitly."""
+    return _select_pipeline(config, "automatic_pipeline", pipeline)
+
+
+def select_remember_pipeline(config: Mapping[str, Any], pipeline: str | None = None) -> str:
+    """Return the sole executable explicit-remember route."""
+    return _select_pipeline(config, "remember_pipeline", pipeline)
 
 
 def _matches(source, session_id, obj):
@@ -163,7 +176,7 @@ def process_inbox(service: Any, *, source: str | None = None, session_id: str | 
     if model is not None and router is not None:
         raise ValueError("ambiguous_model_route")
     boundary = normalize_scopes(scope) if scope is not None else None
-    # Capture receipt recovery precedes selection just as in legacy processing.
+    # Capture receipt recovery precedes incremental selection.
     with service.vault.lock():
         processed = _read_processed(service.vault.processed_state_path)
         changed = False
@@ -176,7 +189,7 @@ def process_inbox(service: Any, *, source: str | None = None, session_id: str | 
         except ValueError as error:
             return _summary([], [{"execution_status": "blocked", "code": _safe_code(error)}], 0, {}, 0)
     rows, newly_applied, attempted = [], {}, 0
-    initial_config = service.vault.config().get("process", {}).get("automatic_pipeline", "legacy")
+    initial_config = service.vault.config().get("process", {}).get("automatic_pipeline", "incremental")
     for turn, run in pending:
         if attempted >= MAX_BATCH_TURNS:
             break
@@ -201,7 +214,7 @@ def process_inbox(service: Any, *, source: str | None = None, session_id: str | 
         attempted += 1
         before = _applied({"commit": commit_result(saved_work)}) if saved_work else (_applied(public_result(run)) if run else {})
         try:
-            if service.vault.config().get("process", {}).get("automatic_pipeline", "legacy") != initial_config:
+            if service.vault.config().get("process", {}).get("automatic_pipeline", "incremental") != initial_config:
                 rows.append(_row(turn, {"execution_status": "blocked", "code": "processing_pipeline_changed"}))
                 break
             if run is not None:
@@ -316,8 +329,14 @@ def health_view(vault) -> dict[str, Any]:
                for run in runs if run["status"] != "completed"]
     live = owner_live(state)
     from .query_progress import retention_inventory
+    config = vault.config()
+    process = config.get("process", {}) if isinstance(config, Mapping) else {}
+    configured = process.get("automatic_pipeline", "incremental") if isinstance(process, Mapping) else None
     return {"retention_inventory": retention_inventory(vault),
-            "configured_pipeline": select_pipeline(vault.config()),
+            "configured_pipeline": configured,
+            "engine": "incremental",
+            "pipeline_ready": configured in (None, "incremental"),
+            "configuration_code": "legacy_pipeline_removed" if configured == "legacy" else None,
             "incremental": {"retained_runs": len(runs), "retained_by_status": dict(statuses),
                             "owner_live": live, "pending_commits": pending_commits,
                             "unresolved_runs": details[:MAX_RESULT_ROWS],

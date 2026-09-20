@@ -57,54 +57,58 @@ class ProcessingEntrypointTests(IncrementalFixture):
         self.assertEqual(first['job_id'], second['job_id'])
         self.assertTrue(second['accepted'])
 
-    def test_queued_selection_cannot_change_scope_recovery_or_pipeline(self):
+    def test_queued_selection_cannot_change_scope_or_recovery(self):
         first = self.enqueue(pipeline='incremental', scope='project:Atlas')
         for kwargs in ({'pipeline':'incremental', 'scope':'project:Beacon'},
-                       {'pipeline':'legacy', 'scope':'project:Atlas'},
                        {'pipeline':'incremental', 'scope':'project:Atlas', 'recover':True}):
             with self.subTest(kwargs=kwargs):
                 result = self.enqueue(**kwargs)
                 self.assertFalse(result['accepted']); self.assertEqual(result['job_id'], first['job_id'])
                 self.assertEqual(result['reason'], 'process_arguments_changed')
+        with self.assertRaisesRegex(ValueError,'legacy_pipeline_removed'):
+            self.enqueue(pipeline='legacy', scope='project:Atlas')
 
-    def test_config_change_does_not_coalesce_into_old_job(self):
+    def test_legacy_config_blocks_new_job_without_overwriting_existing(self):
         first = self.enqueue()
-        self.cfg('incremental')
-        second = self.enqueue()
-        self.assertFalse(second['accepted']); self.assertEqual(first['job_id'], second['job_id'])
+        self.cfg('legacy')
+        with self.assertRaisesRegex(ValueError,'legacy_pipeline_removed'):
+            self.enqueue()
+        self.assertEqual(jobs.status(self.s.vault.root,job_id=first['job_id'])['status'],'pending')
 
-    def test_worker_uses_captured_route(self):
+    def test_worker_uses_incremental_engine(self):
         backend = EchoBackend()
         accepted = self.enqueue(pipeline='incremental')
-        with patch('memleaf.processing.Processor.process', side_effect=AssertionError('legacy')):
-            result = self.start(accepted['job_id'], backend)
+        result = self.start(accepted['job_id'], backend)
         self.assertEqual(result['status'], 'succeeded')
         self.assertEqual(result['result']['pipeline'], 'incremental')
         self.assertEqual(result['result']['model_calls'], 1)
         self.assertEqual(len(backend.calls), 1)
 
-    def test_waiting_job_blocks_after_config_change(self):
-        accepted = self.enqueue(pipeline='incremental'); self.cfg('incremental')
+    def test_waiting_job_blocks_when_legacy_config_reappears(self):
+        accepted = self.enqueue(pipeline='incremental'); self.cfg('legacy')
         backend = EchoBackend(); result = self.start(accepted['job_id'], backend)
         self.assertEqual(len(backend.calls), 0)
         self.assertEqual(result['status'], 'deferred')
-        self.assertEqual(result['result']['results'][0]['code'], 'processing_pipeline_changed')
+        self.assertEqual(result['result']['results'][0]['code'], 'legacy_pipeline_removed')
 
     def test_old_job_without_route_is_not_reinterpreted(self):
         accepted = self.enqueue()
         state = jobs._read_state(self.s.vault)
         for key in ('pipeline','configured_pipeline','recover'): state['jobs'][accepted['job_id']].pop(key)
         jobs._write_state(self.s.vault, state)
-        self.cfg('incremental')
         result = self.start(accepted['job_id'], EchoBackend())
         self.assertEqual(result['status'], 'deferred')
-        self.assertEqual(result['result']['results'][0]['code'], 'processing_pipeline_changed')
+        self.assertEqual(result['result']['results'][0]['code'], 'legacy_pipeline_removed')
 
-    def test_legacy_job_still_runs_legacy_when_not_switched(self):
+    def test_legacy_job_is_blocked_not_executed(self):
         accepted = self.enqueue()
-        with patch('memleaf.processing.Processor.process', return_value={'processed_turns':0}) as process:
-            result = self.start(accepted['job_id'])
-        process.assert_called_once(); self.assertEqual(result['status'], 'succeeded')
+        state = jobs._read_state(self.s.vault)
+        state['jobs'][accepted['job_id']]['pipeline'] = 'legacy'
+        jobs._write_state(self.s.vault, state)
+        backend=EchoBackend(); result = self.start(accepted['job_id'],backend)
+        self.assertFalse(backend.calls)
+        self.assertEqual(result['status'],'deferred')
+        self.assertEqual(result['result']['results'][0]['code'],'legacy_pipeline_removed')
 
     def test_invalid_queue_controls_fail_before_write(self):
         for kwargs in ({'pipeline':'invalid'}, {'recover':'yes'}, {'pipeline':'legacy','recover':True}):
@@ -179,7 +183,7 @@ class ProcessingEntrypointTests(IncrementalFixture):
 
     def test_mcp_schema_extends_existing_tool(self):
         props=_TOOL_BY_NAME['process']['inputSchema']['properties']
-        self.assertEqual(props['pipeline']['enum'],['legacy','incremental'])
+        self.assertEqual(props['pipeline']['enum'],['incremental'])
         self.assertEqual(props['recover']['type'],'boolean')
 
     def test_mcp_sync_invokes_same_route(self):

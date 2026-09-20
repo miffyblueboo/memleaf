@@ -89,8 +89,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "memory_compact_threshold_tokens": 100000,
         "memory_compact_candidate_ratio": 0.30,
         "inbox_cleanup_hours": 24,
-        "automatic_pipeline": "legacy",
-        "remember_pipeline": "legacy",
+        "automatic_pipeline": "incremental",
+        "remember_pipeline": "incremental",
         # Compatibility key: closed todo heads remain current identities.
         "closed_todo_retention_days": 30,
         "model_concurrency": DEFAULT_MODEL_CONCURRENCY,
@@ -225,10 +225,12 @@ def load_config(path: Path | str, *, vault: Path | str | None = None) -> dict[st
     cleanup_hours = process.get("inbox_cleanup_hours") if isinstance(process, Mapping) else None
     if type(cleanup_hours) is not int or cleanup_hours < 0:
         raise ValueError("invalid memleaf process.inbox_cleanup_hours")
-    automatic_pipeline = process.get("automatic_pipeline", "legacy")
+    # Legacy values remain parseable only so old Vaults can be inspected and migrated.
+    # Runtime selection rejects them; new/default configurations are incremental-only.
+    automatic_pipeline = process.get("automatic_pipeline", "incremental")
     if not isinstance(automatic_pipeline, str) or automatic_pipeline not in {"legacy", "incremental"}:
         raise ValueError("invalid memleaf process.automatic_pipeline")
-    remember_pipeline = process.get("remember_pipeline", "legacy")
+    remember_pipeline = process.get("remember_pipeline", "incremental")
     if not isinstance(remember_pipeline, str) or remember_pipeline not in {"legacy", "incremental"}:
         raise ValueError("invalid memleaf process.remember_pipeline")
     closed_todo_days = process.get("closed_todo_retention_days") if isinstance(process, Mapping) else None
@@ -296,11 +298,11 @@ def save_config(path: Path | str, config: Mapping[str, Any]) -> None:
     if not isinstance(process, Mapping):
         raise ValueError("invalid memleaf process settings")
     normalized_process = dict(process)
-    pipeline = normalized_process.get("automatic_pipeline", "legacy")
+    pipeline = normalized_process.get("automatic_pipeline", "incremental")
     if not isinstance(pipeline, str) or pipeline not in {"legacy", "incremental"}:
         raise ValueError("invalid memleaf process.automatic_pipeline")
     normalized_process["automatic_pipeline"] = pipeline
-    remember_pipeline = normalized_process.get("remember_pipeline", "legacy")
+    remember_pipeline = normalized_process.get("remember_pipeline", "incremental")
     if not isinstance(remember_pipeline, str) or remember_pipeline not in {"legacy", "incremental"}:
         raise ValueError("invalid memleaf process.remember_pipeline")
     normalized_process["remember_pipeline"] = remember_pipeline

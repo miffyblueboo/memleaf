@@ -141,8 +141,9 @@ def _valid_state(value: Any) -> dict[str, Any]:
         if not _valid_job_id(job_id) or not isinstance(raw, Mapping):
             raise ProcessJobStateError("invalid process job record")
         from .processing_route import PIPELINES
+        persisted_pipelines = PIPELINES | {"legacy"}
         for field in ("pipeline", "configured_pipeline"):
-            if field in raw and (not isinstance(raw[field], str) or raw[field] not in PIPELINES):
+            if field in raw and (not isinstance(raw[field], str) or raw[field] not in persisted_pipelines):
                 raise ProcessJobStateError("invalid process job pipeline")
         if "recover" in raw and type(raw["recover"]) is not bool:
             raise ProcessJobStateError("invalid process job recovery")
@@ -523,8 +524,8 @@ def _aggregate_attempt_results(attempts: list[Any]) -> dict[str, Any]:
         if type(value) is int and value >= 0:
             aggregate["pending_inbox_turns"] = value
             break
-    # Route-change refusals can also originate from an old legacy job. Keep
-    # its safe reason in the top-level result, not only in attempt history.
+    # Historical legacy jobs can still produce a blocked migration result. Keep
+    # that safe reason in the top-level result, not only in attempt history.
     for attempt in reversed(attempts):
         value = attempt.get("result", {}) if isinstance(attempt, Mapping) else {}
         if not isinstance(value, Mapping):
@@ -691,8 +692,7 @@ def enqueue(vault_path: Path | str, *, source: str, session_id: str, scope: Any 
     with vault.lock():
         config = vault.config()
         chosen = select_pipeline(config, pipeline)
-        configured = select_pipeline(config)
-        if type(recover) is not bool or (chosen == "legacy" and recover):
+        if type(recover) is not bool:
             raise ValueError("invalid_process_recovery")
         state = _read_state(vault)
         recovered = _recover_dead_active(state)
@@ -707,8 +707,7 @@ def enqueue(vault_path: Path | str, *, source: str, session_id: str, scope: Any 
             if job.get("status") in _ACTIVE | {"pending"}:
                 old_scope = normalize_scopes(job.get("scope")) if job.get("scope") is not None else None
                 if (job.get("pipeline", "legacy") != chosen or old_scope != scope
-                        or job.get("recover", False) != recover
-                        or job.get("configured_pipeline", "legacy") != configured):
+                        or job.get("recover", False) != recover):
                     return {"accepted": False, "completed": False, "status": "blocked", "job_id": job_id,
                             "reason": "process_arguments_changed"}
             if job.get("status") in _ACTIVE:
@@ -728,7 +727,7 @@ def enqueue(vault_path: Path | str, *, source: str, session_id: str, scope: Any 
         job_id = f"job-{uuid.uuid4().hex}"
         job = {
             "job_id": job_id, "source": source, "session_id": session_id,
-            "scope": scope, "pipeline": chosen, "configured_pipeline": configured, "recover": recover,
+            "scope": scope, "pipeline": chosen, "configured_pipeline": "incremental", "recover": recover,
             "status": "pending", "accepted_at": _now(),
             "updated_at": _now(), "owner_pid": None, "rerun_requested": False,
         }
@@ -815,13 +814,20 @@ def run_worker(vault_path: Path | str, job_id: str) -> int:
         try:
             service = Memleaf(vault)
             from .processing_route import select_pipeline
-            if select_pipeline(vault.config()) != job.get("configured_pipeline", "legacy"):
-                result = {"pipeline": job.get("pipeline", "legacy"), "execution_status": "blocked",
+            stored_pipeline = job.get("pipeline")
+            try:
+                select_pipeline(vault.config())
+                configured_code = None
+            except ValueError as error:
+                configured_code = str(error)
+            if stored_pipeline != "incremental" or configured_code is not None:
+                result = {"pipeline": "incremental", "execution_status": "blocked",
                           "coverage_status": "partial", "deferred_inbox_turns": 1,
-                          "results": [{"execution_status": "blocked", "code": "processing_pipeline_changed"}]}
+                          "results": [{"execution_status": "blocked",
+                                       "code": configured_code or "legacy_pipeline_removed"}]}
             else:
                 result = service.process(source=job["source"], session_id=job["session_id"], scope=job.get("scope"),
-                                         pipeline=job.get("pipeline", "legacy"), recover=job.get("recover", False))
+                                         pipeline="incremental", recover=job.get("recover", False))
             terminal = _result_status(result if isinstance(result, Mapping) else {})
             rerun = _finish(vault, job_id, status_value=terminal, result=result)
         except Exception as error:

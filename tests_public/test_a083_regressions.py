@@ -15,25 +15,11 @@ from memleaf.index import EVENT_V2_BLOCK
 from memleaf.models import utc_now
 from memleaf.process_common import ProcessingError
 from memleaf.process_journal import ProcessJournal
-from memleaf.processing import Processor
-from memleaf.single_pass_memory_planner import SinglePassMemoryPlanner
 from memleaf.turn_plan import FrozenTurn, input_digest, turn_plan_key
-
-
-class StubBackend:
-    single_pass_safe = True
-    single_pass_protocol = True
-    def __init__(self):
-        self.calls = 0
-    def complete(self, *args, **kw):
-        self.calls += 1
-        return '{}'
-
-
-def no_writes(planner, backend, turn, state, **kw):
-    """Test orchestration only; this is not a semantic-quality model fixture."""
-    backend.complete('contract fixture', purpose='single_pass')
-    return [], []
+from memleaf.memory_writer import MemoryWriter
+from memleaf.memory_commit import MemoryCommitter
+from memleaf.turn_audit import TurnAudit
+from test_incremental_execution import Backend, output
 
 
 class SourceCase(unittest.TestCase):
@@ -78,43 +64,52 @@ class SourceCase(unittest.TestCase):
 
 
 class ExplicitIntentTests(SourceCase):
+    @staticmethod
+    def no_memory_backend(*responses):
+        values = responses or (output({"action": "NO_MEMORY"}),)
+        return Backend(*values)
+
     def test_public_remember_forwards_intent_and_retransmission_is_zero_call(self):
-        model = StubBackend()
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', no_writes):
-            first = self.s.remember('Retain this.', intent_id='user-action', model=model)
-            second = self.s.remember('Retain this.', intent_id='user-action', model=model)
+        model = self.no_memory_backend()
+        first = self.s.remember('Retain this.', intent_id='user-action', model=model)
+        second = self.s.remember('Retain this.', intent_id='user-action', model=model)
         self.assertEqual(first['intent_id'], 'user-action')
         self.assertEqual(second['processed_turns'], 0)
-        self.assertEqual(model.calls, 1)
+        self.assertEqual(len(model.calls), 1)
 
     def test_same_intent_with_different_text_is_not_a_duplicate(self):
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', no_writes):
-            Processor(self.s).remember('A', intent_id='one', model=StubBackend())
-            with self.assertRaisesRegex(ProcessingError, 'different payload'):
-                Processor(self.s).remember('B', intent_id='one', model=StubBackend())
+        model = self.no_memory_backend()
+        self.s.remember('A', intent_id='one', model=model)
+        with self.assertRaisesRegex(ValueError, 'remember_binding_or_pipeline_changed'):
+            self.s.remember('B', intent_id='one', model=Backend())
+        self.assertEqual(len(model.calls), 1)
 
     def test_same_intent_with_changed_scope_is_rejected(self):
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', no_writes):
-            Processor(self.s).remember('A', intent_id='one', scopes=['global'], model=StubBackend())
-            with self.assertRaisesRegex(ProcessingError, 'different payload'):
-                Processor(self.s).remember('A', intent_id='one', scopes=['project:Other'], model=StubBackend())
+        model = self.no_memory_backend()
+        self.s.remember('A', intent_id='one', scopes=['global'], model=model)
+        with self.assertRaisesRegex(ValueError, 'remember_binding_or_pipeline_changed'):
+            self.s.remember('A', intent_id='one', scopes=['project:Other'], model=Backend())
+        self.assertEqual(len(model.calls), 1)
 
     def test_new_intent_in_same_host_turn_has_independent_receipt(self):
-        model = StubBackend()
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', no_writes):
-            for intent in ('one', 'two'):
-                result = Processor(self.s).remember('A', intent_id=intent, turn_id='same-turn',
-                    event_id='same-source', model=model)
-                self.assertEqual(result['processed_turns'], 1)
-        self.assertEqual(model.calls, 2)
+        model = self.no_memory_backend(
+            output({"action": "NO_MEMORY"}),
+            output({"action": "NO_MEMORY"}),
+        )
+        runs = []
+        for intent in ('one', 'two'):
+            result = self.s.remember('A', intent_id=intent, turn_id='same-turn',
+                                     event_id='same-source', model=model)
+            runs.append(result['run_id'])
+        self.assertEqual(len(set(runs)), 2)
+        self.assertEqual(len(model.calls), 2)
 
-    def test_explicit_legacy_receipt_retry_does_not_create_new_intent(self):
-        model = StubBackend()
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', no_writes):
-            first = Processor(self.s).remember('A', event_id='stable-call', model=model)
-            second = Processor(self.s).remember('A', event_id='stable-call', model=model)
+    def test_stable_event_retry_reuses_incremental_intent(self):
+        model = self.no_memory_backend()
+        first = self.s.remember('A', event_id='stable-call', model=model)
+        second = self.s.remember('A', event_id='stable-call', model=model)
         self.assertEqual(first['intent_id'], second['intent_id'])
-        self.assertEqual(model.calls, 1)
+        self.assertEqual(len(model.calls), 1)
 
     def test_frozen_explicit_retry_keeps_original_time(self):
         j = ProcessJournal(self.s)
@@ -128,15 +123,16 @@ class ExplicitIntentTests(SourceCase):
         self.assertEqual(input_digest(turn), input_digest(retried))
         self.assertEqual(FrozenTurn.restore(frozen, retried)['requests'], [])
 
-    def test_legacy_completed_intent_without_receipt_is_not_rebound(self):
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', no_writes):
-            Processor(self.s).remember('A', intent_id='one', model=StubBackend())
-            state = self.state()
-            state['events'] = {}
-            self.save(state)
-            with self.assertRaisesRegex(ProcessingError, 'legacy remember receipt'):
-                Processor(self.s).remember('A', intent_id='one', model=StubBackend())
-            self.assertEqual(self.state()['events'], {})
+    def test_completed_incremental_intent_without_receipt_is_not_rebound(self):
+        model = self.no_memory_backend()
+        self.s.remember('A', intent_id='one', model=model)
+        state = self.state()
+        state['events'] = {}
+        self.save(state)
+        with self.assertRaisesRegex(ValueError, 'remember_source_binding_unavailable'):
+            self.s.remember('A', intent_id='one', model=Backend())
+        self.assertEqual(self.state()['events'], {})
+
 
 
 class ImmutableSourceTests(SourceCase):
@@ -264,9 +260,11 @@ class RevisionDeliveryTests(SourceCase):
         with patch('memleaf.capture.atomic_write_json', side_effect=OSError('injected receipt failure')):
             with self.assertRaises(OSError):
                 self.capture(content='Edit', rev='r2', previous_message_revision='r1', source_sequence=1)
-        p = Processor(self.s)
+        writer = MemoryWriter(self.s)
+        journal = ProcessJournal(self.s)
+        committer = MemoryCommitter(self.s, writer=writer, audit=TurnAudit(), journal=journal)
         with self.assertRaisesRegex(ProcessingError, 'source revision changed'):
-            p.committer._commit_success([snapshot], [], now=utc_now(), cleanup_hours=24)
+            committer._commit_success([snapshot], [], now=utc_now(), cleanup_hours=24)
         self.assertEqual(self.s.vault.list_markdown('knowledge'), [])
 
     def test_snapshot_repairs_receipts_without_another_capture(self):
@@ -291,22 +289,21 @@ class RevisionDeliveryTests(SourceCase):
 
 
 class WorkAndCompatibilityTests(SourceCase):
-    def test_partial_commit_keeps_remaining_request_budget(self):
+    def test_partial_incremental_keeps_request_budget_open(self):
         self.pair()
-        model = StubBackend()
-        def partial(planner, backend, turn, state, **kw):
-            backend.complete('fixture', purpose='single_pass')
-            ref = (turn.source, turn.session_id, turn.turn_key)
-            planner.audit._evidence_by_turn[ref] = [dict(unit_id='e1', decision='DEFERRED', reason='coverage_omitted')]
-            return [], []
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', partial):
-            self.assertEqual(self.s.process(source='host', session_id='s', model=model)['coverage_status'], 'partial')
+        model = Backend(output({
+            "action": "DEFERRED",
+            "evidence": ["e1"],
+            "reason": "missing_context",
+            "need": "Confirm the objective.",
+        }))
+        result = self.s.process(source='host', session_id='s', model=model)
+        self.assertEqual(result['coverage_status'], 'partial')
+        self.assertEqual(len(model.calls), 1)
         ledger = json.loads((self.s.vault.state_path/'extraction_request_budget.json').read_text())
         row = next(iter(next(iter(ledger['works'].values()))['turns'].values()))
         self.assertFalse(row['completed'])
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', no_writes):
-            self.s.process(source='host', session_id='s', model=model, scope=['global'])
-        self.assertEqual(model.calls, 2)
+        self.assertEqual(row['requests'], 1)
 
     def legacy_turn(self):
         self.pair()
@@ -345,14 +342,17 @@ class WorkAndCompatibilityTests(SourceCase):
         old_id = f'{turn.source}/{turn.session_id}/{turn.turn_key}'
         path = self.s.vault.state_path/'extraction_request_budget.json'
         path.write_text(json.dumps(dict(version=1, works={'job-old': {'turns': {old_id: 3}}}, order=['job-old'])))
-        model = StubBackend()
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', no_writes):
-            with self.assertRaises(Exception):
-                self.s.process(source='host', session_id='s', model=model)
-        self.assertEqual(model.calls, 0)
+        model = Backend(output({"action": "NO_MEMORY"}))
+        result = self.s.process(source='host', session_id='s', model=model)
+        self.assertEqual(len(model.calls), 0)
+        self.assertEqual(result['coverage_status'], 'partial')
         migrated = json.loads(path.read_text())
         work = extraction_work_id(turn, request_kind='automatic', intent_id='automatic')
         self.assertEqual(migrated['works'][work]['turns'][old_id]['requests'], 3)
+        self.assertIn(
+            result['results'][0].get('code'),
+            {'request_budget_exhausted', 'budget_state_or_migration_required'},
+        )
 
     def test_missing_source_time_is_still_unknown(self):
         self.capture()

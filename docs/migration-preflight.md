@@ -1,10 +1,11 @@
 # Migration preflight and private local backup (G4e)
 
-This increment implements the preparation portion of the controlled migration
-contract (FS178-179, FS188, FS192 and FS196). It neither switches a pipeline nor
-stops processes, rewrites business records, resets budgets or restores a Vault.
-A verified backup is not permission to activate the new routes. The fixed model
-prompt, request allowance, `legacy` defaults and package version are unchanged.
+This command implements the preparation portion of the controlled migration
+contract (FS178-179, FS188, FS192 and FS196). It does not stop processes, rewrite
+business records, reset budgets, restore a Vault, or rewrite pipeline settings.
+The v0.2.67 candidate itself has only the incremental engine; a retained
+`legacy` setting is reported as `legacy_pipeline_configuration` and must be
+handled explicitly after writers are stopped and a verified backup exists.
 
 ## Inspect before changing anything
 

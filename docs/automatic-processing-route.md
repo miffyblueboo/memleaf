@@ -1,31 +1,29 @@
-# Automatic processing route integration (G4a, opt-in)
+# Automatic processing on the incremental engine
 
-This increment routes the **existing** `Memleaf.process()`, CLI `process`, MCP
-`process` and detached job worker to the already implemented incremental runner.
-It does not add another planner, model review, job queue or writer. Existing
-`process_incremental` and selected `remember_incremental` remain single-turn
-facades on that same runner, budget and commit journal.
+As of the v0.2.67 candidate, `Memleaf.process()`, CLI `process`, MCP `process`
+and the detached job worker all execute through the existing incremental runner.
+There is no executable legacy processing engine and no runtime fallback to it.
+`process_incremental` and selected `remember_incremental` remain facades on the
+same runner, request budget and commit journal.
 
-The default is still `legacy`. This is an integration for isolated evaluation,
-not live Flash/Hermes acceptance, a release, or permission to change a production
-Vault. No existing config, memory, model route or version is automatically migrated.
-Text `remember()` has a separate, default-legacy `process.remember_pipeline`
-selection; see `remember-incremental-route.md`. Switching automatic processing
-alone does not enable the text route. Both use the same incremental runner.
+New Vaults default to incremental processing. Existing Vaults that still contain a
+`legacy` pipeline setting remain readable for migration inspection, but processing
+fails closed with `legacy_pipeline_removed` until the operator explicitly updates
+the configuration after the required stop/backup/preflight procedure.
 
-## Select the route, not a second pipeline
+## One engine, compatibility selector only
 
-The optional configuration field is:
+The configuration field is retained for migration visibility:
 
 ```yaml
 process:
-  automatic_pipeline: legacy   # legacy | incremental; default remains legacy
+  automatic_pipeline: incremental
 ```
 
-A missing field preserves legacy behavior. Unknown names, nonstrings and malformed
-configuration fail explicitly; they do not fall back to a different model pipeline.
-After operator-controlled preparation on an isolated copy, `incremental` may be
-selected in that copy's configuration. No command in this batch switches it for you.
+A missing field resolves to incremental. `incremental` is the only executable
+value. A retained `legacy` value is a migration blocker; unknown names, nonstrings
+and malformed configuration fail explicitly. Nothing silently reinterprets an old
+legacy queue or configuration as new incremental work.
 
 The optional per-call override affects that call only:
 
@@ -134,9 +132,11 @@ concurrent planners and stale responses.
 
 ## Queue binding and cutover
 
-An accepted job binds effective route, configured default, normalized scope and
-recover flag. A same-session request with different controls cannot silently
-coalesce into it. Legacy queue records missing these fields keep legacy semantics.
+An accepted job binds the incremental engine, normalized scope and recover flag.
+A same-session request with different controls cannot silently coalesce into it.
+Historical queue records that are missing the incremental route, or explicitly
+name `legacy`, are retained for diagnosis but blocked with
+`legacy_pipeline_removed`; they are never executed by a compatibility engine.
 Malformed stored controls fail validation without resetting the queue.
 
 A waiting job refuses execution when the configured default has changed since its
@@ -185,8 +185,8 @@ model configuration absent. Queue errors do not become successful NO_MEMORY.
 
 ## Validation and outstanding work
 
-Public tests cover legacy defaults, route overrides, exact scope, source ordering,
-batch caps, redacted ID selection, CLI/MCP/queue controls, captured-route conflicts,
+Public tests cover incremental defaults, explicit rejection of legacy execution,
+exact scope, source ordering, batch caps, redacted ID selection, CLI/MCP/queue controls,
 old queue compatibility, safe summaries, native NO_CHANGE, index/cleanup failures,
 source/target edits, Forget, concurrent dispatch, and a real child process exiting
 after its saved response. All Vaults and model responses in tests are synthetic.
@@ -207,8 +207,8 @@ Native installed-artifact results must come from the exact candidate's CI
 reports, not from a phase document or a prior green build. A native package test
 with a host-interface stub is not actual host acceptance.
 
-The automatic and text-remember routes both remain default-legacy and are
-selected independently. `--dry-run` may still call the configured model;
+Automatic processing and text remember both use the incremental engine by default.
+`--dry-run` may still call the configured model;
 acceptance plan-only mode is the no-model preparation path. See
 [the acceptance evidence guide](acceptance-evidence-guide.md) for the remaining
 gates. The fixed 1,861-codepoint/3,587-byte main prompt is unchanged.

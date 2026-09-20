@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 import venv
 import zipfile
 
@@ -100,6 +101,70 @@ def assert_same_package(wheel_files, source_files):
     return wheel
 
 
+def _source_version(data):
+    try:
+        lines = data.decode('utf-8').splitlines()
+    except UnicodeError as error:
+        raise ValueError('core_version_missing') from error
+    values = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith('__version__'):
+            continue
+        left, sep, right = stripped.partition('=')
+        if sep and left.strip() == '__version__':
+            value = right.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                values.append(value[1:-1])
+    if len(values) != 1 or not values[0]:
+        raise ValueError('core_version_missing')
+    return values[0]
+
+
+def _provider_version(data):
+    try:
+        lines = data.decode('utf-8').splitlines()
+    except UnicodeError as error:
+        raise ValueError('provider_version_missing') from error
+    values = [line.split(':', 1)[1].strip() for line in lines if line.startswith('version:')]
+    if len(values) != 1 or not values[0]:
+        raise ValueError('provider_version_missing')
+    return values[0]
+
+
+def _wheel_metadata_version(files):
+    matches = [data for name, data in files.items() if name.endswith('.dist-info/METADATA')]
+    if len(matches) != 1:
+        raise ValueError('wheel_metadata_missing')
+    try:
+        lines = matches[0].decode('utf-8').splitlines()
+    except UnicodeError as error:
+        raise ValueError('wheel_version_missing') from error
+    versions = [line.split(':', 1)[1].strip() for line in lines if line.startswith('Version:')]
+    if len(versions) != 1 or not versions[0]:
+        raise ValueError('wheel_version_missing')
+    return versions[0]
+
+
+def assert_distribution_versions(wheel_files, source_files):
+    try:
+        pyproject = tomllib.loads(source_files['pyproject.toml'].decode('utf-8'))
+        project_version = pyproject['project']['version']
+        values = {
+            'wheel_metadata': _wheel_metadata_version(wheel_files),
+            'wheel_core': _source_version(wheel_files['memleaf/__init__.py']),
+            'wheel_provider': _provider_version(wheel_files['memleaf/hermes_provider/plugin.yaml']),
+            'sdist_project': project_version,
+            'sdist_core': _source_version(source_files['src/memleaf/__init__.py']),
+            'sdist_provider': _provider_version(source_files['src/memleaf/hermes_provider/plugin.yaml']),
+        }
+    except (KeyError, UnicodeError, tomllib.TOMLDecodeError, TypeError) as error:
+        raise ValueError('distribution_version_metadata_missing') from error
+    if not isinstance(project_version, str) or not project_version or len(set(values.values())) != 1:
+        raise ValueError('distribution_version_mismatch')
+    return project_version
+
+
 def suite_assets(files):
     return {name: data for name, data in files.items()
             if name.startswith(('tests_public/', 'examples/'))}
@@ -122,12 +187,14 @@ def manifest(dist, source_report, revision):
     wheel, sdist = single(dist, '*.whl'), single(dist, '*.tar.gz')
     wf, sf = archive_files(wheel), archive_files(sdist)
     payload = assert_same_package(wf, sf)
+    package_version = assert_distribution_versions(wf, sf)
     report = json.loads(source_report.read_text(encoding='utf-8'))
     if report['status'] != 'passed' or not report['tests'] or report['skipped']:
         raise ValueError('source_tests_not_passed')
     if not any(n.startswith('tests_public/test_') for n in sf):
         raise ValueError('sdist_tests_missing')
     return {'schema_version': 1, 'commit': revision, 'source_report': report,
+            'package_version': package_version,
             'wheel': file_manifest(wheel), 'sdist': file_manifest(sdist),
             'test_dependencies': [file_manifest(p) for p in sorted((dist/'test-dependencies').glob('*.whl'))],
             'package_files': payload,
@@ -151,6 +218,9 @@ def verify_binding(dist, expected_hash, revision):
         if '/' in name or not name.startswith('tzdata-') or file_manifest(dist/'test-dependencies'/name) != dependency:
             raise ValueError('test_dependency_mismatch')
     sf, wf = archive_files(dist/value['sdist']['name']), archive_files(dist/value['wheel']['name'])
+    observed_version = assert_distribution_versions(wf, sf)
+    if value.get('package_version') != observed_version:
+        raise ValueError('package_version_mismatch')
     if assert_same_package(wf, sf) != value['package_files']:
         raise ValueError('package_manifest_mismatch')
     if {n: digest(v) for n, v in suite_assets(sf).items()} != value['test_assets']:

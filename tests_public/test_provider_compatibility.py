@@ -14,7 +14,8 @@ import types
 import unittest
 from unittest.mock import patch
 
-from memleaf import Memleaf
+from memleaf import Memleaf, __version__
+from memleaf.config import save_config
 from memleaf import installer, mcp_server
 from memleaf.provider_compatibility import (
     BUILD_META, PROVIDER_FILES, COMPATIBILITY_CODES, READ_ONLY_TOOLS,
@@ -45,6 +46,9 @@ class ProviderBuildTests(unittest.TestCase):
         self.assertTrue(valid_build(result))
         self.assertEqual(result, provider_build(PROVIDER))
         self.assertNotIn(str(self.root), json.dumps(result))
+
+    def test_provider_manifest_version_matches_core(self):
+        self.assertEqual(installer._provider_manifest_version(PROVIDER), __version__)
 
     def test_same_release_different_behavior_is_not_equal(self):
         before = provider_build(self.root)
@@ -131,6 +135,40 @@ class ProviderBuildTests(unittest.TestCase):
                 installer._copy_provider(Path(self.tmp.name)/'hermes')
 
 
+class InstallerPipelineReadinessTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.service=Memleaf.initialize(Path(self.tmp.name)/'vault')
+
+    def test_new_vault_is_incremental_ready(self):
+        self.assertEqual(
+            installer._pipeline_route_outcome(self.service.vault),
+            (True,'ready',None),
+        )
+
+    def test_retained_legacy_setting_requires_explicit_migration(self):
+        value=self.service.vault.config()
+        value['process']['automatic_pipeline']='legacy'
+        save_config(self.service.vault.config_path,value)
+        ready,status,action=installer._pipeline_route_outcome(self.service.vault)
+        self.assertFalse(ready)
+        self.assertEqual(status,'pipeline_migration_required')
+        self.assertIn('migration-check',action)
+        self.assertIn('automatic_pipeline',action)
+        self.assertIn('remember_pipeline',action)
+
+    def test_invalid_pipeline_configuration_does_not_report_ready(self):
+        from memleaf.frontmatter import dump_yaml, load_yaml
+        path=self.service.vault.config_path
+        value=load_yaml(path.read_text(encoding='utf-8'))
+        value['process']['automatic_pipeline']='broken'
+        path.write_text(dump_yaml(value),encoding='utf-8')
+        ready,status,action=installer._pipeline_route_outcome(self.service.vault)
+        self.assertFalse(ready)
+        self.assertEqual(status,'pipeline_configuration_invalid')
+        self.assertTrue(action)
+
+
 class InstallerProbeTests(unittest.TestCase):
     def test_probe_uses_only_selected_binary_without_vault(self):
         good=provider_build(PROVIDER)
@@ -163,6 +201,19 @@ class InstallerProbeTests(unittest.TestCase):
                 if Path(target).name=='_provider.py':Path(target).write_bytes(b'# incomplete\n')
             with patch.object(installer.os,'replace',side_effect=corrupt):
                 with self.assertRaisesRegex(RuntimeError,'build does not match'):installer._copy_provider(home)
+
+    def test_packaged_provider_version_mismatch_stops_before_host_inspection(self):
+        with patch.object(installer,'_provider_manifest_version',return_value='0.0.0'),\
+             patch.object(installer,'_home_from_environment',
+                          side_effect=AssertionError('must not inspect host')),\
+             patch.object(installer.Vault,'initialize',
+                          side_effect=AssertionError('must not initialize vault')):
+            result=installer.install_hermes()
+        self.assertEqual(result['status'],'failure')
+        self.assertEqual(result['stage'],'provider_version')
+        self.assertEqual(result['core_version'],__version__)
+        self.assertEqual(result['provider_version'],'0.0.0')
+        self.assertIsNone(result['vault'])
 
     def test_install_stops_before_vault_or_host_changes_on_build_mismatch(self):
         with tempfile.TemporaryDirectory() as root:
@@ -232,7 +283,7 @@ class ServerCompatibilityTests(unittest.TestCase):
         with patch.object(self.service,'stats',side_effect=AssertionError('must not scan')):
             result=self.hello(self.good)['result']
         self.assertEqual(result['_meta'][BUILD_META],self.good)
-        self.assertEqual(result['serverInfo']['version'],'0.2.66')
+        self.assertEqual(result['serverInfo']['version'],'0.2.67')
 
     def test_compatible_bridge_dispatches_capture(self):
         self.hello(self.good)

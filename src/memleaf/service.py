@@ -346,30 +346,19 @@ class Memleaf:
         pipeline: str | None = None,
         recover: bool = False,
     ) -> dict[str, Any]:
-        """Process inbox turns through the explicitly selected automatic pipeline.
+        """Process inbox turns through the sole incremental engine.
 
-        Legacy is the unchanged default. Incremental routing shares the existing
-        bounded runner; recover authorizes only its remaining transport attempt,
-        never an automatic partial semantic replan.
+        The pipeline argument is retained only for compatibility. None or
+        incremental selects the same runtime; legacy is rejected. recover
+        authorizes only the remaining transport attempt, never an automatic
+        partial semantic replan.
         """
         from .processing_route import select_pipeline, process_inbox
-        chosen = select_pipeline(self.vault.config(), pipeline)
+        select_pipeline(self.vault.config(), pipeline)
         if type(recover) is not bool:
             raise ValueError("invalid_recover")
-        if chosen == "incremental":
-            return process_inbox(self, source=source, session_id=session_id,
-                                 model=model, router=router, scope=scope, recover=recover)
-        if recover:
-            raise ValueError("incremental_recovery_required")
-        from .processing import Processor
-
-        return Processor(self).process(
-            source=source,
-            session_id=session_id,
-            model=model,
-            router=router,
-            scope=scope,
-        )
+        return process_inbox(self, source=source, session_id=session_id,
+                             model=model, router=router, scope=scope, recover=recover)
 
     def preview_incremental(self, *, source: str, session_id: str, turn_id: str,
                             response: str | None = None, expected_snapshot: str | None = None,
@@ -401,34 +390,16 @@ class Memleaf:
         recover: bool = False,
         source_time: str | None = None,
     ) -> dict[str, Any]:
-        """Explicit text retention; choose a pipeline without resetting an intent."""
-        chosen = self.vault.config().get("process", {}).get("remember_pipeline", "legacy") if pipeline is None else pipeline
-        if not isinstance(chosen, str) or chosen not in {"legacy", "incremental"}:
-            raise ValueError("invalid_remember_pipeline")
+        """Explicit text retention through the sole incremental engine."""
+        from .processing_route import select_remember_pipeline
+        select_remember_pipeline(self.vault.config(), pipeline)
         if type(recover) is not bool:
             raise ValueError("invalid_recover")
-        if chosen == "incremental":
-            from .remember_route import remember_text
-            return remember_text(self, content=content, text=text, source=source,
-                                 session_id=session_id, turn_id=turn_id, event_id=event_id,
-                                 intent_id=intent_id, scopes=scopes, model=model, router=router,
-                                 recover=recover, source_time=source_time)
-        if recover or source_time is not None:
-            raise ValueError("incremental_remember_required")
-        from .processing import Processor
-
-        return Processor(self).remember(
-            content,
-            text=text,
-            source=source,
-            session_id=session_id,
-            turn_id=turn_id,
-            event_id=event_id,
-            intent_id=intent_id,
-            scopes=scopes,
-            model=model,
-            router=router,
-        )
+        from .remember_route import remember_text
+        return remember_text(self, content=content, text=text, source=source,
+                             session_id=session_id, turn_id=turn_id, event_id=event_id,
+                             intent_id=intent_id, scopes=scopes, model=model, router=router,
+                             recover=recover, source_time=source_time)
 
     def compact(self, *, model: Any = None, router: Any = None) -> dict[str, Any]:
         """Compact low-priority active knowledge through an injected model."""
@@ -466,7 +437,7 @@ class Memleaf:
                         backend: Any = None, scope: Any = None,
                         priority_memory_ids=(), candidate_limit: int = 12,
                         allow_new_scopes: bool = False) -> dict[str, Any]:
-        """Opt-in captured-turn model execution; legacy host routes are unchanged."""
+        """Run one captured turn through the incremental execution engine."""
         from .incremental_execution import run_incremental
         return run_incremental(self, source=source, session_id=session_id, turn_id=turn_id,
                                backend=backend, scope=scope, priority_memory_ids=priority_memory_ids,
