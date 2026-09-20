@@ -902,6 +902,44 @@ _MODEL_ROUTE_INCOMPATIBLE_ACTION = (
 )
 
 
+_PIPELINE_MIGRATION_REQUIRED_ACTION = (
+    "This Vault still selects the removed legacy processing engine. Stop all supported "
+    "writers, run migration-check, create and verify a migration backup, then set both "
+    "process.automatic_pipeline and process.remember_pipeline to incremental before "
+    "relying on automatic extraction or remember."
+)
+
+_PIPELINE_CONFIGURATION_INVALID_ACTION = (
+    "Repair the Vault process configuration before relying on memory processing. "
+    "v0.2.67 supports only the incremental execution engine."
+)
+
+
+def _pipeline_route_outcome(vault: Any) -> tuple[bool, str, str | None]:
+    """Report whether this Vault can execute the sole incremental engine."""
+    try:
+        config = vault.config()
+    except Exception:
+        return False, "pipeline_configuration_invalid", _PIPELINE_CONFIGURATION_INVALID_ACTION
+    process = config.get("process") if isinstance(config, Mapping) else None
+    if not isinstance(process, Mapping):
+        return False, "pipeline_configuration_invalid", _PIPELINE_CONFIGURATION_INVALID_ACTION
+    values = (
+        process.get("automatic_pipeline", "incremental"),
+        process.get("remember_pipeline", "incremental"),
+    )
+    if any(value == "legacy" for value in values):
+        return False, "pipeline_migration_required", _PIPELINE_MIGRATION_REQUIRED_ACTION
+    if any(value != "incremental" for value in values):
+        return False, "pipeline_configuration_invalid", _PIPELINE_CONFIGURATION_INVALID_ACTION
+    return True, "ready", None
+
+
+def _join_user_actions(*actions: str | None) -> str | None:
+    values = [action.strip() for action in actions if isinstance(action, str) and action.strip()]
+    return " ".join(values) if values else None
+
+
 def _route_can_extract(vault: Any) -> bool:
     """Ask the production router whether this Vault's route can speak B3.
 
@@ -1098,11 +1136,16 @@ def install_hermes(
     # here used to leave core and provider versions out of step.  A *present*
     # route that cannot speak B3 is reported separately, because advertising
     # ``ready`` for it would promise extraction that can never run.
-    model_ready, processing_status, model_action = _model_route_outcome(
+    model_ready, model_processing_status, model_action = _model_route_outcome(
         model, can_extract=_route_can_extract(vault)
     )
-    # ``model_ready`` is reported through ``processing_status`` below; the host
-    # integration itself is configured either way.
+    pipeline_ready, pipeline_processing_status, pipeline_action = _pipeline_route_outcome(vault)
+    processing_status = (
+        model_processing_status if pipeline_ready else pipeline_processing_status
+    )
+    install_action = _join_user_actions(pipeline_action, model_action)
+    # Host integration is configured even when processing still needs an explicit
+    # model route or a controlled legacy->incremental Vault migration.
 
     provider_target = hermes_home / "plugins" / "memleaf"
     provider_config = hermes_home / "memleaf.json"
@@ -1314,8 +1357,8 @@ def install_hermes(
         "native_sources": native_registration,
         "capture": capture_policy_status(vault.config()),
         "processing_status": processing_status,
-        "user_action_required": bool(model_action),
-        "user_action": model_action,
+        "user_action_required": bool(install_action),
+        "user_action": install_action,
     }
 
 
@@ -1373,9 +1416,12 @@ def install_codex(*, vault_path: Path | None = None) -> dict[str, Any]:
             "codex": configured.to_dict(),
         }
     model_ready = model.get("status") in {"configured", "already_configured"}
+    pipeline_ready, pipeline_processing_status, pipeline_action = _pipeline_route_outcome(vault)
     actions: list[str] = []
     if configured.user_action_required and configured.user_action:
         actions.append(configured.user_action)
+    if pipeline_action:
+        actions.append(pipeline_action)
     if not model_ready:
         actions.append(
             "Configure an independent memleaf Model Route for this Vault before relying on "
@@ -1388,7 +1434,10 @@ def install_codex(*, vault_path: Path | None = None) -> dict[str, Any]:
         "vault": str(vault.root),
         "vault_source": vault_source,
         "model": model,
-        "processing_status": "ready" if model_ready else "model_route_required",
+        "processing_status": (
+            ("ready" if model_ready else "model_route_required")
+            if pipeline_ready else pipeline_processing_status
+        ),
         "codex": configured.to_dict(),
         "user_action_required": bool(actions),
         "user_action": " ".join(actions) if actions else None,
