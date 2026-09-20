@@ -232,7 +232,7 @@ class ServerCompatibilityTests(unittest.TestCase):
         with patch.object(self.service,'stats',side_effect=AssertionError('must not scan')):
             result=self.hello(self.good)['result']
         self.assertEqual(result['_meta'][BUILD_META],self.good)
-        self.assertEqual(result['serverInfo']['version'],'0.2.66')
+        self.assertEqual(result['serverInfo']['version'],'0.2.67')
 
     def test_compatible_bridge_dispatches_capture(self):
         self.hello(self.good)
