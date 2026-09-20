@@ -36,6 +36,30 @@ _BRANCHES = {
     "NO_MEMORY": (set(), set()),
     "DEFERRED": ({"reason", "need"}, {"reason", "need"}),
 }
+
+_CREATE_ROW_META = frozenset(("action", "evidence", "at", "effective"))
+
+
+def _normalize_flat_create_row(row: Any) -> tuple[Any, bool]:
+    """Repair one unambiguous model-only CREATE wrapper mistake.
+
+    This is structural normalization only: it never invents fields, changes
+    values, widens allowed keys, or bypasses the strict CREATE validator.
+    """
+    if not isinstance(row, dict) or "memory" in row:
+        return row, False
+    action = row.get("action")
+    if not isinstance(action, str) or action.strip().upper() != "CREATE":
+        return row, False
+    memory_keys = set(row) & set(_CREATE)
+    required = {"type", "scope", "title", "body"}
+    if not required <= memory_keys:
+        return row, False
+    if set(row) - (_CREATE_ROW_META | set(_CREATE)):
+        return row, False
+    normalized = {key: deepcopy(value) for key, value in row.items() if key not in _CREATE}
+    normalized["memory"] = {key: deepcopy(row[key]) for key in row if key in _CREATE}
+    return normalized, True
 _GROUP = {"status": "status", "validity": "validity", "scopes": "scope",
           "assignee": "responsibility", "waiting_on": "responsibility",
           "deadline": "deadline", "title": "content", "body": "content"}
@@ -553,7 +577,11 @@ def compile_incremental(raw: str, snapshot: PlanningSnapshot) -> dict[str, Any]:
         issues.append({"row": index, "code": code, "evidence": list(dict.fromkeys(refs))})
     for index, row in enumerate(value["items"]):
         try:
-            parsed.append((index, _parse_row(row, state)))
+            normalized_row, normalized = _normalize_flat_create_row(row)
+            parsed_row = _parse_row(normalized_row, state)
+            if normalized:
+                parsed_row.setdefault("warnings", []).append("create_memory_wrapper_normalized")
+            parsed.append((index, parsed_row))
         except (ValueError, TypeError) as error:
             problem(index, str(error) if isinstance(error, ValueError) else "invalid_fields", row)
             if isinstance(row, dict) and isinstance(row.get("target"), str) and row["target"].strip() in state["targets"]:
