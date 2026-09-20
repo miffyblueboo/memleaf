@@ -1,10 +1,10 @@
-# Existing text remember route (G4b, opt-in)
+# Text remember on the incremental engine
 
-The existing `Memleaf.remember()` and MCP `remember` tool can explicitly select
-incremental execution. This is an adapter to the same selected-retention runner,
-budget, native comparator, compiler and shared MemoryWriter; not another planner.
-The already implemented automatic route is independent. Neither route is enabled
-on an existing Vault by this change. Package version and fixed prompts are unchanged.
+As of the v0.2.67 candidate, `Memleaf.remember()` and the MCP `remember` tool use
+incremental execution as their only engine. This remains an adapter to the same
+selected-retention runner, budget, native comparator, compiler and shared
+MemoryWriter; it does not create a second planner. There is no executable legacy
+remember path and no fallback to it.
 
 ## Selection and compatibility
 
@@ -26,13 +26,13 @@ if result["retry_available"]:
     )
 ```
 
-The optional `process.remember_pipeline` is `legacy` by default and accepts only
-`legacy` or `incremental`. The per-call `pipeline` overrides it. Selecting
-`process.automatic_pipeline=incremental` alone does not change text remember.
-Unknown values fail explicitly, not by falling back to another semantic pipeline.
-The MCP tool adds only the same optional `pipeline`, `recover` and `source_time`
-fields. There is no new MCP tool, CLI command, daemon or automatic live migration.
-A supplied model/router still must meet the existing single-dispatch contract.
+The retained `process.remember_pipeline` field defaults to `incremental`.
+`incremental` is the only executable value; an old `legacy` value is preserved
+for migration inspection but is rejected with `legacy_pipeline_removed`. The
+per-call `pipeline` argument is now only a compatibility selector for
+`incremental`. Unknown values fail explicitly. The MCP tool exposes only
+`incremental` plus the existing `recover` and `source_time` controls. A
+supplied model/router still must meet the existing single-dispatch contract.
 
 `content` and its `text` alias contain the actual submitted user material. Supplying
 both with different values is rejected on the incremental route. One text request
@@ -145,12 +145,12 @@ consent or report a damaged state as NO_MEMORY.
 
 ## Cutover and validation
 
-Keep legacy defaults until controlled stop/backup/upgrade/restart and the planned
-live acceptance. Older code does not understand the standalone marker and cannot
-be expected to enforce its cleanup semantics. Changing a config key does not kill
-an old process or grant safe mixed-version writes. No default activation, production
-Vault mutation, release, real Flash calls or native Hermes/Windows/macOS acceptance
-was performed by this increment.
+Production migration still requires controlled stop/backup/upgrade/restart and
+live acceptance. Older binaries must be stopped before changing a retained legacy
+configuration; changing a config key does not kill an old process or make
+mixed-version writes safe. This candidate changes the package default to
+incremental but does not itself mutate a production Vault, run a real model, or
+prove native Hermes lifecycle acceptance.
 
 Deterministic tests cover one-user projection, origin provenance, same/new intents,
 legacy-route collisions, explicit and configured selection, unchanged originating
