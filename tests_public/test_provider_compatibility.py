@@ -15,6 +15,7 @@ import unittest
 from unittest.mock import patch
 
 from memleaf import Memleaf, __version__
+from memleaf.config import save_config
 from memleaf import installer, mcp_server
 from memleaf.provider_compatibility import (
     BUILD_META, PROVIDER_FILES, COMPATIBILITY_CODES, READ_ONLY_TOOLS,
@@ -132,6 +133,39 @@ class ProviderBuildTests(unittest.TestCase):
         with patch.object(installer.os,'replace',side_effect=corrupt):
             with self.assertRaisesRegex(RuntimeError,'build does not match'):
                 installer._copy_provider(Path(self.tmp.name)/'hermes')
+
+
+class InstallerPipelineReadinessTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.service=Memleaf.initialize(Path(self.tmp.name)/'vault')
+
+    def test_new_vault_is_incremental_ready(self):
+        self.assertEqual(
+            installer._pipeline_route_outcome(self.service.vault),
+            (True,'ready',None),
+        )
+
+    def test_retained_legacy_setting_requires_explicit_migration(self):
+        value=self.service.vault.config()
+        value['process']['automatic_pipeline']='legacy'
+        save_config(self.service.vault.config_path,value)
+        ready,status,action=installer._pipeline_route_outcome(self.service.vault)
+        self.assertFalse(ready)
+        self.assertEqual(status,'pipeline_migration_required')
+        self.assertIn('migration-check',action)
+        self.assertIn('automatic_pipeline',action)
+        self.assertIn('remember_pipeline',action)
+
+    def test_invalid_pipeline_configuration_does_not_report_ready(self):
+        path=self.service.vault.config_path
+        text=path.read_text(encoding='utf-8')
+        path.write_text(text.replace('automatic_pipeline: "incremental"',
+                                     'automatic_pipeline: "broken"'),encoding='utf-8')
+        ready,status,action=installer._pipeline_route_outcome(self.service.vault)
+        self.assertFalse(ready)
+        self.assertEqual(status,'pipeline_configuration_invalid')
+        self.assertTrue(action)
 
 
 class InstallerProbeTests(unittest.TestCase):
