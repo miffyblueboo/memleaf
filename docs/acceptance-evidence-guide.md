@@ -24,16 +24,17 @@ the suite count or from module-name references.
 
 ## Current route semantics
 
-Both `process.automatic_pipeline` and `process.remember_pipeline` default to
-`legacy`. Selecting one does not switch the other. A successfully installed
-candidate is not proof that either new route is active. Use the exact installed
-configuration and returned route/state when recording acceptance; no instructions
-here modify production defaults or grant a production switch.
+The v0.2.67 candidate has one processing engine: incremental. New Vaults default
+both `process.automatic_pipeline` and `process.remember_pipeline` to
+`incremental`. A retained `legacy` value from an older Vault is not executable;
+migration preflight reports it as `legacy_pipeline_configuration`, and runtime
+entry points reject it with `legacy_pipeline_removed`.
 
-After isolation and authorization, the supported opt-in values are `incremental`
-for both keys. They are test configuration choices, not edits to package defaults.
-Existing queued work retains its route/authority contract. Do not erase old work,
-failed receipts or request counters to get a clean-looking preflight result.
+A successfully installed candidate is still not proof that production migration is
+safe. Existing legacy queue/control records retain their identity for diagnosis and
+must be settled or explicitly reviewed; they are not reinterpreted as incremental
+work. Do not erase old work, failed receipts or request counters to obtain a clean
+preflight result.
 
 ## Preparation with no paid calls
 
