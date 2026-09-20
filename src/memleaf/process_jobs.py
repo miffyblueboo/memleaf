@@ -812,11 +812,18 @@ def run_worker(vault_path: Path | str, job_id: str) -> int:
     while True:
         try:
             service = Memleaf(vault)
+            from .processing_route import select_pipeline
             stored_pipeline = job.get("pipeline")
-            if stored_pipeline != "incremental":
+            try:
+                select_pipeline(vault.config())
+                configured_code = None
+            except ValueError as error:
+                configured_code = str(error)
+            if stored_pipeline != "incremental" or configured_code is not None:
                 result = {"pipeline": "incremental", "execution_status": "blocked",
                           "coverage_status": "partial", "deferred_inbox_turns": 1,
-                          "results": [{"execution_status": "blocked", "code": "legacy_pipeline_removed"}]}
+                          "results": [{"execution_status": "blocked",
+                                       "code": configured_code or "legacy_pipeline_removed"}]}
             else:
                 result = service.process(source=job["source"], session_id=job["session_id"], scope=job.get("scope"),
                                          pipeline="incremental", recover=job.get("recover", False))
