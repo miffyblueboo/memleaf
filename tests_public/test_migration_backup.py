@@ -56,10 +56,27 @@ class MigrationPreflightTests(MigrationFixture):
         r = self.inspect()
         self.assertEqual(r["local_status"], "clear")
         self.assertFalse(r["switch_authorized"])
-        self.assertEqual(r["configured_pipelines"], {"automatic_pipeline":"legacy", "remember_pipeline":"legacy"})
+        self.assertEqual(r["configured_pipelines"], {"automatic_pipeline":"incremental", "remember_pipeline":"incremental"})
         self.assertIn("real_model_multiturn_acceptance", r["required_external_checks"])
         self.assertEqual(r["runtime"]["installed_host_verification"], "not_performed")
         self.assertEqual(len(r["runtime"]["implementation_fingerprint"]),64)
+
+    def test_legacy_pipeline_settings_are_migration_blockers(self):
+        from memleaf.config import save_config
+        value = self.s.vault.config()
+        value["process"]["automatic_pipeline"] = "legacy"
+        value["process"]["remember_pipeline"] = "legacy"
+        save_config(self.s.vault.config_path, value)
+
+        report = self.inspect()
+        self.assertEqual(report["local_status"], "blocked")
+        self.assertIn("legacy_pipeline_configuration", report["blockers"])
+        self.assertEqual(report["counts"]["legacy_pipeline_settings"], 2)
+        self.assertEqual(
+            report["configured_pipelines"],
+            {"automatic_pipeline": "legacy", "remember_pipeline": "legacy"},
+        )
+        self.assertFalse(report["switch_authorized"])
 
     def test_preflight_does_not_initialize_or_lock_or_resolve_model(self):
         before = self.snapshot()
