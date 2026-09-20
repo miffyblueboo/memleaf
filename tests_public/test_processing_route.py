@@ -38,6 +38,12 @@ class ProcessingRouteTests(IncrementalFixture):
         cfg = self.s.vault.config(); cfg['process']['automatic_pipeline'] = value
         save_config(self.s.vault.config_path, cfg)
 
+    def test_legacy_processor_has_no_executable_engine(self):
+        from memleaf.processing import Processor
+        from memleaf.process_common import ProcessingError
+        with self.assertRaisesRegex(ProcessingError,'legacy_pipeline_removed'):
+            Processor(self.s)
+
     def test_default_route_is_incremental(self):
         b=EchoBackend()
         r=self.s.process(source='hermes',session_id='s',model=b)
