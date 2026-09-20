@@ -158,10 +158,11 @@ class InstallerPipelineReadinessTests(unittest.TestCase):
         self.assertIn('remember_pipeline',action)
 
     def test_invalid_pipeline_configuration_does_not_report_ready(self):
+        from memleaf.frontmatter import dump_yaml, load_yaml
         path=self.service.vault.config_path
-        text=path.read_text(encoding='utf-8')
-        path.write_text(text.replace('automatic_pipeline: "incremental"',
-                                     'automatic_pipeline: "broken"'),encoding='utf-8')
+        value=load_yaml(path.read_text(encoding='utf-8'))
+        value['process']['automatic_pipeline']='broken'
+        path.write_text(dump_yaml(value),encoding='utf-8')
         ready,status,action=installer._pipeline_route_outcome(self.service.vault)
         self.assertFalse(ready)
         self.assertEqual(status,'pipeline_configuration_invalid')
