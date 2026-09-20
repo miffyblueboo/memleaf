@@ -139,7 +139,7 @@ class SourceOrderTests(SourceCase):
 
     def test_zero_source_sequence_is_a_real_position(self):
         self.turn(1); self.turn(0)
-        shots, _ = Processor(self.s).journal._snapshot(source='ordered', session_id='s', now=utc_now(), cleanup_hours=24)
+        shots, _ = ProcessJournal(self.s)._snapshot(source='ordered', session_id='s', now=utc_now(), cleanup_hours=24)
         self.assertEqual([s.turn.events[0].content for s in shots], ['user-0', 'user-1'])
 
     def test_unknown_source_order_keeps_legacy_arrival_order(self):
