@@ -94,6 +94,7 @@ def _checks(service: Any, snapshot: dict[str, bytes]) -> dict:
     warnings: set[str] = set()
     counts: dict[str, int] = {}
     config = None
+    configured: dict[str, Any] = {}
     binding = {"status": "unknown"}
     try:
         binding = service.vault.identity_status()
@@ -106,6 +107,14 @@ def _checks(service: Any, snapshot: dict[str, bytes]) -> dict:
     except (OSError, ValueError, UnicodeError, TypeError):
         blockers.add("invalid_configuration")
     if config is not None:
+        process_config = config.get("process", {}) if isinstance(config, Mapping) else {}
+        configured = {
+            key: process_config.get(key, "incremental") if isinstance(process_config, Mapping) else None
+            for key in ("automatic_pipeline", "remember_pipeline")
+        }
+        counts["legacy_pipeline_settings"] = sum(value == "legacy" for value in configured.values())
+        if counts["legacy_pipeline_settings"]:
+            blockers.add("legacy_pipeline_configuration")
         native_unavailable, native_blockers = _native_source_readiness(service, config)
         counts["unavailable_native_sources"] = native_unavailable
         blockers.update(native_blockers)
@@ -187,10 +196,8 @@ def _checks(service: Any, snapshot: dict[str, bytes]) -> dict:
     elif progress["status"] != "current":
         blockers.add("unsettled_sources_require_review")
     warnings.update(_EXTERNAL_CHECKS)
-    # Even a disabled stage does not prove that an older installed binary will
-    # never run. Report facts; never automatically flip either route.
-    configured = {k: config["process"].get(k, "legacy") for k in
-                  ("automatic_pipeline", "remember_pipeline")} if config else {}
+    # Historical route settings are reported as migration facts. They are not
+    # executable by this release and are never silently rewritten here.
     return {"local_status": "blocked" if blockers else "clear",
             "blockers": sorted(blockers),
             "backup_blockers": sorted(blockers & {"processing_owner_live", "queue_not_quiescent"}),
