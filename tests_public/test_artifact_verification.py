@@ -42,6 +42,26 @@ class ArtifactVerificationTests(unittest.TestCase):
                 'hermes_provider/_provider.py': b'pass',
                 'hermes_provider/evidence_budget.py': b'pass'}
 
+    def wheel_members(self, payload=None, version='test'):
+        payload = payload or self.payload()
+        metadata = (
+            'Metadata-Version: 2.1\n'
+            'Name: memleaf\n'
+            f'Version: {version}\n'
+        ).encode()
+        return [('memleaf/'+n, v) for n, v in payload.items()] + [
+            (f'memleaf-{version}.dist-info/METADATA', metadata)
+        ]
+
+    def sdist_members(self, payload=None, version='test', *, include_test=True):
+        payload = payload or self.payload()
+        pyproject = f'[project]\nname = "memleaf"\nversion = "{version}"\n'.encode()
+        members = [('memleaf/pyproject.toml', pyproject)]
+        members += [('memleaf/src/memleaf/'+n, v) for n, v in payload.items()]
+        if include_test:
+            members.append(('memleaf/tests_public/test_a.py', b'pass'))
+        return members
+
     def test_safe_names_are_relative_and_portable(self):
         for name in ('../escape', '/abs', 'C:/abs', 'x\\y', 'a//b', 'a/./b', ''):
             with self.subTest(name=name), self.assertRaises(ValueError):verify.safe_name(name)
@@ -86,6 +106,15 @@ class ArtifactVerificationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'provider_resource_missing'):
             verify.assert_same_package({'memleaf/'+k:v for k,v in data.items()}, {'src/memleaf/'+k:v for k,v in data.items()})
 
+    def test_distribution_version_mismatch_is_rejected(self):
+        payload=self.payload()
+        wheel=verify.archive_files(self.wheel(self.wheel_members(payload, version='test')))
+        bad=dict(payload)
+        bad['hermes_provider/plugin.yaml']=b'version: old'
+        source=verify.archive_files(self.tar(self.sdist_members(bad, version='test')))
+        with self.assertRaisesRegex(ValueError,'distribution_version_mismatch'):
+            verify.assert_distribution_versions(wheel,source)
+
     def test_empty_package_rejected(self):
         with self.assertRaisesRegex(ValueError,'package_missing'):verify.package_files({})
 
@@ -124,15 +153,15 @@ class ArtifactVerificationTests(unittest.TestCase):
 
     def test_manifest_requires_successful_source_tests(self):
         payload=self.payload()
-        self.wheel([('memleaf/'+n,v) for n,v in payload.items()])
-        self.tar([('memleaf/src/memleaf/'+n,v) for n,v in payload.items()]+[('memleaf/tests_public/test_a.py',b'pass')])
+        self.wheel(self.wheel_members(payload))
+        self.tar(self.sdist_members(payload))
         report=self.root/'source.json';report.write_text(json.dumps({'status':'failed','tests':1,'skipped':[]}))
         with self.assertRaisesRegex(ValueError,'source_tests_not_passed'):verify.manifest(self.root,report,'a'*40)
 
     def test_manifest_binds_commit_and_exact_artifact_bytes(self):
         payload=self.payload()
-        w=self.wheel([('memleaf/'+n,v) for n,v in payload.items()])
-        self.tar([('memleaf/src/memleaf/'+n,v) for n,v in payload.items()]+[('memleaf/tests_public/test_a.py',b'pass')])
+        w=self.wheel(self.wheel_members(payload))
+        self.tar(self.sdist_members(payload))
         report=self.root/'source.json';report.write_text(json.dumps({'status':'passed','tests':1,'skipped':[]}))
         value=verify.manifest(self.root,report,'a'*40)
         raw=json.dumps(value).encode();(self.root/'verification-manifest.json').write_bytes(raw)
@@ -143,7 +172,7 @@ class ArtifactVerificationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'bytes_mismatch'):verify.verify_binding(self.root,verify.digest(raw),'a'*40)
 
     def test_skipped_source_tests_do_not_create_a_passing_manifest(self):
-        payload=self.payload();self.wheel([('memleaf/'+n,v) for n,v in payload.items()])
-        self.tar([('memleaf/src/memleaf/'+n,v) for n,v in payload.items()])
+        payload=self.payload();self.wheel(self.wheel_members(payload))
+        self.tar(self.sdist_members(payload, include_test=False))
         report=self.root/'source.json';report.write_text(json.dumps({'status':'passed','tests':1,'skipped':['some']}))
         with self.assertRaisesRegex(ValueError,'source_tests_not_passed'):verify.manifest(self.root,report,'a'*40)
