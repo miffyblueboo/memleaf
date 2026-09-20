@@ -4,6 +4,8 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.68 — 2026-09-20
+
 ### Hermes live-path hardening
 
 - Observe Hermes deferred `tool_call` single-entry `calls[]` wrappers so real
