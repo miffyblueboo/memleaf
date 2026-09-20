@@ -4,6 +4,17 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+### Incremental-only processing and release integrity
+
+- Remove the executable legacy processing/remember engine. New Vaults use the
+  incremental runner for automatic processing, explicit remember, MCP/CLI and
+  detached jobs; retained legacy settings/jobs remain inspectable but fail closed.
+- Fix the v0.2.66 Hermes Provider manifest drift by aligning Core and Provider at
+  0.2.67 and rejecting an internally inconsistent package before host/Vault changes.
+- Gate source and wheel/sdist verification on one version identity across package
+  metadata, Core `__version__`, Hermes `plugin.yaml` and sdist project metadata.
+
+
 ## 0.2.66 — 2026-09-20
 
 ### Reconcile divergent local candidates
