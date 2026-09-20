@@ -303,7 +303,7 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                 "session_id": {"type": "string"},
                 "scope": _text_or_texts_schema(),
                 "background": {"type": "boolean"},
-                "pipeline": {"type": "string", "enum": ["legacy", "incremental"]},
+                "pipeline": {"type": "string", "enum": ["incremental"]},
                 "recover": {"type": "boolean"},
             }
         ),
@@ -332,7 +332,7 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                 "event_id": {"type": "string"},
                 "intent_id": {"type": "string"},
                 "scopes": _text_or_texts_schema(),
-                "pipeline": {"type": "string", "enum": ["legacy", "incremental"]},
+                "pipeline": {"type": "string", "enum": ["incremental"]},
                 "recover": {"type": "boolean"},
                 "source_time": {"type": "string"},
             },
