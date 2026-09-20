@@ -37,9 +37,35 @@ class IncrementalDateTests(unittest.TestCase):
         self.assertEqual(out["operations"][0]["memory"]["due_date"], "2026-09-25")
 
     def test_clear_is_explicit(self):
-        out = self.compile("取消原期限", {"deadline": {"ref": "e1", "clear": True}})
+        out = self.compile("取消原期限", {"deadline": {"ref": "e1", "clear": True, "text": "取消原期限"}})
         self.assertIsNone(out["operations"][0]["memory"]["due_date"])
         self.assertEqual(out["operations"][0]["memory"]["due_status"], "cleared")
+
+    def test_unproven_clear_is_ignored_when_other_update_exists(self):
+        out = self.compile(
+            "责任转交给林工，等待客户验收。",
+            {"assignee": "林工", "waiting_on": "客户验收", "deadline": {"ref": "e1", "clear": True}},
+        )
+        mem = out["operations"][0]["memory"]
+        self.assertEqual(mem["assignee"], "林工")
+        self.assertEqual(mem["waiting_on"], "客户验收")
+        self.assertEqual(mem["due_date"], "2026-09-25")
+        self.assertIn("deadline_clear_unproven", out["operations"][0]["warnings"])
+
+    def test_clear_quote_must_exist_in_source(self):
+        out = self.compile(
+            "责任转交给林工。",
+            {"assignee": "林工", "deadline": {"ref": "e1", "clear": True, "text": "取消原期限"}},
+        )
+        mem = out["operations"][0]["memory"]
+        self.assertEqual(mem["assignee"], "林工")
+        self.assertEqual(mem["due_date"], "2026-09-25")
+        self.assertIn("deadline_clear_unproven", out["operations"][0]["warnings"])
+
+    def test_unproven_clear_only_update_is_rejected(self):
+        out = self.compile("继续推进", {"deadline": {"ref": "e1", "clear": True}})
+        self.assertFalse(out["operations"])
+        self.assertEqual(out["issues"][0]["code"], "unverified_deadline_clear")
 
     def test_unknown_new_deadline_invalidates_old_calendar_value(self):
         out = self.compile("改为发布后一周内", {"deadline": {"ref": "e1", "text": "发布后一周内"}})

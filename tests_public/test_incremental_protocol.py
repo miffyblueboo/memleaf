@@ -379,5 +379,6 @@ class IncrementalProtocolTests(unittest.TestCase):
         self.assertLessEqual(len(INCREMENTAL_SYSTEM.encode("utf-8")),3881)
         self.assertIn("explicit_remember",INCREMENTAL_SYSTEM)
         self.assertIn("validity=valid/retracted",INCREMENTAL_SYSTEM)
+        self.assertIn('"clear":true,"text"', INCREMENTAL_SYSTEM)
         example=re.search(r'(?m)^\{"items":.*$',INCREMENTAL_SYSTEM).group(0)
         self.assertFalse(compile_incremental(example,self.snapshot)["issues"])

@@ -15,14 +15,14 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .incremental_dates import parse_source_time, selected_calendar, source_basis
+from .incremental_dates import parse_source_time, reading_text, selected_calendar, source_basis
 from .models import Memory
 from .scope_state import validate_scope_key
 from .turn_plan import revision_digest
 from .validation import ModelOutputError, parse_strict_json
 
 PROTOCOL_VERSION = "incremental-items-v1"
-SEMANTIC_PROTOCOL = "incremental-turn-v3"
+SEMANTIC_PROTOCOL = "incremental-turn-v4"
 MAX_BYTES = 128 * 1024
 MAX_ITEMS = 64
 _TYPES = frozenset(("fact", "todo", "preference", "project", "event", "identity", "other"))
@@ -288,6 +288,33 @@ def _selected(value: Any, evidence: Mapping[str, Any], refs: list[str], *, clear
     return selected_calendar(value["text"], evidence[ref])
 
 
+def _deadline(value: Any, evidence: Mapping[str, Any], refs: list[str], *, update: bool) -> tuple[dict[str, Any] | None, str | None]:
+    """Compile one model-selected deadline change without inferring semantics.
+
+    Clearing an existing deadline is destructive, so automatic model output
+    must cite the exact source text that it judged to be an explicit removal.
+    Core verifies provenance only; it does not classify cancellation wording.
+    """
+
+    if update and isinstance(value, dict) and value.get("clear") is True:
+        if set(value) != {"ref", "clear", "text"}:
+            return None, "deadline_clear_unproven"
+        try:
+            ref = _ref(value["ref"], evidence)
+        except ValueError:
+            return None, "deadline_clear_unproven"
+        if ref not in refs or evidence[ref]["use"] != "new":
+            return None, "deadline_clear_unproven"
+        try:
+            quote = _text(value["text"], 512)
+        except ValueError:
+            return None, "deadline_clear_unproven"
+        if reading_text(quote) not in reading_text(str(evidence[ref].get("text", ""))):
+            return None, "deadline_clear_unproven"
+        return {"clear": True, "anchor": source_basis(evidence[ref])}, None
+    return _selected(value, evidence, refs, clear=False), None
+
+
 def _scope(value: Any, state: Mapping[str, Any], *, create: bool = False) -> str:
     value = _text(value, 160)
     if value in state["scopes"]:
@@ -388,7 +415,14 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
         if "scope" in fields:
             fields["scopes"] = [_scope(fields.pop("scope"), state, create=action == "CREATE")]
         if "deadline" in fields:
-            fields["deadline"] = _selected(fields["deadline"], evidence, refs, clear=action == "UPDATE")
+            deadline, warning = _deadline(fields["deadline"], evidence, refs, update=action == "UPDATE")
+            if deadline is None:
+                fields.pop("deadline")
+                result.setdefault("warnings", []).append(warning or "deadline_clear_unproven")
+                if not fields:
+                    raise ValueError("unverified_deadline_clear")
+            else:
+                fields["deadline"] = deadline
         if "effective" in row:
             result["effective"] = _selected(row["effective"], evidence, refs)
         if "reopen" in row and (row["reopen"] is not True or fields.get("status") != "active"):
@@ -471,7 +505,12 @@ def _compile_group(rows: list[dict[str, Any]], state: Mapping[str, Any]) -> dict
     memory.update(fields)
     if target and memory.get("status") != old.get("status"):
         memory.pop("completed_at", None)  # Observation time never supplies completion time.
-    warnings = []
+    warnings = list(dict.fromkeys(
+        warning
+        for row in rows
+        for warning in row.get("warnings", [])
+        if isinstance(warning, str) and warning
+    ))
     if deadline is not None:
         if deadline.get("clear"):
             memory.update(due_date=None, due_text=None, due_anchor=deadline["anchor"], due_status="cleared")
