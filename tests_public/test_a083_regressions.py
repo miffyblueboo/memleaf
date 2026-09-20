@@ -15,7 +15,6 @@ from memleaf.index import EVENT_V2_BLOCK
 from memleaf.models import utc_now
 from memleaf.process_common import ProcessingError
 from memleaf.process_journal import ProcessJournal
-from memleaf.single_pass_memory_planner import SinglePassMemoryPlanner
 from memleaf.turn_plan import FrozenTurn, input_digest, turn_plan_key
 from memleaf.memory_writer import MemoryWriter
 from memleaf.memory_commit import MemoryCommitter
