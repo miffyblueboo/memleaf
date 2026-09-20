@@ -38,23 +38,25 @@ class ProcessingRouteTests(IncrementalFixture):
         cfg = self.s.vault.config(); cfg['process']['automatic_pipeline'] = value
         save_config(self.s.vault.config_path, cfg)
 
-    def test_default_route_remains_legacy(self):
-        with patch('memleaf.processing.Processor.process', return_value={'legacy':True}) as f:
-            self.assertEqual(self.s.process(), {'legacy':True})
-            f.assert_called_once()
-        self.assertEqual(select_pipeline(self.s.vault.config()), 'legacy')
+    def test_default_route_is_incremental(self):
+        b=EchoBackend()
+        r=self.s.process(source='hermes',session_id='s',model=b)
+        self.assertEqual((r['pipeline'],r['execution_status'],r['model_calls']),
+                         ('incremental','completed',1))
+        self.assertEqual(select_pipeline(self.s.vault.config()), 'incremental')
 
-    def test_explicit_route_never_calls_legacy(self):
-        with patch('memleaf.processing.Processor.process', side_effect=AssertionError('legacy fallback')):
-            r = self.process(EchoBackend())
-        self.assertEqual((r['execution_status'],r['model_calls']),('completed',1))
+    def test_explicit_incremental_uses_the_same_engine(self):
+        r = self.process(EchoBackend())
+        self.assertEqual((r['pipeline'],r['execution_status'],r['model_calls']),
+                         ('incremental','completed',1))
 
-    def test_config_route_and_explicit_override(self):
+    def test_legacy_route_is_not_executable(self):
         self.configure('incremental')
-        b=EchoBackend(); r=self.s.process(source='hermes',session_id='s',model=b)
-        self.assertEqual(r['model_calls'],1)
-        with patch('memleaf.processing.Processor.process', return_value={'legacy':True}):
-            self.assertEqual(self.s.process(pipeline='legacy'), {'legacy':True})
+        with self.assertRaisesRegex(ValueError,'legacy_pipeline_removed'):
+            self.s.process(pipeline='legacy')
+        self.configure('legacy')
+        with self.assertRaisesRegex(ValueError,'legacy_pipeline_removed'):
+            self.s.process()
 
     def test_invalid_config_and_pipeline_are_not_silent_fallbacks(self):
         for value in (None, [], True, 'other', 'Incremental'):
@@ -223,7 +225,7 @@ class ProcessingRouteTests(IncrementalFixture):
     def test_same_batch_stops_at_changed_default_without_rolling_back_first(self):
         self.capture('later',seq=3)
         def response():
-            self.configure('incremental')
+            self.configure('legacy')
             return output(self.create(),self.no_memory())
         b=Backend(response)
         r=self.process(b)
