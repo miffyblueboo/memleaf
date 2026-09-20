@@ -4,6 +4,8 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.67 — 2026-09-20
+
 ### Incremental-only processing and release integrity
 
 - Remove the executable legacy processing/remember engine. New Vaults use the
