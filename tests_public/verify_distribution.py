@@ -10,7 +10,6 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -103,7 +102,75 @@ def assert_same_package(wheel_files, source_files):
 
 
 def _source_version(data):
-    match = re.search(rb'(?m)^__version__\s*=\s*["\']([^"\']+)["\']\s*def suite_assets(files):
+    try:
+        lines = data.decode('utf-8').splitlines()
+    except UnicodeError as error:
+        raise ValueError('core_version_missing') from error
+    values = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith('__version__'):
+            continue
+        left, sep, right = stripped.partition('=')
+        if sep and left.strip() == '__version__':
+            value = right.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                values.append(value[1:-1])
+    if len(values) != 1 or not values[0]:
+        raise ValueError('core_version_missing')
+    return values[0]
+
+
+def _provider_version(data):
+    try:
+        lines = data.decode('utf-8').splitlines()
+    except UnicodeError as error:
+        raise ValueError('provider_version_missing') from error
+    values = [line.split(':', 1)[1].strip() for line in lines
+              if line.startswith('version:')]
+    if len(values) != 1 or not values[0]:
+        raise ValueError('provider_version_missing')
+    return values[0]
+
+
+def _wheel_metadata_version(files):
+    matches = [data for name, data in files.items() if name.endswith('.dist-info/METADATA')]
+    if len(matches) != 1:
+        raise ValueError('wheel_metadata_missing')
+    try:
+        lines = matches[0].decode('utf-8').splitlines()
+    except UnicodeError as error:
+        raise ValueError('wheel_version_missing') from error
+    versions = [line.split(':', 1)[1].strip() for line in lines if line.startswith('Version:')]
+    if len(versions) != 1 or not versions[0]:
+        raise ValueError('wheel_version_missing')
+    return versions[0]
+
+
+def assert_distribution_versions(wheel_files, source_files):
+    try:
+        pyproject = tomllib.loads(source_files['pyproject.toml'].decode('utf-8'))
+        project_version = pyproject['project']['version']
+        wheel_core = _source_version(wheel_files['memleaf/__init__.py'])
+        wheel_provider = _provider_version(wheel_files['memleaf/hermes_provider/plugin.yaml'])
+        sdist_core = _source_version(source_files['src/memleaf/__init__.py'])
+        sdist_provider = _provider_version(source_files['src/memleaf/hermes_provider/plugin.yaml'])
+    except (KeyError, UnicodeError, tomllib.TOMLDecodeError, TypeError) as error:
+        raise ValueError('distribution_version_metadata_missing') from error
+    values = {
+        'wheel_metadata': _wheel_metadata_version(wheel_files),
+        'wheel_core': wheel_core,
+        'wheel_provider': wheel_provider,
+        'sdist_project': project_version,
+        'sdist_core': sdist_core,
+        'sdist_provider': sdist_provider,
+    }
+    if not isinstance(project_version, str) or not project_version or len(set(values.values())) != 1:
+        raise ValueError('distribution_version_mismatch')
+    return project_version
+
+
+def suite_assets(files):
     return {name: data for name, data in files.items()
             if name.startswith(('tests_public/', 'examples/'))}
 
