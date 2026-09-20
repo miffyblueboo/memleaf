@@ -141,8 +141,9 @@ def _valid_state(value: Any) -> dict[str, Any]:
         if not _valid_job_id(job_id) or not isinstance(raw, Mapping):
             raise ProcessJobStateError("invalid process job record")
         from .processing_route import PIPELINES
+        persisted_pipelines = PIPELINES | {"legacy"}
         for field in ("pipeline", "configured_pipeline"):
-            if field in raw and (not isinstance(raw[field], str) or raw[field] not in PIPELINES):
+            if field in raw and (not isinstance(raw[field], str) or raw[field] not in persisted_pipelines):
                 raise ProcessJobStateError("invalid process job pipeline")
         if "recover" in raw and type(raw["recover"]) is not bool:
             raise ProcessJobStateError("invalid process job recovery")
