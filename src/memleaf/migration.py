@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import platform
 import re
-from typing import Any
+from typing import Any, Mapping
 
 from . import __version__
 from .inspection import _checked_snapshot, _snapshot, _fingerprint, existing_root
