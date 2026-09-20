@@ -94,8 +94,8 @@ def build_parser() -> argparse.ArgumentParser:
     process.add_argument("--source", default=None)
     process.add_argument("--session-id", default=None)
     process.add_argument("--scope", default=None)
-    process.add_argument("--pipeline", choices=("legacy", "incremental"), default=None,
-                         help="explicit automatic pipeline; otherwise use Vault configuration")
+    process.add_argument("--pipeline", choices=("incremental",), default=None,
+                         help="compatibility override; incremental is the only processing engine")
     process.add_argument("--recover", action="store_true",
                          help="allow remaining incremental transport recovery, not partial replan")
     process.add_argument("--dry-run", action="store_true", help="no source Vault writes; may call the configured model")
