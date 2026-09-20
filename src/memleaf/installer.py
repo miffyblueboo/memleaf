@@ -965,6 +965,22 @@ def install_hermes(
     if mcp_runtime not in _MCP_RUNTIME_POLICIES:
         raise ValueError(f"unsupported Hermes MCP runtime policy: {mcp_runtime}")
 
+    # Reject an internally inconsistent package before reading or changing any
+    # Hermes/Vault state.  The post-copy check below remains as defense in depth.
+    packaged_provider = Path(__file__).with_name("hermes_provider")
+    packaged_provider_version = _provider_manifest_version(packaged_provider)
+    if packaged_provider_version != core_version:
+        return _failure_result(
+            stage="provider_version",
+            reason=(
+                "packaged Hermes provider version mismatch: "
+                f"core={core_version}, provider={packaged_provider_version or 'unknown'}"
+            ),
+            core_version=core_version,
+            provider_version=packaged_provider_version,
+            vault=None,
+        )
+
     home = _home_from_environment()
     hermes_home = _hermes_home(home)
     try:
