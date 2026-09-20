@@ -96,10 +96,12 @@ class ExplicitIntentTests(SourceCase):
             output({"action": "NO_MEMORY"}),
             output({"action": "NO_MEMORY"}),
         )
+        runs = []
         for intent in ('one', 'two'):
             result = self.s.remember('A', intent_id=intent, turn_id='same-turn',
                                      event_id='same-source', model=model)
-            self.assertEqual(result['processed_turns'], 1)
+            runs.append(result['run_id'])
+        self.assertEqual(len(set(runs)), 2)
         self.assertEqual(len(model.calls), 2)
 
     def test_stable_event_retry_reuses_incremental_intent(self):
