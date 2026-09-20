@@ -167,6 +167,19 @@ class InstallerProbeTests(unittest.TestCase):
             with patch.object(installer.os,'replace',side_effect=corrupt):
                 with self.assertRaisesRegex(RuntimeError,'build does not match'):installer._copy_provider(home)
 
+    def test_packaged_provider_version_mismatch_stops_before_host_inspection(self):
+        with patch.object(installer,'_provider_manifest_version',return_value='0.0.0'),\
+             patch.object(installer,'_home_from_environment',
+                          side_effect=AssertionError('must not inspect host')),\
+             patch.object(installer.Vault,'initialize',
+                          side_effect=AssertionError('must not initialize vault')):
+            result=installer.install_hermes()
+        self.assertEqual(result['status'],'failure')
+        self.assertEqual(result['stage'],'provider_version')
+        self.assertEqual(result['core_version'],__version__)
+        self.assertEqual(result['provider_version'],'0.0.0')
+        self.assertIsNone(result['vault'])
+
     def test_install_stops_before_vault_or_host_changes_on_build_mismatch(self):
         with tempfile.TemporaryDirectory() as root:
             home=Path(root);selected=home/'vault';command=home/'memleaf-mcp'
