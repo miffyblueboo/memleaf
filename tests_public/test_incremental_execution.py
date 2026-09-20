@@ -280,7 +280,7 @@ class ExecutionTests(IncrementalFixture):
         self.assertIsNone(self.s.read("mem-old",include_history=True))
         self.assertNotIn("request", self.runs()[0]); self.assertNotIn("response", self.runs()[0])
 
-    def test_no_file_lock_across_backend_and_legacy_is_fenced(self):
+    def test_no_file_lock_across_backend_and_nested_incremental_is_fenced(self):
         import threading
         observed=[]
         def check():
@@ -289,8 +289,12 @@ class ExecutionTests(IncrementalFixture):
             thread=threading.Thread(target=worker); thread.start(); thread.join(2)
             self.assertFalse(thread.is_alive())
             self.assertEqual(observed,["locked"])
-            with self.assertRaisesRegex(ValueError,"incremental_model_busy"):
-                self.s.process(source="hermes",session_id="s",model=Backend())
+            nested=self.s.process(source="hermes",session_id="s",model=Backend())
+            self.assertEqual(nested["execution_status"],"partial")
+            self.assertIn(
+                nested["results"][0].get("code"),
+                {"processing_busy","incremental_model_busy"},
+            )
             return output(self.create(), self.no_memory())
         result=self.execute(Backend(check))
         self.assertEqual(result["execution_status"],"completed")
