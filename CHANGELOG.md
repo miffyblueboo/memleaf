@@ -4,6 +4,21 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+### Hermes live-path hardening
+
+- Observe Hermes deferred `tool_call` single-entry `calls[]` wrappers so real
+  memleaf search results are recorded as `NO_MATCH`/found instead of
+  `SEARCH_UNKNOWN`.
+- Deterministically normalize only unambiguous flattened CREATE rows back into
+  the required `memory` object before the unchanged strict incremental validator;
+  malformed, incomplete and unknown-field variants remain fail-closed.
+- Strip the trailing Hermes `<!--CLEAN-->` control marker at the Provider capture
+  boundary so it does not enter Inbox or memory extraction input.
+- Validate the fixes with a real Hermes + DeepSeek Flash turn: retrieval audit
+  `NO_MATCH`, completed incremental extraction, three settled CREATE operations,
+  zero unresolved evidence and no CLEAN marker in Inbox.
+
+
 ## 0.2.67 — 2026-09-20
 
 ### Incremental-only processing and release integrity

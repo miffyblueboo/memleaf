@@ -19,6 +19,16 @@ except (ImportError, ValueError):
         _spec.loader.exec_module(_module)
     globals().update({name: getattr(_module, name) for name in getattr(_module, "__all__", ())})
 
+def _capture_assistant_text(value: str) -> str:
+    """Remove Hermes' terminal internal cleanliness marker from memory input."""
+    import re
+
+    if not isinstance(value, str):
+        return value
+    return re.sub(r"(?:\r?\n)?\s*<!--\s*CLEAN\s*-->\s*$", "", value,
+                  flags=re.IGNORECASE)
+
+
 def _sync_source_metadata(messages: Any, user_content: str, assistant_content: str) -> dict[str, dict[str, Any]]:
     """Read optional host metadata only from the exact visible tail pair.
 
@@ -1618,9 +1628,11 @@ class MemleafMemoryProvider(MemoryProvider):
         # Never capture the raw message list as business conversation content.
         if not self._write_enabled or self._client is None:
             return
+        raw_assistant_content = assistant_content
+        captured_assistant_content = _capture_assistant_text(assistant_content)
         visible_events = [
             ("user", user_content),
-            ("assistant", assistant_content),
+            ("assistant", captured_assistant_content),
         ]
         if any(not isinstance(content, str) or not content.strip() for _, content in visible_events):
             return
@@ -1640,9 +1652,9 @@ class MemleafMemoryProvider(MemoryProvider):
                     effective_session,
                     resolved_turn_number,
                     user_content,
-                    assistant_content,
+                    captured_assistant_content,
                 )
-                source_metadata = _sync_source_metadata(messages, user_content, assistant_content)
+                source_metadata = _sync_source_metadata(messages, user_content, raw_assistant_content)
                 user_source_id = source_metadata.get("user", {}).get("message_id")
                 if user_source_id:
                     # Stable host identity survives a revised body/final reply.

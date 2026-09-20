@@ -568,8 +568,26 @@ def _tool_call_parts(value: Any) -> Optional[dict[str, Any]]:
         wrapper = _decode_tool_value(arguments)
         if not isinstance(wrapper, Mapping):
             return None
-        name = wrapper.get("name")
-        arguments = wrapper.get("arguments")
+        # Hermes' deferred-tool bridge advertises a batch envelope even for one
+        # local tool: {"calls": [{"name": ..., "arguments": ...}]}. Local
+        # deferred tools are one entry per outer tool_call, so only unwrap a
+        # single-entry batch. Multi-entry wrapper results cannot be correlated
+        # safely to one inner call and therefore remain diagnostic-unknown.
+        raw_calls = _decode_tool_value(wrapper.get("calls")) if "calls" in wrapper else None
+        if raw_calls is not None:
+            if isinstance(raw_calls, Mapping):
+                raw_calls = [raw_calls]
+            if not isinstance(raw_calls, list) or len(raw_calls) != 1 or not isinstance(raw_calls[0], Mapping):
+                return None
+            inner = raw_calls[0]
+            name = inner.get("name")
+            arguments = inner.get("arguments")
+            inner_id = inner.get("id") or inner.get("call_id")
+            if isinstance(inner_id, str) and inner_id:
+                call_id = inner_id
+        else:
+            name = wrapper.get("name")
+            arguments = wrapper.get("arguments")
     if not isinstance(name, str):
         return None
     arguments = _decode_tool_value(arguments)

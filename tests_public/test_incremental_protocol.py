@@ -117,6 +117,40 @@ class IncrementalProtocolTests(unittest.TestCase):
         op = self.run_rows(self.create(type="todo", status="active", assignee="user:1", waiting_on=None))["operations"][0]
         self.assertEqual(op["memory"]["assignee"], "user:1")
 
+    def test_flattened_create_wrapper_is_normalized_before_strict_validation(self):
+        row = {
+            "action": "CREATE", "evidence": ["e1"],
+            "type": "fact", "scope": "s1",
+            "title": "Known requirement", "body": "Keep this requirement.",
+        }
+        out = self.run_rows(row)
+        self.assertFalse(out["issues"])
+        self.assertEqual(len(out["operations"]), 1)
+        op = out["operations"][0]
+        self.assertEqual(op["memory"]["type"], "fact")
+        self.assertEqual(op["memory"]["scopes"], ["project:Atlas"])
+        self.assertIn("create_memory_wrapper_normalized", op["warnings"])
+
+    def test_flattened_create_with_unknown_field_stays_rejected(self):
+        row = {
+            "action": "CREATE", "evidence": ["e1"],
+            "type": "fact", "scope": "s1",
+            "title": "Known requirement", "body": "Keep this requirement.",
+            "unexpected": "must not be accepted",
+        }
+        out = self.run_rows(row)
+        self.assertFalse(out["operations"])
+        self.assertEqual(out["issues"][0]["code"], "invalid_fields")
+
+    def test_flattened_create_missing_required_field_stays_rejected(self):
+        row = {
+            "action": "CREATE", "evidence": ["e1"],
+            "type": "fact", "scope": "s1", "title": "Known requirement",
+        }
+        out = self.run_rows(row)
+        self.assertFalse(out["operations"])
+        self.assertEqual(out["issues"][0]["code"], "invalid_fields")
+
     def test_target_type_cannot_be_reclassified_in_patch(self):
         out = self.run_rows(self.update(type="fact", status="completed"))
         self.assertFalse(out["operations"])
