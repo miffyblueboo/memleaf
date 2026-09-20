@@ -19,7 +19,6 @@ from memleaf.models import MemoryVersionError, utc_now
 from memleaf.planning_context import PlanningContext
 from memleaf.process_common import ProcessingError, _native_result
 from memleaf.process_journal import ProcessJournal
-from memleaf.processing import Processor
 from memleaf.semantic_maintenance import expand_maintenance
 from memleaf.turn_audit import TurnAudit
 from memleaf.turn_plan import FrozenTurn, content_digest, dedup_digest, revision_digest
@@ -36,6 +35,13 @@ class TemporaryVaultCase(unittest.TestCase):
 
     def context(self):
         return PlanningContext(self.s, TurnAudit(), ProcessJournal(self.s))
+
+    def commit_components(self):
+        journal = ProcessJournal(self.s)
+        audit = TurnAudit()
+        writer = MemoryWriter(self.s)
+        committer = MemoryCommitter(self.s, writer=writer, audit=audit, journal=journal)
+        return journal, writer, committer
 
     def request(self, expected):
         turn = SimpleNamespace(source="hermes", session_id="session", turn_key="turn",
@@ -145,13 +151,13 @@ class SemanticDigestTests(TemporaryVaultCase):
                              field_basis={"content": {"event_key": "old"}})
         self.s.capture("hermes", "session", "turn-1", "user", "Approval required.")
         self.s.capture("hermes", "session", "turn-1", "assistant", "Noted.")
-        processor = Processor(self.s); now = utc_now()
-        snapshots, _ = processor.journal._snapshot(source="hermes", session_id="session", now=now, cleanup_hours=24, scope=None)
+        journal, writer, committer = self.commit_components(); now = utc_now()
+        snapshots, _ = journal._snapshot(source="hermes", session_id="session", now=now, cleanup_hours=24, scope=None)
         turn = snapshots[0].turn
         request = {"turn": turn, "summary": {"title": "Deployment", "body": "Approval required.", "type": "fact",
             "tags": [], "scopes": ["global"], "aliases": [], "keywords": []}, "memory_id": "mem-new",
             "candidate_id": "c1", "evidence_unit_ids": ["e1"], "conversation_title": "audit", "event_key": turn.events[0].event_key}
-        result = processor.committer._commit_success(snapshots, [request], now=now, cleanup_hours=24)
+        result = committer._commit_success(snapshots, [request], now=now, cleanup_hours=24)
         self.assertEqual(result, [])
         self.assertEqual(request["duplicate_memory_id"], "mem-existing")
         self.assertEqual(len(self.s.vault.list_markdown("knowledge")), 1)
@@ -238,17 +244,17 @@ class LegacyRevisionTests(TemporaryVaultCase):
         _, expected = self.legacy()
         self.s.capture("hermes", "session", "turn-1", "user", "Updated")
         self.s.capture("hermes", "session", "turn-1", "assistant", "Noted")
-        processor = Processor(self.s); now = utc_now()
-        snapshots, _ = processor.journal._snapshot(source="hermes", session_id="session", now=now, cleanup_hours=24, scope=None)
+        journal, writer, committer = self.commit_components(); now = utc_now()
+        snapshots, _ = journal._snapshot(source="hermes", session_id="session", now=now, cleanup_hours=24, scope=None)
         req = self.request(expected); req["turn"] = snapshots[0].turn
         req.update(conversation_title="audit", event_key=snapshots[0].turn.events[0].event_key)
-        self.assertEqual(processor.committer._commit_success(snapshots, [req], now=now, cleanup_hours=24), ["mem-one"])
+        self.assertEqual(committer._commit_success(snapshots, [req], now=now, cleanup_hours=24), ["mem-one"])
         self.assertEqual(self.s.read("mem-one").body, "Updated")
         count = len(self.s.vault.list_markdown("history"))
         # The request has already been applied; validating/replaying cannot
         # manufacture another history version merely because the head is new.
         self.validate(req)
-        with self.s.vault.lock(): processor.writer.write_many_unlocked([req], now=now)
+        with self.s.vault.lock(): writer.write_many_unlocked([req], now=now)
         self.assertEqual(len(self.s.vault.list_markdown("history")), count)
 
 
