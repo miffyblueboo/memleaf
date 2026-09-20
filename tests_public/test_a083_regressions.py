@@ -23,22 +23,6 @@ from memleaf.turn_audit import TurnAudit
 from test_incremental_execution import Backend, output
 
 
-class StubBackend:
-    single_pass_safe = True
-    single_pass_protocol = True
-    def __init__(self):
-        self.calls = 0
-    def complete(self, *args, **kw):
-        self.calls += 1
-        return '{}'
-
-
-def no_writes(planner, backend, turn, state, **kw):
-    """Test orchestration only; this is not a semantic-quality model fixture."""
-    backend.complete('contract fixture', purpose='single_pass')
-    return [], []
-
-
 class SourceCase(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -304,22 +288,21 @@ class RevisionDeliveryTests(SourceCase):
 
 
 class WorkAndCompatibilityTests(SourceCase):
-    def test_partial_commit_keeps_remaining_request_budget(self):
+    def test_partial_incremental_keeps_request_budget_open(self):
         self.pair()
-        model = StubBackend()
-        def partial(planner, backend, turn, state, **kw):
-            backend.complete('fixture', purpose='single_pass')
-            ref = (turn.source, turn.session_id, turn.turn_key)
-            planner.audit._evidence_by_turn[ref] = [dict(unit_id='e1', decision='DEFERRED', reason='coverage_omitted')]
-            return [], []
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', partial):
-            self.assertEqual(self.s.process(source='host', session_id='s', model=model)['coverage_status'], 'partial')
+        model = Backend(output({
+            "action": "DEFERRED",
+            "evidence": ["e1"],
+            "reason": "missing_context",
+            "need": "Confirm the objective.",
+        }))
+        result = self.s.process(source='host', session_id='s', model=model)
+        self.assertEqual(result['coverage_status'], 'partial')
+        self.assertEqual(len(model.calls), 1)
         ledger = json.loads((self.s.vault.state_path/'extraction_request_budget.json').read_text())
         row = next(iter(next(iter(ledger['works'].values()))['turns'].values()))
         self.assertFalse(row['completed'])
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', no_writes):
-            self.s.process(source='host', session_id='s', model=model, scope=['global'])
-        self.assertEqual(model.calls, 2)
+        self.assertEqual(row['requests'], 1)
 
     def legacy_turn(self):
         self.pair()
@@ -358,14 +341,17 @@ class WorkAndCompatibilityTests(SourceCase):
         old_id = f'{turn.source}/{turn.session_id}/{turn.turn_key}'
         path = self.s.vault.state_path/'extraction_request_budget.json'
         path.write_text(json.dumps(dict(version=1, works={'job-old': {'turns': {old_id: 3}}}, order=['job-old'])))
-        model = StubBackend()
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', no_writes):
-            with self.assertRaises(Exception):
-                self.s.process(source='host', session_id='s', model=model)
-        self.assertEqual(model.calls, 0)
+        model = Backend(output({"action": "NO_MEMORY"}))
+        result = self.s.process(source='host', session_id='s', model=model)
+        self.assertEqual(len(model.calls), 0)
+        self.assertEqual(result['coverage_status'], 'partial')
         migrated = json.loads(path.read_text())
         work = extraction_work_id(turn, request_kind='automatic', intent_id='automatic')
         self.assertEqual(migrated['works'][work]['turns'][old_id]['requests'], 3)
+        self.assertIn(
+            result['results'][0].get('code'),
+            {'request_budget_exhausted', 'budget_state_or_migration_required'},
+        )
 
     def test_missing_source_time_is_still_unknown(self):
         self.capture()
