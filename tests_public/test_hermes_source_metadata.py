@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 import tempfile
 import types
@@ -98,6 +99,89 @@ class HermesMetadataTests(unittest.TestCase):
         self.assertEqual(call.call_count, 2)
         for invocation in call.call_args_list:
             self.assertNotIn('source_time', invocation.args[1])
+
+    def test_single_entry_tool_call_batch_is_observed_as_no_match(self):
+        retrieval_id = 'retrieval-1'
+        messages = [
+            {
+                'role': 'assistant',
+                'tool_calls': [{
+                    'id': 'bridge-call',
+                    'function': {
+                        'name': 'tool_call',
+                        'arguments': json.dumps({
+                            'calls': [{
+                                'name': 'mcp__memleaf__search',
+                                'arguments': {'query': 'mail status', 'retrieval_id': retrieval_id},
+                            }]
+                        }),
+                    },
+                }],
+            },
+            {
+                'role': 'tool',
+                'tool_call_id': 'bridge-call',
+                'content': json.dumps({'status': 'no_match', 'results': []}),
+            },
+        ]
+        audit = {}
+        status = self.module.MemleafMemoryProvider._observe_search_messages(
+            messages, retrieval_id, audit_state=audit,
+        )
+        self.assertEqual(status, 'no_match')
+        self.assertEqual(audit['status'], 'NO_MATCH')
+
+    def test_multi_entry_tool_call_batch_is_not_misattributed(self):
+        retrieval_id = 'retrieval-1'
+        messages = [
+            {
+                'role': 'assistant',
+                'tool_calls': [{
+                    'id': 'bridge-call',
+                    'function': {
+                        'name': 'tool_call',
+                        'arguments': json.dumps({
+                            'calls': [
+                                {'name': 'mcp__memleaf__search',
+                                 'arguments': {'query': 'mail status', 'retrieval_id': retrieval_id}},
+                                {'name': 'another_tool', 'arguments': {}},
+                            ]
+                        }),
+                    },
+                }],
+            },
+            {
+                'role': 'tool',
+                'tool_call_id': 'bridge-call',
+                'content': json.dumps({'status': 'no_match', 'results': []}),
+            },
+        ]
+        audit = {}
+        status = self.module.MemleafMemoryProvider._observe_search_messages(
+            messages, retrieval_id, audit_state=audit,
+        )
+        self.assertEqual(status, 'unknown')
+        self.assertEqual(audit['status'], 'SEARCH_UNKNOWN')
+
+    def test_clean_marker_is_removed_before_assistant_capture(self):
+        with tempfile.TemporaryDirectory() as root:
+            service = Memleaf.initialize(Path(root) / 'vault')
+            provider = self.module.MemleafMemoryProvider()
+            provider._client = object(); provider._auto_process = False
+            raw_final = 'No new mail.\n\n<!--CLEAN-->'
+            rows = [
+                dict(role='user', content='Check mail', id='u', source_sequence=1),
+                dict(role='assistant', content=raw_final, id='a', source_sequence=2),
+            ]
+            def call(name, args, **kw):
+                self.assertEqual(name, 'capture')
+                result = service.capture(**args)
+                return {'stored': result.stored, 'duplicate': result.duplicate}
+            with patch.object(provider, '_call', side_effect=call):
+                provider.sync_turn('Check mail', raw_final, session_id='s', turn_number=3, messages=rows)
+            turn = parse_inbox(service.vault)[0]
+            self.assertEqual(turn.events[1].content, 'No new mail.')
+            self.assertNotIn('<!--CLEAN-->', turn.events[1].content)
 
 
 if __name__ == '__main__':
