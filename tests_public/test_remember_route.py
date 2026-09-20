@@ -44,35 +44,41 @@ class TextFixture(unittest.TestCase):
 
 
 class TextRememberRouteTests(TextFixture):
-    def test_default_legacy_is_unchanged(self):
-        with patch('memleaf.processing.Processor.remember',return_value={'old':True}) as f:
-            self.assertEqual(self.s.remember('x'),{'old':True})
-            f.assert_called_once()
-        self.assertEqual(self.s.vault.config()['process']['remember_pipeline'],'legacy')
+    def test_default_route_is_incremental(self):
+        self.assertEqual(self.s.vault.config()['process']['remember_pipeline'],'incremental')
+        b=Backend(output(self.create()))
+        r=self.s.remember('Use the stable API.',source='hermes',session_id='s',
+                          intent_id='default-incremental',model=b)
+        self.assertEqual(r['execution_status'],'completed');self.assertEqual(len(b.calls),1)
 
     def test_configured_and_explicit_routes_share_existing_runner(self):
         cfg=self.s.vault.config();cfg['process']['remember_pipeline']='incremental'
         save_config(self.s.vault.config_path,cfg)
         b=Backend(output(self.create()))
-        with patch('memleaf.processing.Processor.remember',side_effect=AssertionError('legacy')):
-            r=self.s.remember('Use the stable API.',source='hermes',session_id='s',intent_id='explicit-1',model=b)
-            again=self.remember()
+        r=self.s.remember('Use the stable API.',source='hermes',session_id='s',intent_id='explicit-1',model=b)
+        again=self.remember()
         self.assertEqual(r['run_id'],again['run_id']);self.assertEqual(len(b.calls),1)
 
-    def test_automatic_pipeline_does_not_silently_switch_remember(self):
-        cfg=self.s.vault.config();cfg['process']['automatic_pipeline']='incremental'
+    def test_automatic_pipeline_setting_does_not_select_another_engine(self):
+        cfg=self.s.vault.config();cfg['process']['automatic_pipeline']='legacy'
         save_config(self.s.vault.config_path,cfg)
-        with patch('memleaf.processing.Processor.remember',return_value={'legacy':True}):
-            self.assertEqual(self.s.remember('x'),{'legacy':True})
+        b=Backend(output(self.create()))
+        r=self.s.remember('Use the stable API.',source='hermes',session_id='s',
+                          intent_id='remember-still-incremental',model=b)
+        self.assertEqual(r['execution_status'],'completed');self.assertEqual(len(b.calls),1)
 
-    def test_invalid_route_and_configuration_are_rejected(self):
+    def test_invalid_or_legacy_route_is_rejected(self):
         for value in ('other',[],True):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):self.s.remember('x',pipeline=value)
                 cfg=self.s.vault.config();cfg['process']['remember_pipeline']=value
                 with self.assertRaises(ValueError):save_config(self.s.vault.config_path,cfg)
-        for kwargs in ({'recover':True},{'source_time':'2026-09-17T11:00:00Z'}):
-            with self.assertRaises(ValueError):self.s.remember('x',**kwargs)
+        with self.assertRaisesRegex(ValueError,'legacy_pipeline_removed'):
+            self.s.remember('x',pipeline='legacy')
+        cfg=self.s.vault.config();cfg['process']['remember_pipeline']='legacy'
+        save_config(self.s.vault.config_path,cfg)
+        with self.assertRaisesRegex(ValueError,'legacy_pipeline_removed'):
+            self.s.remember('x')
 
     def test_single_real_user_input_has_no_fabricated_assistant(self):
         b=Backend(output(self.create()));r=self.remember(b)
@@ -241,17 +247,16 @@ class TextRememberRouteTests(TextFixture):
         with self.assertRaisesRegex(ValueError,'pipeline_changed'):self.remember(b)
         self.assertFalse(b.calls)
 
-    def test_new_receipt_cannot_refresh_budget_via_old_route(self):
+    def test_new_receipt_cannot_be_replayed_through_removed_legacy_route(self):
         self.remember(Backend(output(self.create())))
-        from memleaf.process_common import ProcessingError
-        with self.assertRaisesRegex(ProcessingError,'intent reused'):
+        with self.assertRaisesRegex(ValueError,'legacy_pipeline_removed'):
             self.remember(Backend(),pipeline='legacy')
         self.assertEqual(len(self.ledger()[KEY]),1)
 
     def test_mcp_existing_remember_tool_exposes_route_without_new_tool(self):
         from memleaf.mcp_server import _TOOLS, _invoke_tool
         schema=next(x for x in _TOOLS if x['name']=='remember')['inputSchema']['properties']
-        self.assertEqual(schema['pipeline']['enum'],['legacy','incremental'])
+        self.assertEqual(schema['pipeline']['enum'],['incremental'])
         self.assertIn('source_time',schema);self.assertIn('recover',schema)
         with patch('memleaf.incremental_runtime._resolve',return_value=Backend(output(self.create()))):
             r=_invoke_tool(self.s,'remember',{'content':'Use the stable API.','intent_id':'mcp','pipeline':'incremental'})
