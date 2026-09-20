@@ -4,6 +4,8 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.66 — 2026-09-20
+
 ### Reconcile divergent local candidates
 
 - Integrate the 1147-test closeout and 1128-test update candidates without losing
