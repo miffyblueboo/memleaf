@@ -7,6 +7,7 @@ from unittest.mock import patch
 from memleaf.extraction_work_state import ExtractionWorkStateError, extraction_work_id, reserve_model_request
 from memleaf.inbox import parse_inbox
 from memleaf.models import utc_now
+from memleaf.process_journal import ProcessJournal
 from test_a083_regressions import SourceCase
 from test_incremental_execution import Backend, output
 from memleaf.llm.base import ModelError
