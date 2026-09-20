@@ -34,13 +34,19 @@ class ControlAbsenceContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):restarted.capture('hermes','s','t','user','not collected')
         self.assertFalse(path.exists());self.assertEqual(restarted.vault.list_markdown('inbox'),[])
 
-    def test_missing_processed_blocks_both_remember_routes_before_backend(self):
+    def test_missing_processed_blocks_incremental_remember_before_backend(self):
         self.s.vault.processed_state_path.unlink()
-        for pipeline in ('legacy','incremental'):
-            backend=Backend()
-            with self.subTest(pipeline=pipeline),self.assertRaises((ValueError,RuntimeError)):
-                self.s.remember('Keep the approved decision.',pipeline=pipeline,model=backend,intent_id='intent')
-            self.assertFalse(backend.calls)
+        backend=Backend()
+        with self.assertRaises((ValueError,RuntimeError)):
+            self.s.remember('Keep the approved decision.',pipeline='incremental',
+                            model=backend,intent_id='intent')
+        self.assertFalse(backend.calls)
+
+        legacy=Backend()
+        with self.assertRaisesRegex(ValueError,'legacy_pipeline_removed'):
+            self.s.remember('Keep the approved decision.',pipeline='legacy',
+                            model=legacy,intent_id='intent')
+        self.assertFalse(legacy.calls)
 
     def test_consumed_budget_cannot_be_recreated_on_restart(self):
         self.run_work();path=budgets._budget_path(self.s.vault)
