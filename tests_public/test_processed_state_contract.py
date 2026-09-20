@@ -72,17 +72,23 @@ class ProcessedStateReadTests(unittest.TestCase):
         self.assertEqual(self.path.read_text(), raw)
         self.assertFalse(self.s.vault.list_markdown('inbox'))
 
-    def test_both_remember_routes_preserve_corrupt_control_and_do_not_dispatch(self):
+    def test_incremental_remember_preserves_corrupt_control_and_legacy_is_rejected(self):
         raw = '{"sessions":[]}'
         self.path.write_text(raw)
-        for pipeline in ('legacy', 'incremental'):
-            with self.subTest(pipeline=pipeline):
-                backend = Backend()
-                with self.assertRaises(ValueError):
-                    self.s.remember('A stable statement.', pipeline=pipeline, model=backend,
-                                    intent_id='same-authorization')
-                self.assertFalse(backend.calls)
-                self.assertEqual(self.path.read_text(), raw)
+
+        backend = Backend()
+        with self.assertRaises(ValueError):
+            self.s.remember('A stable statement.', pipeline='incremental', model=backend,
+                            intent_id='same-authorization')
+        self.assertFalse(backend.calls)
+        self.assertEqual(self.path.read_text(), raw)
+
+        legacy = Backend()
+        with self.assertRaisesRegex(ValueError, 'legacy_pipeline_removed'):
+            self.s.remember('A stable statement.', pipeline='legacy', model=legacy,
+                            intent_id='same-authorization')
+        self.assertFalse(legacy.calls)
+        self.assertEqual(self.path.read_text(), raw)
         self.assertFalse(self.s.vault.list_markdown('knowledge'))
 
     def test_nested_run_integrity_stays_with_the_run_validator(self):
