@@ -61,7 +61,8 @@ memleaf 不会把整个 Vault 或整段历史对话自动塞进模型上下文�
 - search 候选单页最多 20 项、约 4000 字符；
 - read 单页正文最多 2000 字符；
 - 同一受管理轮次可继续读取所有与问题相关的记忆；`read_count`/`read_chars` 仅用于审计，不再作为阻断配额；
-- `retrieval_id` 必须属于当前轮次，且必须先有成功的 `search` 才能 `read`；
+- 有宿主 Hook/Provider 时，`retrieval_id` 必须属于当前轮次；纯 MCP 客户端第一次 `search` / `list_todos` 可省略它，由 memleaf 返回短期 token，后续分页和 `read` 必须复用；
+- 无论哪种接入方式，都必须先有成功的 `search` / `list_todos` 才能 `read`；
 - `found`、`no_match` 和工具错误是不同状态，错误不能被伪装成无匹配；
 - `context()` 和 Python `search(view="full")` 作为兼容接口保留，但不属于自动检索路径。
 
@@ -266,7 +267,7 @@ python -m memleaf.mcp_server --vault "$HOME/.memleaf"
 | `rebuild_index` | 重建可重建的本地派生索引 |
 | `stats` | 返回 Vault 计数和诊断统计 |
 
-`search` 的候选只是线索，标题不能单独作为事实依据。受管理检索必须使用同一轮的 `retrieval_id` 完成 `search → read`；工具错误、Scope 冲突或读取预算耗尽都应如实处理。
+`search` 的候选只是线索，标题不能单独作为事实依据。受管理检索必须使用同一条检索链的 `retrieval_id` 完成 `search → read`。Hermes/Codex Hook 可直接提供该 token；只有 MCP 的客户端可在第一条 `search` / `list_todos` 省略 token，并使用返回值继续分页和读取。带 cursor 的后续页以及所有 `read` 都不能省略 `retrieval_id`。工具错误、Scope 冲突或读取失败都应如实处理。
 
 ## Python API
 

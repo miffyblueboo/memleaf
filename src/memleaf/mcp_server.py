@@ -65,11 +65,15 @@ INSTRUCTIONS = (
     "Search returns status=found or no_match and lightweight results (memory_id, title), "
     "not bodies. Errors are not no_match: correct scope_mismatch or retry a failed search at most "
     "twice, then honestly report degraded retrieval; do not claim memory was checked successfully. "
+    "When a host supplies retrieval_id, reuse it. A bare MCP client may omit retrieval_id only on "
+    "the first search or first list_todos page; memleaf then returns a short-lived retrieval_id that "
+    "must be reused for pagination and read. "
     "Treat directory entries as leads, never as verified facts; do not infer facts from a title. "
     "Use read(memory_id) on the best matching entry before relying on a past fact. Read more only "
     "when needed, not every entry to filter unrelated items. You may refine the query/scope and "
-    "search again. Pass the host-provided retrieval_id to search and read; never invent or replace "
-    "it. Managed reads have no aggregate ID/character quota; read every relevant memory needed for "
+    "search again. Never invent a retrieval_id: use the host-provided token when present, otherwise "
+    "use the token returned by the first bare-MCP search/list_todos call. Managed reads have no "
+    "aggregate ID/character quota; read every relevant memory needed for "
     "the user's question while keeping each read page at 2000 characters. MCP read requires retrieval_id "
     "and a current FOUND search or list_todos result; NO_MATCH, ERROR, and DEGRADED turns cannot read. "
     "For global current-todo questions use list_todos rather than relevance search, omit scope to cover "
@@ -219,8 +223,10 @@ _TOOLS: tuple[dict[str, Any], ...] = (
         "description": (
             "Search once per ordinary user turn. Return found/no_match and paged lightweight "
             "results (memory_id, title), at most 20/4000 characters, without changing hits. "
-            "retrieval_id is required and must be the host-provided current-turn token. Errors are "
-            "failures, never no_match. Managed MCP search is directory-only; view=full is rejected. "
+            "With host integration, retrieval_id is the host-provided current-turn token. A bare "
+            "MCP client may omit it only on the first page; memleaf returns a short-lived retrieval_id "
+            "for pagination/read. Errors are failures, never no_match. Managed MCP search is "
+            "directory-only; view=full is rejected. "
             "Python search(view='full') remains the compatibility interface."
         ),
         "inputSchema": _object_schema(
@@ -237,15 +243,17 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                 "cursor": {"type": "string"},
                 "retrieval_id": {"type": "string"},
             },
-            required=["query", "retrieval_id"],
+            required=["query"],
         ),
     },
     {
         "name": "list_todos",
         "description": (
             "Enumerate current memleaf todo memories by status/date across all scopes by default. "
-            "This is not relevance search. Continue with next_cursor until has_more=false, then read "
-            "the matching todo bodies with the same retrieval_id. Retired completed/cancelled rows "
+            "This is not relevance search. A bare MCP client may omit retrieval_id only on the first "
+            "page; memleaf returns one that must be reused for pagination and read. Continue with "
+            "next_cursor until has_more=false, then read the matching todo bodies with the same "
+            "retrieval_id. Retired completed/cancelled rows "
             "include history=true and require read(include_history=true)."
         ),
         "inputSchema": _object_schema(
@@ -262,7 +270,6 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                 "limit": {"type": "integer", "minimum": 1},
                 "retrieval_id": {"type": "string"},
             },
-            required=["retrieval_id"],
         ),
     },
     {
@@ -826,7 +833,7 @@ def _managed_search_state(
     service: Memleaf,
     retrieval_id: str | None,
 ) -> dict[str, Any] | None:
-    """Validate the current host turn; Hermes additionally records MCP results."""
+    """Validate the current turn; server-owned MCP fallback records its own results."""
 
     if retrieval_id is None:
         return None
@@ -835,10 +842,21 @@ def _managed_search_state(
     if not isinstance(source, str) or not source:
         raise RetrievalGateError("retrieval_identity_invalid")
     current = validate_current_turn(service.vault, retrieval_id, source)
-    # Codex records real search outcomes from PostToolUse so the stdio server
-    # must not double-count them. Current-turn validation is authoritative for
-    # every host token before the search itself is allowed to run.
-    return current if source == "hermes" else None
+    # Codex host hooks record real search outcomes from PostToolUse, so the
+    # stdio server must not double-count those host-owned tokens. Hermes and
+    # bare-MCP fallback tokens are observed here by the stdio server itself.
+    return current if source in {"hermes", "mcp"} else None
+
+
+def _open_mcp_retrieval_turn(service: Memleaf, request_id: Any) -> str:
+    """Mint one server-owned retrieval chain for a bare MCP first-page request."""
+
+    turn_id = (
+        _mcp_search_call_id(request_id)
+        if request_id is not None
+        else f"mcp-direct-{uuid.uuid4().hex}"
+    )
+    return begin_turn(service.vault, "mcp", _MCP_PROCESS_NAMESPACE, turn_id)
 
 
 def _observe_mcp_search(
@@ -852,12 +870,15 @@ def _observe_mcp_search(
     status = value.get("status") if isinstance(value, Mapping) else None
     if status not in {"found", "no_match"}:
         status = "error"
+    current_source = state.get("source")
+    if current_source not in {"hermes", "mcp"}:
+        raise RetrievalGateError("retrieval_identity_invalid")
     observe_search(
         service.vault,
         state["retrieval_id"],
         status,
         _mcp_search_call_id(request_id),
-        current_source="hermes",
+        current_source=current_source,
     )
 
 
@@ -885,7 +906,11 @@ def _observe_mcp_todos(
         cursor=arguments.get("cursor") if isinstance(arguments.get("cursor"), str) else None,
         has_more=has_more if isinstance(has_more, bool) else False,
         next_cursor=next_cursor if isinstance(next_cursor, str) else None,
-        current_source="hermes",
+        current_source=(
+            state["source"]
+            if state.get("source") in {"hermes", "mcp"}
+            else "hermes"
+        ),
     )
 
 
@@ -898,7 +923,7 @@ def _invoke_tool(
 ) -> dict[str, Any]:
     if name not in _TOOL_BY_NAME:
         raise _InvalidParams
-    if name in {"read", "search", "list_todos"} and (
+    if name == "read" and (
         not isinstance(arguments, dict) or "retrieval_id" not in arguments
     ):
         return _tool_error(RetrievalGateError("retrieval_id_required"))
@@ -936,6 +961,10 @@ def _invoke_tool(
         elif name == "search":
             view = args.pop("view", "directory")
             retrieval_id = args.pop("retrieval_id", None)
+            if retrieval_id is None:
+                if args.get("cursor") is not None:
+                    raise RetrievalGateError("retrieval_id_required")
+                retrieval_id = _open_mcp_retrieval_turn(service, request_id)
             managed_state = _managed_search_state(service, retrieval_id)
             try:
                 if retrieval_id is not None and view == "full":
@@ -959,8 +988,14 @@ def _invoke_tool(
             except Exception as error:
                 # A managed result is not successful until the gate records it.
                 return _tool_error(error)
+            value = dict(value)
+            value["retrieval_id"] = retrieval_id
         elif name == "list_todos":
             retrieval_id = args.pop("retrieval_id", None)
+            if retrieval_id is None:
+                if args.get("cursor") is not None:
+                    raise RetrievalGateError("retrieval_id_required")
+                retrieval_id = _open_mcp_retrieval_turn(service, request_id)
             managed_state = _managed_search_state(service, retrieval_id)
             observed_args = dict(args)
             try:
@@ -975,6 +1010,8 @@ def _invoke_tool(
                 _observe_mcp_todos(service, managed_state, value, request_id, observed_args)
             except Exception as error:
                 return _tool_error(error)
+            value = dict(value)
+            value["retrieval_id"] = retrieval_id
         elif name == "read":
             # Keep the protocol boundary hard-capped even if a caller sends a
             # larger value.  Core read_page performs the same authoritative
