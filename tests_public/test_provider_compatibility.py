@@ -14,7 +14,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from memleaf import Memleaf
+from memleaf import Memleaf, __version__
 from memleaf import installer, mcp_server
 from memleaf.provider_compatibility import (
     BUILD_META, PROVIDER_FILES, COMPATIBILITY_CODES, READ_ONLY_TOOLS,
@@ -43,6 +43,9 @@ class ProviderBuildTests(unittest.TestCase):
     def test_exact_copy_has_same_identity_without_location(self):
         result = provider_build(self.root)
         self.assertTrue(valid_build(result))
+
+    def test_provider_manifest_version_matches_core(self):
+        self.assertEqual(installer._provider_manifest_version(PROVIDER), __version__)
         self.assertEqual(result, provider_build(PROVIDER))
         self.assertNotIn(str(self.root), json.dumps(result))
 
