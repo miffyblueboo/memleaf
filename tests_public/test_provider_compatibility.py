@@ -43,11 +43,11 @@ class ProviderBuildTests(unittest.TestCase):
     def test_exact_copy_has_same_identity_without_location(self):
         result = provider_build(self.root)
         self.assertTrue(valid_build(result))
+        self.assertEqual(result, provider_build(PROVIDER))
+        self.assertNotIn(str(self.root), json.dumps(result))
 
     def test_provider_manifest_version_matches_core(self):
         self.assertEqual(installer._provider_manifest_version(PROVIDER), __version__)
-        self.assertEqual(result, provider_build(PROVIDER))
-        self.assertNotIn(str(self.root), json.dumps(result))
 
     def test_same_release_different_behavior_is_not_equal(self):
         before = provider_build(self.root)
