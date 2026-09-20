@@ -15,9 +15,12 @@ from memleaf.index import EVENT_V2_BLOCK
 from memleaf.models import utc_now
 from memleaf.process_common import ProcessingError
 from memleaf.process_journal import ProcessJournal
-from memleaf.processing import Processor
 from memleaf.single_pass_memory_planner import SinglePassMemoryPlanner
 from memleaf.turn_plan import FrozenTurn, input_digest, turn_plan_key
+from memleaf.memory_writer import MemoryWriter
+from memleaf.memory_commit import MemoryCommitter
+from memleaf.turn_audit import TurnAudit
+from test_incremental_execution import Backend, output
 
 
 class StubBackend:
@@ -78,43 +81,50 @@ class SourceCase(unittest.TestCase):
 
 
 class ExplicitIntentTests(SourceCase):
+    @staticmethod
+    def no_memory_backend(*responses):
+        values = responses or (output({"action": "NO_MEMORY"}),)
+        return Backend(*values)
+
     def test_public_remember_forwards_intent_and_retransmission_is_zero_call(self):
-        model = StubBackend()
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', no_writes):
-            first = self.s.remember('Retain this.', intent_id='user-action', model=model)
-            second = self.s.remember('Retain this.', intent_id='user-action', model=model)
+        model = self.no_memory_backend()
+        first = self.s.remember('Retain this.', intent_id='user-action', model=model)
+        second = self.s.remember('Retain this.', intent_id='user-action', model=model)
         self.assertEqual(first['intent_id'], 'user-action')
         self.assertEqual(second['processed_turns'], 0)
-        self.assertEqual(model.calls, 1)
+        self.assertEqual(len(model.calls), 1)
 
     def test_same_intent_with_different_text_is_not_a_duplicate(self):
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', no_writes):
-            Processor(self.s).remember('A', intent_id='one', model=StubBackend())
-            with self.assertRaisesRegex(ProcessingError, 'different payload'):
-                Processor(self.s).remember('B', intent_id='one', model=StubBackend())
+        model = self.no_memory_backend()
+        self.s.remember('A', intent_id='one', model=model)
+        with self.assertRaisesRegex(ValueError, 'remember_binding_or_pipeline_changed'):
+            self.s.remember('B', intent_id='one', model=Backend())
+        self.assertEqual(len(model.calls), 1)
 
     def test_same_intent_with_changed_scope_is_rejected(self):
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', no_writes):
-            Processor(self.s).remember('A', intent_id='one', scopes=['global'], model=StubBackend())
-            with self.assertRaisesRegex(ProcessingError, 'different payload'):
-                Processor(self.s).remember('A', intent_id='one', scopes=['project:Other'], model=StubBackend())
+        model = self.no_memory_backend()
+        self.s.remember('A', intent_id='one', scopes=['global'], model=model)
+        with self.assertRaisesRegex(ValueError, 'remember_binding_or_pipeline_changed'):
+            self.s.remember('A', intent_id='one', scopes=['project:Other'], model=Backend())
+        self.assertEqual(len(model.calls), 1)
 
     def test_new_intent_in_same_host_turn_has_independent_receipt(self):
-        model = StubBackend()
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', no_writes):
-            for intent in ('one', 'two'):
-                result = Processor(self.s).remember('A', intent_id=intent, turn_id='same-turn',
-                    event_id='same-source', model=model)
-                self.assertEqual(result['processed_turns'], 1)
-        self.assertEqual(model.calls, 2)
+        model = self.no_memory_backend(
+            output({"action": "NO_MEMORY"}),
+            output({"action": "NO_MEMORY"}),
+        )
+        for intent in ('one', 'two'):
+            result = self.s.remember('A', intent_id=intent, turn_id='same-turn',
+                                     event_id='same-source', model=model)
+            self.assertEqual(result['processed_turns'], 1)
+        self.assertEqual(len(model.calls), 2)
 
-    def test_explicit_legacy_receipt_retry_does_not_create_new_intent(self):
-        model = StubBackend()
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', no_writes):
-            first = Processor(self.s).remember('A', event_id='stable-call', model=model)
-            second = Processor(self.s).remember('A', event_id='stable-call', model=model)
+    def test_stable_event_retry_reuses_incremental_intent(self):
+        model = self.no_memory_backend()
+        first = self.s.remember('A', event_id='stable-call', model=model)
+        second = self.s.remember('A', event_id='stable-call', model=model)
         self.assertEqual(first['intent_id'], second['intent_id'])
-        self.assertEqual(model.calls, 1)
+        self.assertEqual(len(model.calls), 1)
 
     def test_frozen_explicit_retry_keeps_original_time(self):
         j = ProcessJournal(self.s)
@@ -128,15 +138,16 @@ class ExplicitIntentTests(SourceCase):
         self.assertEqual(input_digest(turn), input_digest(retried))
         self.assertEqual(FrozenTurn.restore(frozen, retried)['requests'], [])
 
-    def test_legacy_completed_intent_without_receipt_is_not_rebound(self):
-        with patch.object(SinglePassMemoryPlanner, '_collect_turn_outputs', no_writes):
-            Processor(self.s).remember('A', intent_id='one', model=StubBackend())
-            state = self.state()
-            state['events'] = {}
-            self.save(state)
-            with self.assertRaisesRegex(ProcessingError, 'legacy remember receipt'):
-                Processor(self.s).remember('A', intent_id='one', model=StubBackend())
-            self.assertEqual(self.state()['events'], {})
+    def test_completed_incremental_intent_without_receipt_is_not_rebound(self):
+        model = self.no_memory_backend()
+        self.s.remember('A', intent_id='one', model=model)
+        state = self.state()
+        state['events'] = {}
+        self.save(state)
+        with self.assertRaisesRegex(ValueError, 'remember_source_binding_unavailable'):
+            self.s.remember('A', intent_id='one', model=Backend())
+        self.assertEqual(self.state()['events'], {})
+
 
 
 class ImmutableSourceTests(SourceCase):
@@ -264,9 +275,11 @@ class RevisionDeliveryTests(SourceCase):
         with patch('memleaf.capture.atomic_write_json', side_effect=OSError('injected receipt failure')):
             with self.assertRaises(OSError):
                 self.capture(content='Edit', rev='r2', previous_message_revision='r1', source_sequence=1)
-        p = Processor(self.s)
+        writer = MemoryWriter(self.s)
+        journal = ProcessJournal(self.s)
+        committer = MemoryCommitter(self.s, writer=writer, audit=TurnAudit(), journal=journal)
         with self.assertRaisesRegex(ProcessingError, 'source revision changed'):
-            p.committer._commit_success([snapshot], [], now=utc_now(), cleanup_hours=24)
+            committer._commit_success([snapshot], [], now=utc_now(), cleanup_hours=24)
         self.assertEqual(self.s.vault.list_markdown('knowledge'), [])
 
     def test_snapshot_repairs_receipts_without_another_capture(self):
