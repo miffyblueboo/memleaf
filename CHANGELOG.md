@@ -4,6 +4,17 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.71 — 2026-09-21
+
+### Source-time and calendar grounding
+
+- Normalize native Hermes Unix timestamps using the host-local day while
+  rejecting non-finite and out-of-range numeric values.
+- Provide source-local calendar hints to incremental planning without using the
+  processing clock or making an additional model request.
+- Reject generated content dates that conflict with cited source dates or
+  same-clock relative-date evidence, while preserving existing target wording.
+
 ## 0.2.70 — 2026-09-21
 
 ### Public repository and artifact hygiene

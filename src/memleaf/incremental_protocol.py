@@ -15,7 +15,8 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .incremental_dates import parse_source_time, reading_text, selected_calendar, source_basis
+from .incremental_dates import (calendar_hints, invalid_content_dates, parse_source_time,
+                                reading_text, selected_calendar, source_basis)
 from .models import Memory
 from .scope_state import validate_scope_key
 from .turn_plan import revision_digest
@@ -352,6 +353,13 @@ class PlanningSnapshot:
                     fields["observed"] = {}
             # No real memory IDs, revisions, local paths, source lists or journals.
             memories.append(fields)
+        projected_evidence = []
+        for event in state["evidence"]:
+            projection = {key: event[key] for key in ("ref", "use", "role", "text", "source_time", "source_sequence") if key in event}
+            hints = calendar_hints(event)
+            if hints:
+                projection["calendar_hints"] = hints
+            projected_evidence.append(projection)
         return {
             "protocol_version": PROTOCOL_VERSION, "request_kind": state["request_kind"],
             **({"retention_request": state["retention_request"]} if "retention_request" in state else {}),
@@ -359,8 +367,7 @@ class PlanningSnapshot:
             **({"scope_aliases": {reverse_scope[s]: a for s, a in state["scope_aliases"].items()}}
                if state.get("scope_aliases") else {}),
             "allow_new_scopes": state["allow_new_scopes"], "context_complete": state["context_complete"],
-            "evidence": [{key: e[key] for key in ("ref", "use", "role", "text", "source_time", "source_sequence") if key in e}
-                         for e in state["evidence"]], "memories": memories,
+            "evidence": projected_evidence, "memories": memories,
         }
 
 
@@ -495,6 +502,9 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
             if key in fields:
                 _text(fields[key], 256 if key == "title" else 16384,
                       empty=key == "body" and fields.get("validity") == "retracted")
+        if invalid_content_dates(fields, [evidence[ref] for ref in refs],
+                                 state["targets"][result["target_ref"]]["memory"] if action == "UPDATE" else None):
+            raise ValueError("ungrounded_content_date")
         if "status" in fields and fields["status"] not in ("active", "completed", "cancelled"):
             raise ValueError("invalid_status")
         if "validity" in fields and fields["validity"] not in ("valid", "retracted"):

@@ -12,6 +12,17 @@ from typing import Any, Mapping
 
 from .validation import calendar_tokens, normalize_relative_calendar_text, _RELATIVE_CALENDAR_EXPRESSION
 
+_CLOCK_AFTER_DATE = re.compile(r"\s*(?:(?:日|号|上午|下午|晚上|中午|凌晨|约|在|at|T)\s*){0,2}(\d{1,2}:[0-5]\d)(?!\d)", re.IGNORECASE)
+
+
+def _dated_clocks(text: str) -> set[tuple[str, str]]:
+    pairs = set()
+    for token in calendar_tokens(text):
+        clock = _CLOCK_AFTER_DATE.match(text, token.end)
+        if token.canonical and clock:
+            pairs.add((token.canonical, clock.group(1)))
+    return pairs
+
 
 def parse_source_time(value: Any) -> datetime | None:
     if value is None:
@@ -43,6 +54,66 @@ def source_basis(evidence: Mapping[str, Any]) -> dict[str, Any]:
         value.update(input_kind="explicit_text", origin_session_id=origin["session_id"],
                      origin_turn_key=origin["turn_key"])
     return value
+
+
+def calendar_hints(evidence: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Small, source-local calendar facts for the same model call (no processing clock)."""
+    anchor = parse_source_time(evidence.get("source_time"))
+    if anchor is None:
+        return []
+    text = reading_text(str(evidence["text"]))
+    result: list[dict[str, str]] = []
+    for match in _RELATIVE_CALENDAR_EXPRESSION.finditer(text):
+        resolved = normalize_relative_calendar_text(match.group(), anchor.date())
+        if resolved and resolved != match.group():
+            hint = {"text": match.group(), "date": resolved}
+            if hint not in result:
+                result.append(hint)
+    return result[:20]
+
+
+def invalid_content_dates(fields: Mapping[str, Any], events: list[Mapping[str, Any]],
+                          preserved: Mapping[str, Any] | None = None) -> bool:
+    """Reject unsupported generated dates, including misdated relative clock pairs.
+
+    Only cited sources and the selected update target may ground new wording.
+    Existing memory wording is preserved without a new source claim.
+    """
+    from .process_common import _summary_date_grounding_violations
+
+    source_texts = [reading_text(str(event["text"])) for event in events]
+    grounded: set[str] = set()
+    clock_dates: dict[str, set[str]] = {}
+    for event, source in zip(events, source_texts):
+        anchor = parse_source_time(event.get("source_time"))
+        local_day = anchor.date() if anchor is not None else None
+        normalized = normalize_relative_calendar_text(source, local_day) if local_day else None
+        grounded.update(token.canonical for token in calendar_tokens(source, local_day) if token.canonical)
+        if normalized is not None:
+            grounded.update(token.canonical for token in calendar_tokens(normalized, local_day) if token.canonical)
+            for match in _RELATIVE_CALENDAR_EXPRESSION.finditer(source):
+                clock = _CLOCK_AFTER_DATE.match(source, match.end())
+                if clock:
+                    resolved = normalize_relative_calendar_text(match.group(), local_day)
+                    if resolved:
+                        clock_dates.setdefault(clock.group(1), set()).add(resolved)
+        # An explicit source date at the same clock makes a relative binding
+        # ambiguous; in that case the guard must not claim which event it is.
+        for date_value, clock_value in _dated_clocks(source):
+            clock_dates.setdefault(clock_value, set()).add(date_value)
+    prior = preserved or {}
+    texts = {key: fields[key] for key in ("title", "body") if key in fields}
+    if _summary_date_grounding_violations(texts, grounded_dates=grounded, source_texts=source_texts,
+                                          preserved_texts=[prior.get("title"), prior.get("body")]):
+        return True
+    preserved_pairs = set().union(*(_dated_clocks(text) for text in (prior.get("title"), prior.get("body"))
+                                    if isinstance(text, str)))
+    for value in texts.values():
+        for date_value, clock_value in _dated_clocks(value):
+            expected = clock_dates.get(clock_value, set())
+            if len(expected) == 1 and date_value not in expected and (date_value, clock_value) not in preserved_pairs:
+                return True
+    return False
 
 
 def selected_calendar(text: str, evidence: Mapping[str, Any]) -> dict[str, Any]:

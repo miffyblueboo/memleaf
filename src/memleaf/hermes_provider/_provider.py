@@ -37,6 +37,7 @@ def _sync_source_metadata(messages: Any, user_content: str, assistant_content: s
     Strings supplied to sync_turn remain the only captured conversation bodies.
     """
     from datetime import datetime
+    from math import isfinite
 
     if not isinstance(messages, list) or not messages:
         return {}
@@ -55,8 +56,17 @@ def _sync_source_metadata(messages: Any, user_content: str, assistant_content: s
             value = item.get(name, item.get("id") if name == "message_id" else None)
             if isinstance(value, str) and 0 < len(value) <= 800 and not any(c in value for c in "\x00\r\n"):
                 row[name] = value
-        timestamp = item.get("source_time", item.get("timestamp"))
-        if isinstance(timestamp, str) and len(timestamp) <= 80:
+        timestamp = item.get("source_time")
+        if timestamp is None:
+            timestamp = item.get("timestamp")
+        if type(timestamp) in (int, float) and isfinite(timestamp) and 0 <= timestamp < 253402300800:
+            # Hermes persists Unix seconds (not an ISO string). Keep the host's
+            # local offset: a UTC rendering can shift "today" across midnight.
+            try:
+                row["source_time"] = datetime.fromtimestamp(timestamp).astimezone().isoformat()
+            except (OverflowError, OSError, ValueError):
+                pass
+        elif isinstance(timestamp, str) and len(timestamp) <= 80:
             try:
                 parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
                 if parsed.tzinfo is not None and parsed.utcoffset() is not None:
