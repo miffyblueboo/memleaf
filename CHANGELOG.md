@@ -4,6 +4,16 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.70 — 2026-09-21
+
+### Public repository and artifact hygiene
+
+- Remove test files from the public `main` tree and keep them ignored locally.
+- Stop including test files in source distributions and keep CI focused on
+  source syntax, isolated package installation and release-asset integrity.
+- Preserve the runtime package and public API while ensuring new artifacts do
+  not contain the former test fixtures.
+
 ## 0.2.69 — 2026-09-21
 
 ### Incremental protocol compatibility hardening
