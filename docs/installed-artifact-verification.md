@@ -1,26 +1,24 @@
-# Installed artifact and native-platform verification (G5c)
+# Installed artifact and native-platform verification
 
-This is a deterministic CI gate, not a new runtime subsystem or live-model
-acceptance. It follows FS183, FS185-194 and the installation/process portions
-of E10/E17/E19. Existing extraction defaults, prompts, budgets, public interfaces
-and package version are unchanged. Running these checks does not install a real
-Hermes host, read a production Vault, create a release or authorize migration.
+This is a deterministic packaging gate, not a runtime subsystem or live-model
+acceptance gate. The public repository intentionally contains no test files.
+CI therefore validates the source and the built artifacts without checking out
+or executing an in-repository test suite.
 
-## Build once, test the same distribution bytes
+## Build once, install the same bytes
 
-The build job runs the complete public source suite and records the discovered
-case inventory. It builds one wheel and one sdist, verifies that **all** packaged
-Memleaf files match (including the Provider resources), and creates a manifest
-binding artifact sizes/hashes, test assets, inventory and the current commit.
-Verification inputs (manifest and test-only dependencies) use a separate
-artifact; `memleaf-distributions` continues to contain only the release wheel
-and sdist, so downstream PyPI publishing cannot ingest test data. The build job
-exposes the manifest hash separately as a job output. A verification
-job must match that hash and commit before installing the downloaded artifacts.
-This catches accidental cross-run/mixed artifacts; it is not a signed supply-chain
-attestation against replacement of the workflow and its own evidence together.
+The build job:
 
-`verify-artifacts` covers five cells:
+1. compiles `src/` with Python's standard-library compiler;
+2. builds one wheel and one source distribution;
+3. uploads only those two distributions as the workflow artifact.
+
+The `verify-artifacts` job downloads those exact bytes and installs each artifact
+in its own fresh virtual environment. It imports `memleaf` and checks the
+reported package version. It does not read a source-tree checkout, run a model,
+access a production Vault or create a release.
+
+The matrix is:
 
 | Native runner | Python |
 |---|---|
@@ -28,104 +26,32 @@ attestation against replacement of the workflow and its own evidence together.
 | Windows | 3.12 |
 | macOS | 3.12 |
 
-This is not a full OS/Python/architecture Cartesian matrix. Every cell downloads
-the same build artifact. The sdist is rebuilt locally on that runner, and the
-resulting Memleaf payload must equal the original wheel before it is tested.
-Archive timestamps and packaging metadata may differ; implementation/resource
-bytes must not. Neither cell rebuilds from a different checkout and calls that
-the originally tested binary.
+The source distribution is installed with its declared build backend. The
+wheel and source distribution are checked separately so a successful wheel
+install cannot hide a broken source package. `fail-fast: false` lets every
+native cell report its own result; it does not relax the aggregate dependency.
 
-Each cell creates **two fresh virtual environments**, one for the original wheel
-and one for the sdist-built wheel. Only public test assets and examples are copied
-to a separate temporary workspace. The extracted source directory is removed
-before either suite runs. The test Python uses isolated mode; inherited
-`PYTHONPATH`, Python home settings and product/model configuration variables are
-removed. Child crash/restart tests use that environment's Python too.
+## Release dependency
 
-Before and after discovery/execution the reporter verifies that `memleaf` and
-its loaded submodules come from that environment's site-packages. It compares
-installed test IDs and count to the source-job inventory, fails on empty/missing
-cases, errors, failures, skips or expected failures, and verifies installed
-package bytes after execution. It does not report success just because a help
-command returned zero, or because a source-tree import masked a broken install.
+The release job still requires the build and every installed-artifact cell.
+Only an explicitly authorized `release: v<version>` commit on `main` can create
+a GitHub Release. Existing release assets are checked against the local bytes
+before a missing asset is uploaded; existing assets are never replaced.
 
-## Reuse existing contracts; add native-process evidence
-
-The existing complete public suite remains the main acceptance surface. Added
-focused checks exercise Unicode/spaces in Vault paths, exact UTF-8 and LF/CRLF
-file handling, real process lock contention, OS process-exit lock release,
-case-insensitive identity collisions and missing timezone data. These checks do
-not patch `os.name` to pretend Linux is Windows.
-
-The installed smoke check starts the actual generated `memleaf-mcp` executable
-through byte pipes twice and uses the packaged Hermes MCP client for a
-`scope_catalog -> search -> read` exchange. It overrides the child environment to
-`PYTHONUTF8=0` and `PYTHONIOENCODING=cp1252`; the MCP transport must still exchange
-UTF-8, including Chinese and emoji. Both actual console scripts also run directly.
-
-Hermes' two base-interface classes are stubbed solely to load the bundled client.
-Transport, executable, process boundary and Vault operations are real; a running
-Hermes installation, Provider registration, installed-host lifecycle and user
-configuration are **not** tested by this stub. The report leaves installed
-Hermes/live semantic acceptance `not_run` and `switch_authorized=false`.
-
-The suite's old POSIX-only exclusion for one symlink test is removed. Hosted
-runners must support the filesystem primitives under test. Capability failures or
-other skips make the gate fail rather than becoming a green reduced suite. A
-separate native setup issue can then be diagnosed explicitly; assertions must
-not be disabled merely to obtain a green matrix.
-
-## Encoding and timezone fixtures
-
-The general test runner explicitly enables UTF-8 for test-file I/O on all
-platforms; historical tests contain Unicode fixtures. That harness setting is
-not evidence that a user terminal has UTF-8 enabled. The separate stdio tests
-intentionally disable it, so protocol correctness does not depend on the harness.
-
-Windows does not necessarily have an IANA zoneinfo database. The build job obtains
-`tzdata` as a **test-only wheel**, hashes it in the same manifest, and verification
-jobs install only that bound wheel offline into the disposable test environments.
-Memleaf runtime dependencies and its behavior when timezone data is unavailable
-remain unchanged. No dependency is silently installed into a user's environment.
-The negative missing-zone test still checks explicit failure and UTC fallback.
-Build tools and runners can evolve; reports retain Python/OS/architecture and
-artifact hashes, not a claim of hermetic or bit-reproducible build infrastructure.
-
-## Reports, failure and release dependency
-
-The source report and each cell's stage JSON/logs are uploaded separately. Reports
-include actual test count and skips, test-inventory hash, package import root,
-Python/OS/architecture, durations and the candidate manifest. An interrupted or
-failed command fails the job; available earlier-stage reports remain available.
-A wheel pass followed by an sdist failure is not a platform pass. `fail-fast:false`
-allows other cells to finish without hiding their results; it does not relax the
-aggregate dependency.
-
-The existing release job now requires **build and all installed-artifact cells**.
-Existing release conditions and explicit `release: v...` authorization remain.
-Ordinary development commits do not create tags, GitHub Releases or PyPI uploads.
-This change only adds a deterministic prerequisite; it cannot replace live Flash,
-held-out multi-turn review, real host testing, backup/Forget checks or operator
-switch authorization. Until a commit's matrix has actually run, its native
-platform results are `not_run`, not inferred from a written workflow.
+Ordinary commits do not create tags, GitHub Releases or PyPI uploads. These
+checks do not establish live provider behavior, Hermes host installation,
+Windows process semantics, migration safety or semantic quality.
 
 ## Local reproduction
 
-From a clean candidate source directory, with its declared build backend available:
+From a clean checkout with the declared build backend available:
 
 ```sh
-python -I -X utf8 tests_public/run_contracts.py --tests tests_public --source-root src --report source-results.json
+python -m compileall -q src
 python -m build --wheel --sdist
-python -m pip download --only-binary=:all: --no-deps --dest dist/test-dependencies tzdata
-python tests_public/verify_distribution.py manifest --dist dist --source-report source-results.json --commit <candidate-sha>
-python tests_public/verify_distribution.py verify --dist dist --output <new-output-directory> --commit <candidate-sha> --manifest-sha256 <printed-manifest-sha256>
 ```
 
-`build`/setuptools are developer tools. The verifier itself uses the standard
-library and the explicitly installed backend for the sdist build. It never
-implicitly fetches a model or a package at runtime: artifact installations use
-`--no-index --no-deps`. On a machine with system IANA data, a local manifest may
-omit the test dependency; record that difference rather than claiming the local
-run used CI's identical dependency set. Existing output is refused. Reports and
-logs here contain synthetic test data only; real-model trace packages follow the
-separate private acceptance contract and must not be uploaded by this job.
+For an isolated local import check, create a temporary virtual environment and
+install the wheel and source archive separately with `--no-deps`. Do not add
+local test files to this repository; they are intentionally ignored and are not
+part of the release artifacts.

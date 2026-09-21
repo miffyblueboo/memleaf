@@ -150,17 +150,10 @@ bytes, LF newlines and a trailing LF; fences and dynamic inputs are excluded.
 Size is checked by the public tests against half of the v3.0 baseline. The old
 production prompts and model settings are not replaced.
 
-Run the source contract tests with:
-
-```sh
-PYTHONPATH=src python -m unittest discover -s tests_public -p 'test_*.py'
-```
-
-These tests cover the parser/compiler, calendar conversion, immutable snapshots,
-read-only service boundary and old 110 regressions. They are not live semantic
-or native Hermes/Windows/macOS acceptance. Before G3 production activation, finish
-commit/recovery integration and bounded dispatch, test the installed artifacts,
-and run the agreed isolated multi-turn Flash acceptance set.
+The public repository intentionally does not store or execute test files. Before
+G3 production activation, finish commit/recovery integration and bounded dispatch,
+verify the installed artifacts through CI, and run the agreed isolated multi-turn
+Flash acceptance set from its separate acceptance environment.
 
 ## Development closeout: bounded identity and provenance
 

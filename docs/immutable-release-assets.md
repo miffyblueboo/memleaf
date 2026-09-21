@@ -14,14 +14,14 @@ that the bytes were unchanged: rebuilding an archive can produce different
 compressed bytes from equivalent source. A retry must use the **original verified
 artifacts**, not a rebuild presented as the same published package.
 
-`tests_public/release_assets.py` checks the tag's resolved commit and release ID,
-then downloads all existing expected assets by their asset IDs. Sizes and SHA-256
-must match the local wheel, source archive and deterministic `SHA256SUMS` before
-any missing attachment is uploaded. A mismatch fails without deleting, renaming,
+The release workflow checks the tag's resolved commit and release metadata, then
+downloads all existing expected assets by their asset IDs. Sizes and SHA-256 must
+match the local wheel, source archive and deterministic `SHA256SUMS` before any
+missing attachment is uploaded. A mismatch fails without deleting, renaming,
 overwriting or repairing the published asset. Unrelated release attachments stay
 untouched. Duplicate expected names, unfinished uploads and malformed metadata
-fail visibly. This helper is CI-only and is included with the public tests, not
-imported by the Memleaf runtime.
+fail visibly. The check is kept inline in the workflow; no test helper is stored
+in the public repository.
 
 Uploads are create-only and bounded to one attempt per missing name. When another
 uploader wins, the helper rereads and verifies the resulting bytes; a failed

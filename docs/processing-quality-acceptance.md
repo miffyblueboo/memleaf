@@ -5,9 +5,9 @@ The online candidate path uses one incremental planner and at most two durable
 request reservations per source/authorization work. It does not retain the old
 Gate -> summary -> semantic-review tail as an acceptance requirement. Legacy
 routes remain available for compatibility and deliberately stay the default
-until separately authorized migration. This document replaces the obsolete
-statement that deterministic tests are local-only: `tests_public/` is committed,
-in the sdist, and exercised by CI. A green CI is not live-model acceptance.
+until separately authorized migration. The public repository keeps deterministic
+test inputs and test code outside the tracked source tree. CI validates source
+syntax and installed package artifacts; a green CI is not live-model acceptance.
 
 ## What runs, and what does not
 
@@ -157,10 +157,9 @@ Its OS matrix and explicit import/skip checks strengthen gate 1, not gates 2 or 
 A workflow definition alone is not a passed native run; retain the per-commit
 reports and keep actual Hermes installation and live semantics separate.
 
-1. **Deterministic contracts and artifact consistency.** Run `tests_public/` on
-   source, sdist and an actually installed wheel, verifying import paths. Fixed
-   oracle responses test the harness/runtime, not the model. Source and artifact
-   implementation fingerprints must match before comparing results.
+1. **Artifact consistency.** Build the wheel and sdist once, then install both
+   exact artifacts in isolated native environments and verify package imports.
+   This does not replace semantic review or live host acceptance.
 2. **Live semantic judgement.** A structurally passing live run still records
    `semantic_status:not_reviewed`. Review each repetition against its own source
    and checklist: future value, non-invention, correct subject/scope, independent

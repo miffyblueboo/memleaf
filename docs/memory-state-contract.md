@@ -134,12 +134,9 @@ use the controlled stop-write upgrade procedure before resuming pending work.
 Malformed validity types raise controlled validation errors. Existing scanning
 can skip the invalid record and keep unrelated records usable; the public integrity envelope reports malformed and conflicting records with
 bounded snapshot validation. Explicit writes need a provably unique target and
-can conservatively block where ordinary reads continue with incomplete diagnostics. Public tests are included in the source distribution and use temporary
-Vaults only, with no model or network access:
-
-```bash
-PYTHONPATH=src python -m unittest discover -s tests_public -p 'test_*.py' -v
-```
+can conservatively block where ordinary reads continue with incomplete diagnostics.
+The public repository does not store test files; package installation and source
+syntax are checked by CI, while semantic acceptance runs in a separate environment.
 
 ## Current revision-target integrity (unreleased)
 

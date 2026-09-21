@@ -34,6 +34,7 @@ MEMORY_CLEANUP_CANDIDATES.md
 
 # Local-only tests, acceptance helpers, and planning artifacts
 /tests/
+/tests_public/
 /examples/live_core_lifecycle_acceptance.py
 /examples/live_processing_acceptance.py
 /IMPLEMENTATION_PLAN.md

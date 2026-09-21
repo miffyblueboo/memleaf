@@ -21,8 +21,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    outputs:
-      manifest_sha256: ${{ steps.bind.outputs.manifest_sha256 }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -32,22 +30,10 @@ jobs:
           python-version: "3.12"
       - name: Install build tools
         run: python -m pip install --upgrade pip build "setuptools>=77"
-      - name: Run complete source contracts and record test inventory
-        run: >-
-          python -I -X utf8 tests_public/run_contracts.py
-          --tests tests_public --source-root src --report source-results.json
+      - name: Check source syntax
+        run: python -m compileall -q src
       - name: Build wheel and source distribution once
         run: python -m build --wheel --sdist
-      - name: Obtain test-only timezone data for native Windows
-        run: >-
-          python -m pip download --only-binary=:all: --no-deps --dest dist/test-dependencies tzdata
-      - name: Bind exact distributions and test inventory to this commit
-        id: bind
-        env:
-          CANDIDATE_SHA: ${{ github.sha }}
-        run: >-
-          python tests_public/verify_distribution.py manifest
-          --dist dist --source-report source-results.json --commit "$CANDIDATE_SHA"
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
@@ -56,21 +42,6 @@ jobs:
             dist/*.whl
             dist/*.tar.gz
           if-no-files-found: error
-      - name: Upload verification inputs separately from release payloads
-        uses: actions/upload-artifact@v4
-        with:
-          name: memleaf-verification-inputs
-          path: |
-            dist/verification-manifest.json
-            dist/test-dependencies/
-          if-no-files-found: error
-      - name: Upload source contract report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: source-contract-report
-          path: source-results.json
-          if-no-files-found: warn
 
   verify-artifacts:
     name: Installed artifacts (${{ matrix.os }}, Python ${{ matrix.python }})
@@ -92,45 +63,63 @@ jobs:
           - os: macos-latest
             python: "3.12"
     steps:
-      - name: Check out exact verification helpers
-        uses: actions/checkout@v4
       - name: Set up native Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - name: Install sdist build backend only
-        run: python -m pip install "setuptools>=77"
       - name: Download the same candidate distributions
         uses: actions/download-artifact@v4
         with:
           name: memleaf-distributions
           path: dist/
-      - name: Download bound test-only inputs
-        uses: actions/download-artifact@v4
-        with:
-          name: memleaf-verification-inputs
-          path: dist/
-      - name: Verify wheel and sdist in separate isolated installations
-        env:
-          CANDIDATE_SHA: ${{ github.sha }}
-          CANDIDATE_MANIFEST: ${{ needs.build.outputs.manifest_sha256 }}
-        # Use Python expansion on every OS, not POSIX variables in PowerShell.
+      - name: Install and import wheel and source distribution separately
         shell: python
         run: |
+          import json
           import os
+          from pathlib import Path
           import subprocess
           import sys
-          subprocess.run([
-              sys.executable, "tests_public/verify_distribution.py", "verify",
-              "--dist", "dist", "--output", "artifact-verification",
-              "--commit", os.environ["CANDIDATE_SHA"],
-              "--manifest-sha256", os.environ["CANDIDATE_MANIFEST"],
-          ], check=True)
-      - name: Upload verification evidence even on failure
+          import tempfile
+          import venv
+
+          dist = Path("dist")
+          artifacts = sorted(dist.glob("*.whl")) + sorted(dist.glob("*.tar.gz"))
+          if len(artifacts) != 2:
+              raise SystemExit(f"expected exactly one wheel and one sdist, got {artifacts}")
+          evidence = Path("artifact-verification")
+          evidence.mkdir()
+
+          for artifact in artifacts:
+              with tempfile.TemporaryDirectory(prefix="memleaf-install-") as temp:
+                  environment = Path(temp) / "venv"
+                  venv.EnvBuilder(with_pip=True).create(environment)
+                  python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+                  if artifact.suffixes[-2:] == [".tar", ".gz"]:
+                      subprocess.run(
+                          [str(python), "-m", "pip", "install", "--upgrade", "setuptools>=77", "wheel"],
+                          check=True,
+                      )
+                  subprocess.run(
+                      [
+                          str(python), "-m", "pip", "install", "--no-deps",
+                          "--no-build-isolation", str(artifact.resolve()),
+                      ],
+                      check=True,
+                  )
+                  result = subprocess.run(
+                      [str(python), "-c", "import memleaf; print(memleaf.__version__)"],
+                      check=True, capture_output=True, text=True,
+                  )
+                  (evidence / f"{artifact.name}.json").write_text(
+                      json.dumps({"artifact": artifact.name, "version": result.stdout.strip()}),
+                      encoding="utf-8",
+                  )
+      - name: Upload installation evidence even on failure
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: installed-contracts-${{ matrix.os }}-py${{ matrix.python }}
+          name: installed-artifacts-${{ matrix.os }}-py${{ matrix.python }}
           path: artifact-verification/
           if-no-files-found: warn
 
@@ -203,9 +192,47 @@ jobs:
           )
 
           verify_existing_release() {
-            python tests_public/release_assets.py \
-              --repository "$GITHUB_REPOSITORY" --version "$VERSION" \
-              --commit "$RELEASE_SHA" --dist dist
+            python - "$TAG" "$RELEASE_SHA" "$VERSION" <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          tag, expected_sha, version = sys.argv[1:]
+          repository = os.environ["GITHUB_REPOSITORY"]
+          expected_paths = {
+              f"memleaf-{version}-py3-none-any.whl": Path("dist") / f"memleaf-{version}-py3-none-any.whl",
+              f"memleaf-{version}.tar.gz": Path("dist") / f"memleaf-{version}.tar.gz",
+              "SHA256SUMS": Path("dist") / "SHA256SUMS",
+          }
+
+          def gh_json(endpoint):
+              return json.loads(subprocess.check_output(["gh", "api", endpoint], text=True))
+
+          commit = gh_json(f"repos/{repository}/commits/{tag}")
+          if commit.get("sha") != expected_sha:
+              raise SystemExit("release_target_changed")
+          release = gh_json(f"repos/{repository}/releases/tags/{tag}")
+          assets = {item.get("name"): item for item in release.get("assets", [])}
+
+          def digest(data):
+              return hashlib.sha256(data).hexdigest()
+
+          for name, path in expected_paths.items():
+              if not path.is_file() or name not in assets:
+                  raise SystemExit(f"release_asset_missing:{name}")
+              asset = assets[name]
+              if asset.get("state") != "uploaded" or not isinstance(asset.get("id"), int):
+                  raise SystemExit(f"release_asset_incomplete:{name}")
+              remote = subprocess.check_output([
+                  "gh", "api", "-H", "Accept: application/octet-stream",
+                  f"repos/{repository}/releases/assets/{asset['id']}",
+              ])
+              if digest(path.read_bytes()) != digest(remote):
+                  raise SystemExit(f"release_asset_conflict:{name}")
+          PY
           }
 
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
