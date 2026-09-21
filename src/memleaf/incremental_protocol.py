@@ -22,7 +22,7 @@ from .turn_plan import revision_digest
 from .validation import ModelOutputError, parse_strict_json
 
 PROTOCOL_VERSION = "incremental-items-v1"
-SEMANTIC_PROTOCOL = "incremental-turn-v4"
+SEMANTIC_PROTOCOL = "incremental-turn-v5"
 MAX_BYTES = 128 * 1024
 MAX_ITEMS = 64
 _TYPES = frozenset(("fact", "todo", "preference", "project", "event", "identity", "other"))
@@ -38,6 +38,64 @@ _BRANCHES = {
 }
 
 _CREATE_ROW_META = frozenset(("action", "evidence", "at", "effective"))
+_ROW_FIELDS = frozenset(
+    {"action", "evidence"}.union(*(required | optional for required, optional in _BRANCHES.values()))
+)
+
+
+class _FieldShapeError(ValueError):
+    def __init__(self, detail: str):
+        super().__init__("invalid_fields")
+        self.detail = detail
+
+
+def _normalize_create_fields(fields: Any) -> tuple[Any, list[str]]:
+    """Normalize model serialization aliases that preserve one exact meaning."""
+    if not isinstance(fields, dict):
+        return fields, []
+    normalized = deepcopy(fields)
+    warnings = []
+    if "scope" not in normalized and isinstance(normalized.get("scopes"), list):
+        scopes = normalized["scopes"]
+        if len(scopes) == 1 and isinstance(scopes[0], str):
+            normalized["scope"] = scopes[0]
+            normalized.pop("scopes")
+            warnings.append("create_single_scope_alias_normalized")
+    if normalized.get("validity") == "valid":
+        normalized.pop("validity")
+        warnings.append("create_default_validity_normalized")
+    return normalized, warnings
+
+
+def _normalize_model_row(row: Any) -> tuple[Any, list[str]]:
+    """Remove only semantically empty branch placeholders and normalize CREATE aliases."""
+    if not isinstance(row, dict) or not isinstance(row.get("action"), str):
+        return row, []
+    action = row["action"].strip().upper()
+    if action not in _BRANCHES:
+        return row, []
+    normalized = deepcopy(row)
+    warnings = []
+    required, optional = _BRANCHES[action]
+    allowed = {"action", "evidence"} | required | optional
+    for key in sorted(_ROW_FIELDS - allowed):
+        if key in normalized and normalized[key] is None:
+            normalized.pop(key)
+            warnings.append("null_branch_placeholder_normalized")
+    if action == "CREATE":
+        if "memory" in normalized and normalized["memory"] is None:
+            normalized.pop("memory")
+            warnings.append("null_memory_wrapper_normalized")
+        if "memory" in normalized:
+            normalized["memory"], field_warnings = _normalize_create_fields(normalized["memory"])
+            warnings.extend(field_warnings)
+        else:
+            normalized, field_warnings = _normalize_create_fields(normalized)
+            warnings.extend(field_warnings)
+        normalized, flattened = _normalize_flat_create_row(normalized)
+        if flattened:
+            warnings.append("create_memory_wrapper_normalized")
+    return normalized, list(dict.fromkeys(warnings))
 
 
 def _normalize_flat_create_row(row: Any) -> tuple[Any, bool]:
@@ -54,8 +112,6 @@ def _normalize_flat_create_row(row: Any) -> tuple[Any, bool]:
     memory_keys = set(row) & set(_CREATE)
     required = {"type", "scope", "title", "body"}
     if not required <= memory_keys:
-        return row, False
-    if set(row) - (_CREATE_ROW_META | set(_CREATE)):
         return row, False
     normalized = {key: deepcopy(value) for key, value in row.items() if key not in _CREATE}
     normalized["memory"] = {key: deepcopy(row[key]) for key in row if key in _CREATE}
@@ -75,9 +131,18 @@ def _text(value: Any, maximum: int = 16384, *, empty: bool = False) -> str:
     return value
 
 
-def _keys(value: Any, required: set[str], allowed: set[str] | frozenset[str]) -> None:
-    if not isinstance(value, dict) or not required <= value.keys() or value.keys() - allowed:
-        raise ValueError("invalid_fields")
+def _keys(value: Any, required: set[str], allowed: set[str] | frozenset[str], *, path: str) -> None:
+    if not isinstance(value, dict):
+        raise _FieldShapeError(f"{path}:not_object")
+    missing = sorted(required - value.keys())
+    unexpected = sorted(value.keys() - allowed)
+    if missing or unexpected:
+        parts = []
+        if missing:
+            parts.append("missing=" + ",".join(missing))
+        if unexpected:
+            parts.append("unexpected=" + ",".join(unexpected))
+        raise _FieldShapeError(path + ":" + ";".join(parts))
 
 
 def _ref(value: Any, table: Mapping[str, Any]) -> str:
@@ -305,7 +370,7 @@ def _selected(value: Any, evidence: Mapping[str, Any], refs: list[str], *, clear
         if ref not in refs or evidence[ref]["use"] != "new":
             raise ValueError("invalid_reference")
         return {"clear": True, "anchor": source_basis(evidence[ref])}
-    _keys(value, {"ref", "text"}, {"ref", "text"})
+    _keys(value, {"ref", "text"}, {"ref", "text"}, path="selected_time")
     ref = _ref(value["ref"], evidence)
     if ref not in refs:
         raise ValueError("invalid_reference")
@@ -369,7 +434,7 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
     required_keys = {"action"} | required
     if action != "NO_MEMORY":
         required_keys.add("evidence")
-    _keys(row, required_keys, {"action", "evidence"} | optional)
+    _keys(row, required_keys, {"action", "evidence"} | optional, path="row")
     evidence = {e["ref"]: e for e in state["evidence"]}
     if action == "NO_MEMORY" and state["request_kind"] == "explicit_remember":
         raise ValueError("explicit_retention_required")
@@ -412,7 +477,8 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
     if action in {"CREATE", "UPDATE"}:
         fields = deepcopy(row["memory"] if action == "CREATE" else row["patch"])
         _keys(fields, {"type", "scope", "title", "body"} if action == "CREATE" else set(),
-              _CREATE if action == "CREATE" else _PATCH)
+              _CREATE if action == "CREATE" else _PATCH,
+              path="memory" if action == "CREATE" else "patch")
         if not fields:
             raise ValueError("empty_patch")
         if action == "CREATE":
@@ -564,26 +630,30 @@ def compile_incremental(raw: str, snapshot: PlanningSnapshot) -> dict[str, Any]:
         value = parse_strict_json(raw)
     except (ModelOutputError, RecursionError) as error:
         raise ValueError("invalid_json") from error
-    _keys(value, {"items"}, {"items"})
+    _keys(value, {"items"}, {"items"}, path="root")
     if not isinstance(value["items"], list) or len(value["items"]) > MAX_ITEMS:
         raise ValueError("invalid_items")
     state = snapshot.state()
     known = {e["ref"] for e in state["evidence"]}
     new = {e["ref"] for e in state["evidence"] if e["use"] == "new"}
     parsed, issues, poisoned = [], [], set()
-    def problem(index: int | None, code: str, row: Any) -> None:
+    def problem(index: int | None, code: str, row: Any, detail: str | None = None) -> None:
         refs = row.get("evidence", []) if isinstance(row, dict) else []
         refs = [r.strip() for r in refs if isinstance(r, str) and r.strip() in known] if isinstance(refs, list) else []
-        issues.append({"row": index, "code": code, "evidence": list(dict.fromkeys(refs))})
+        issue = {"row": index, "code": code, "evidence": list(dict.fromkeys(refs))}
+        if detail:
+            issue["detail"] = detail
+        issues.append(issue)
     for index, row in enumerate(value["items"]):
         try:
-            normalized_row, normalized = _normalize_flat_create_row(row)
+            normalized_row, warnings = _normalize_model_row(row)
             parsed_row = _parse_row(normalized_row, state)
-            if normalized:
-                parsed_row.setdefault("warnings", []).append("create_memory_wrapper_normalized")
+            if warnings:
+                parsed_row.setdefault("warnings", []).extend(warnings)
             parsed.append((index, parsed_row))
         except (ValueError, TypeError) as error:
-            problem(index, str(error) if isinstance(error, ValueError) else "invalid_fields", row)
+            problem(index, str(error) if isinstance(error, ValueError) else "invalid_fields", row,
+                    getattr(error, "detail", None))
             if isinstance(row, dict) and isinstance(row.get("target"), str) and row["target"].strip() in state["targets"]:
                 poisoned.add(row["target"].strip())
     groups: dict[str, list[tuple[int, dict[str, Any]]]] = defaultdict(list)

@@ -141,6 +141,47 @@ class IncrementalProtocolTests(unittest.TestCase):
         out = self.run_rows(row)
         self.assertFalse(out["operations"])
         self.assertEqual(out["issues"][0]["code"], "invalid_fields")
+        self.assertEqual(out["issues"][0]["detail"], "row:unexpected=unexpected")
+
+    def test_null_fields_from_other_branches_are_ignored(self):
+        row = self.create()
+        row.update(target=None, patch=None, reason=None, need=None, reopen=None)
+        out = self.run_rows(row)
+        self.assertFalse(out["issues"])
+        self.assertEqual(len(out["operations"]), 1)
+        self.assertIn("null_branch_placeholder_normalized", out["operations"][0]["warnings"])
+
+    def test_flattened_create_with_null_memory_wrapper_is_normalized(self):
+        row = {
+            "action": "CREATE", "evidence": ["e1"], "memory": None,
+            "type": "fact", "scope": "s1",
+            "title": "Known requirement", "body": "Keep this requirement.",
+        }
+        out = self.run_rows(row)
+        self.assertFalse(out["issues"])
+        warnings = out["operations"][0]["warnings"]
+        self.assertIn("null_memory_wrapper_normalized", warnings)
+        self.assertIn("create_memory_wrapper_normalized", warnings)
+
+    def test_single_scopes_alias_and_default_validity_are_normalized(self):
+        row = self.create()
+        row["memory"].pop("scope")
+        row["memory"].update(scopes=["s1"], validity="valid")
+        out = self.run_rows(row)
+        self.assertFalse(out["issues"])
+        op = out["operations"][0]
+        self.assertEqual(op["memory"]["scopes"], ["project:Atlas"])
+        self.assertIn("create_single_scope_alias_normalized", op["warnings"])
+        self.assertIn("create_default_validity_normalized", op["warnings"])
+
+    def test_ambiguous_scopes_alias_stays_rejected_with_detail(self):
+        row = self.create()
+        row["memory"].pop("scope")
+        row["memory"]["scopes"] = ["s1", "s2"]
+        out = self.run_rows(row)
+        self.assertFalse(out["operations"])
+        self.assertEqual(out["issues"][0]["code"], "invalid_fields")
+        self.assertEqual(out["issues"][0]["detail"], "memory:missing=scope;unexpected=scopes")
 
     def test_flattened_create_missing_required_field_stays_rejected(self):
         row = {

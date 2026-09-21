@@ -4,6 +4,14 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.69 — 2026-09-21
+
+### Incremental protocol compatibility hardening
+
+- Advance the incremental semantic protocol to `incremental-turn-v5` and expose precise field-shape details for fail-closed rows.
+- Normalize only unambiguous model serialization variants: null placeholders from other branches, a null CREATE wrapper, a single-item `scopes` alias, default `validity`, and flattened CREATE fields. Ambiguous aliases and unknown fields remain rejected.
+- Keep the new normalization behavior covered by the public protocol and provider-compatibility tests.
+
 ## 0.2.68 — 2026-09-20
 
 ### Hermes live-path hardening
