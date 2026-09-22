@@ -426,7 +426,7 @@ def _scope_context(
     return prefix + "\n".join(lines) + suffix, len(lines)
 
 
-def _hermes_search_status(value: Any) -> str:
+def _hermes_search_status(value: Any, *, tool_name: str = "mcp__memleaf__search") -> str:
     """Classify an observed MCP search result without retaining its content."""
 
     if value is _CALL_FAILED or value is None:
@@ -461,14 +461,18 @@ def _hermes_search_status(value: Any) -> str:
         if status is not None or results is not None:
             if status not in {"found", "no_match"} or not isinstance(results, list):
                 return "error"
+            allowed_fields = {"memory_id", "title", "due_date"}
+            if tool_name == "mcp__memleaf__list_todos":
+                allowed_fields.add("history")
             valid_results = all(
                 isinstance(item, Mapping)
-                and set(item) in ({"memory_id", "title"}, {"memory_id", "title", "due_date"})
+                and {"memory_id", "title"} <= set(item) <= allowed_fields
                 and isinstance(item.get("memory_id"), str)
                 and bool(item.get("memory_id"))
                 and isinstance(item.get("title"), str)
                 and bool(item.get("title"))
                 and ("due_date" not in item or item.get("due_date") is None or isinstance(item.get("due_date"), str))
+                and ("history" not in item or type(item.get("history")) is bool)
                 for item in results
             )
             if not valid_results:

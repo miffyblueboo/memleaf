@@ -1424,7 +1424,7 @@ class MemleafMemoryProvider(MemoryProvider):
                 continue
             payload = _tool_result_for_call(call, calls, results, search_results_used)
             if payload is not _CALL_FAILED:
-                status = _hermes_search_status(payload)
+                status = _hermes_search_status(payload, tool_name=call["name"])
                 observation_key = _tool_observation_key(call, search_ordinal)
                 if not _record_tool_observation(seen_call_keys, observation_key):
                     continue

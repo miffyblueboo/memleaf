@@ -4,6 +4,14 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.72 — 2026-09-22
+
+### Hermes todo observation compatibility
+
+- Accept the boolean `history` field returned by `list_todos` when observing
+  Hermes retrieval results, while keeping ordinary `search` result validation
+  strict and rejecting malformed field types.
+
 ## 0.2.71 — 2026-09-21
 
 ### Source-time and calendar grounding
