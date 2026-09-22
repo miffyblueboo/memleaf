@@ -23,10 +23,11 @@ from .turn_plan import MAX_PLAN_BYTES, revision_digest
 from .validation import parse_strict_json
 from .vault import safe_component
 
-_FIELDS = frozenset({"title", "body", "tags", "aliases", "keywords", "scopes", "status",
+_FIELDS = frozenset({"title", "body", "tags", "aliases", "keywords", "scopes", "status", "actionable",
                      "completed_at", "due_date", "due_text", "assignee", "waiting_on", "validity", "type"})
 _TODO = frozenset({"status", "completed_at", "due_date", "due_text", "assignee", "waiting_on"})
 _GROUP = {"title": "content", "body": "content", "type": "content", "scopes": "scope",
+          "actionable": "status",
           "status": "status", "completed_at": "status", "validity": "validity",
           "due_date": "deadline", "due_text": "deadline", "assignee": "responsibility", "waiting_on": "responsibility"}
 
@@ -56,6 +57,9 @@ def _legacy_request(patch: Mapping[str, Any], authorized_scopes: Any, *, reopen:
         elif key == "status":
             if value not in (None, "active", "completed", "cancelled"):
                 raise ValueError("invalid explicit task status")
+        elif key == "actionable":
+            if type(value) is not bool:
+                raise ValueError("invalid explicit action marker")
         elif key == "validity":
             if value not in ("valid", "retracted"):
                 raise ValueError("invalid explicit validity")
@@ -85,6 +89,8 @@ def _legacy_patched(current: Memory, request: Mapping[str, Any], now: str) -> Me
     patch = request["patch"]
     value = deepcopy(current.to_dict())
     value.update(deepcopy(patch))
+    if value.get("actionable") and value.get("status") is None:
+        value["status"] = "active"
     if set(current.scopes) - set(request["authorized_scopes"]) or set(value["scopes"]) - set(request["authorized_scopes"]):
         raise ValueError("blocked_scope")
     if current.status in {"completed", "cancelled"} and value.get("status") == "active" and not request["reopen"]:
@@ -96,8 +102,6 @@ def _legacy_patched(current: Memory, request: Mapping[str, Any], now: str) -> Me
         if patch.get("body"):
             raise ValueError("retracted_body_must_be_empty")
         value["body"] = ""
-    if value["type"] != "todo" and any(value.get(k) is not None for k in _TODO):
-        raise ValueError("explicitly_clear_todo_fields_before_type_correction")
     if value["type"] == "todo" and value.get("status") not in {"active", "completed", "cancelled"}:
         raise ValueError("missing_status")
     if "status" in patch and patch["status"] != current.status and "completed_at" not in patch:
@@ -144,8 +148,6 @@ def _request(patch: Mapping[str, Any], authorized_scopes: Any, *, reopen: bool =
 def _patched(current: Memory, request: Mapping[str, Any], now: str) -> Memory:
     from .incremental_dates import selected_calendar
     fields = deepcopy(request["patch"])
-    if current.type != "todo" and fields.keys() & (_TODO | {"deadline"}) and fields.get("type") != "todo":
-        raise ValueError("todo_fields_on_non_todo")
     if current.validity == "retracted" and not (
             request["restore"] and fields.get("validity") == "valid" and fields.get("body")):
         # A repeated explicit retraction can be an unchanged audit operation.
@@ -164,6 +166,8 @@ def _patched(current: Memory, request: Mapping[str, Any], now: str) -> Memory:
             derived["due_status"] = selected["status"]
     changed_request = dict(request, patch=fields)
     after = _legacy_patched(current, changed_request, now)
+    if current.type == "todo" and after.type != "todo" and "actionable" not in fields:
+        after.actionable = True
     after.extra.update(derived)
     # Compare the same normalized body that a later Markdown read will see.
     return Memory.from_markdown(after.to_markdown())

@@ -70,6 +70,14 @@ class _Record:
     scope_rank: int = 0
 
 
+def _todo_responsibility(memory: Memory) -> str:
+    """Use only an explicit canonical self-owner; unknown owners stay unknown."""
+    assignee = memory.extra.get("assignee")
+    if not isinstance(assignee, str) or not assignee.strip():
+        return "unassigned"
+    return "mine" if assignee.strip().casefold() == "user" else "delegated"
+
+
 def _native_memory(item: Mapping[str, Any]) -> Memory:
     native_id = item.get("native_id", item.get("memory_id"))
     if not isinstance(native_id, str) or not native_id:
@@ -963,7 +971,7 @@ class Memleaf:
                     version=_memory_version(memory),
                     count_hit=record.area == "knowledge" and record.account_ready,
                     memory_type=memory.type,
-                    status=(memory.status or "active") if memory.type == "todo" else memory.status,
+                    status=(memory.status or "active") if (memory.type == "todo" or memory.actionable) else memory.status,
                     due_date=memory.due_date,
                     validity=memory.validity,
                     revision=revision_digest(memory),
@@ -1365,6 +1373,7 @@ class Memleaf:
         self,
         *,
         status: str = "active",
+        responsibility: str = "all",
         scope: str | Iterable[str] | None = None,
         due_from: str | None = None,
         due_to: str | None = None,
@@ -1375,10 +1384,12 @@ class Memleaf:
         as_of: str | None = None,
         timezone: str | None = None,
     ) -> dict[str, Any]:
-        """Enumerate current todo memories globally, independent of source session or agent."""
+        """Enumerate explicitly tracked actions, including legacy todo memories."""
 
         if status not in {"active", "completed", "cancelled", "all"}:
             raise ValueError("invalid todo status")
+        if responsibility not in {"all", "mine", "delegated", "unassigned"}:
+            raise ValueError("invalid todo responsibility")
         if type(include_overdue) is not bool or type(include_unscheduled) is not bool:
             raise ValueError("todo inclusion flags must be booleans")
         lower = self._todo_date(due_from, "due_from")
@@ -1394,7 +1405,8 @@ class Memleaf:
             active_records = [
                 record
                 for record in snapshot.area("knowledge")
-                if record.memory.type == "todo" and record.memory.validity == "valid"
+                if (record.memory.type == "todo" or record.memory.actionable)
+                and record.memory.validity == "valid"
             ]
             active_ids = {record.memory.memory_id.casefold() for record in snapshot.area("knowledge")}
             records = list(active_records)
@@ -1402,7 +1414,7 @@ class Memleaf:
                 records.extend(
                     record
                     for record in snapshot.area("history")
-                    if record.memory.type == "todo"
+                    if (record.memory.type == "todo" or record.memory.actionable)
                     and record.memory.extra.get("invalidated_reason") == "todo_closed"
                     and str(record.memory.extra.get("active_memory_id", "")).casefold() not in active_ids | snapshot.ambiguous
                 )
@@ -1424,6 +1436,9 @@ class Memleaf:
                 memory = record.memory
                 current_status = memory.status or "active"
                 if status != "all" and current_status != status:
+                    continue
+                owner = _todo_responsibility(memory)
+                if responsibility != "all" and owner != responsibility:
                     continue
                 parsed_due = self._todo_date(memory.due_date, "due_date") if memory.due_date is not None else None
                 if parsed_due is None:
@@ -1447,9 +1462,16 @@ class Memleaf:
             ordered = [record for _key, record in filtered]
             candidates = [
                 {
+                    "ordinal": ordinal,
                     "memory_id": record.memory.memory_id,
                     "title": directory_entry(record.memory).title,
+                    "type": record.memory.type,
+                    "scopes": list(record.memory.scopes),
                     "due_date": record.memory.due_date,
+                    "status": record.memory.status or "active",
+                    "assignee": record.memory.extra.get("assignee"),
+                    "responsibility": _todo_responsibility(record.memory),
+                    "waiting_on": record.memory.extra.get("waiting_on"),
                     "history": record.area == "history",
                     **(
                         {"active_memory_id": record.memory.extra.get("active_memory_id")}
@@ -1457,12 +1479,13 @@ class Memleaf:
                         else {}
                     ),
                 }
-                for record in ordered
+                for ordinal, record in enumerate(ordered, start=1)
             ]
             fingerprint = _page_fingerprint(
                 {
                     "filters": {
                         "status": status,
+                        "responsibility": responsibility,
                         "scope": scope_value,
                         "due_from": due_from,
                         "due_to": due_to,
@@ -1651,7 +1674,7 @@ class Memleaf:
         for record in records:
             if record.memory.memory_id not in ranks:
                 continue
-            if record.memory.type == "todo":
+            if record.memory.type == "todo" or record.memory.actionable:
                 status = record.memory.status or "active"
                 if todo_status != "all" and status != todo_status:
                     continue

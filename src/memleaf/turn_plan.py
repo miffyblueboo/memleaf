@@ -39,6 +39,7 @@ def content_digest(summary: Mapping[str, Any]) -> str:
             "type",
             "scopes",
             "status",
+            "actionable",
             "completed_at",
             "due_date",
             "validity",
@@ -61,10 +62,9 @@ def content_digest(summary: Mapping[str, Any]) -> str:
             fields["due_anchor"] = anchor
     fields["validity"] = fields["validity"] or "valid"
     fields["scopes"] = sorted(fields["scopes"] or ["global"])
-    if fields["type"] == "todo":
+    if fields["type"] == "todo" or fields["actionable"] is True:
         fields["status"] = fields["status"] or "active"
-    else:
-        fields["status"] = None
+    # A status on another memory type is an explicit action facet, not noise.
     # A completion timestamp can be assigned by the writer. Operation identity
     # retains the complete frozen payload separately from this replay comparison.
     if fields["status"] == "completed":

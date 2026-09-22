@@ -63,6 +63,7 @@ class Memory:
     hit_count: int = 0
     last_hit_at: Optional[str] = None
     status: Optional[str] = None
+    actionable: bool = False
     completed_at: Optional[str] = None
     due_date: Optional[str] = None
     validity: str = "valid"
@@ -86,6 +87,8 @@ class Memory:
             raise ValueError("memory hit_count must be a non-negative integer")
         if self.status is not None and not isinstance(self.status, str):
             raise ValueError("memory status must be a string")
+        if type(self.actionable) is not bool:
+            raise ValueError("memory actionable must be boolean")
         if self.completed_at is not None and not isinstance(self.completed_at, str):
             raise ValueError("memory completed_at must be a string")
         if not isinstance(self.validity, str) or self.validity not in {"valid", "retracted"}:
@@ -99,8 +102,8 @@ class Memory:
                 parsed_due_date = date.fromisoformat(self.due_date)
             except ValueError as error:
                 raise ValueError("memory due_date must be YYYY-MM-DD") from error
-            if parsed_due_date.isoformat() != self.due_date or self.type != "todo":
-                raise ValueError("memory due_date requires a todo and YYYY-MM-DD")
+            if parsed_due_date.isoformat() != self.due_date:
+                raise ValueError("memory due_date must be YYYY-MM-DD")
 
     @classmethod
     def new(
@@ -134,6 +137,7 @@ class Memory:
             hit_count=metadata.pop("hit_count", 0),
             last_hit_at=metadata.pop("last_hit_at", None),
             status=metadata.pop("status", None),
+            actionable=metadata.pop("actionable", False),
             completed_at=metadata.pop("completed_at", None),
             due_date=metadata.pop("due_date", None),
             validity=metadata.pop("validity", "valid"),
@@ -160,6 +164,7 @@ class Memory:
             "hit_count",
             "last_hit_at",
             "status",
+            "actionable",
             "completed_at",
             "due_date",
             "validity",
@@ -183,6 +188,7 @@ class Memory:
             hit_count=value.get("hit_count", 0),
             last_hit_at=value.get("last_hit_at"),
             status=value.get("status"),
+            actionable=value.get("actionable", False),
             completed_at=value.get("completed_at"),
             due_date=value.get("due_date"),
             validity=value.get("validity", "valid"),
@@ -224,6 +230,8 @@ class Memory:
             metadata["last_hit_at"] = self.last_hit_at
         if self.status is not None:
             metadata["status"] = self.status
+        if self.actionable:
+            metadata["actionable"] = True
         if self.completed_at is not None:
             metadata["completed_at"] = self.completed_at
         if self.due_date is not None:

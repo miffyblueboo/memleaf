@@ -1471,6 +1471,9 @@ def validate_summarize_output(
         "sources",
         "evidence_event_ids",
         "status",
+        "actionable",
+        "assignee",
+        "waiting_on",
         "completed_at",
         "due_date",
         "shadow_native_ids",
@@ -1586,18 +1589,22 @@ def validate_summarize_output(
     ):
         raise ModelOutputError("invalid scope_source", validation_detail="invalid_scope_source")
 
-    if candidate_type == "todo" and (item.get("update_memory_id") or expected_update_memory_id) and "status" not in item:
-        raise ModelOutputError("todo update must declare its current status", validation_detail="todo_fields")
+    if (candidate_type == "todo" or item.get("actionable") is True) and (item.get("update_memory_id") or expected_update_memory_id) and "status" not in item:
+        raise ModelOutputError("action update must declare its current status", validation_detail="todo_fields")
     if "status" in item:
-        if candidate_type != "todo" or item["status"] not in TODO_STATUSES:
-            raise ModelOutputError("invalid todo status", validation_detail="todo_fields")
+        if item["status"] not in TODO_STATUSES:
+            raise ModelOutputError("invalid action status", validation_detail="todo_fields")
+    if "actionable" in item and type(item["actionable"]) is not bool:
+        raise ModelOutputError("invalid action marker", validation_detail="todo_fields")
+    for field in ("assignee", "waiting_on"):
+        if field in item and item[field] is not None:
+            if not isinstance(item[field], str) or not item[field].strip() or len(item[field]) > 512:
+                raise ModelOutputError("invalid action responsibility", validation_detail="todo_fields")
     if "completed_at" in item:
         _string(item["completed_at"], "completed_at")
-        if candidate_type != "todo" or item.get("status") != "completed":
-            raise ModelOutputError("completed_at requires completed todo", validation_detail="todo_fields")
+        if item.get("status") != "completed":
+            raise ModelOutputError("completed_at requires completed action", validation_detail="todo_fields")
     if "due_date" in item and item["due_date"] is not None:
-        if candidate_type != "todo":
-            raise ModelOutputError("due_date requires todo", validation_detail="todo_fields")
         item["due_date"] = _validated_due_date(item["due_date"])
         if allowed_due_dates is not None:
             grounded = {value for value in allowed_due_dates if isinstance(value, str)}

@@ -5,9 +5,9 @@ from typing import Any, Mapping
 from .semantic_protocol import RETENTION_GUIDANCE, expand_fragments, _invalid
 from .validation import ModelOutputError, parse_strict_json
 
-MAINTENANCE_SYSTEM = RETENTION_GUIDANCE + "\n" + '''根据 incoming 引用的原始证据维护长期记忆；incoming 仅划定待复核的主题，不提供已确认的分类或归属，其中已有的 due_date 是 Core 按证据和 reference_time 校验过的期限，须原样用于 due_date 和正文。catalog 是可更新的已有记忆。先识别已有事项的状态变化，再判断新建价值。同一事项合并维护当前状态，重复不新建；完成或转交也应维护已有 todo，不能另建完成事实留下旧待办。
+MAINTENANCE_SYSTEM = RETENTION_GUIDANCE + "\n" + '''根据 incoming 引用的原始证据维护长期记忆；incoming 仅划定待复核的主题，不提供已确认的分类或归属，其中已有的 due_date 是 Core 按证据和 reference_time 校验过的期限，须原样用于 due_date 和正文。catalog 是可更新的已有记忆。先识别已有事项的状态变化，再判断新建价值。同一事项合并维护当前状态，重复不新建；完成或转交维护原记忆，不另建完成事实留下旧行动。
 返回 JSON {"memories":[{"from":["d1"],"target":null,"title":"简短主题","body":"最小可复用核心","type":"fact","scope":"global"}],"discard":[],"deferred":[]}。
-每条一个独立主体与用途，可拆分同一 incoming。scope 按证据独立确定为 project:主体名、global（通用原则）或 unscoped（归属未确定）。type 为 fact/preference/project/todo/event/identity/other。target 为同事项的 catalog 真实ID，无才为null；更新保留原type，明确归属纠正可以改变scope。新 todo 须有用户明确承担未完成动作的证据。todo 必须显式提供 status（active/completed/cancelled）和 due_date（无则null）。reference_time 是当前会话时间；按原始约定把可换算的相对期限写成 YYYY-MM-DD，范围取最晚完成日，正文同步使用该日期。无法可靠换算则 due_date:null，但保留核心记忆。正文保留当前有效内容，去掉过时状态和无复用价值的细节。每个 incoming 用 from、discard 或 deferred 覆盖；from 表示该主题已完整复核。仅拆分同一 incoming 时填写 evidence:[fragments.id] 来绑定各自保留内容，否则省略 evidence。所有引用只能选输入中已有的编号。'''
+每条一个独立主体与用途，仅不同生命周期时拆分。scope 按证据独立确定为 project:主体名、global（通用原则）或 unscoped（归属未确定）。type 为 fact/preference/project/todo/event/identity/other。target 为同事项的 catalog 真实ID，无才为null；更新保留原type，明确归属纠正可以改变scope。独立可跟进行动不论 type 可设 actionable:true、status（active/completed/cancelled）、assignee、waiting_on 和 due_date（无则null）；旧 todo 隐含 actionable。reference_time 是当前会话时间；按原始约定把可换算的相对期限写成 YYYY-MM-DD，范围取最晚完成日，正文同步使用该日期。无法可靠换算则 due_date:null，但保留核心记忆。正文保留当前有效内容，去掉过时状态和无复用价值的细节。每个 incoming 用 from、discard 或 deferred 覆盖；from 表示该主题已完整复核。仅拆分同一 incoming 时填写 evidence:[fragments.id] 来绑定各自保留内容，否则省略 evidence。所有引用只能选输入中已有的编号。'''
 
 
 def maintenance_input(
@@ -116,10 +116,18 @@ def expand_maintenance(raw: str, context, *, diagnostics=None) -> str:
             if record is None or any(record.get(k) != v for k, v in fields.items()):
                 raise _invalid('invalid_evidence')
             return None
-        if set(row) - {'from', 'target', 'title', 'body', 'scope', 'type', 'status', 'due_date', 'completed_at', 'evidence'}:
+        if set(row) - {'from', 'target', 'title', 'body', 'scope', 'type', 'actionable', 'status', 'assignee', 'waiting_on', 'due_date', 'completed_at', 'evidence'}:
             raise _invalid()
         if any(not isinstance(row[k], str) or not row[k].strip() for k in ('title', 'body')):
             raise _invalid()
+        if 'actionable' in row and type(row['actionable']) is not bool:
+            raise _invalid('todo_fields')
+        if 'status' in row and (not isinstance(row['status'], str) or row['status'] not in {'active', 'completed', 'cancelled'}):
+            raise _invalid('todo_fields')
+        if any(field in row and row[field] is not None and (
+                not isinstance(row[field], str) or not row[field].strip() or len(row[field]) > 512)
+                for field in ('assignee', 'waiting_on')):
+            raise _invalid('todo_fields')
         sources = resolve(row['from'])
         scopes = {s['scope'] for s in sources}
         if len(scopes)!=1 and 'scope' not in row:
@@ -143,7 +151,7 @@ def expand_maintenance(raw: str, context, *, diagnostics=None) -> str:
             if row.get('type') == 'todo' and record['type'] != 'todo':
                 raise _invalid('invalid_type')
             kind = record['type']
-            if kind == 'todo' and 'todo' not in kinds and row.get('status') not in {'active', 'completed', 'cancelled'}:
+            if (kind == 'todo' or record.get('actionable') is True or row.get('actionable') is True) and 'todo' not in kinds and row.get('status') not in {'active', 'completed', 'cancelled'}:
                 raise _invalid('todo_fields')
         elif len(kinds) != 1 and 'type' not in row:
             raise _invalid('invalid_type')
@@ -153,10 +161,7 @@ def expand_maintenance(raw: str, context, *, diagnostics=None) -> str:
         memory['target']=target
         memory['scope']=scope
         memory['type']=kind
-        if kind != 'todo':
-            for field in ('status', 'due_date', 'completed_at'):
-                memory.pop(field, None)
-        else:
+        if kind == 'todo' or memory.get('actionable') is True or (record.get('actionable') is True if target is not None else False):
             confirmed_due_dates = {
                 source.get('_confirmed_due_date')
                 for source in sources
@@ -181,7 +186,7 @@ def expand_maintenance(raw: str, context, *, diagnostics=None) -> str:
             raise _invalid('invalid_evidence')
         memory['evidence']=list(dict.fromkeys(chosen))
         bases = list(dict.fromkeys(int(r) for s in sources for r in (s.get('task_basis') or [])))
-        if bases and kind == 'todo':
+        if bases and (kind == 'todo' or memory.get('actionable') is True):
             memory['task_basis']=[ref for ref in bases if ref in chosen]
             if not memory['task_basis']:
                 del memory['task_basis']

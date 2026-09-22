@@ -76,8 +76,11 @@ INSTRUCTIONS = (
     "aggregate ID/character quota; read every relevant memory needed for "
     "the user's question while keeping each read page at 2000 characters. MCP read requires retrieval_id "
     "and a current FOUND search or list_todos result; NO_MATCH, ERROR, and DEGRADED turns cannot read. "
-    "For global current-todo questions use list_todos rather than relevance search, omit scope to cover "
-    "all scopes, follow next_cursor until has_more=false, then read every matching todo body. "
+    "For global current-action questions use list_todos rather than relevance search, omit scope to cover "
+    "all scopes, follow next_cursor until has_more=false, then read each relevant action body. "
+    "For 'my work' use list_todos responsibility=mine; use delegated or all for others' work. "
+    "Unassigned ownership is uncertain. waiting_on alone does not create a user follow-up task; "
+    "an active item is not automatically the user's personal work. "
     "Legacy context is an explicit compatibility interface, not an alternative to this "
     "scope/search/read flow. Managed MCP search is directory-only and rejects view=full; "
     "Python full-result search remains compatible. Without host integration, tools remain an explicit fallback only; "
@@ -249,16 +252,22 @@ _TOOLS: tuple[dict[str, Any], ...] = (
     {
         "name": "list_todos",
         "description": (
-            "Enumerate current memleaf todo memories by status/date across all scopes by default. "
+            "Enumerate explicitly tracked actions (including non-todo memories with status) by status/date across all scopes. "
             "This is not relevance search. A bare MCP client may omit retrieval_id only on the first "
             "page; memleaf returns one that must be reused for pagination and read. Continue with "
-            "next_cursor until has_more=false, then read the matching todo bodies with the same "
-            "retrieval_id. Retired completed/cancelled rows "
+            "next_cursor until has_more=false, then read the matching action bodies with the same "
+            "retrieval_id. Displayed list numbers are turn-local; resolve a later numbered update "
+            "against the previously shown title and memory_id, and clarify if that mapping is ambiguous. "
+            "responsibility=mine selects only explicit assignee=user; delegated selects other named owners, "
+            "unassigned is uncertain. A handoff alone does not create a follow-up for the user. "
+            "Retired completed/cancelled rows "
             "include history=true and require read(include_history=true)."
         ),
         "inputSchema": _object_schema(
             {
                 "status": {"type": "string", "enum": ["active", "completed", "cancelled", "all"]},
+                "responsibility": {"type": "string", "enum": ["all", "mine", "delegated", "unassigned"],
+                                   "description": "Owner filter; default all. mine requires explicit assignee=user."},
                 "scope": _text_or_texts_schema(),
                 "due_from": {"type": "string"},
                 "due_to": {"type": "string"},

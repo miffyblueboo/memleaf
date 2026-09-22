@@ -451,7 +451,7 @@ def admission_reason(candidate: Mapping[str, Any], units: Iterable[EvidenceUnit]
         for unit in support
     ):
         return "assistant_restatement", support
-    if candidate.get("type") == "todo":
+    if candidate.get("type") == "todo" or candidate.get("actionable") is True:
         # Negative or third-party facts may still be retained as facts or used
         # for a verified state update. They must not become a new active task.
         # A validated model binding can intentionally select a complete
@@ -517,7 +517,7 @@ def _coverage_todo_witnesses(value: Any) -> dict[str, tuple[str, str]]:
         if not isinstance(raw_id, str) or not raw_id:
             continue
         if isinstance(raw_value, Mapping):
-            if raw_value.get("type") != "todo":
+            if raw_value.get("type") != "todo" and raw_value.get("actionable") is not True:
                 continue
             status = raw_value.get("status")
         else:

@@ -71,11 +71,11 @@ _B3_DEFERRABLE_DETAILS = {
 }
 _DETAIL_TEXT_RE = re.compile(r"^[a-z_]{1,48}$")
 _MEMORY_FIELDS = frozenset({
-    "title", "body", "tags", "aliases", "keywords", "status", "completed_at", "due_date",
+    "title", "body", "tags", "aliases", "keywords", "status", "actionable", "assignee", "waiting_on", "completed_at", "due_date",
     "shadow_native_ids",
 })
 _LOCAL_FIELDS = (
-    "memory_id", "title", "body", "type", "scopes", "status", "completed_at", "due_date"
+    "memory_id", "title", "body", "type", "scopes", "actionable", "status", "assignee", "waiting_on", "completed_at", "due_date"
 )
 _EVIDENCE_FIELDS = ("unit_id", "role", "content", "origin", "section_path", "timestamp")
 _SCOPE_REGISTRY_FIELDS = ("scope", "aliases", "parent")
@@ -1317,14 +1317,15 @@ def run_single_pass_stage(
         for item in items:
             if not isinstance(item, dict) or item.get("decision") not in {"CREATE", "UPDATE"}:
                 continue
-            if item.get("decision") == "CREATE" and item.get("type") != "todo":
+            memory = item.get("memory")
+            if (item.get("decision") == "CREATE" and item.get("type") != "todo"
+                    and not (isinstance(memory, Mapping) and memory.get("actionable") is True)):
                 continue
             if item.get("decision") == "UPDATE":
                 target_id = item.get("target_memory_id")
                 target = local_by_key.get(target_id.casefold()) if isinstance(target_id, str) else None
-                if not isinstance(target, Mapping) or target.get("type") != "todo":
+                if not isinstance(target, Mapping) or (target.get("type") != "todo" and target.get("actionable") is not True):
                     continue
-            memory = item.get("memory")
             candidate_id = item.get("candidate_id")
             due_date = memory.get("due_date") if isinstance(memory, Mapping) else None
             if not isinstance(candidate_id, str) or not isinstance(due_date, str):

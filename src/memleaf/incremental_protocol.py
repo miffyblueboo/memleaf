@@ -28,7 +28,7 @@ MAX_BYTES = 128 * 1024
 MAX_ITEMS = 64
 _TYPES = frozenset(("fact", "todo", "preference", "project", "event", "identity", "other"))
 _TYPE_ALIASES = {"decision": "fact", "task": "todo", "action": "todo", "action_item": "todo", "note": "other"}
-_PATCH = frozenset(("title", "body", "scope", "status", "assignee", "waiting_on", "deadline", "validity"))
+_PATCH = frozenset(("title", "body", "scope", "status", "actionable", "assignee", "waiting_on", "deadline", "validity"))
 _CREATE = (_PATCH - {"validity"}) | {"type"}
 _BRANCHES = {
     "CREATE": ({"memory"}, {"memory", "at", "effective"}),
@@ -56,6 +56,7 @@ def _normalize_create_fields(fields: Any) -> tuple[Any, list[str]]:
         return fields, []
     normalized = deepcopy(fields)
     warnings = []
+    warnings.extend(_normalize_enum_fields(normalized))
     if "scope" not in normalized and isinstance(normalized.get("scopes"), list):
         scopes = normalized["scopes"]
         if len(scopes) == 1 and isinstance(scopes[0], str):
@@ -68,6 +69,20 @@ def _normalize_create_fields(fields: Any) -> tuple[Any, list[str]]:
     return normalized, warnings
 
 
+def _normalize_enum_fields(fields: dict[str, Any]) -> list[str]:
+    """Accept only spelling differences of existing protocol enum values."""
+    warnings = []
+    for key, allowed in (("status", {"active", "completed", "cancelled"}),
+                         ("validity", {"valid", "retracted"})):
+        value = fields.get(key)
+        if isinstance(value, str):
+            canonical = value.strip().casefold()
+            if canonical in allowed and canonical != value:
+                fields[key] = canonical
+                warnings.append(f"{key}_enum_normalized")
+    return warnings
+
+
 def _normalize_model_row(row: Any) -> tuple[Any, list[str]]:
     """Remove only semantically empty branch placeholders and normalize CREATE aliases."""
     if not isinstance(row, dict) or not isinstance(row.get("action"), str):
@@ -77,6 +92,13 @@ def _normalize_model_row(row: Any) -> tuple[Any, list[str]]:
         return row, []
     normalized = deepcopy(row)
     warnings = []
+    for key in ("effective", "reopen"):
+        if key in normalized and normalized[key] is None:
+            normalized.pop(key)
+            warnings.append("null_optional_metadata_normalized")
+    if action == "NO_MEMORY" and normalized.get("evidence", object()) in (None, []):
+        normalized.pop("evidence", None)
+        warnings.append("empty_no_memory_evidence_normalized")
     required, optional = _BRANCHES[action]
     allowed = {"action", "evidence"} | required | optional
     for key in sorted(_ROW_FIELDS - allowed):
@@ -96,6 +118,8 @@ def _normalize_model_row(row: Any) -> tuple[Any, list[str]]:
         normalized, flattened = _normalize_flat_create_row(normalized)
         if flattened:
             warnings.append("create_memory_wrapper_normalized")
+    elif action == "UPDATE" and isinstance(normalized.get("patch"), dict):
+        warnings.extend(_normalize_enum_fields(normalized["patch"]))
     return normalized, list(dict.fromkeys(warnings))
 
 
@@ -117,7 +141,7 @@ def _normalize_flat_create_row(row: Any) -> tuple[Any, bool]:
     normalized = {key: deepcopy(value) for key, value in row.items() if key not in _CREATE}
     normalized["memory"] = {key: deepcopy(row[key]) for key in row if key in _CREATE}
     return normalized, True
-_GROUP = {"status": "status", "validity": "validity", "scopes": "scope",
+_GROUP = {"status": "status", "actionable": "status", "validity": "validity", "scopes": "scope",
           "assignee": "responsibility", "waiting_on": "responsibility",
           "deadline": "deadline", "title": "content", "body": "content"}
 
@@ -493,11 +517,33 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
         kind = fields.get("type") if action == "CREATE" else state["targets"][result["target_ref"]]["memory"]["type"]
         if action == "CREATE" and kind == "todo" and "status" not in fields:
             fields["status"] = "active"
-        if kind != "todo":
-            if action == "CREATE" and fields.get("status") == "active":
-                fields.pop("status")
-            if set(fields) & {"status", "assignee", "waiting_on", "deadline"}:
-                raise ValueError("todo_fields_on_non_todo")
+        # A non-todo may itself be one independently trackable action.  Model
+        # serializers sometimes omit the marker while explicitly supplying
+        # both lifecycle and responsibility.  That structured pair is a
+        # bounded, auditable opt-in; a person, date or generic active alone is
+        # never enough.
+        if "actionable" in fields and type(fields["actionable"]) is not bool:
+            raise ValueError("invalid_actionable")
+        if (kind != "todo" and "actionable" not in fields
+                and isinstance(fields.get("status"), str)
+                and fields["status"] in {"active", "completed", "cancelled"}
+                and any(fields.get(key) is not None for key in ("assignee", "waiting_on", "deadline"))):
+            fields["actionable"] = True
+            result.setdefault("warnings", []).append("actionable_inferred_from_structured_action")
+        if (action == "UPDATE" and kind != "todo" and "actionable" not in fields
+                and isinstance(fields.get("assignee"), str) and fields["assignee"].strip()):
+            # An explicit executor change on an existing record is an action
+            # facet, unlike a name merely mentioned in body text.
+            fields["actionable"] = True
+            result.setdefault("warnings", []).append("actionable_inferred_from_assignee_update")
+        if action == "CREATE" and kind != "todo" and fields.get("status") == "active" and fields.get("actionable") is not True:
+            fields.pop("status")
+            result.setdefault("warnings", []).append("generic_active_without_action_ignored")
+        if fields.get("actionable") is True and kind != "todo" and "status" not in fields and action == "CREATE":
+            fields["status"] = "active"
+        if (action == "UPDATE" and fields.get("actionable") is True and "status" not in fields
+                and state["targets"][result["target_ref"]]["memory"].get("status") is None):
+            fields["status"] = "active"
         for key in ("title", "body"):
             if key in fields:
                 _text(fields[key], 256 if key == "title" else 16384,
@@ -592,7 +638,7 @@ def _compile_group(rows: list[dict[str, Any]], state: Mapping[str, Any]) -> dict
         fields["body"] = ""
     state_change = bool(target and any(
         key in fields and fields[key] != old.get(key)
-        for key in ("status", "assignee", "waiting_on", "validity", "scopes")
+        for key in ("status", "actionable", "assignee", "waiting_on", "validity", "scopes")
     )) or (not target and fields.get("status") in {"completed", "cancelled"})
     if effective is not None and state_change:
         anchor = parse_source_time(first["basis"].get("source_time"))

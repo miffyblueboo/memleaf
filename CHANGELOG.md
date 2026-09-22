@@ -4,6 +4,18 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.73 — 2026-09-22
+
+### Explicitly tracked actions
+
+- Extend action tracking beyond `todo` memories with a bounded `actionable`
+  marker and support status, deadline, assignee and waiting-on metadata.
+- Include actionable memories in planning, updates, maintenance, retrieval and
+  `list_todos`, with explicit responsibility filtering and richer directory
+  results.
+- Keep ordinary memories unchanged unless the action facet is explicitly
+  declared or safely inferred from structured action fields.
+
 ## 0.2.72 — 2026-09-22
 
 ### Hermes todo observation compatibility

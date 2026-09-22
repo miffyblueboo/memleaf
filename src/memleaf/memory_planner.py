@@ -339,10 +339,11 @@ class MemoryPlanner:
                 continue
             seen.add(key)
             memory = self.inputs._active_memory_by_id(memory_id)
-            if memory is None or memory.type != "todo":
+            if memory is None or (memory.type != "todo" and not memory.actionable):
                 continue
             witnesses[memory.memory_id] = {
-                "type": "todo",
+                "type": memory.type,
+                "actionable": memory.actionable or memory.type == "todo",
                 "status": memory.status,
             }
         return witnesses

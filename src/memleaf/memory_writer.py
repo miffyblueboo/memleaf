@@ -304,7 +304,11 @@ class MemoryWriter:
         memory_id = existing.memory_id if existing is not None else request["memory_id"]
         created = existing.created if existing is not None else now
         status = summary.get("status") if "status" in summary else (existing.status if existing is not None else None)
-        if summary["type"] == "todo" and status is None:
+        actionable = summary.get("actionable", existing.actionable if existing is not None else False)
+        if (summary["type"] != "todo" and "actionable" not in summary
+                and isinstance(summary.get("assignee"), str) and summary["assignee"].strip()):
+            actionable = True
+        if (summary["type"] == "todo" or actionable) and status is None:
             status = "active"
         due_date = summary.get("due_date") if "due_date" in summary else (existing.due_date if existing is not None else None)
         validity = summary.get("validity") if "validity" in summary else (
@@ -316,6 +320,9 @@ class MemoryWriter:
             else existing.completed_at if existing is not None and status == "completed" else None
         )
         extra = dict(existing.extra) if existing is not None else {}
+        for field in ("assignee", "waiting_on"):
+            if field in summary:
+                extra[field] = summary[field]
         extra["source"] = request["turn"].source
         if request.get("explicit_remember") is True:
             extra["explicit_remember"] = True
@@ -342,6 +349,7 @@ class MemoryWriter:
             hit_count=existing.hit_count if existing is not None else 0,
             last_hit_at=existing.last_hit_at if existing is not None else None,
             status=status,
+            actionable=actionable,
             completed_at=completed_at,
             due_date=due_date,
             validity=validity,

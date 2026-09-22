@@ -643,7 +643,7 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             deadline_dates = _candidate_deadline_dates(candidate_date_evidence)
             basis = decision_context.get("_task_basis")
             task_dates: set[str] = set()
-            if memory_type == "todo" and isinstance(basis, Mapping):
+            if (memory_type == "todo" or proposed.get("actionable") is True) and isinstance(basis, Mapping):
                 basis_unit = by_unit.get(basis.get("unit_id"))
                 if (basis_unit is not None and basis_unit.source_role == "user"
                         and basis_unit.origin == "user_assertion"
@@ -654,12 +654,12 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                     deadline_dates.update(task_dates)
             grounded_dates.update(deadline_dates)
             summary = dict(proposed)
-            if (memory_type == "todo" and summary.get("status", "active") == "active"
+            if ((memory_type == "todo" or summary.get("actionable") is True) and summary.get("status", "active") == "active"
                     and not summary.get("due_date") and len(task_dates) == 1):
                 summary["due_date"] = next(iter(task_dates))
             # 日期校验：只接受在本候选证据里出现过、且能锚定成 ISO 的日期。
             # 校验不通过时只丢掉日期字段，候选照常写入。
-            if memory_type == "todo":
+            if memory_type == "todo" or summary.get("actionable") is True:
                 resolved_due = _resolve_candidate_due_date(
                     summary.get("due_date"),
                     candidate_date_evidence,
@@ -674,9 +674,9 @@ class SinglePassMemoryPlanner(MemoryPlanner):
                 summary.setdefault("tags", list(target_memory.tags))
                 summary.setdefault("aliases", list(target_memory.aliases))
                 summary.setdefault("keywords", list(target_memory.keywords))
-                if target_memory.type == "todo" and "status" not in summary:
+                if (target_memory.type == "todo" or target_memory.actionable) and "status" not in summary:
                     summary["status"] = target_memory.status or "active"
-                if target_memory.type == "todo" and "due_date" not in summary:
+                if (target_memory.type == "todo" or target_memory.actionable) and "due_date" not in summary:
                     # An update that stays silent about the deadline keeps the
                     # one already recorded instead of silently clearing it.
                     summary["due_date"] = target_memory.due_date
@@ -687,7 +687,7 @@ class SinglePassMemoryPlanner(MemoryPlanner):
             summary["scopes"] = scopes
             if isinstance(scope_source, str) and scope_source:
                 summary["scope_source"] = scope_source
-            if memory_type == "todo" and summary.get("status") == "completed" and not summary.get("completed_at"):
+            if (memory_type == "todo" or summary.get("actionable") is True) and summary.get("status") == "completed" and not summary.get("completed_at"):
                 # Message/source time proves when the completion was reported,
                 # not when the task actually completed. Preserve an existing
                 # explicit completion time, otherwise keep it unknown.

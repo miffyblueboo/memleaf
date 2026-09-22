@@ -327,6 +327,7 @@ _DIAGNOSTIC_SUMMARY_ALLOWED = frozenset(
         "sources",
         "evidence_event_ids",
         "status",
+        "actionable",
         "completed_at",
         "due_date",
         "shadow_native_ids",
@@ -1025,14 +1026,14 @@ def _native_result(value: Any) -> list[dict[str, Any]]:
                 continue
             value = item.to_dict()
             projected = {key: value[key] for key in allowed_fields if key in value}
-            if item.type == "todo":
+            if item.type == "todo" or item.actionable:
                 projected["due_date"] = item.due_date
             result.append(projected)
         elif isinstance(item, Mapping):
             if item.get("validity", "valid") != "valid":
                 continue
             projected = {key: item[key] for key in allowed_fields if key in item}
-            if projected.get("type") == "todo":
+            if projected.get("type") == "todo" or projected.get("actionable") is True:
                 projected["due_date"] = item.get("due_date")
             result.append(projected)
         else:

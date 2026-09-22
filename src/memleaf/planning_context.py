@@ -466,7 +466,7 @@ class PlanningContext:
             "type": memory.type,
             "scopes": list(memory.scopes),
         }
-        if memory.type == "todo":
+        if memory.type == "todo" or memory.actionable:
             # Gate may use a terminal todo only as a structural witness for
             # already_completed coverage.  Keep the state metadata bounded;
             # the todo body remains outside the directory projection.
