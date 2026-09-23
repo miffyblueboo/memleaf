@@ -13,6 +13,7 @@ from typing import Any, Mapping
 from .validation import calendar_tokens, normalize_relative_calendar_text, _RELATIVE_CALENDAR_EXPRESSION
 
 _CLOCK_AFTER_DATE = re.compile(r"\s*(?:(?:日|号|上午|下午|晚上|中午|凌晨|约|在|at|T)\s*){0,2}(\d{1,2}:[0-5]\d)(?!\d)", re.IGNORECASE)
+_PROVENANCE_PREFIX = re.compile(r"^[ \t]*(?:来源|source)[：:][ \t]*", re.IGNORECASE)
 
 
 def _dated_clocks(text: str) -> set[tuple[str, str]]:
@@ -70,6 +71,42 @@ def calendar_hints(evidence: Mapping[str, Any]) -> list[dict[str, str]]:
             if hint not in result:
                 result.append(hint)
     return result[:20]
+
+
+def remove_source_time_provenance_date(body: str, events: list[Mapping[str, Any]]) -> str:
+    """Drop only a redundant source-day stamp at the start of a provenance line.
+
+    The source chain is stored by Core. A message timestamp is not evidence for
+    a date in the memory's facts or deadline, even when a model copies that day
+    into a decorative ``来源：`` line. Leave every other date for the strict
+    content-date guard to validate.
+    """
+    source_days = {
+        anchor.date().isoformat()
+        for event in events
+        if (anchor := parse_source_time(event.get("source_time"))) is not None
+    }
+    if not source_days or not isinstance(body, str):
+        return body
+    original_lines = body.splitlines(keepends=True)
+    footer_index = max((index for index, line in enumerate(original_lines) if line.strip()), default=-1)
+    lines = []
+    for index, line in enumerate(original_lines):
+        # Only a footer is presentation metadata. A date in the middle of
+        # task content must still be treated as a possible business fact.
+        if index != footer_index:
+            lines.append(line)
+            continue
+        prefix = _PROVENANCE_PREFIX.match(line)
+        if prefix:
+            token = next((token for token in calendar_tokens(line)
+                          if token.start == prefix.end() and token.has_year), None)
+            if token is not None and token.canonical in source_days:
+                # Retain any text after the stamp; only source metadata is
+                # normalized, never a task statement or a different date.
+                line = line[:token.start] + line[token.end:].lstrip(" \t")
+        lines.append(line)
+    return "".join(lines)
 
 
 def invalid_content_dates(fields: Mapping[str, Any], events: list[Mapping[str, Any]],

@@ -4,6 +4,16 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.75 — 2026-09-23
+
+### Incremental date provenance normalization
+
+- Remove a redundant source-day stamp only from a final provenance line when
+  it matches the cited event's `source_time`; retain other dates for strict
+  content grounding.
+- Clarify that `source_time` resolves relative dates but must not be copied as
+  an added factual date in memory content.
+
 ## 0.2.74 — 2026-09-23
 
 ### Incremental update evidence compatibility

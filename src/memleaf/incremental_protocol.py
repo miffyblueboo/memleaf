@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from .incremental_dates import (calendar_hints, invalid_content_dates, parse_source_time,
+                                remove_source_time_provenance_date,
                                 reading_text, selected_calendar, source_basis)
 from .models import Memory
 from .scope_state import validate_scope_key
@@ -564,7 +565,13 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
             if key in fields:
                 _text(fields[key], 256 if key == "title" else 16384,
                       empty=key == "body" and fields.get("validity") == "retracted")
-        if invalid_content_dates(fields, [evidence[ref] for ref in refs],
+        cited_events = [evidence[ref] for ref in refs]
+        if "body" in fields:
+            normalized_body = remove_source_time_provenance_date(fields["body"], cited_events)
+            if normalized_body != fields["body"]:
+                fields["body"] = normalized_body
+                result.setdefault("warnings", []).append("source_time_provenance_date_removed")
+        if invalid_content_dates(fields, cited_events,
                                  state["targets"][result["target_ref"]]["memory"] if action == "UPDATE" else None):
             raise ValueError("ungrounded_content_date")
         if "status" in fields and fields["status"] not in ("active", "completed", "cancelled"):
