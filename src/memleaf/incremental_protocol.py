@@ -83,8 +83,8 @@ def _normalize_enum_fields(fields: dict[str, Any]) -> list[str]:
     return warnings
 
 
-def _normalize_model_row(row: Any) -> tuple[Any, list[str]]:
-    """Remove only semantically empty branch placeholders and normalize CREATE aliases."""
+def _normalize_model_row(row: Any, state: Mapping[str, Any], *, only_row: bool) -> tuple[Any, list[str]]:
+    """Normalize bounded serialization differences without inventing a target or value."""
     if not isinstance(row, dict) or not isinstance(row.get("action"), str):
         return row, []
     action = row["action"].strip().upper()
@@ -92,6 +92,22 @@ def _normalize_model_row(row: Any) -> tuple[Any, list[str]]:
         return row, []
     normalized = deepcopy(row)
     warnings = []
+    if (action == "UPDATE" and "type" in normalized
+            and isinstance(normalized.get("target"), str)):
+        target = state["targets"].get(normalized["target"].strip())
+        offered = normalized["type"]
+        if (target is not None and isinstance(offered, str)
+                and offered.strip().casefold() == target["memory"]["type"]):
+            normalized.pop("type")
+            warnings.append("unchanged_update_type_normalized")
+    if (action == "UPDATE" and "evidence" not in normalized and only_row
+            and state["request_kind"] == "automatic"):
+        new = [item for item in state["evidence"] if item["use"] == "new"]
+        if (len(new) == 2 and {item["role"] for item in new} == {"user", "assistant"}
+                and new[0]["source"] == new[1]["source"]
+                and new[0]["session_id"] == new[1]["session_id"]):
+            normalized["evidence"] = [item["ref"] for item in new]
+            warnings.append("single_turn_update_evidence_normalized")
     for key in ("effective", "reopen"):
         if key in normalized and normalized[key] is None:
             normalized.pop(key)
@@ -702,7 +718,7 @@ def compile_incremental(raw: str, snapshot: PlanningSnapshot) -> dict[str, Any]:
         issues.append(issue)
     for index, row in enumerate(value["items"]):
         try:
-            normalized_row, warnings = _normalize_model_row(row)
+            normalized_row, warnings = _normalize_model_row(row, state, only_row=len(value["items"]) == 1)
             parsed_row = _parse_row(normalized_row, state)
             if warnings:
                 parsed_row.setdefault("warnings", []).extend(warnings)

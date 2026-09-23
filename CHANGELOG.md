@@ -4,6 +4,17 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.74 — 2026-09-23
+
+### Incremental update evidence compatibility
+
+- Normalize omitted evidence only for a single automatic UPDATE with an
+  explicit target and an exact same-source, same-session user/assistant pair.
+- Ignore a redundant UPDATE type only when it matches the named target's
+  existing type; keep type changes and ambiguous evidence rejected.
+- Clarify latest-scope completion and deadline handling in the incremental
+  prompt, and limit Hermes `remember` to explicit user-requested retention.
+
 ## 0.2.73 — 2026-09-22
 
 ### Explicitly tracked actions

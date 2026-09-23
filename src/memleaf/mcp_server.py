@@ -330,7 +330,10 @@ _TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "remember",
-        "description": "Explicitly remember text using the configured Core model route.",
+        "description": (
+            "Explicit user-requested retention only. Hermes auto-processes ordinary turns; "
+            "do not duplicate them or invent follow-ups from assistant summaries."
+        ),
         "inputSchema": _object_schema(
             {
                 "content": {"type": "string"},
