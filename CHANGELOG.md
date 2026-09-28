@@ -4,6 +4,18 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.76 — 2026-09-28
+
+### Incremental turn maintenance and date diagnostics
+
+- Advance the incremental semantic protocol to v6 and keep turn-wide
+  `NO_MEMORY` exclusive, so it cannot mask a memory action or an invalid row.
+- Report unsupported content dates by field and occurrence, with bounded source
+  anchors, while continuing to reject ungrounded dates.
+- Refine whole-turn maintenance guidance: reconcile new content with existing
+  valid memories, and require evidence before treating assistant-authored
+  proposals, responsibilities or deadlines as durable facts.
+
 ## 0.2.75 — 2026-09-23
 
 ### Incremental date provenance normalization
