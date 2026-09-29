@@ -151,6 +151,9 @@ def _source_valid(service, processed, work):
         return False
     try:
         turn, window = _window(service, work["source"], work["session_id"], work["turn_key"])
+        from .incremental_explicit import bindings_current
+        if not bindings_current(service, processed, work):
+            return False
     except (OSError, ValueError):
         return False
     return window == work["source_window"] and input_digest(turn) == work["source_digest"]
@@ -365,6 +368,10 @@ def apply_incremental(service: Any, *, response: str, expected_snapshot: str, in
                                       "selected_fragments": sum("native" in t for t in snapshot.state()["targets"].values()),
                                       "selection": "bounded_candidates", "read_only": True},
                 "index_status": "dirty" if any(op["action"] in {"CREATE", "UPDATE"} and op["state"] == "prepared" for op in operations) else "current"}
+        if snapshot.state().get("explicit_writes"):
+            from .incremental_explicit import freeze_bindings
+            work["explicit_write_bindings"] = freeze_bindings(
+                snapshot.state()["explicit_writes"], snapshot.state()["targets"])
         if recovery_run is not None:
             work["recovery_parent"] = parent["work_id"]
         save_work(service, processed, work)

@@ -130,10 +130,20 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
     works = processed.get(KEY, {})
     if not isinstance(works, dict):
         raise ValueError("invalid_incremental_ledger")
+    explicit_writes = []
+    explicit_content = {}
+    from .incremental_explicit import matching_writes
     for key in works:
         work = load_work(processed, key)
         if work["source"] == source and work["session_id"] == session_id and work["turn_key"] == selected.turn_key:
             prior_ids.update(op["memory_id"] for op in work["operations"] if op.get("memory_id"))
+        if selection is None:
+            explicit_writes.extend(matching_writes(service, processed, work, source=source,
+                session_id=session_id, turn_key=selected.turn_key, content_cache=explicit_content))
+    # Receipt-linked targets precede query candidates. They cannot silently
+    # disappear when the submitted wording differs from the final reply.
+    explicit_ids = list(dict.fromkeys(link["memory_id"] for link in explicit_writes))
+    priority = list(dict.fromkeys(explicit_ids + priority))
     priority += sorted(x for x in prior_ids if x.casefold() in records and x not in priority)
     if len(priority) > candidate_limit:
         raise ValueError("blocked_context")
@@ -187,6 +197,9 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
     scopes = sorted({s for m in chosen for s in m.scopes} | set(boundary or []) | set(registry))
     scope_refs = {f"s{i}": s for i, s in enumerate(scopes, 1) if s not in {"global", "unscoped"}}
     targets = {f"m{i}": memory for i, memory in enumerate(chosen, 1)}
+    target_refs = {memory.memory_id: ref for ref, memory in targets.items()}
+    explicit_links = [{**{k: v for k, v in link.items() if k != "memory_id"},
+                       "target": target_refs[link["memory_id"]]} for link in explicit_writes]
     writable = {ref: memory.memory_id not in native.bindings and
                 (boundary is None or set(memory.scopes) <= set(boundary)) for ref, memory in targets.items()}
     native_targets = {ref: native.bindings[memory.memory_id] for ref, memory in targets.items()
@@ -203,7 +216,8 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
                                   request_kind="explicit_remember" if selection else "automatic",
                                   retention_request=retention_request, scope_guard=scope_guard,
                                   scope_aliases=scope_aliases, basis_statuses=statuses,
-                                  vault_binding=binding if binding["status"] == "bound" else None)
+                                  vault_binding=binding if binding["status"] == "bound" else None,
+                                  explicit_writes=explicit_links)
 
 
 def prepare_incremental(service: Any, **arguments: Any) -> PlanningSnapshot:

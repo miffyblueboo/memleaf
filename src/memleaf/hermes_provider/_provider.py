@@ -34,7 +34,7 @@ def _sync_source_metadata(messages: Any, user_content: str, assistant_content: s
 
     Hermes' base API does not guarantee IDs or timestamps. Do not consult tools,
     attachments, older matching text, or a local clock to invent missing fields.
-    Strings supplied to sync_turn remain the only captured conversation bodies.
+    This legacy helper supplies metadata only; host-v1 uses admission snapshots.
     """
     from datetime import datetime
     from math import isfinite
@@ -55,10 +55,10 @@ def _sync_source_metadata(messages: Any, user_content: str, assistant_content: s
                  if isinstance(item, Mapping) and item.get("role") == "user"), None)
     if user is None:
         logger.info("memleaf source-metadata reason=user_missing")
-        return {}
+        return _independent_assistant_time(assistant, assistant_content)
     if user.get("content") != user_content:
         logger.info("memleaf source-metadata reason=user_mismatch")
-        return {}
+        return _independent_assistant_time(assistant, assistant_content)
     result: dict[str, dict[str, Any]] = {}
     for role, item in (("user", user), ("assistant", assistant)):
         row: dict[str, Any] = {}
@@ -99,6 +99,115 @@ def _sync_source_metadata(messages: Any, user_content: str, assistant_content: s
         for row in result.values():
             row.pop("source_sequence", None)
     return result
+
+
+def _independent_assistant_time(assistant: Mapping[str, Any], content: str) -> dict[str, dict[str, Any]]:
+    from datetime import datetime
+    from math import isfinite
+    value = assistant.get("source_time")
+    if value is None:
+        value = assistant.get("timestamp")
+    parsed = None
+    try:
+        if type(value) in (int, float) and isfinite(value) and 0 <= value < 253402300800:
+            parsed = datetime.fromtimestamp(value).astimezone()
+        elif isinstance(value, str) and len(value) <= 80:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed is not None and parsed.tzinfo is not None and parsed.utcoffset() is not None:
+            return {"assistant": {"source_time": parsed.isoformat()}}
+    except (ValueError, OSError, OverflowError):
+        pass
+    return {}
+
+
+def _host_turn_id(context: Any) -> Optional[str]:
+    if not isinstance(context, Mapping) or context.get("version") != 1:
+        return None
+    raw = context.get("turn_id")
+    if not isinstance(raw, str) or not raw or len(raw) > 800 or any(c in raw for c in "\x00\r\n"):
+        return None
+    return "host-" + sha256(("v1:" + raw).encode()).hexdigest()[:24]
+
+
+def _host_visible_events(messages: Any, context: Any, session_id: str,
+                         assistant_content: str) -> Optional[list[dict[str, Any]]]:
+    """Resolve the host's enumerated visible user events, never split model text."""
+    if (_host_turn_id(context) is None or context.get("session_id") != session_id
+            or not isinstance(messages, list) or not messages):
+        return None
+    if type(context.get("turn_number")) is not int or context["turn_number"] <= 0:
+        return None
+    ids = context.get("user_message_ids")
+    if (not isinstance(ids, list) or not 1 <= len(ids) < 64
+            or any(not isinstance(i, str) or not i or len(i) > 800 for i in ids)
+            or len(set(ids)) != len(ids)):
+        return None
+    snapshots = context.get("user_events")
+    if (not isinstance(snapshots, list) or len(snapshots) != len(ids)
+            or any(not isinstance(row, Mapping) or row.get("role") != "user"
+                   or row.get("message_uid") != uid for row, uid in zip(snapshots, ids))):
+        return None
+    final = messages[-1]
+    if (not isinstance(final, Mapping) or final.get("role") != "assistant"
+            or final.get("content") != assistant_content or final.get("tool_calls")):
+        return None
+    completed_uid = context.get("completed_assistant_message_id")
+    completed = completed_uid is not None
+    if completed and (not isinstance(completed_uid, str) or not completed_uid
+                      or completed_uid != final.get("message_uid")):
+        return None
+    found = []
+    for uid, snapshot in zip(ids, snapshots):
+        matches = [(index, row) for index, row in enumerate(messages[:-1])
+                   if isinstance(row, Mapping) and row.get("message_uid") == uid]
+        if len(matches) > 1 or (matches and matches[0][1].get("role") != "user"):
+            return None
+        if not matches and not completed:
+            return None
+        index = matches[0][0] if matches else None
+        # Live API content can contain host/model scaffolding. Only the clean
+        # admission snapshot supplies user facts and timestamps; live rows prove
+        # UID/role/order membership, not their subsequently modified text.
+        visible = _visible_message_text(snapshot)
+        if not visible.strip():
+            return None
+        item = {key: snapshot[key] for key in ("message_uid", "source_time", "timestamp", "source_sequence") if key in snapshot}
+        found.append((index, dict(item, role="user", content=visible)))
+    positions = [i for i, row in found if i is not None]
+    if positions != sorted(positions):
+        return None
+    # Every actual user after the anchor must belong to this turn. A stale
+    # context cannot capture a subsequent turn or borrow an old matching body.
+    if not completed:
+        actual = [row.get("message_uid") for row in messages[positions[0]:-1]
+                  if isinstance(row, Mapping) and row.get("role") == "user"]
+        if actual != ids:
+            return None
+    # A completed host context is bound to this final UID and was frozen while
+    # its turn was active. Its admission ledger survives lossy compaction; API
+    # summary carriers are not new user events and never supply captured facts.
+    if not isinstance(final.get("message_uid"), str) or not final["message_uid"]:
+        return None
+    assistant = dict(final)
+    if isinstance(final.get("message_uid"), str):
+        assistant["message_id"] = final["message_uid"]
+    events = []
+    final_metadata = {}
+    for _, item in found:
+        user = dict(item, message_id=item["message_uid"])
+        pair = _sync_source_metadata([user, assistant], user["content"], assistant_content)
+        events.append({"role": "user", "content": user["content"], "metadata": pair.get("user", {})})
+        final_metadata = pair.get("assistant", {})
+    # Never manufacture a sequence by assuming a turn always has two events.
+    if not all(type(row.get("source_sequence")) is int for row in [r for _, r in found] + [final]):
+        for event in events:
+            event["metadata"].pop("source_sequence", None)
+        final_metadata.pop("source_sequence", None)
+    if events[-1]["metadata"].get("message_id"):
+        final_metadata["previous_message_id"] = events[-1]["metadata"]["message_id"]
+    events.append({"role": "assistant", "content": _capture_assistant_text(assistant_content),
+                   "metadata": final_metadata})
+    return events
 
 
 def _capture_policy_status(config: Mapping[str, Any], vault: Path) -> dict[str, Any]:
@@ -196,6 +305,7 @@ class MemleafMemoryProvider(MemoryProvider):
         # bounded session -> job mapping so a later turn can poll the prior
         # result and request a rerun on the same job while it is active.
         self._process_jobs_by_session: "OrderedDict[str, str]" = OrderedDict()
+        self._bound_retrieval_calls: "OrderedDict[Tuple[str, str, str, str], str]" = OrderedDict()
         self._last_retrieval_observation = "unknown"
         self._last_retrieval_audit = "SEARCH_UNKNOWN"
 
@@ -842,14 +952,14 @@ class MemleafMemoryProvider(MemoryProvider):
             )
             self._version_warning_emitted = True
 
-    def _queue_turn_number(self, turn_number: Any, message: Any) -> None:
+    def _queue_turn_number(self, turn_number: Any, message: Any, *, session_id: Optional[str] = None) -> None:
         if isinstance(turn_number, bool) or not isinstance(turn_number, int) or turn_number <= 0:
             return
         visible_user = _visible_message_text(message)
         if not visible_user.strip():
             return
         fingerprint = _visible_fingerprint(visible_user)
-        session_id = self._canonical_session_id(self._session_id)
+        session_id = self._canonical_session_id(session_id or self._session_id)
         with self._sync_lock:
             queue = self._pending_turn_numbers.get(fingerprint)
             if queue is None:
@@ -950,7 +1060,11 @@ class MemleafMemoryProvider(MemoryProvider):
     def on_turn_start(self, turn_number: Any, message: Any = None, **kwargs: Any) -> None:
         """Remember only a bounded user-text fingerprint for later ``sync_turn``."""
 
-        del kwargs
+        host_context = kwargs.get("turn_context")
+        host_session = host_context.get("session_id") if isinstance(host_context, Mapping) else None
+        turn_session = self._canonical_session_id(
+            host_session if _host_turn_id(host_context) and isinstance(host_session, str) and host_session
+            else self._session_id)
         if not self._write_enabled:
             return
         if self._gate_enabled:
@@ -958,15 +1072,15 @@ class MemleafMemoryProvider(MemoryProvider):
                 # The token is created by the MCP server during this turn's
                 # scope_catalog call.  Clearing the active value here prevents
                 # a skipped prefetch from reusing the previous turn's token.
-                self._active_turn_numbers[self._session_id] = turn_number
-                self._active_turn_numbers.move_to_end(self._session_id)
-                self._active_retrieval_ids[self._session_id] = None
-                self._active_retrieval_ids.move_to_end(self._session_id)
+                self._active_turn_numbers[turn_session] = turn_number
+                self._active_turn_numbers.move_to_end(turn_session)
+                self._active_retrieval_ids[turn_session] = None
+                self._active_retrieval_ids.move_to_end(turn_session)
                 visible_user = _visible_message_text(message)
-                self._gate_turn_ids[(self._session_id, turn_number)] = (
-                    f"turn-{turn_number:06d}-{_visible_fingerprint(visible_user)}"
+                self._gate_turn_ids[(turn_session, turn_number)] = (
+                    _host_turn_id(host_context) or f"turn-{turn_number:06d}-{_visible_fingerprint(visible_user)}"
                 )
-                self._gate_turn_ids.move_to_end((self._session_id, turn_number))
+                self._gate_turn_ids.move_to_end((turn_session, turn_number))
                 while len(self._active_turn_numbers) > _MAX_PENDING_TURN_NUMBERS:
                     self._active_turn_numbers.popitem(last=False)
                 while len(self._active_retrieval_ids) > _MAX_PENDING_TURN_NUMBERS:
@@ -974,7 +1088,7 @@ class MemleafMemoryProvider(MemoryProvider):
                 while len(self._gate_turn_ids) > _MAX_PENDING_TURN_NUMBERS:
                     self._gate_turn_ids.popitem(last=False)
                 self._last_retrieval_observation = "not_observed"
-        self._queue_turn_number(turn_number, message)
+        self._queue_turn_number(turn_number, message, session_id=turn_session)
 
     def on_session_switch(
         self,
@@ -1413,6 +1527,7 @@ class MemleafMemoryProvider(MemoryProvider):
         vault_root: Optional[Path] = None,
         seen_call_keys: Any = None,
         audit_state: Optional[dict[str, Any]] = None,
+        bound_retrieval_calls: Optional[Mapping[Tuple[str, str, str, str], str]] = None,
     ) -> str:
         """Observe explicit host MCP calls in public messages.
 
@@ -1433,6 +1548,9 @@ class MemleafMemoryProvider(MemoryProvider):
                 continue
             search_ordinal += 1
             arguments = call.get("arguments")
+            bound_token = (bound_retrieval_calls or {}).get((session_id, turn_id, call["name"], call.get("call_id", "")))
+            if bound_token == retrieval_id and isinstance(retrieval_id, str):
+                arguments = {"retrieval_id": bound_token}
             if not isinstance(arguments, Mapping) or arguments.get("retrieval_id") != retrieval_id:
                 continue
             payload = _tool_result_for_call(call, calls, results, search_results_used)
@@ -1455,6 +1573,9 @@ class MemleafMemoryProvider(MemoryProvider):
                 continue
             read_ordinal += 1
             arguments = call.get("arguments")
+            bound_token = (bound_retrieval_calls or {}).get((session_id, turn_id, call["name"], call.get("call_id", "")))
+            if bound_token == retrieval_id and isinstance(retrieval_id, str):
+                arguments = {"retrieval_id": bound_token}
             retrieval_present = isinstance(arguments, Mapping) and "retrieval_id" in arguments
             retrieval_match = bool(
                 retrieval_present
@@ -1611,6 +1732,7 @@ class MemleafMemoryProvider(MemoryProvider):
             catalog,
             retrieval_id=retrieval_id,
             scope_hint=_unique_query_scope(query, catalog),
+            host_bound=bool((self._gate_turn_id(safe_session, turn_number) or "").startswith("host-")),
         )
         if not context:
             notices = [
@@ -1642,13 +1764,13 @@ class MemleafMemoryProvider(MemoryProvider):
         session_id: str = "",
         messages: Optional[List[Dict[str, Any]]] = None,
         turn_number: Optional[int] = None,
+        turn_context: Optional[Mapping[str, Any]] = None,
     ) -> None:
         # ``messages`` may contain system prompts, tool calls/results, and
-        # attachment parts.  Hermes already supplies the visible user and
-        # assistant strings separately; derive only a bounded search status
-        # from an explicit public memleaf tool result below. Optional source
-        # metadata is copied only from an exactly matched visible tail pair.
-        # Never capture the raw message list as business conversation content.
+        # attachment parts. Host-v1 captures clean admission snapshots after
+        # checking message membership; legacy input uses the supplied visible
+        # strings and exact tail metadata. Tool results supply search status,
+        # never user facts. Never capture the raw API message list as content.
         if not self._write_enabled or self._client is None:
             return
         raw_assistant_content = assistant_content
@@ -1666,26 +1788,41 @@ class MemleafMemoryProvider(MemoryProvider):
         # captured turn within this provider instance.
         with self._sync_lock:
             try:
+                capture_context = turn_context
+                if (isinstance(turn_context, Mapping) and isinstance(turn_context.get("session_id"), str)
+                        and self._canonical_session_id(turn_context["session_id"]) == effective_session):
+                    capture_context = {**turn_context, "session_id": effective_session}
+                host_events = _host_visible_events(messages, capture_context, effective_session, raw_assistant_content)
+                bound_turn_id = (_host_turn_id(capture_context) if isinstance(capture_context, Mapping)
+                                 and capture_context.get("session_id") == effective_session else None)
+                if turn_context is not None and host_events is None:
+                    logger.info("memleaf source-metadata reason=host_event_mismatch")
+                    return
                 resolved_turn_number = turn_number
+                if bound_turn_id and type(turn_context.get("turn_number")) is int:
+                    resolved_turn_number = turn_context["turn_number"]
                 if resolved_turn_number is None:
                     resolved_turn_number = self._take_turn_number(effective_session, user_content)
                 elif isinstance(resolved_turn_number, int) and not isinstance(resolved_turn_number, bool):
-                    self._discard_turn_number(effective_session, user_content, resolved_turn_number)
+                    queued_content = host_events[0]["content"] if host_events else user_content
+                    self._discard_turn_number(effective_session, queued_content, resolved_turn_number)
                 turn_id = self._resolve_turn_id(
                     effective_session,
                     resolved_turn_number,
                     user_content,
                     captured_assistant_content,
                 )
-                source_metadata = _sync_source_metadata(messages, user_content, raw_assistant_content)
+                source_metadata = ({} if host_events is not None else
+                                   _sync_source_metadata(messages, user_content, raw_assistant_content))
                 user_source_id = source_metadata.get("user", {}).get("message_id")
-                if user_source_id:
+                if bound_turn_id:
+                    turn_id = bound_turn_id
+                elif user_source_id:
                     # Stable host identity survives a revised body/final reply.
                     turn_id = "source-" + sha256(user_source_id.encode("utf-8")).hexdigest()[:24]
                     source_metadata["assistant"].setdefault("previous_message_id", user_source_id)
                 retrieval_id = self._gate_id_for_turn(effective_session, resolved_turn_number)
-                if retrieval_id is None and resolved_turn_number is None:
-                    retrieval_id = self._current_gate_id(effective_session)
+                # A background callback must never attach itself to a newer turn.
                 if self._gate_enabled:
                     audit_state: dict[str, Any] = {}
                     observation = self._observe_search_messages(
@@ -1696,22 +1833,31 @@ class MemleafMemoryProvider(MemoryProvider):
                         vault_root=_resolve_vault(self._config()),
                         seen_call_keys=self._observed_tool_call_keys,
                         audit_state=audit_state,
+                        bound_retrieval_calls=self._bound_retrieval_calls,
                     )
                     while len(self._observed_tool_call_keys) > _MAX_OBSERVED_TOOL_CALL_KEYS:
                         self._observed_tool_call_keys.popitem(last=False)
                     self._last_retrieval_observation = observation
                     self._last_retrieval_audit = str(audit_state.get("status") or "SEARCH_UNKNOWN")
                 lineage_ready = self._retry_pending_lineage(effective_session)
-                sequence_base = resolved_turn_number * 2 if isinstance(resolved_turn_number, int) else None
-                for offset, (role, content) in enumerate(visible_events):
+                if host_events is not None:
+                    logger.info("memleaf source-metadata contract=host-v1 user_events=%d source=hermes session=%s turn=%s",
+                                len(host_events) - 1, effective_session, turn_id)
+                    capture_events = host_events
+                    sequence_base = None
+                else:
+                    capture_events = [{"role": role, "content": content, "metadata": source_metadata.get(role)}
+                                      for role, content in visible_events]
+                    sequence_base = (resolved_turn_number * 2
+                                     if not bound_turn_id and isinstance(resolved_turn_number, int) else None)
+                for offset, event in enumerate(capture_events):
+                    role = event["role"]
                     if not self._capture_visible(
-                        session_id=effective_session,
-                        turn_id=turn_id,
-                        role=role,
-                        content=content,
+                        session_id=effective_session, turn_id=turn_id, role=role,
+                        content=event["content"],
                         source_sequence=(sequence_base + offset if sequence_base is not None else None),
                         final=True if role == "assistant" else None,
-                        source_metadata=source_metadata.get(role),
+                        source_metadata=event["metadata"],
                     ):
                         return
                 if not self._auto_process:
@@ -1733,6 +1879,50 @@ class MemleafMemoryProvider(MemoryProvider):
                     effective_session,
                     _error_type(error),
                 )
+
+    def bind_external_tool_call(self, tool_name: str, args: Dict[str, Any], *,
+                                turn_context: Any = None, tool_call_id: str = "") -> Optional[Dict[str, Any]]:
+        """Bind the existing MCP surface at the trusted host dispatch boundary."""
+        prefix = "mcp__memleaf__"
+        if not tool_name.startswith(prefix):
+            return None
+        name = tool_name[len(prefix):]
+        if name not in {"search", "read", "list_todos", "scope_catalog", "remember"}:
+            return None
+        turn_id = _host_turn_id(turn_context)
+        session = turn_context.get("session_id") if isinstance(turn_context, Mapping) else None
+        ordinal = turn_context.get("turn_number") if isinstance(turn_context, Mapping) else None
+        if (not turn_id or not isinstance(session, str) or not session
+                or type(ordinal) is not int or ordinal <= 0):
+            raise ValueError("memory_host_identity_missing")
+        session = self._canonical_session_id(session)
+        if self._gate_turn_id(session, ordinal) != turn_id:
+            raise ValueError("memory_host_turn_mismatch")
+        bound = dict(args)
+        if name == "remember":
+            if not tool_call_id or tool_call_id.endswith("/"):
+                raise ValueError("memory_host_operation_missing")
+            bound.update(source="hermes", session_id=session, turn_id=turn_id,
+                         intent_id="host-op-" + sha256((turn_id + "/" + tool_call_id + "/" + name).encode()).hexdigest())
+            bound.pop("event_id", None)
+            # No source timestamp is assigned to an assistant-written composite
+            # explicit request; only the submitted text itself is its evidence.
+            bound.pop("source_time", None)
+        elif name == "scope_catalog":
+            bound.update(source="hermes", session_id=session, turn_id=turn_id)
+        else:
+            token = self._gate_id_for_turn(session, ordinal)
+            if token is None:
+                raise ValueError("memory_host_retrieval_unavailable")
+            bound["retrieval_id"] = token
+            call_id = tool_call_id.rsplit("/", 1)[-1]
+            if call_id:
+                key = (session, turn_id, tool_name, call_id)
+                self._bound_retrieval_calls[key] = token
+                self._bound_retrieval_calls.move_to_end(key)
+                while len(self._bound_retrieval_calls) > _MAX_OBSERVED_TOOL_CALL_KEYS:
+                    self._bound_retrieval_calls.popitem(last=False)
+        return bound
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         # memleaf-mcp remains configured separately for deliberate search,

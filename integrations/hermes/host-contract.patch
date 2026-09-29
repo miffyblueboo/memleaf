@@ -1,0 +1,390 @@
+--- /dev/null
++++ b/agent/memory_turn.py
+@@ -0,0 +1,89 @@
++"""Host-owned visible event identity and external memory tool binding.
++
++No tool schemas or provider-specific names live here. The same immutable
++context follows a completed turn and its tool dispatches, across background work.
++"""
++from copy import deepcopy
++from contextlib import contextmanager
++from contextvars import ContextVar
++
++_binding = ContextVar('external_memory_tool_binding', default=None)
++
++
++def _visible_event(message, content):
++    from agent.message_metadata import stamp_message_uid
++    event = {'role': 'user', 'message_uid': stamp_message_uid(message),
++             'content': deepcopy(content)}
++    for key in ('source_time', 'timestamp', 'source_sequence'):
++        if key in message:
++            event[key] = deepcopy(message[key])
++    return event
++
++
++def begin_memory_turn(agent, messages, user_index, visible_content=None):
++    from agent.message_metadata import stamp_message_uid
++    message = messages[user_index]
++    agent._memory_turn_context = {
++        'version': 1, 'session_id': agent.session_id or '',
++        'turn_id': agent._current_turn_id, 'turn_number': agent._user_turn_count,
++        'user_message_ids': [stamp_message_uid(message)],
++        'user_events': [_visible_event(message, message.get('content') if visible_content is None else visible_content)],
++        'source_time': message.get('source_time', message.get('timestamp')),
++    }
++
++
++def register_memory_correction(agent, message):
++    from agent.message_metadata import stamp_message_uid
++    context = getattr(agent, '_memory_turn_context', None)
++    if isinstance(context, dict) and context.get('turn_id') == getattr(agent, '_current_turn_id', None):
++        context['user_message_ids'].append(stamp_message_uid(message))
++        context['user_events'].append(_visible_event(message, message.get('content')))
++
++
++@contextmanager
++def bind_memory_tools(manager, context, api_request_id=''):
++    token = _binding.set((manager, deepcopy(context), api_request_id))
++    try:
++        yield
++    finally:
++        _binding.reset(token)
++
++
++def bind_external_arguments(name, args, call_id):
++    value = _binding.get()
++    if value is None or value[0] is None:
++        return args
++    manager, context, api_request_id = value
++    binder = getattr(manager, 'bind_external_tool_call', None)
++    if binder is None:
++        return args
++    return binder(name, args, turn_context=context,
++                  tool_call_id=f'{api_request_id}/{call_id or ""}')
++
++
++def current_memory_tool_binding():
++    """Return the dispatch planning snapshot inherited by a worker, if present."""
++    return _binding.get()
++
++
++def complete_memory_turn(agent, messages, assistant_content, *, turn_id):
++    """Freeze admitted source events against this completed reply, before enqueue.
++
++    Compaction may remove every admitted user from the model's API transcript.
++    The host's admission ledger, not that lossy transcript, proves provenance.
++    """
++    context = getattr(agent, '_memory_turn_context', None)
++    if (not isinstance(context, dict)
++            or not isinstance(turn_id, str) or not turn_id
++            or context.get('turn_id') != turn_id
++            or getattr(agent, '_current_turn_id', None) != turn_id
++            or not messages or not isinstance(messages[-1], dict)):
++        raise ValueError('memory completion identity mismatch')
++    final = messages[-1]
++    if (final.get('role') != 'assistant' or final.get('content') != assistant_content
++            or final.get('tool_calls')):
++        raise ValueError('memory completion reply mismatch')
++    from agent.message_metadata import stamp_message_uid
++    result = deepcopy(context)
++    result['completed_assistant_message_id'] = stamp_message_uid(final)
++    return result
+--- a/agent/memory_provider.py
++++ b/agent/memory_provider.py
+@@ -134,6 +134,7 @@
+         self, user_content: str, assistant_content: str, *,
+         session_id: str = "", messages: Optional[List[Dict[str, Any]]] = None,
+         turn_author: Optional[Dict[str, Any]] = None,
++        turn_context: Optional[Dict[str, Any]] = None,
+     ) -> None:
+         """Persist a completed turn (non-blocking). ``messages`` is the OpenAI-style list so far.
+         ``turn_author`` (``{"id", "name", "is_bot"}``) is who wrote the user side; the manager sends it only to signatures that accept it."""
+@@ -141,6 +142,18 @@
+     @abstractmethod
+     def get_tool_schemas(self) -> List[Dict[str, Any]]:
+         """OpenAI function-calling schemas ({"name", "description", "parameters"}); [] if none."""
++
++    def bind_external_tool_call(self, tool_name: str, args: Dict[str, Any], *,
++                                turn_context: Optional[Dict[str, Any]] = None,
++                                tool_call_id: str = "") -> Optional[Dict[str, Any]]:
++        """Opt in to binding existing external tools to trusted host identity.
++
++        Return None for an unowned tool, or a replacement argument dict for a
++        claimed tool. Raising fails the claimed dispatch closed. This hook does
++        not expose tools or permit a provider to read another provider's state.
++        The host context is snapshotted at dispatch, never read as 'latest'.
++        """
++        return None
+ 
+     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+         """Handle one of this provider's tools; must return a JSON string."""
+--- a/agent/memory_manager.py
++++ b/agent/memory_manager.py
+@@ -532,7 +532,8 @@
+ 
+     def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "",
+                  messages: Optional[List[Dict[str, Any]]] = None,
+-                 turn_author: Optional[Dict[str, Any]] = None) -> None:
++                 turn_author: Optional[Dict[str, Any]] = None,
++                 turn_context: Optional[Dict[str, Any]] = None) -> None:
+         """Sync a completed turn to all providers on the background worker.
+ 
+         Never inline: a provider's ``sync_turn`` may block for minutes, which kept ``run_conversation``
+@@ -543,7 +544,9 @@
+         clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
+         if not clean_user_content:
+             return
+-        optional_kwargs = {"messages": messages, "turn_author": turn_author}
++        from copy import deepcopy
++        optional_kwargs = deepcopy({"messages": messages, "turn_author": turn_author,
++                                    "turn_context": turn_context})
+ 
+         def _sync(provider: MemoryProvider) -> None:
+             kwargs: Dict[str, Any] = {"session_id": session_id}
+@@ -637,6 +640,26 @@
+     def get_all_tool_names(self) -> set:
+         return set(self._tool_to_provider)
+ 
++    def bind_external_tool_call(self, tool_name: str, args: Dict[str, Any], **context) -> Dict[str, Any]:
++        """Let an opted-in provider bind existing external tools to host identity.
++
++        A claimed tool fails closed on errors; never dispatch its unbound model args.
++        Providers return None for tools they do not own. Multiple claims are rejected.
++        """
++        from copy import deepcopy
++        claimed = []
++        for provider in self._providers:
++            binder = getattr(provider, "bind_external_tool_call", None)
++            if binder is not None:
++                bound = binder(tool_name, deepcopy(args), **context)
++                if bound is not None:
++                    if not isinstance(bound, dict):
++                        raise ValueError("invalid_memory_tool_binding")
++                    claimed.append(bound)
++        if len(claimed) > 1:
++            raise ValueError("ambiguous_memory_tool_binding")
++        return claimed[0] if claimed else args
++
+     def has_tool(self, tool_name: str) -> bool:
+         return tool_name in self._tool_to_provider
+ 
+--- a/agent/turn_context.py
++++ b/agent/turn_context.py
+@@ -869,6 +869,7 @@
+     with suppress(Exception):
+         agent._memory_manager.on_turn_start(
+             agent._user_turn_count, _query,
++            turn_context=getattr(agent, "_memory_turn_context", None),
+             author_id=_author.get("id") or None, author_name=_author.get("name") or None,
+             author_is_bot=bool(_author.get("is_bot")),
+         )
+@@ -1071,6 +1072,9 @@
+     agent._persist_user_message_idx = current_turn_user_idx
+ 
+     agent._user_turn_count += 1
++    from agent.memory_turn import begin_memory_turn
++    begin_memory_turn(agent, messages, current_turn_user_idx,
++                      persist_user_message if persist_user_message is not None else user_message)
+     # Copilot x-initiator: the first API call of this user turn is user-initiated;
+     # tool-loop follow-ups revert to "agent".
+     agent._is_user_initiated_turn = True
+--- a/agent/conversation_loop.py
++++ b/agent/conversation_loop.py
+@@ -353,7 +353,10 @@
+             placeholder["api_content"] = _INTERRUPTED_PLACEHOLDER
+         append_message(messages, placeholder)
+     # Transcript shows the user's own words; the provider replays the scaffolded form.
+-    append_message(messages, {"role": "user", "content": text, "api_content": correction})
++    user_correction = {"role": "user", "content": text, "api_content": correction}
++    append_message(messages, user_correction)
++    from agent.memory_turn import register_memory_correction
++    register_memory_correction(agent, user_correction)
+ 
+     # Stateful scrubber for <memory-context> spans split across stream deltas (#5719).  sanitize_context()
+     # alone can't survive chunk boundaries because the block regex needs both tags in one string.
+--- a/agent/tool_executor.py
++++ b/agent/tool_executor.py
+@@ -391,7 +391,8 @@
+ 
+ 
+ def _unwrap_tool_search_call(
+-    agent, function_name: str, function_args: dict, *, flatten_probe: bool = False
++    agent, function_name: str, function_args: dict, *, flatten_probe: bool = False,
++    tool_call_id: str = ""
+ ) -> tuple[str, dict, Optional[str]]:
+     """Peel the ``tool_call`` bridge so downstream hooks (checkpointing, guardrails, plugin
+     hooks, activity feed) see the underlying tool; ``tool_call.function`` stays untouched for
+@@ -421,6 +422,10 @@
+             )
+         # Validate before unwrapping: the generic bridge hides the concrete
+         # parameter schema from provider-native tool-call validation.
++        from agent.memory_turn import bind_memory_tools, bind_external_arguments
++        with bind_memory_tools(agent._memory_manager, getattr(agent, "_memory_turn_context", None),
++                               getattr(agent, "_current_api_request_id", "")):
++            underlying_args = bind_external_arguments(underlying, underlying_args, tool_call_id)
+         scope_block = _ts.validate_deferred_call_args(underlying, underlying_args)
+         if scope_block is None:
+             return underlying, underlying_args, None
+@@ -456,7 +461,8 @@
+     args, parse_error = _parse_tool_arguments(tool_call.function.arguments)
+     scope_block = None
+     if parse_error is None:
+-        name, args, scope_block = _unwrap_tool_search_call(agent, name, args, flatten_probe=flatten_probe)
++        name, args, scope_block = _unwrap_tool_search_call(agent, name, args, flatten_probe=flatten_probe,
++                                                          tool_call_id=_pairing_tool_call_id(tool_call))
+     return _ParsedCall(tool_call, name, args, [], parse_error, scope_block)
+ 
+ 
+@@ -1296,6 +1302,10 @@
+ 
+     def __init__(self, agent, messages: list, effective_task_id: str, parsed_calls: list[_ParsedCall], timeout_s: float | None) -> None:
+         self.agent = agent
++        from copy import deepcopy
++        self.memory_context = deepcopy(getattr(agent, "_memory_turn_context", None))
++        self.memory_api_id = getattr(agent, "_current_api_request_id", "")
++        self.memory_manager = getattr(agent, "_memory_manager", None)
+         self.messages = messages
+         self.effective_task_id = effective_task_id
+         self.parsed_calls = parsed_calls
+@@ -1307,6 +1317,11 @@
+         self.gate = _StartOrderGate(_start_order_gate_timeout(timeout_s))
+         self.authorization_gate = _ConcurrentToolAuthorizationGate()
+         self.timed_out_indices: set[int] = set()
++
++    def _invoke_with_memory_context(self, *args, **kwargs):
++        from agent.memory_turn import bind_memory_tools
++        with bind_memory_tools(self.memory_manager, self.memory_context, self.memory_api_id):
++            return self.agent._invoke_tool(*args, **kwargs)
+ 
+     def _dispatch_worker(self, index: int, ref: _ToolCallRef, scope_block, start_gate: _WorkerStartOnce) -> Optional[_ToolOutcome]:
+         """Run one call through the middleware and synthesize its slot outcome; ``None`` when
+@@ -1321,7 +1336,7 @@
+             managed = _run_agent_tool_execution_middleware(
+                 agent,
+                 **ref.middleware_kwargs(),
+-                execute=lambda next_args: agent._invoke_tool(
++                execute=lambda next_args: self._invoke_with_memory_context(
+                     ref.name, next_args, ref.task_id, ref.call_id,
+                     messages=self.messages,
+                     pre_tool_block_checked=True,
+@@ -1675,10 +1690,16 @@
+         )
+ 
+     # Registry tools: post hook is owned by this executor (inner observer suppressed).
++    from copy import deepcopy
++    memory_context = deepcopy(getattr(agent, "_memory_turn_context", None))
++    memory_api_id = getattr(agent, "_current_api_request_id", "")
+     def _execute(next_args: dict) -> Any:
+         import model_tools
+ 
+-        with model_tools.suppress_post_tool_call_hook():
++        from agent.memory_turn import bind_memory_tools
++        with model_tools.suppress_post_tool_call_hook(), bind_memory_tools(
++            agent._memory_manager, memory_context, memory_api_id
++        ):
+             return model_tools.handle_function_call(
+                 function_name,
+                 next_args,
+--- a/agent/agent_runtime_helpers.py
++++ b/agent/agent_runtime_helpers.py
+@@ -2448,6 +2448,12 @@
+             middleware_trace=_tool_middleware_trace,
+         )
+         return result
++    from copy import deepcopy
++    from agent.memory_turn import current_memory_tool_binding
++    planned_binding = current_memory_tool_binding()
++    memory_manager = planned_binding[0] if planned_binding else getattr(agent, "_memory_manager", None)
++    memory_context = deepcopy(planned_binding[1] if planned_binding else getattr(agent, "_memory_turn_context", None))
++    memory_api_id = planned_binding[2] if planned_binding else getattr(agent, "_current_api_request_id", "")
+     tool_start_time = time.monotonic()
+     inline_executor = resolve_invoke_tool_executor(agent, function_name)
+     if inline_executor is not None:
+@@ -2483,7 +2489,9 @@
+             if skip_tool_execution_middleware:
+                 dispatch_kwargs["skip_tool_execution_middleware"] = True
+             import model_tools
+-            return model_tools.handle_function_call(function_name, next_args, effective_task_id, **dispatch_kwargs)
++            from agent.memory_turn import bind_memory_tools
++            with bind_memory_tools(memory_manager, memory_context, memory_api_id):
++                return model_tools.handle_function_call(function_name, next_args, effective_task_id, **dispatch_kwargs)
+     if skip_tool_execution_middleware:
+         return _execute(function_args)
+     from hermes_cli.middleware import run_tool_execution_middleware
+--- a/agent/turn_finalizer.py
++++ b/agent/turn_finalizer.py
+@@ -746,7 +746,7 @@
+     # External memory provider: sync the completed turn + queue next prefetch.
+     agent._sync_external_memory_for_turn(
+         original_user_message=original_user_message, final_response=final_response,
+-        interrupted=interrupted, messages=messages,
++        interrupted=interrupted, messages=messages, turn_id=turn_id,
+     )
+ 
+     # Background memory/skill review runs AFTER delivery so it never competes with the
+--- a/model_tools.py
++++ b/model_tools.py
+@@ -705,7 +705,8 @@
+ 
+ 
+ def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
+-                          enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]]):
++                          enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]],
++                          tool_call_id: Optional[str] = None):
+     """Handle a Tool Search bridge call (tool_search / tool_describe / tool_call).
+ 
+     None when *function_name* is not a bridge tool; ``(result, None)`` for a
+@@ -744,6 +745,11 @@
+                           "Use tool_search to find tools you can call."), None
+     # Validate against the deferred tool's concrete schema — the generic
+     # ``arguments: object`` bridge schema can't enforce it.
++    from agent.memory_turn import bind_external_arguments
++    try:
++        underlying_args = bind_external_arguments(underlying_name, underlying_args, tool_call_id)
++    except Exception as exc:
++        return tool_error(f"Memory tool identity binding failed: {type(exc).__name__}"), None
+     probe_err = ts.validate_deferred_call_args(underlying_name, underlying_args)
+     if probe_err is not None:
+         return probe_err, None
+@@ -833,6 +839,11 @@
+         dispatch_kwargs["user_task"] = user_task
+ 
+     def _dispatch(next_args: Dict[str, Any]) -> Any:
++        from agent.memory_turn import bind_external_arguments
++        try:
++            next_args = bind_external_arguments(function_name, next_args, ids.tool_call_id)
++        except Exception as exc:
++            return tool_error(f"Memory tool identity binding failed: {type(exc).__name__}")
+         from tools.connectors import dispatch_connector_call, is_connector_name
+         if is_connector_name(function_name):
+             return dispatch_connector_call(function_name, next_args, ids.tool_call_id)
+@@ -903,7 +914,7 @@
+     # Tool Search bridge: tool_search / tool_describe are catalog reads handled
+     # inline; tool_call is unwrapped so every downstream hook (pre/post, edit
+     # approval, guardrails) sees the real tool name, never the bridge.
+-    bridged = _dispatch_bridge_tool(function_name, function_args, enabled_toolsets, disabled_toolsets)
++    bridged = _dispatch_bridge_tool(function_name, function_args, enabled_toolsets, disabled_toolsets, tool_call_id)
+     if bridged is not None:
+         result, underlying = bridged
+         if underlying is None:
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -917,7 +917,7 @@
+         _notify_context_engine_session_end(self, messages)
+ 
+     def _sync_external_memory_for_turn(self, *, original_user_message: Any, final_response: Any, interrupted: bool,
+-                                       messages: list | None = None) -> None:
++                                       messages: list | None = None, turn_id: str | None = None) -> None:
+         """Mirror a completed turn into external memory providers (``sync_all`` + ``queue_prefetch_all``).
+ 
+         Uses ``original_user_message`` (``user_message`` may carry injected skill content). Interrupted turns
+@@ -942,6 +942,8 @@
+             turn_author = getattr(self, "_turn_author", None)
+             if turn_author is not None:
+                 sync_kwargs["turn_author"] = turn_author
++            from agent.memory_turn import complete_memory_turn
++            sync_kwargs["turn_context"] = complete_memory_turn(self, messages, response_text, turn_id=turn_id)
+             self._memory_manager.sync_all(user_text, response_text, **sync_kwargs)
+             # Sibling of the build_turn_context() prefetch gate: don't key recall on zero-signal prompts.
+             if not is_trivial_prompt(user_text):

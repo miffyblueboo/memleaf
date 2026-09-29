@@ -24,7 +24,7 @@ from .turn_plan import revision_digest
 from .validation import ModelOutputError, parse_strict_json
 
 PROTOCOL_VERSION = "incremental-items-v1"
-SEMANTIC_PROTOCOL = "incremental-turn-v6"
+SEMANTIC_PROTOCOL = "incremental-turn-v7"
 MAX_BYTES = 128 * 1024
 MAX_ITEMS = 64
 _TYPES = frozenset(("fact", "todo", "preference", "project", "event", "identity", "other"))
@@ -260,7 +260,8 @@ class PlanningSnapshot:
               retention_request: str | None = None, scope_guard: dict[str, Any] | None = None,
               scope_aliases: Mapping[str, list[str]] | None = None,
               basis_statuses: Mapping[str, str] | None = None,
-              vault_binding: Mapping[str, Any] | None = None) -> "PlanningSnapshot":
+              vault_binding: Mapping[str, Any] | None = None,
+              explicit_writes: list[dict[str, Any]] | None = None) -> "PlanningSnapshot":
         if request_kind not in {"automatic", "explicit_remember"}:
             raise ValueError("invalid_request_kind")
         if type(allow_new_scopes) is not bool or type(context_complete) is not bool:
@@ -336,6 +337,12 @@ class PlanningSnapshot:
         state = {"protocol_version": PROTOCOL_VERSION, "evidence": evidence, "targets": target_values,
                  "scopes": scopes, "write_scopes": write_scopes, "request_kind": request_kind,
                  "allow_new_scopes": allow_new_scopes, "context_complete": context_complete}
+        from .incremental_explicit import validate_links
+        links = validate_links(explicit_writes, target_values)
+        if links:
+            if request_kind != "automatic":
+                raise ValueError("unexpected_explicit_write_links")
+            state["explicit_writes"] = links
         if vault_binding is not None:
             if (not isinstance(vault_binding, Mapping) or vault_binding.get("status") not in {"bound", "legacy_unbound"}
                     or len(_json(dict(vault_binding)).encode("utf-8")) > 1024):
@@ -409,6 +416,7 @@ class PlanningSnapshot:
             if hints:
                 projection["calendar_hints"] = hints
             projected_evidence.append(projection)
+        from .incremental_explicit import project_links
         return {
             "protocol_version": PROTOCOL_VERSION, "request_kind": state["request_kind"],
             **({"retention_request": state["retention_request"]} if "retention_request" in state else {}),
@@ -417,6 +425,8 @@ class PlanningSnapshot:
                if state.get("scope_aliases") else {}),
             "allow_new_scopes": state["allow_new_scopes"], "context_complete": state["context_complete"],
             "evidence": projected_evidence, "memories": memories,
+            **({"explicit_writes": project_links(state["explicit_writes"], state["targets"])}
+               if state.get("explicit_writes") else {}),
         }
 
 

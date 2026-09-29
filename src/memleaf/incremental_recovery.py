@@ -34,6 +34,7 @@ def restore_snapshot(state: Any) -> PlanningSnapshot:
             scope_guard=state.get("scope_guard"), scope_aliases=state.get("scope_aliases"),
             basis_statuses={r: t["basis_status"] for r, t in targets.items() if "basis_status" in t},
             vault_binding=state.get("vault_binding"),
+            explicit_writes=state.get("explicit_writes"),
         )
     except (KeyError, TypeError) as error:
         raise ValueError("invalid_partial_snapshot") from error
@@ -253,13 +254,20 @@ def recovery_snapshot(original: PlanningSnapshot, current: PlanningSnapshot, wor
             if ref in old["targets"] and (ref not in targets or
                     old["targets"][ref]["revision"] != new_revision(targets[ref])):
                 raise ValueError("repair_target_changed")
+    rebound_targets = {memory.memory_id: ref for ref, memory in targets.items()}
+    new_target_refs = {ref: rebound_targets[t["memory"]["memory_id"]] for ref, t in new["targets"].items()}
+    explicit_links = [{**link, "target": new_target_refs[link["target"]]}
+                      for link in new.get("explicit_writes", [])]
+    if mode == "repair" and old.get("explicit_writes", []) != explicit_links:
+        raise ValueError("repair_explicit_context_changed")
     return PlanningSnapshot.build(evidence=evidence, targets=targets, scopes=scopes,
                                   write_scopes=old["write_scopes"], writable=writable,
                                   native_targets=natives, native_guard=new.get("native_guard"),
                                   request_kind=old["request_kind"], retention_request=old.get("retention_request"),
                                   allow_new_scopes=old["allow_new_scopes"], context_complete=new["context_complete"],
                                   scope_guard=new.get("scope_guard"), scope_aliases=new.get("scope_aliases"),
-                                  basis_statuses=statuses, vault_binding=new.get("vault_binding"))
+                                  basis_statuses=statuses, vault_binding=new.get("vault_binding"),
+                                  explicit_writes=explicit_links)
 
 
 def new_revision(memory: Memory) -> str:

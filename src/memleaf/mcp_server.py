@@ -75,6 +75,7 @@ INSTRUCTIONS = (
     "use the token returned by the first bare-MCP search/list_todos call. Managed reads have no "
     "aggregate ID/character quota; read every relevant memory needed for "
     "the user's question while keeping each read page at 2000 characters. MCP read requires retrieval_id "
+    "at the execution boundary (supplied by a bound host or explicitly by a bare client), "
     "and a current FOUND search or list_todos result; NO_MATCH, ERROR, and DEGRADED turns cannot read. "
     "For global current-action questions use list_todos rather than relevance search, omit scope to cover "
     "all scopes, follow next_cursor until has_more=false, then read each relevant action body. "
@@ -300,7 +301,7 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                 "expected_version": {"type": "string"},
                 "retrieval_id": {"type": "string"},
             },
-            required=["memory_id", "retrieval_id"],
+            required=["memory_id"],
         ),
     },
     {

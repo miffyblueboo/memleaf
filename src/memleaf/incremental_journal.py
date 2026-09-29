@@ -78,6 +78,10 @@ def load_work(processed: dict[str, Any], work_id: str) -> dict[str, Any] | None:
     if work.get("scope_guard") is not None:
         from .incremental_scopes import validate_guard
         validate_guard(work["scope_guard"])
+    from .incremental_explicit import validate_bindings
+    validate_bindings(work.get("explicit_write_bindings"))
+    if work.get("explicit_write_bindings") and kind != "automatic":
+        raise ValueError("unexpected_explicit_write_bindings")
     refs, ids = set(), set()
     for e in work["evidence"]:
         if (not isinstance(e, dict) or not isinstance(e.get("ref"), str) or not e["ref"]

@@ -4,6 +4,19 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.78 — 2026-09-29
+
+### Hermes host-turn provenance and explicit-write context
+
+- Capture corrected user messages as separate events from host admission
+  snapshots; reject incomplete or mismatched turn context instead of inferring
+  event identity from composed text.
+- Bind external tool calls to verified host/session/turn identity, and keep
+  explicit-save receipts tied to their source evidence and target revision
+  across planning and recovery.
+- Keep MCP retrieval authorization enforced at execution while allowing hosts
+  and bare clients to supply the retrieval token through their own transport.
+
 ## 0.2.77 — 2026-09-29
 
 ### Hermes source metadata pairing

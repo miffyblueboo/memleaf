@@ -285,6 +285,7 @@ def _scope_context(
     *,
     retrieval_id: Optional[str] = None,
     scope_hint: Optional[str] = None,
+    host_bound: bool = False,
 ) -> tuple[str, int]:
     """Render a bounded Scope Map without per-memory identifiers or text."""
 
@@ -313,7 +314,11 @@ def _scope_context(
         "Search/list_todos return directories; read only the selected memory when needed for ordinary "
         "relevance queries; for global todo queries, read every matching todo item. A no-match result is valid.\n"
     )
-    if isinstance(retrieval_id, str) and retrieval_id:
+    if host_bound:
+        prefix += ("Hermes binds retrieval and retention identity at tool dispatch. "
+                   "Supply business parameters only; omit retrieval_id, source, session_id, "
+                   "turn_id, event_id and intent_id.\n")
+    elif isinstance(retrieval_id, str) and retrieval_id:
         prefix = (
             prefix
             + f"For this turn, pass retrieval_id={retrieval_id} to memleaf "
