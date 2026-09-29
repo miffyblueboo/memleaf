@@ -4,6 +4,14 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.80 — 2026-09-29
+
+### Explicit deadline annotations
+
+- Resolve model-selected deadlines such as `明天（2026-09-30）` from their
+  explicit full-date annotation when source time is absent, retaining the
+  original text and leaving ambiguous expressions unresolved.
+
 ## 0.2.79 — 2026-09-29
 
 ### Model-owned content dates

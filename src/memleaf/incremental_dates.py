@@ -123,6 +123,24 @@ def selected_calendar(text: str, evidence: Mapping[str, Any]) -> dict[str, Any]:
     anchor = parse_source_time(evidence.get("source_time"))
     local_day = anchor.date() if anchor is not None else None
     view = reading_text(text)
+    # A model-selected expression can already spell out its absolute date,
+    # e.g. "明天（2026-09-30）". Resolve that local annotation even when an
+    # explicit remember call carries no source timestamp. Do not borrow an
+    # unrelated date elsewhere in the expression or infer a missing year.
+    if local_day is None:
+        def explicit_annotation(match: re.Match[str]) -> str:
+            tail = view[match.end():]
+            note = re.match(r"\s*(?:（([^（）()]*)）|\(([^（）()]*)\))", tail)
+            if note is None:
+                return match.group()
+            literal = (note.group(1) if note.group(1) is not None else note.group(2)).strip()
+            dates = calendar_tokens(literal)
+            if (len(dates) == 1 and dates[0].has_year and dates[0].canonical
+                    and dates[0].raw == literal):
+                return dates[0].canonical
+            return match.group()
+
+        view = _RELATIVE_CALENDAR_EXPRESSION.sub(explicit_annotation, view)
     converted = normalize_relative_calendar_text(view, local_day)
     if local_day is None and not _RELATIVE_CALENDAR_EXPRESSION.search(view):
         converted = view
