@@ -78,8 +78,8 @@ def remove_source_time_provenance_date(body: str, events: list[Mapping[str, Any]
 
     The source chain is stored by Core. A message timestamp is not evidence for
     a date in the memory's facts or deadline, even when a model copies that day
-    into a decorative ``来源：`` line. Leave every other date for the strict
-    content-date guard to validate.
+    into a decorative ``来源：`` line. Leave every other date unchanged; provenance matching does not
+    authorize or reject business dates.
     """
     source_days = {
         anchor.date().isoformat()
@@ -107,73 +107,6 @@ def remove_source_time_provenance_date(body: str, events: list[Mapping[str, Any]
                 line = line[:token.start] + line[token.end:].lstrip(" \t")
         lines.append(line)
     return "".join(lines)
-
-
-def content_date_violations(fields: Mapping[str, Any], events: list[Mapping[str, Any]],
-                            preserved: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Locate unsupported dates without weakening the existing grounding guard.
-
-    Only cited sources and the selected update target may ground new wording.
-    Existing memory wording is preserved without a new source claim.
-    """
-    from .process_common import _summary_date_grounding_violations
-
-    source_texts = [reading_text(str(event["text"])) for event in events]
-    grounded: set[str] = set()
-    clock_dates: dict[str, set[str]] = {}
-    for event, source in zip(events, source_texts):
-        anchor = parse_source_time(event.get("source_time"))
-        local_day = anchor.date() if anchor is not None else None
-        normalized = normalize_relative_calendar_text(source, local_day) if local_day else None
-        grounded.update(token.canonical for token in calendar_tokens(source, local_day) if token.canonical)
-        if normalized is not None:
-            grounded.update(token.canonical for token in calendar_tokens(normalized, local_day) if token.canonical)
-            for match in _RELATIVE_CALENDAR_EXPRESSION.finditer(source):
-                clock = _CLOCK_AFTER_DATE.match(source, match.end())
-                if clock:
-                    resolved = normalize_relative_calendar_text(match.group(), local_day)
-                    if resolved:
-                        clock_dates.setdefault(clock.group(1), set()).add(resolved)
-        # An explicit source date at the same clock makes a relative binding
-        # ambiguous; in that case the guard must not claim which event it is.
-        for date_value, clock_value in _dated_clocks(source):
-            clock_dates.setdefault(clock_value, set()).add(date_value)
-    prior = preserved or {}
-    texts = {key: fields[key] for key in ("title", "body") if key in fields}
-    violations = []
-    anchors = [{key: event[key] for key in ("ref", "source_time") if key in event}
-               for event in events]
-    for field, value in texts.items():
-        unsupported = set(_summary_date_grounding_violations(
-            {field: value}, grounded_dates=grounded, source_texts=source_texts,
-            preserved_texts=[prior.get("title"), prior.get("body")]))
-        for token in calendar_tokens(value):
-            # A yearless literal cannot borrow a year merely for display.
-            identity = (token.canonical if token.has_year else None) or token.raw
-            if identity in unsupported:
-                violations.append({"field": field, "start": token.start, "end": token.end,
-                                   "text": token.raw, "normalized": token.canonical or token.monthday,
-                                   "reason": "not_in_cited_evidence_or_target", "anchors": anchors})
-    preserved_pairs = set().union(*(_dated_clocks(text) for text in (prior.get("title"), prior.get("body"))
-                                    if isinstance(text, str)))
-    for field, value in texts.items():
-        for token in calendar_tokens(value):
-            clock = _CLOCK_AFTER_DATE.match(value, token.end)
-            if not token.canonical or clock is None:
-                continue
-            date_value, clock_value = token.canonical, clock.group(1)
-            expected = clock_dates.get(clock_value, set())
-            if len(expected) == 1 and date_value not in expected and (date_value, clock_value) not in preserved_pairs:
-                violations.append({"field": field, "start": token.start, "end": token.end,
-                                   "text": token.raw, "normalized": date_value,
-                                   "reason": "relative_clock_date_mismatch",
-                                   "expected_dates": sorted(expected), "anchors": anchors})
-    return violations
-
-
-def invalid_content_dates(fields: Mapping[str, Any], events: list[Mapping[str, Any]],
-                          preserved: Mapping[str, Any] | None = None) -> bool:
-    return bool(content_date_violations(fields, events, preserved))
 
 
 def selected_calendar(text: str, evidence: Mapping[str, Any]) -> dict[str, Any]:

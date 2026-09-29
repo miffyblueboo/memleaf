@@ -4,6 +4,16 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.79 — 2026-09-29
+
+### Model-owned content dates
+
+- Remove evidence-grounding rejection for dates in memory titles and bodies;
+  date content is now judged by the extraction model, without a replacement
+  date-format gate.
+- Retain structural protocol checks and source-time calendar conversion.
+- Advance the incremental semantic protocol to v8 for the changed contract.
+
 ## 0.2.78 — 2026-09-29
 
 ### Hermes host-turn provenance and explicit-write context

@@ -15,7 +15,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .incremental_dates import (calendar_hints, content_date_violations, parse_source_time,
+from .incremental_dates import (calendar_hints, parse_source_time,
                                 remove_source_time_provenance_date,
                                 reading_text, selected_calendar, source_basis)
 from .models import Memory
@@ -24,7 +24,7 @@ from .turn_plan import revision_digest
 from .validation import ModelOutputError, parse_strict_json
 
 PROTOCOL_VERSION = "incremental-items-v1"
-SEMANTIC_PROTOCOL = "incremental-turn-v7"
+SEMANTIC_PROTOCOL = "incremental-turn-v8"
 MAX_BYTES = 128 * 1024
 MAX_ITEMS = 64
 _TYPES = frozenset(("fact", "todo", "preference", "project", "event", "identity", "other"))
@@ -49,14 +49,6 @@ class _FieldShapeError(ValueError):
     def __init__(self, detail: str):
         super().__init__("invalid_fields")
         self.detail = detail
-
-
-class _ContentDateError(ValueError):
-    def __init__(self, violations: list[dict[str, Any]]):
-        super().__init__("ungrounded_content_date")
-        # Reuse the issue detail channel. Only offending date tokens and
-        # reference/anchor metadata, never the complete source/body, are kept.
-        self.detail = json.dumps(violations, ensure_ascii=False, separators=(",", ":"))
 
 
 def _normalize_create_fields(fields: Any) -> tuple[Any, list[str]]:
@@ -594,11 +586,6 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
             if normalized_body != fields["body"]:
                 fields["body"] = normalized_body
                 result.setdefault("warnings", []).append("source_time_provenance_date_removed")
-        date_issues = content_date_violations(
-            fields, cited_events,
-            state["targets"][result["target_ref"]]["memory"] if action == "UPDATE" else None)
-        if date_issues:
-            raise _ContentDateError(date_issues)
         if "status" in fields and fields["status"] not in ("active", "completed", "cancelled"):
             raise ValueError("invalid_status")
         if "validity" in fields and fields["validity"] not in ("valid", "retracted"):
