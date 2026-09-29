@@ -4,6 +4,16 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.77 — 2026-09-29
+
+### Hermes source metadata pairing
+
+- Match the final assistant reply to the nearest preceding user message across
+  tool rounds, regardless of message count; never borrow metadata from an older
+  matching turn when the nearest user content differs.
+- Log bounded reason codes for unavailable or mismatched message metadata and
+  missing or invalid timestamps, without logging message bodies.
+
 ## 0.2.76 — 2026-09-28
 
 ### Incremental turn maintenance and date diagnostics

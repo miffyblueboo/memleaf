@@ -40,14 +40,24 @@ def _sync_source_metadata(messages: Any, user_content: str, assistant_content: s
     from math import isfinite
 
     if not isinstance(messages, list) or not messages:
+        logger.info("memleaf source-metadata reason=messages_missing")
         return {}
     assistant = messages[-1]
     if (not isinstance(assistant, Mapping) or assistant.get("role") != "assistant"
             or assistant.get("content") != assistant_content or assistant.get("tool_calls")):
+        logger.info("memleaf source-metadata reason=assistant_mismatch")
         return {}
-    user = next((item for item in reversed(messages[:-1][-32:])
+    # Tool rounds do not define a turn boundary. Stop at the nearest user,
+    # even if its text mismatches; never borrow an older matching message.
+    preceding = reversed(messages)
+    next(preceding)  # The final assistant was checked above.
+    user = next((item for item in preceding
                  if isinstance(item, Mapping) and item.get("role") == "user"), None)
-    if user is None or user.get("content") != user_content:
+    if user is None:
+        logger.info("memleaf source-metadata reason=user_missing")
+        return {}
+    if user.get("content") != user_content:
+        logger.info("memleaf source-metadata reason=user_mismatch")
         return {}
     result: dict[str, dict[str, Any]] = {}
     for role, item in (("user", user), ("assistant", assistant)):
@@ -73,6 +83,9 @@ def _sync_source_metadata(messages: Any, user_content: str, assistant_content: s
                     row["source_time"] = parsed.isoformat()
             except ValueError:
                 pass
+        if "source_time" not in row:
+            logger.info("memleaf source-metadata reason=%s role=%s",
+                        "time_missing" if timestamp is None else "time_invalid", role)
         sequence = item.get("source_sequence")
         if type(sequence) is int and sequence >= 0:
             row["source_sequence"] = sequence
