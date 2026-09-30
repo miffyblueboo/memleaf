@@ -460,6 +460,14 @@ class Memleaf:
                                            context_memory_ids=context_memory_ids,
                                            model=model, router=router)
 
+    def recover_failed_run(self, run_id: str, *, dry_run: bool = True,
+                           expected_revision: str | None = None, allow_legacy_http: bool = False,
+                           model: Any = None, router: Any = None) -> dict[str, Any]:
+        """Preview/apply explicit terminal transport recovery using original budget."""
+        from .incremental_failed_recovery import recover_failed_run
+        return recover_failed_run(self, run_id, dry_run=dry_run, expected_revision=expected_revision,
+                                  allow_legacy_http=allow_legacy_http, model=model, router=router)
+
     def resume_incremental_run(self, run_id: str, *, backend: Any = None) -> dict[str, Any]:
         """Resume a frozen response/commit without another model request when possible."""
         from .incremental_execution import resume_incremental_run

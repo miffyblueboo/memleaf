@@ -84,6 +84,20 @@ def load_run(processed: dict[str, Any], run_id: str) -> dict[str, Any] | None:
                 or not 1 <= attempt["ordinal"] <= 2 or attempt.get("outcome") not in
                 ("unknown", "response", "invalid_response", "model_timeout", "model_rate_limited", "model_network_error", "model_failed", "model_auth_failed", "model_unavailable", "model_http_error", "model_invalid_response")):
             raise ValueError("invalid_incremental_attempt")
+        if "http_status" in attempt and (type(attempt["http_status"]) is not int or not 100 <= attempt["http_status"] <= 599):
+            raise ValueError("invalid_incremental_http_status")
+    audit = run.get("terminal_recovery")
+    if audit is not None:
+        required = {"version", "expected_revision", "allow_legacy_http", "previous_code",
+                    "previous_snapshot_id", "previous_source_window", "requested_at"}
+        if (not isinstance(audit, dict) or set(audit) != required or type(audit.get("version")) is not int
+                or audit["version"] != 1 or type(audit.get("allow_legacy_http")) is not bool
+                or audit.get("previous_code") not in {"model_http_error", "model_timeout", "model_rate_limited", "model_network_error", "model_invalid_response"}
+                or any(not isinstance(audit.get(k), str) or re.fullmatch(r"[0-9a-f]{64}", audit[k]) is None
+                       for k in ("expected_revision", "previous_snapshot_id", "previous_source_window"))
+                or not isinstance(audit.get("requested_at"), str) or not audit["requested_at"]
+                or kind != "automatic" or not run["attempts"] or run["attempts"][0]["outcome"] != audit["previous_code"]):
+            raise ValueError("invalid_terminal_recovery")
     if run["status"] not in TERMINAL:
         request = run.get("request")
         if (not isinstance(request, dict) or set(request) != {"system", "user"}
@@ -115,7 +129,7 @@ def save_run(service: Any, processed: dict[str, Any], run: dict[str, Any]) -> No
         raise ValueError("incremental_runs_full")
     runs[run["run_id"]] = {"version": VERSION, "payload": payload,
                            "checksum": hashlib.sha256(payload.encode("utf-8")).hexdigest()}
-    if is_compact(previous, COMPACT_VERSION):
+    if is_compact(previous, COMPACT_VERSION) and run["status"] in TERMINAL:
         runs[run["run_id"]] = encode_receipt(runs[run["run_id"]], version=COMPACT_VERSION)
     ledger_usage(runs, compact_version=COMPACT_VERSION)
     if len(canonical(runs).encode("utf-8")) > MAX_LEDGER_BYTES:
@@ -184,6 +198,9 @@ def public_result(run: dict[str, Any], *, calls: int = 0) -> dict[str, Any]:
         "request_kind": run.get("request_kind", "automatic"),
         **({"intent_id": run["authorization_intent"]} if "authorization_intent" in run else {}),
         "code": run.get("code"), "commit_work_id": run["commit_work_id"],
+        **({"http_status": run["attempts"][-1]["http_status"]} if run["attempts"] and "http_status" in run["attempts"][-1] else {}),
+        **({"terminal_recovery": {"expected_revision": run["terminal_recovery"]["expected_revision"],
+                                  "previous_code": run["terminal_recovery"]["previous_code"]}} if "terminal_recovery" in run else {}),
         "model_calls_this_invocation": calls,
         "model_calls_known": sum(a["outcome"] != "unknown" for a in run["attempts"]),
         "reserved_requests": run["reserved_requests"], "request_limit": 2,

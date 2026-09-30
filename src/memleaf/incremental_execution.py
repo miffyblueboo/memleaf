@@ -28,7 +28,7 @@ from .incremental_run_state import (
 )
 from .index import turn_key
 from .inbox import captured_turn_selector
-from .llm.base import ModelError
+from .llm.base import ModelError, HTTP_RETRYABLE_STATUSES
 from .locking import atomic_write_json
 from .models import utc_now
 from .process_common import _read_processed
@@ -295,12 +295,14 @@ def _drive(service, run_id, token, backend, calls):
             if ordinal > 1 and not run.get("partial_used"):
                 request["system"] += RETRY_SYSTEM
         error_code = None
+        http_status = None
         response = None
         try:
             calls[0] += 1
             response = backend.complete(request["user"], system=request["system"], purpose="single_pass")
         except ModelError as error:
             error_code = error.code
+            http_status = error.http_status
         except Exception:
             error_code = "model_failed"  # Never persist provider exception text.
         with service.vault.lock():
@@ -309,7 +311,10 @@ def _drive(service, run_id, token, backend, calls):
                 return public_result(run, calls=calls[0])
             if error_code is not None:
                 run["attempts"][-1]["outcome"] = error_code
-                retryable = error_code in TRANSIENT and run["reserved_requests"] < 2
+                if http_status is not None:
+                    run["attempts"][-1]["http_status"] = http_status
+                retryable = (error_code in TRANSIENT or
+                             (error_code == "model_http_error" and http_status in HTTP_RETRYABLE_STATUSES)) and run["reserved_requests"] < 2
                 _finish(service, processed, run, "retryable" if retryable else "failed", error_code)
                 return public_result(run, calls=calls[0])
             if not isinstance(response, str) or not response.strip() or len(response.encode("utf-8")) > MAX_BYTES:

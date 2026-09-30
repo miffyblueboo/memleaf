@@ -100,6 +100,13 @@ def build_parser() -> argparse.ArgumentParser:
                          help="allow remaining incremental transport recovery, not partial replan")
     process.add_argument("--dry-run", action="store_true", help="no source Vault writes; may call the configured model")
     process.add_argument("--json", action="store_true")
+    recovery = commands.add_parser("recover-run", help="preview or explicitly replan a failed automatic transport run")
+    recovery.add_argument("--vault", type=Path, default=None)
+    recovery.add_argument("--run-id", required=True)
+    recovery.add_argument("--apply", action="store_true", help="use the original remaining budget; requires preview revision")
+    recovery.add_argument("--expected-revision", default=None)
+    recovery.add_argument("--allow-legacy-http", action="store_true", help="explicitly retry one old HTTP failure whose status was not recorded")
+    recovery.add_argument("--json", action="store_true")
     maintenance = commands.add_parser("maintain-state", help="preview lossless terminal control-state compaction")
     maintenance.add_argument("--vault", type=Path, default=None)
     maintenance.add_argument("--apply", action="store_true", help="apply only to --expected-revision from preview")
@@ -274,6 +281,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 from .service import Memleaf
                 output = Memleaf(existing_root(args.vault)).process(
                     source=args.source, session_id=args.session_id, scope=args.scope, pipeline=args.pipeline, recover=args.recover)
+        elif args.command == "recover-run":
+            from .inspection import existing_root
+            from .service import Memleaf
+            from .incremental_failed_recovery import FailedRecoveryError
+            service = Memleaf(Vault(existing_root(args.vault), create=False))
+            try:
+                output = service.recover_failed_run(args.run_id, dry_run=not args.apply,
+                    expected_revision=args.expected_revision, allow_legacy_http=args.allow_legacy_http)
+            except FailedRecoveryError as error:
+                print(json.dumps({"run_id": args.run_id, "code": error.code, "status": "rejected"}))
+                return 1
         elif args.command == "maintain-state":
             from .inspection import existing_root
             from .service import Memleaf
@@ -318,15 +336,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print("{}")
             return 0
         if getattr(args, "json", False):
-            print(json.dumps({"error": "operation failed" if args.command in {"audit", "process", "maintain-state", "migration-check", "migration-backup"}
+            print(json.dumps({"error": "operation failed" if args.command in {"audit", "process", "recover-run", "maintain-state", "migration-check", "migration-backup"}
                               else "initialization failed", "stage": args.command}, ensure_ascii=False))
         else:
             action = getattr(args, "command", "init")
             print(f"memleaf {action} failed unexpectedly", file=sys.stderr)
         return 1
 
-    if args.command in {"audit", "process", "maintain-state", "migration-check", "migration-backup"}:
+    if args.command in {"audit", "process", "recover-run", "maintain-state", "migration-check", "migration-backup"}:
         print(json.dumps(output, ensure_ascii=False, sort_keys=True, indent=None if args.json else 2))
+        if args.command == "recover-run":
+            return 2 if output.get("recoverable") is False or output.get("execution_status") in {"failed", "blocked", "cancelled"} else 0
         return 2 if args.command == "migration-check" and output["local_status"] != "clear" else 0
     if args.command == "host-event":
         print(json.dumps(output, ensure_ascii=False, separators=(",", ":")))

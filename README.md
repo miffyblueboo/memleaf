@@ -4,7 +4,7 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **版本：0.2.80。**
+> **版本：0.2.81。**
 > 自动提炼和复核共用同一条“未来记忆价值”标准：模型综合未来复用、信息增量、再次读取时的直接可用性和忘记成本，只保留对未来理解、判断或行动有实质影响的最小核心；没有明确价值的信息不提炼，不按具体业务场景硬编码排除。
 > 提炼契约现在只有一份中文语义契约（旧版英文 B3 提示词已删除），首轮、主题选择、候选修复和 `semantic_maintenance` 使用同一套保留价值判断；同一件事只写一次。
 > Core 不再因为归属、日期、任务依据或跨项目而丢弃整条候选：归属缺失会归一到证据里唯一被点名的项目、否则落 `global`；日期只接受能在本候选证据里找到出处、且能锚定成 ISO 的写法（`明天`、`周五`、`月底` 都会被解析），无法解析时只丢掉日期字段，记忆照常写入；未获授权的改归属沿用目标原归属。
@@ -261,6 +261,7 @@ python -m memleaf.mcp_server --vault "$HOME/.memleaf"
 | `read` | 使用当前 `retrieval_id` 分页读取选中的记忆正文 |
 | `process` | 处理完整 inbox 轮次并按准入规则提炼；`background=true` 时异步入队 |
 | `process_status` | 只读查询异步处理 job 状态 |
+| `recover_failed_run` | 预览并显式恢复终态传输失败，保留原请求预算 |
 | `remember` | 用户明确要求时创建或更新记忆 |
 | `forget_memory` | 按精确 ID 删除一条记忆 |
 | `forget_about` | 忘记明确主题；有歧义时只返回候选 |
@@ -510,3 +511,5 @@ memleaf process --vault /path/to/existing/vault --source hermes --session-id SES
 边界在宿主采集、Core capture 和历史 inbox 的新处理处执行。
 已提交记忆不会自动删除。旧版本已冻结但未完成的计划不会被静默丢弃或重新规划，
 不含新来源边界标记的计划会停止恢复并保留现场，避免越过新的输入约定。
+
+历史 HTTP 失败的受控恢复及 CLI 用法见 [失败任务恢复](docs/failed-run-recovery.md)。

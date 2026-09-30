@@ -151,6 +151,7 @@ def _row(turn, result):
             "turn_index": turn.turn_index, "run_id": result.get("run_id"),
             "work_id": result.get("commit_work_id"), "execution_status": result["execution_status"],
             "code": result.get("code"), "memory_ids": ids,
+            **({"http_status": result["http_status"]} if "http_status" in result else {}),
             "model_calls": result.get("model_calls_this_invocation", 0),
             "reservations": result.get("reserved_requests", 0),
             "unresolved_evidence_count": len(unresolved_refs),
@@ -325,7 +326,8 @@ def health_view(vault) -> dict[str, Any]:
     pending_commits = sum(commit_result(work)["execution_status"] == "recovery_required" for work in works)
     details = [{"run_id": run["run_id"], "source": run["source"], "session_id": run["session_id"],
                 "execution_status": run["status"], "code": run.get("code"),
-                "reserved_requests": run["reserved_requests"]}
+                "reserved_requests": run["reserved_requests"],
+                **({"http_status": run["attempts"][-1]["http_status"]} if run["attempts"] and "http_status" in run["attempts"][-1] else {})}
                for run in runs if run["status"] != "completed"]
     live = owner_live(state)
     from .query_progress import retention_inventory

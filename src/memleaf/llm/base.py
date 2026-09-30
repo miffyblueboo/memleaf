@@ -28,6 +28,7 @@ MODEL_ERROR_CODES = frozenset(
     }
 )
 MODEL_ERROR_STAGES = frozenset({"gate", "summarize", "single_pass"})
+HTTP_RETRYABLE_STATUSES = frozenset({408, 500, 502, 503, 504})
 MODEL_VALIDATION_REASONS = frozenset(
     {"empty_content", "invalid_json", "schema_violation", "response_shape"}
 )
@@ -92,6 +93,7 @@ class ModelError(RuntimeError):
         code: str = "model_failed",
         stage: str | None = None,
         validation_reason: str | None = None,
+        http_status: int | None = None,
     ):
         # Existing callers may still provide a descriptive local message.  The
         # public MCP/marker paths use only ``code`` and ``stage``.
@@ -99,6 +101,9 @@ class ModelError(RuntimeError):
         self.code = _safe_error_code(code)
         self.stage = _safe_error_stage(stage)
         self.validation_reason = _safe_validation_reason(validation_reason)
+        # Status alone is safe to retain; never retain the provider response,
+        # URL, headers or free-form HTTP reason in a diagnostic receipt.
+        self.http_status = http_status if type(http_status) is int and 100 <= http_status <= 599 else None
         self.response_diagnostics: dict[str, Any] = {}
 
     def with_stage(self, stage: str | None) -> "ModelError":
@@ -322,6 +327,7 @@ class HTTPModelBackend:
                     close()
         except urllib.error.HTTPError as error:
             status = getattr(error, "code", None)
+            status = status if type(status) is int and 100 <= status <= 599 else None
             if status in (401, 403):
                 code = "model_auth_failed"
                 message = "model authentication failed"
@@ -335,7 +341,7 @@ class HTTPModelBackend:
                 error.close()
             except Exception:
                 pass
-            raise ModelError(message, code=code, stage=stage) from None
+            raise ModelError(message, code=code, stage=stage, http_status=status) from None
         except TimeoutError:
             raise ModelError("model request timed out", code="model_timeout", stage=stage) from None
         except urllib.error.URLError as error:

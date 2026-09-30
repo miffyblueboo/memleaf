@@ -319,6 +319,18 @@ _TOOLS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
+        "name": "recover_failed_run",
+        "description": (
+            "Preview a failed automatic transport run without writes or model calls. "
+            "Only an explicit recovery request may set apply=true with the exact preview expected_revision. "
+            "Preserves original request budget; allow_legacy_http explicitly acknowledges an unrecorded old HTTP status."
+        ),
+        "inputSchema": _object_schema({
+            "run_id": {"type": "string"}, "apply": {"type": "boolean"},
+            "expected_revision": {"type": "string"}, "allow_legacy_http": {"type": "boolean"},
+        }, required=["run_id"]),
+    },
+    {
         "name": "process_status",
         "description": (
             "Read the status of an accepted background process job, or, when job_id is "
@@ -744,6 +756,9 @@ def _safe_model_diagnostics(error: BaseException, *, default_reason: str | None 
     if not isinstance(detail, str) or detail not in MODEL_VALIDATION_DETAILS:
         detail = "other_schema_violation" if isinstance(error, ModelOutputError) else None
     fields: dict[str, Any] = {}
+    http_status = getattr(error, "http_status", None)
+    if type(http_status) is int and 100 <= http_status <= 599:
+        fields["http_status"] = http_status
     if reason is not None:
         fields["validation_reason"] = reason
     if detail is not None:
@@ -754,6 +769,9 @@ def _safe_model_diagnostics(error: BaseException, *, default_reason: str | None 
 
 
 def _tool_error(error: BaseException) -> dict[str, Any]:
+    from .incremental_failed_recovery import FailedRecoveryError
+    if isinstance(error, FailedRecoveryError):
+        return _tool_result({"status": "error", "error": {"code": error.code, "message": "failed run recovery rejected"}}, is_error=True)
     if isinstance(error, (RetrievalError, RetrievalGateError)):
         return _tool_result(
             {"status": "error", "error": {"code": error.code, "message": str(error)}},
@@ -1070,6 +1088,9 @@ def _invoke_tool(
                     value = HostRuntime(service, source).process(**args)
                 else:
                     value = service.process(**args)
+        elif name == "recover_failed_run":
+            value = service.recover_failed_run(args["run_id"], dry_run=not args.get("apply", False),
+                expected_revision=args.get("expected_revision"), allow_legacy_http=args.get("allow_legacy_http", False))
         elif name == "process_status":
             job_id = args.get("job_id")
             if isinstance(job_id, str) and job_id:

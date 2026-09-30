@@ -4,6 +4,24 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.81 — 2026-09-30
+
+### HTTP failure classification and controlled run recovery
+
+- Preserve safe numeric HTTP status in model errors, request attempts and
+  processing diagnostics. Allow 408/500/502/503/504 to use the remaining original
+  transport allowance; known permanent errors stay closed.
+- Add revision-bound failed automatic run preview/apply through the Python API,
+  `recover-run` CLI and `recover_failed_run` MCP tool. Historical unclassified
+  HTTP errors require explicit acknowledgement; ordinary recovery stays unchanged.
+- Rebuild current comparison context for unchanged sources while retaining run,
+  commit and budget identities, prior attempts and recovery audit. Reject consumed,
+  changed or revoked sources, conflicting ownership, exhausted budgets and full
+  active receipt capacity. Repeated execution and interrupted writes remain bounded.
+- Validation: 121 focused checks passed and 10 historical failed runs exercised
+  isolated recovery with an injected HTTP503, without network/model calls or
+  formal Vault changes. Real-model semantic quality remains unverified.
+
 ## 0.2.80 — 2026-09-29
 
 ### Explicit deadline annotations
