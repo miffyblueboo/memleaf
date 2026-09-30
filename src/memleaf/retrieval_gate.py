@@ -618,6 +618,25 @@ def mark_degraded(vault: Vault | Path | str, retrieval_id: str) -> dict[str, Any
         return _public_state(retrieval_id, entry)
 
 
+def snapshot_read_context(vault: Vault | Path | str, retrieval_id: str, *,
+                          source: str, session_id: str, turn_id: str) -> dict[str, Any]:
+    """Freeze successful reads for exactly the queued host turn, including older turns.
+
+    Current-turn enforcement remains on live search/read. A delayed capture may
+    use its own still-valid gate; it must never resolve the latest session gate.
+    """
+    retrieval_id = _retrieval_id(retrieval_id)
+    root = _coerce_vault(vault)
+    with _with_lock(root):
+        entry = _entry_for(_read_ledger(_ledger_path(root)), retrieval_id)
+        if any(entry.get(key) != value for key, value in (
+                ("source", source), ("session_id", session_id), ("turn_id", turn_id))):
+            raise RetrievalGateError("retrieval_turn_mismatch")
+        identities = list(dict.fromkeys(x for x in entry.get("read_ids", []) if isinstance(x, str)))
+        return {"retrieval_id": retrieval_id, "turn_id": turn_id,
+                "memory_ids": identities[:20], "overflow": len(identities) > 20}
+
+
 def guarded_read(
     vault: Vault | Path | str,
     retrieval_id: str,

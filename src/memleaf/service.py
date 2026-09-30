@@ -235,6 +235,8 @@ class Memleaf:
         previous_message_revision: Optional[str] = None,
         previous_message_id: Optional[str] = None,
         final: Optional[bool] = None,
+        retrieval_id: Optional[str] = None,
+        retrieval_turn_id: Optional[str] = None,
     ) -> CaptureResult:
         """Capture one visible user/assistant event into inbox."""
 
@@ -256,6 +258,8 @@ class Memleaf:
             previous_message_revision=previous_message_revision,
             previous_message_id=previous_message_id,
             final=final,
+            retrieval_id=retrieval_id,
+            retrieval_turn_id=retrieval_turn_id,
         )
 
     def session_lineage(

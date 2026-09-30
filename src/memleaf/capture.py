@@ -199,6 +199,7 @@ def _append_event(
     final: bool | None,
     tool_evidence: list[dict[str, str]] | None = None,
     explicit_input: dict[str, Any] | None = None,
+    comparison_context: dict[str, Any] | None = None,
 ) -> str:
     if not existing:
         existing = _new_session_text(source, session_id, captured_at)
@@ -232,6 +233,8 @@ def _append_event(
         metadata["final"] = final
     if explicit_input is not None:
         metadata["explicit_input"] = explicit_input
+    if comparison_context is not None:
+        metadata["comparison_context"] = comparison_context
     if tool_evidence:
         metadata["tool_evidence"] = [dict(item) for item in tool_evidence]
     metadata_line = json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -359,6 +362,8 @@ def _payload_digest(metadata: Mapping[str, Any], content: str) -> str:
     if metadata.get("explicit_input") is not None:
         from .explicit_text_source import validate_origin
         value["explicit_input"] = validate_origin(metadata["explicit_input"])
+    if metadata.get("comparison_context") is not None:
+        value["comparison_context"] = metadata["comparison_context"]
     value["content"] = content.rstrip("\n")
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
                                     separators=(",", ":")).encode("utf-8")).hexdigest()
@@ -414,7 +419,7 @@ def recover_capture_receipts_unlocked(vault: Vault, processed: dict, path: Path)
             turn_key_value=metadata["turn_key"], turn_index=metadata["turn_index"],
             message_id=metadata["message_id"], message_revision=metadata["message_revision"],
         )
-        entry = {field: metadata[field] for field in (*_IMMUTABLE_EVENT_FIELDS, "turn_id", "turn_index", "captured_at", "explicit_input")
+        entry = {field: metadata[field] for field in (*_IMMUTABLE_EVENT_FIELDS, "turn_id", "turn_index", "captured_at", "explicit_input", "comparison_context")
                  if field in metadata}
         entry.update(event_key=key, payload_digest=digest)
         events[key] = entry
@@ -447,6 +452,8 @@ def capture_event(
     previous_message_id: Optional[str] = None,
     final: Optional[bool] = None,
     _explicit_input: dict[str, Any] | None = None,
+    retrieval_id: Optional[str] = None,
+    retrieval_turn_id: Optional[str] = None,
 ) -> CaptureResult:
     """Capture one visible event; all persisted text is redacted first."""
 
@@ -478,6 +485,9 @@ def capture_event(
         # Opting into source envelopes does not implicitly certify completion.
         # Old callers with no source metadata retain their legacy boundary.
         final = False
+    if (retrieval_id is None) != (retrieval_turn_id is None) or (
+            retrieval_id is not None and (role != "assistant" or retrieval_turn_id != turn_id)):
+        raise ValueError("invalid_comparison_binding")
     resolved_event_id, resolved_message_id, resolved_event_key = _event_identity(
         source, session_id, turn_id, role, event_id, message_id, message_revision
     )
@@ -487,6 +497,31 @@ def capture_event(
     safe_content = escape_event_markers(redact_text(content))
     if not visible or role not in ("user", "assistant"):
         return CaptureResult(resolved_event_id, stored=False, duplicate=False, content=safe_content)
+
+    comparison_context = None
+    if retrieval_id is not None:
+        # Never hold the vault lock while acquiring the retrieval lock: gated
+        # reads acquire them in the opposite order. Durable retries reuse their
+        # immutable receipt even after the short-lived gate has expired.
+        with vault.lock():
+            recovered = _read_processed(vault.processed_state_path)
+            from .recording_policy import recording_allowed
+            comparison_permitted = record and recording_allowed(recovered, source, session_id, resolved_turn_key)
+            if comparison_permitted:
+                path = vault.session_path(source, session_id)
+                if path.is_symlink():
+                    raise ValueError("unsafe inbox session path")
+                if recover_capture_receipts_unlocked(vault, recovered, path):
+                    atomic_write_json(vault.processed_state_path, recovered)
+            receipt = recovered.get("events", {}).get(resolved_event_key, {})
+            saved = receipt.get("comparison_context") if isinstance(receipt, Mapping) else None
+        if (isinstance(saved, dict) and saved.get("retrieval_id") == retrieval_id
+                and saved.get("turn_id") == retrieval_turn_id):
+            comparison_context = saved
+        elif comparison_permitted:
+            from .retrieval_gate import snapshot_read_context
+            comparison_context = snapshot_read_context(vault, retrieval_id,
+                source=source, session_id=session_id, turn_id=retrieval_turn_id)
 
     with vault.lock():
         processed = _read_processed(vault.processed_state_path)
@@ -526,6 +561,8 @@ def capture_event(
             "previous_message_revision": previous_message_revision, "source_sequence": source_sequence,
             "previous_message_id": previous_message_id, "source_time": source_time, "final": final,
         }
+        if retrieval_id is not None:
+            incoming["comparison_context"] = comparison_context
         if _explicit_input is not None:
             incoming["explicit_input"] = _explicit_input
         digest = _payload_digest(incoming, safe_content)
@@ -584,6 +621,7 @@ def capture_event(
             final=final,
             tool_evidence=safe_tool_evidence,
             explicit_input=_explicit_input,
+            comparison_context=comparison_context,
         )
         atomic_write_text(path, updated)
 

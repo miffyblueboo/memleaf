@@ -9,7 +9,7 @@ assistant 可解释已确立事实、转述有依据的责任、报告有依据�
 各动作最小字段：
 CREATE：action、evidence、memory；memory 必填 type/scope/title/body。
 UPDATE：action、evidence、target、非空 patch。
-NO_CHANGE：action、evidence、target；旧目标已完整涵盖本项，无业务变化。
+NO_CHANGE：action、evidence、target；旧目标正文与结构化字段均完整涵盖本项，无业务变化。旧正文已有期限但 due_date 缺失或 due_status 未解析，本次 new 提供可校验期限时，须 UPDATE 原目标的 deadline；不能因正文同义选 NO_CHANGE，也不另建同一事项。例如旧正文已写2030年11月30日、due_date=null，本轮再次确认该截止日期，仍 UPDATE.patch.deadline。
 DEFERRED：action、evidence、reason、need；reason=missing_identity|missing_context|conflict，need 说明缺失/冲突。
 NO_MEMORY：仅 action；自动模式整轮无维护事项且无值得新增内容时使用，独占 items，不与其他动作并存。
 格式示例，引用按实际输入选择，不是默认值：

@@ -62,6 +62,7 @@ class InboxEvent:
     tool_evidence: tuple[dict[str, str], ...] = ()
     legacy: bool = False
     explicit_input: dict[str, Any] | None = None
+    comparison_context: dict[str, Any] | None = None
 
     @property
     def processable(self) -> bool:
@@ -306,6 +307,8 @@ def parse_inbox_text(
                 timestamp=source_time if isinstance(source_time, str) and source_time else None,
                 tool_evidence=_bounded_tool_evidence(metadata.get("tool_evidence")),
                 explicit_input=explicit_input,
+                comparison_context=(metadata.get("comparison_context")
+                                    if isinstance(metadata.get("comparison_context"), dict) else None),
             )
         )
 

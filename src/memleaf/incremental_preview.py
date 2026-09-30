@@ -143,7 +143,19 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
     # Receipt-linked targets precede query candidates. They cannot silently
     # disappear when the submitted wording differs from the final reply.
     explicit_ids = list(dict.fromkeys(link["memory_id"] for link in explicit_writes))
-    priority = list(dict.fromkeys(explicit_ids + priority))
+    read_ids = []
+    for event in selected.events:
+        context = event.comparison_context
+        if context is not None:
+            if context.get("overflow") is not False:
+                raise ValueError("blocked_context")
+            identities = context.get("memory_ids")
+            if not isinstance(identities, list) or len(identities) > 20:
+                raise ValueError("invalid_comparison_context")
+            for identity in identities:
+                safe_component(identity, "memory id")
+            read_ids.extend(identities)
+    priority = list(dict.fromkeys(explicit_ids + read_ids + priority))
     priority += sorted(x for x in prior_ids if x.casefold() in records and x not in priority)
     if len(priority) > candidate_limit:
         raise ValueError("blocked_context")

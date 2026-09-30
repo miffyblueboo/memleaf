@@ -24,7 +24,7 @@ from .turn_plan import revision_digest
 from .validation import ModelOutputError, parse_strict_json
 
 PROTOCOL_VERSION = "incremental-items-v1"
-SEMANTIC_PROTOCOL = "incremental-turn-v10"
+SEMANTIC_PROTOCOL = "incremental-turn-v11"
 EXTRACTION_CONTRACT = "field-reviewed-v1"
 MAX_BYTES = 128 * 1024
 MAX_ITEMS = 64

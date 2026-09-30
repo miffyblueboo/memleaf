@@ -4,7 +4,7 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.83.**
+> **Version: 0.2.84.**
 > Automatic extraction and review share one future-value standard: the model weighs likely reuse, information gain, direct usability when read again, and the cost of forgetting. It keeps only the smallest core that can materially help future understanding, decisions, or actions; information without clear value is not extracted, and no business-specific exclusion rule is hard-coded.
 > Extraction compares existing identifiers, objectives, progress, responsibility and deadlines first. Filling an unknown also maintains the original item; a separate task does not replace updating shared project facts. Core does not merge matching titles.
 > New requests use `field-reviewed-v1`: CREATE/UPDATE explicitly decide structural deadlines; unknown executors use `null`, and new or changed non-null responsibility requires a source quote. Core validates fields and provenance while the model judges business meaning; invalid rows use existing partial handling. Source time resolves relative dates without inventing factual dates.
@@ -264,10 +264,13 @@ The server exposes the following tools:
 | `process_status` | Read the status of a background processing job |
 | `recover_failed_run` | Preview and explicitly recover terminal transport failures within the original request budget |
 | `remember` | Create or update memory after an explicit request |
-| `forget_memory` | Delete one memory by exact ID |
-| `forget_about` | Forget an unambiguous topic; return candidates when ambiguous |
+| `update_memory` | Complete, cancel or reopen a task using its current revision; retain body and history |
+| `forget_memory` | Permanently delete an exact ID after explicit user forgetting, with `confirm_delete=true` |
+| `forget_about` | Forget an unambiguous topic with `confirm_delete=true`; return candidates when ambiguous |
 | `rebuild_index` | Rebuild local derived indexes |
 | `stats` | Return Vault counts and diagnostic statistics |
+
+See [Lifecycle tools](docs/memory-lifecycle-tools.md) and [Hermes source and comparison context](docs/hermes-source-comparison-context.md) for operation and capture boundaries.
 
 Search results are clues; a title alone is not a business fact. Managed retrieval must use the same `retrieval_id` for `search → read`. Tool errors, Scope conflicts, retrieval-turn violations, and read page/version errors must be handled as such.
 

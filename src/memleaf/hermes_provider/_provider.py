@@ -29,6 +29,118 @@ def _capture_assistant_text(value: str) -> str:
                   flags=re.IGNORECASE)
 
 
+def _assistant_source_matches(messages: Any, content: str) -> bool:
+    """Accept exact text or an exactly reconstructed native verifier footer.
+
+    No generic prefix/suffix matching. Tool receipts are used only to check
+    Hermes' display transformation, never as message times or memory facts.
+    Unsupported host formats fail closed.
+    """
+    if not isinstance(messages, list) or not messages:
+        return False
+    final = messages[-1]
+    if not isinstance(final, Mapping) or final.get("role") != "assistant" or final.get("tool_calls"):
+        return False
+    raw = final.get("content")
+    if raw == content:
+        return True
+    if not isinstance(raw, str) or not raw.strip():
+        return False
+    try:
+        from agent.turn_explainers import TurnExplainersMixin
+        from agent.tool_dispatch_helpers import _extract_error_preview, _extract_file_mutation_targets
+        from agent.tool_result_classification import file_mutation_result_landed
+        # The last real user bounds the supported single-message legacy turn.
+        anchor = max(i for i, row in enumerate(messages[:-1])
+                     if isinstance(row, Mapping) and row.get("role") == "user")
+        tail = messages[anchor:-1]
+        calls, results = _visible_tool_calls(tail), _visible_tool_results(tail)
+        failed = {}
+        for call in calls:
+            name, args = call.get("name"), call.get("arguments")
+            if name not in {"write_file", "patch"} or not isinstance(args, Mapping):
+                continue
+            matches = [row for row in results if call.get("call_id")
+                       and row.get("call_id") == call["call_id"]]
+            if not matches:
+                # Hermes' persisted transcript can omit tool_call_id. Accept
+                # only one call immediately followed by its named tool row.
+                for index, row in enumerate(tail[:-1]):
+                    row_calls = _visible_tool_calls([row])
+                    following = tail[index + 1]
+                    if (len(row_calls) == 1 and row_calls[0] == call
+                            and isinstance(following, Mapping) and following.get("role") == "tool"
+                            and not following.get("tool_call_id")
+                            and following.get("name", following.get("tool_name")) == name):
+                        matches.append({"payload": following.get("content")})
+            if len(matches) != 1:
+                return False
+            payload = matches[0]["payload"]
+            decoded = _decode_tool_value(payload)
+            if not isinstance(decoded, Mapping):
+                return False
+            targets = _extract_file_mutation_targets(name, dict(args))
+            if decoded.get("error") and not file_mutation_result_landed(name, payload):
+                for path in targets:
+                    failed.setdefault(path, {"tool": name, "error_preview": _extract_error_preview(payload)})
+            else:
+                for path in targets:
+                    failed.pop(path, None)
+        footer = TurnExplainersMixin._format_file_mutation_failure_footer(failed)
+        return bool(footer) and content == raw.rstrip() + "\n\n" + footer
+    except (ImportError, AttributeError, TypeError, ValueError, KeyError):
+        return False
+
+
+def _legacy_correction_users(messages: Any, merged: str) -> Optional[list[Mapping[str, Any]]]:
+    """Check the actual bounded correction rows against Hermes' merge format.
+
+    Never split user text by a delimiter. Admission rows and the native replay
+    scaffold identify corrections; full reconstruction must match uniquely.
+    """
+    if not isinstance(messages, list) or not messages:
+        return None
+    users = []
+    for row in reversed(messages[:-1]):
+        if not isinstance(row, Mapping) or row.get("role") != "user":
+            continue
+        if not isinstance(row.get("content"), str) or not row["content"].strip():
+            return None
+        users.append(row)
+        if len(users) > 63:
+            return None
+        api = row.get("api_content")
+        correction = (isinstance(api, str) and api.startswith(
+            "[Context from the interrupted assistant response]\n[This response was interrupted by a user correction.]")
+            and api.endswith("\n\n" + row["content"]))
+        if not correction:
+            break
+    if len(users) < 2:
+        return None
+    users.reverse()
+    reconstructed = users[0]["content"]
+    for row in users[1:]:
+        reconstructed += "\n\nUser correction during the turn: " + row["content"]
+    return users if reconstructed == merged else None
+
+
+def _sync_delivery_digest(messages: Any, users: Any, user_content: str, assistant_content: str) -> str:
+    """Disambiguate identical text deliveries using verified host source rows."""
+    identities = []
+    if _assistant_source_matches(messages, assistant_content):
+        for row in [*(users or []), messages[-1]]:
+            uid = row.get("message_uid") or row.get("message_id")
+            timestamp = _independent_assistant_time(row, "").get("assistant", {}).get("source_time")
+            if not uid and not timestamp:
+                identities = []
+                break
+            identities.append((uid, timestamp))
+    payload = f"{user_content}\x00{_capture_assistant_text(assistant_content)}"
+    if identities:
+        payload += "\x00" + json.dumps(identities, ensure_ascii=False, separators=(",", ":"))
+    return sha256(payload.encode()).hexdigest()[:16]
+
+
 def _sync_source_metadata(messages: Any, user_content: str, assistant_content: str) -> dict[str, dict[str, Any]]:
     """Read optional host metadata only from the exact visible tail pair.
 
@@ -43,8 +155,7 @@ def _sync_source_metadata(messages: Any, user_content: str, assistant_content: s
         logger.info("memleaf source-metadata reason=messages_missing")
         return {}
     assistant = messages[-1]
-    if (not isinstance(assistant, Mapping) or assistant.get("role") != "assistant"
-            or assistant.get("content") != assistant_content or assistant.get("tool_calls")):
+    if not _assistant_source_matches(messages, assistant_content):
         logger.info("memleaf source-metadata reason=assistant_mismatch")
         return {}
     # Tool rounds do not define a turn boundary. Stop at the nearest user,
@@ -149,7 +260,7 @@ def _host_visible_events(messages: Any, context: Any, session_id: str,
         return None
     final = messages[-1]
     if (not isinstance(final, Mapping) or final.get("role") != "assistant"
-            or final.get("content") != assistant_content or final.get("tool_calls")):
+            or not _assistant_source_matches(messages, assistant_content)):
         return None
     completed_uid = context.get("completed_assistant_message_id")
     completed = completed_uid is not None
@@ -195,7 +306,7 @@ def _host_visible_events(messages: Any, context: Any, session_id: str,
     final_metadata = {}
     for _, item in found:
         user = dict(item, message_id=item["message_uid"])
-        pair = _sync_source_metadata([user, assistant], user["content"], assistant_content)
+        pair = _sync_source_metadata([user, assistant], user["content"], assistant["content"])
         events.append({"role": "user", "content": user["content"], "metadata": pair.get("user", {})})
         final_metadata = pair.get("assistant", {})
     # Never manufacture a sequence by assuming a turn always has two events.
@@ -1040,8 +1151,9 @@ class MemleafMemoryProvider(MemoryProvider):
         turn_number: Optional[int],
         user_content: str,
         assistant_content: str,
+        delivery_digest: Optional[str] = None,
     ) -> str:
-        pair_digest = sha256(f"{user_content}\x00{assistant_content}".encode("utf-8")).hexdigest()[:16]
+        pair_digest = delivery_digest or sha256(f"{user_content}\x00{assistant_content}".encode("utf-8")).hexdigest()[:16]
         pair_key = (session_id, pair_digest)
         existing = self._turn_ids_by_pair.get(pair_key)
         if existing is not None and turn_number is None:
@@ -1481,6 +1593,8 @@ class MemleafMemoryProvider(MemoryProvider):
         source_sequence: int | None = None,
         final: bool | None = None,
         source_metadata: Mapping[str, Any] | None = None,
+        retrieval_id: str | None = None,
+        retrieval_turn_id: str | None = None,
     ) -> bool:
         metadata = {
             key: value for key, value in (source_metadata or {}).items()
@@ -1500,6 +1614,8 @@ class MemleafMemoryProvider(MemoryProvider):
                 **({"source_sequence": source_sequence} if source_sequence is not None else {}),
                 **({"final": final} if final is not None else {}),
                 **metadata,
+                **({"retrieval_id": retrieval_id, "retrieval_turn_id": retrieval_turn_id}
+                   if retrieval_id and retrieval_turn_id and role == "assistant" else {}),
                 "record": True,
                 "visible": True,
             },
@@ -1783,6 +1899,10 @@ class MemleafMemoryProvider(MemoryProvider):
             return
 
         effective_session = self._canonical_session_id(session_id or self._session_id)
+        # Snapshot the list at invocation; subsequent tool/turn appends cannot
+        # change which source rows this callback verifies.
+        import copy
+        messages = copy.deepcopy(messages)
         # Hermes serializes provider sync work, but this lock also protects
         # direct/plugin-level concurrent calls and makes process one-shot per
         # captured turn within this provider instance.
@@ -1798,30 +1918,60 @@ class MemleafMemoryProvider(MemoryProvider):
                 if turn_context is not None and host_events is None:
                     logger.info("memleaf source-metadata reason=host_event_mismatch")
                     return
+                correction_users = (_legacy_correction_users(messages, user_content)
+                                    if host_events is None else None)
+                queued_content = correction_users[0]["content"] if correction_users else user_content
+                source_users = correction_users
+                if source_users is None and isinstance(messages, list):
+                    nearest = next((row for row in reversed(messages[:-1])
+                                    if isinstance(row, Mapping) and row.get("role") == "user"), None)
+                    source_users = [nearest] if nearest and nearest.get("content") == user_content else None
+                delivery_digest = _sync_delivery_digest(messages, source_users, user_content, raw_assistant_content)
                 resolved_turn_number = turn_number
                 if bound_turn_id and type(turn_context.get("turn_number")) is int:
                     resolved_turn_number = turn_context["turn_number"]
                 if resolved_turn_number is None:
-                    resolved_turn_number = self._take_turn_number(effective_session, user_content)
+                    # Check this source delivery before consuming another same-text
+                    # admission. Old callbacks must not take the next turn's gate.
+                    import re
+                    cached = self._turn_ids_by_pair.get((effective_session, delivery_digest), "")
+                    if cached:
+                        numbers = [number for (session, number), identity in self._gate_turn_ids.items()
+                                   if session == effective_session and identity == cached]
+                        pair = sha256(f"{user_content}\x00{captured_assistant_content}".encode()).hexdigest()[:16]
+                        match = re.fullmatch(r"turn-([0-9]+)-" + pair, cached)
+                        if len(numbers) == 1:
+                            resolved_turn_number = numbers[0]
+                        elif match:
+                            resolved_turn_number = int(match[1])
+                    elif (messages is None or source_users and _assistant_source_matches(messages, raw_assistant_content)):
+                        resolved_turn_number = self._take_turn_number(effective_session, queued_content)
                 elif isinstance(resolved_turn_number, int) and not isinstance(resolved_turn_number, bool):
-                    queued_content = host_events[0]["content"] if host_events else user_content
+                    queued_content = host_events[0]["content"] if host_events else queued_content
                     self._discard_turn_number(effective_session, queued_content, resolved_turn_number)
                 turn_id = self._resolve_turn_id(
                     effective_session,
                     resolved_turn_number,
                     user_content,
                     captured_assistant_content,
+                    delivery_digest=delivery_digest,
                 )
-                source_metadata = ({} if host_events is not None else
+                source_metadata = ({} if host_events is not None or correction_users else
                                    _sync_source_metadata(messages, user_content, raw_assistant_content))
                 user_source_id = source_metadata.get("user", {}).get("message_id")
+                retrieval_id = self._gate_id_for_turn(effective_session, resolved_turn_number)
+                retrieval_turn_id = self._gate_turn_id(effective_session, resolved_turn_number)
                 if bound_turn_id:
                     turn_id = bound_turn_id
+                elif retrieval_id and retrieval_turn_id:
+                    # Reuse the identity frozen at on_turn_start. Comparison
+                    # reads and capture must refer to the identical host turn.
+                    turn_id = retrieval_turn_id
                 elif user_source_id:
                     # Stable host identity survives a revised body/final reply.
                     turn_id = "source-" + sha256(user_source_id.encode("utf-8")).hexdigest()[:24]
                     source_metadata["assistant"].setdefault("previous_message_id", user_source_id)
-                retrieval_id = self._gate_id_for_turn(effective_session, resolved_turn_number)
+                self._turn_ids_by_pair[(effective_session, delivery_digest)] = turn_id
                 # A background callback must never attach itself to a newer turn.
                 if self._gate_enabled:
                     audit_state: dict[str, Any] = {}
@@ -1850,6 +2000,21 @@ class MemleafMemoryProvider(MemoryProvider):
                                       for role, content in visible_events]
                     sequence_base = (resolved_turn_number * 2
                                      if not bound_turn_id and isinstance(resolved_turn_number, int) else None)
+                    if correction_users and resolved_turn_number is not None and _assistant_source_matches(messages, raw_assistant_content):
+                        # Capture each verified source row separately. A correction's
+                        # timestamp never becomes the timestamp of the merged text.
+                        capture_events = []
+                        for index, row in enumerate(correction_users):
+                            pair = _sync_source_metadata([row, messages[-1]], row["content"], messages[-1]["content"])
+                            metadata = pair.get("user", {})
+                            metadata["message_id"] = row.get("message_uid") or f"{turn_id}/user-{index}"
+                            capture_events.append({"role": "user", "content": row["content"], "metadata": metadata})
+                        assistant_metadata = pair.get("assistant", {})
+                        assistant_metadata["previous_message_id"] = capture_events[-1]["metadata"]["message_id"]
+                        capture_events.append({"role": "assistant", "content": captured_assistant_content,
+                                               "metadata": assistant_metadata})
+                        sequence_base = None
+                        logger.info("memleaf source-metadata contract=legacy-corrections user_events=%d", len(correction_users))
                 for offset, event in enumerate(capture_events):
                     role = event["role"]
                     if not self._capture_visible(
@@ -1858,6 +2023,8 @@ class MemleafMemoryProvider(MemoryProvider):
                         source_sequence=(sequence_base + offset if sequence_base is not None else None),
                         final=True if role == "assistant" else None,
                         source_metadata=event["metadata"],
+                        retrieval_id=retrieval_id if role == "assistant" else None,
+                        retrieval_turn_id=retrieval_turn_id if role == "assistant" else None,
                     ):
                         return
                 if not self._auto_process:

@@ -4,6 +4,28 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.84 — 2026-09-30
+
+### Task lifecycle, Hermes source times and read-linked comparison
+
+- Expose revision-bound MCP `update_memory` for completion, cancellation and
+  reopening; retain the memory body, other fields and version history. Both MCP
+  permanent-forgetting tools now require strict `confirm_delete=true`.
+- Verify Hermes' native file-mutation footer as an exact display transformation
+  instead of losing both message times. Verify legacy correction rows against
+  their native scaffold and full merge format; capture each source event with
+  its own timestamp. Unknown inputs remain unknown.
+- Recognize a repeated source delivery before consuming another same-text turn;
+  copy messages at callback invocation and retain the queued retrieval identity.
+- Freeze successful current-turn read IDs in assistant capture metadata and
+  immutable receipts. Prioritize those targets for automatic extraction; reject
+  mismatched source/session/turn context and block missing or over-budget targets.
+  Recover captured context after Inbox/receipt interruption even if the gate expires.
+- Require structured deadline maintenance before NO_CHANGE when current evidence
+  verifies an existing textual deadline whose date is absent or unresolved.
+  Advance semantic protocol to v11 without changing legacy snapshot field contracts.
+- No production memory migration or automatic retry of historical runs is performed.
+
 ## 0.2.83 — 2026-09-30
 
 ### Reviewed extraction fields and existing-item maintenance

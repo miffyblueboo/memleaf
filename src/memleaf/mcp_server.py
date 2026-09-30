@@ -99,8 +99,12 @@ INSTRUCTIONS = (
     "process_status; accepted does not mean completed. "
     "Use remember only when the user explicitly asks to remember something. If the user has "
     "previously or currently explicitly said not to record corresponding text, skip capture for it. "
-    "For text already persisted, use forget_memory or forget_about only when its target is "
-    "reliably identified; a do-not-remember or forget request takes precedence. Use "
+    "For a completed, closed or cancelled task, read its current revision and use update_memory "
+    "with patch.status=completed or cancelled. This preserves its facts and history. "
+    "Forgetting permanently deletes the selected memory and its history. Use forget_memory or "
+    "forget_about only for an explicit user request to permanently forget a reliably identified "
+    "target, with confirm_delete=true; task completion is not such a request. A do-not-remember "
+    "or forget request takes precedence. Use "
     "include_history=true only for an explicit request "
     "about historical memory. MCP read returns at most 2000 body characters per page; when "
     "has_more is true, continue with next_offset only as needed and pass the returned version "
@@ -162,6 +166,8 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                 "previous_message_id": {"type": "string"},
                 "source_time": {"type": "string"},
                 "source_sequence": {"type": "integer", "minimum": 0},
+                "retrieval_id": {"type": "string"},
+                "retrieval_turn_id": {"type": "string"},
                 "final": {"type": "boolean"},
                 "record": {"type": "boolean"},
                 "visible": {"type": "boolean"},
@@ -365,19 +371,54 @@ _TOOLS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
-        "name": "forget_memory",
-        "description": "Forget one memory by its exact memory id.",
+        "name": "update_memory",
+        "description": (
+            "Complete, cancel or explicitly reopen an existing action without deleting its facts "
+            "or history. Read the target first and pass its revision as expected_revision. "
+            "Use patch.status=completed for finished/closed tasks, cancelled for abandoned tasks, "
+            "or active with reopen=true for an explicitly reopened task. Only supply source_time "
+            "when the event time is explicitly known; it supplies completed_at for completion. "
+            "Omit it when unknown; never substitute the current processing time. "
+            "Retry the same arguments after an interrupted call."
+        ),
         "inputSchema": _object_schema(
-            {"memory_id": {"type": "string"}},
-            required=["memory_id"],
+            {
+                "memory_id": {"type": "string"},
+                "expected_revision": {"type": "string"},
+                "patch": _object_schema(
+                    {"status": {"type": "string", "enum": ["active", "completed", "cancelled"]}},
+                    required=["status"],
+                ),
+                "source_time": {"type": "string"},
+                "reopen": {"type": "boolean"},
+            },
+            required=["memory_id", "expected_revision", "patch"],
+        ),
+    },
+    {
+        "name": "forget_memory",
+        "description": (
+            "Permanently delete one exact memory and its history. Only use for an explicit user "
+            "request to permanently forget this memory, represented by confirm_delete=true. "
+            "Do not set confirmation for completing, closing, cancelling or archiving a task; "
+            "use update_memory instead. Deleted content has no retained historical copy."
+        ),
+        "inputSchema": _object_schema(
+            {"memory_id": {"type": "string"}, "confirm_delete": {"type": "boolean", "enum": [True]}},
+            required=["memory_id", "confirm_delete"],
         ),
     },
     {
         "name": "forget_about",
-        "description": "Forget one unambiguous memory topic or return candidates.",
+        "description": (
+            "Permanently delete one unambiguous memory topic and its history, or return candidates. "
+            "Only use for an explicit user request to permanently forget that topic, represented "
+            "by confirm_delete=true. Completing, closing, cancelling or archiving a task is not "
+            "permission to delete; use update_memory instead."
+        ),
         "inputSchema": _object_schema(
-            {"query": {"type": "string"}},
-            required=["query"],
+            {"query": {"type": "string"}, "confirm_delete": {"type": "boolean", "enum": [True]}},
+            required=["query", "confirm_delete"],
         ),
     },
     {
@@ -954,6 +995,13 @@ def _invoke_tool(
 ) -> dict[str, Any]:
     if name not in _TOOL_BY_NAME:
         raise _InvalidParams
+    if name in {"forget_memory", "forget_about"} and (
+        not isinstance(arguments, dict) or arguments.get("confirm_delete") is not True
+    ):
+        return _tool_result({"error": {"code": "delete_confirmation_required", "message": (
+            "Permanent deletion requires confirm_delete=true for an explicit user forget request. "
+            "For task completion or cancellation, use update_memory; facts and history are retained."
+        )}}, is_error=True)
     if name == "read" and (
         not isinstance(arguments, dict) or "retrieval_id" not in arguments
     ):
@@ -1103,9 +1151,24 @@ def _invoke_tool(
                 value = processing_health(service.vault.root)
         elif name == "remember":
             value = service.remember(**args)
+        elif name == "update_memory":
+            patch = args["patch"]
+            if (not isinstance(patch, dict) or set(patch) != {"status"}
+                    or not isinstance(patch["status"], str)
+                    or patch["status"] not in {"active", "completed", "cancelled"}):
+                raise ValueError("MCP update_memory requires a valid patch.status")
+            patch = dict(patch)
+            # This is an explicitly supplied event time, never the clock at
+            # which the adapter happens to execute the command.
+            if patch["status"] == "completed" and "source_time" in args:
+                patch["completed_at"] = args["source_time"]
+            args["patch"] = patch
+            value = service.update_memory(**args)
         elif name == "forget_memory":
+            args.pop("confirm_delete")
             value = service.forget_memory(**args)
         elif name == "forget_about":
+            args.pop("confirm_delete")
             value = service.forget_about(**args)
         elif name == "rebuild_index":
             value = service.rebuild_index(**args)

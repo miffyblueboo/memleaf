@@ -4,7 +4,7 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **版本：0.2.83。**
+> **版本：0.2.84。**
 > 自动提炼和复核共用同一条“未来记忆价值”标准：模型综合未来复用、信息增量、再次读取时的直接可用性和忘记成本，只保留对未来理解、判断或行动有实质影响的最小核心；没有明确价值的信息不提炼，不按具体业务场景硬编码排除。
 > 提炼先比较旧事项中的编号、目标、进展、责任和期限；补全未知信息也应维护原事项，另建独立待办不能替代项目事实更新。Core 不按标题强行合并。
 > 新请求使用 `field-reviewed-v1`：CREATE/UPDATE 显式判断结构化期限；未知执行人填 `null`，新增或变更非空负责人必须引用来源原文。Core 校验字段和来源，模型判断业务含义；非法行进入现有 partial 处理。来源时间用于解析相对日期，不补造事实日期。
@@ -264,10 +264,13 @@ python -m memleaf.mcp_server --vault "$HOME/.memleaf"
 | `process_status` | 只读查询异步处理 job 状态 |
 | `recover_failed_run` | 预览并显式恢复终态传输失败，保留原请求预算 |
 | `remember` | 用户明确要求时创建或更新记忆 |
-| `forget_memory` | 按精确 ID 删除一条记忆 |
-| `forget_about` | 忘记明确主题；有歧义时只返回候选 |
+| `update_memory` | 携带当前 revision 办结、取消或重新激活任务，保留正文与历史 |
+| `forget_memory` | 用户明确要求遗忘时，携带 `confirm_delete=true` 按精确 ID 永久删除 |
+| `forget_about` | 携带 `confirm_delete=true` 遗忘明确主题；有歧义时只返回候选 |
 | `rebuild_index` | 重建可重建的本地派生索引 |
 | `stats` | 返回 Vault 计数和诊断统计 |
+
+任务办结与永久遗忘的接口和兼容性见 [生命周期工具](docs/memory-lifecycle-tools.md)；来源时间及本轮比较目标的捕获边界见 [Hermes 来源与比较上下文](docs/hermes-source-comparison-context.md)。
 
 `search` 的候选只是线索，标题不能单独作为事实依据。受管理检索必须使用同一条检索链的 `retrieval_id` 完成 `search → read`。Hermes/Codex Hook 可直接提供该 token；只有 MCP 的客户端可在第一条 `search` / `list_todos` 省略 token，并使用返回值继续分页和读取。带 cursor 的后续页以及所有 `read` 都不能省略 `retrieval_id`。工具错误、Scope 冲突或读取失败都应如实处理。
 
