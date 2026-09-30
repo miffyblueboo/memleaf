@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable
 
-from .incremental_protocol import PlanningSnapshot, compile_incremental, MAX_BYTES
+from .incremental_protocol import PlanningSnapshot, compile_incremental, MAX_BYTES, EXTRACTION_CONTRACT
 from .incremental_prompts import INCREMENTAL_SYSTEM
 from .index import turn_key, normalize_term
 from .inbox import parse_inbox_file, source_ordered_turns, captured_turn_selector
@@ -217,7 +217,7 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
                                   retention_request=retention_request, scope_guard=scope_guard,
                                   scope_aliases=scope_aliases, basis_statuses=statuses,
                                   vault_binding=binding if binding["status"] == "bound" else None,
-                                  explicit_writes=explicit_links)
+                                  explicit_writes=explicit_links, extraction_contract=EXTRACTION_CONTRACT)
 
 
 def prepare_incremental(service: Any, **arguments: Any) -> PlanningSnapshot:

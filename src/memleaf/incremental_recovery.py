@@ -35,6 +35,7 @@ def restore_snapshot(state: Any) -> PlanningSnapshot:
             basis_statuses={r: t["basis_status"] for r, t in targets.items() if "basis_status" in t},
             vault_binding=state.get("vault_binding"),
             explicit_writes=state.get("explicit_writes"),
+            extraction_contract=state.get("extraction_contract"),
         )
     except (KeyError, TypeError) as error:
         raise ValueError("invalid_partial_snapshot") from error
@@ -267,7 +268,8 @@ def recovery_snapshot(original: PlanningSnapshot, current: PlanningSnapshot, wor
                                   allow_new_scopes=old["allow_new_scopes"], context_complete=new["context_complete"],
                                   scope_guard=new.get("scope_guard"), scope_aliases=new.get("scope_aliases"),
                                   basis_statuses=statuses, vault_binding=new.get("vault_binding"),
-                                  explicit_writes=explicit_links)
+                                  explicit_writes=explicit_links,
+                                  extraction_contract=(old if mode == "repair" else new).get("extraction_contract"))
 
 
 def new_revision(memory: Memory) -> str:

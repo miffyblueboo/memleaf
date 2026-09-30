@@ -4,6 +4,28 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.83 — 2026-09-30
+
+### Reviewed extraction fields and existing-item maintenance
+
+- Compare established identifiers and other facts against existing unknowns
+  before NO_CHANGE, including shared project facts when creating an independent
+  task. Project/task identity remains model-owned; Core does not merge titles.
+- Add the `field-reviewed-v1` request contract: CREATE/UPDATE explicitly decide
+  whether to select a structural deadline or leave it absent/unchanged. CREATE
+  explicitly records unknown executors as null; changed non-null responsibility
+  fields require a verifiable source quote.
+- Preserve selected deadline and responsibility provenance. Unknown CREATE
+  responsibility and unchanged inherited responsibility do not advance its basis.
+  Project existing `actionable` metadata and clarify new/context boundaries.
+- Advance semantic protocol to v10. Legacy snapshot digests remain readable;
+  repair retains its original field contract and replan uses the current one.
+  Existing runtime protocol gates still apply to historical partial runs.
+- Validation: 86 focused checks, six real-model synthetic scenarios and six
+  isolated capture/commit/repeated-replay scenarios passed. The 182-check local
+  comparison has nine pre-existing date assertions failing on both versions,
+  with no new failures. No formal Vault or historical run was changed.
+
 ## 0.2.82 — 2026-09-30
 
 ### Hermes installation tool discovery

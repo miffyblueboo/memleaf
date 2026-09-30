@@ -24,7 +24,8 @@ from .turn_plan import revision_digest
 from .validation import ModelOutputError, parse_strict_json
 
 PROTOCOL_VERSION = "incremental-items-v1"
-SEMANTIC_PROTOCOL = "incremental-turn-v9"
+SEMANTIC_PROTOCOL = "incremental-turn-v10"
+EXTRACTION_CONTRACT = "field-reviewed-v1"
 MAX_BYTES = 128 * 1024
 MAX_ITEMS = 64
 _TYPES = frozenset(("fact", "todo", "preference", "project", "event", "identity", "other"))
@@ -32,8 +33,8 @@ _TYPE_ALIASES = {"decision": "fact", "task": "todo", "action": "todo", "action_i
 _PATCH = frozenset(("title", "body", "scope", "status", "actionable", "assignee", "waiting_on", "deadline", "validity"))
 _CREATE = (_PATCH - {"validity"}) | {"type"}
 _BRANCHES = {
-    "CREATE": ({"memory"}, {"memory", "at", "effective"}),
-    "UPDATE": ({"target", "patch"}, {"target", "patch", "at", "effective", "reopen"}),
+    "CREATE": ({"memory"}, {"memory", "at", "effective", "deadline_decision", "responsibility_basis"}),
+    "UPDATE": ({"target", "patch"}, {"target", "patch", "at", "effective", "reopen", "deadline_decision", "responsibility_basis"}),
     "NO_CHANGE": ({"target"}, {"target", "at"}),
     "NO_MEMORY": (set(), set()),
     "DEFERRED": ({"reason", "need"}, {"reason", "need"}),
@@ -253,7 +254,11 @@ class PlanningSnapshot:
               scope_aliases: Mapping[str, list[str]] | None = None,
               basis_statuses: Mapping[str, str] | None = None,
               vault_binding: Mapping[str, Any] | None = None,
-              explicit_writes: list[dict[str, Any]] | None = None) -> "PlanningSnapshot":
+              explicit_writes: list[dict[str, Any]] | None = None,
+              extraction_contract: str | None = None) -> "PlanningSnapshot":
+        # Absence preserves frozen legacy snapshots and their digest.
+        if extraction_contract not in (None, EXTRACTION_CONTRACT):
+            raise ValueError("unsupported_extraction_contract")
         if request_kind not in {"automatic", "explicit_remember"}:
             raise ValueError("invalid_request_kind")
         if type(allow_new_scopes) is not bool or type(context_complete) is not bool:
@@ -329,6 +334,8 @@ class PlanningSnapshot:
         state = {"protocol_version": PROTOCOL_VERSION, "evidence": evidence, "targets": target_values,
                  "scopes": scopes, "write_scopes": write_scopes, "request_kind": request_kind,
                  "allow_new_scopes": allow_new_scopes, "context_complete": context_complete}
+        if extraction_contract is not None:
+            state["extraction_contract"] = extraction_contract
         from .incremental_explicit import validate_links
         links = validate_links(explicit_writes, target_values)
         if links:
@@ -383,7 +390,7 @@ class PlanningSnapshot:
         for ref, target in state["targets"].items():
             memory = target["memory"]
             fields = {key: deepcopy(memory[key]) for key in (
-                "type", "title", "body", "status", "validity", "assignee", "waiting_on",
+                "type", "title", "body", "status", "validity", "actionable", "assignee", "waiting_on",
                 "due_date", "due_text", "due_status", "completed_at",
             ) if key in memory}
             values = memory.get("scopes", ["global"])
@@ -411,6 +418,7 @@ class PlanningSnapshot:
         from .incremental_explicit import project_links
         return {
             "protocol_version": PROTOCOL_VERSION, "request_kind": state["request_kind"],
+            **({"extraction_contract": state["extraction_contract"]} if "extraction_contract" in state else {}),
             **({"retention_request": state["retention_request"]} if "retention_request" in state else {}),
             "write_scopes": state["write_scopes"], "scopes": state["scopes"],
             **({"scope_aliases": {reverse_scope[s]: a for s, a in state["scope_aliases"].items()}}
@@ -482,6 +490,43 @@ def _scope(value: Any, state: Mapping[str, Any], *, create: bool = False) -> str
     raise ValueError("invalid_scope")
 
 
+def _review_fields(row: Mapping[str, Any], fields: Mapping[str, Any], state: Mapping[str, Any],
+                   evidence: Mapping[str, Any], refs: list[str]) -> dict[str, dict[str, Any]]:
+    """Require explicit choices and verifiable sources; never infer business meaning."""
+    if state.get("extraction_contract") != EXTRACTION_CONTRACT:
+        return {}
+    create = row["action"].strip().upper() == "CREATE"
+    decision = row.get("deadline_decision")
+    if decision is None:
+        raise ValueError("missing_deadline_decision")
+    expected = "selected" if "deadline" in fields else ("none" if create else "unchanged")
+    if decision != expected:
+        raise ValueError("deadline_decision_mismatch")
+    if create and "assignee" not in fields:
+        raise ValueError("missing_assignee_decision")
+    offered = row.get("responsibility_basis", {})
+    if not isinstance(offered, dict) or set(offered) - {"assignee", "waiting_on"}:
+        raise ValueError("invalid_responsibility_basis")
+    old = {} if create else state["targets"][row["target"].strip()]["memory"]
+    bases = {}
+    needed = {key for key in ("assignee", "waiting_on")
+              if fields.get(key) is not None and fields.get(key) != old.get(key)}
+    if needed - set(offered):
+        raise ValueError("missing_responsibility_basis")
+    for key, selection in offered.items():
+        if key not in fields or fields[key] is None:
+            raise ValueError("invalid_responsibility_basis")
+        if not isinstance(selection, dict) or set(selection) != {"ref", "text"}:
+            raise ValueError("invalid_responsibility_basis")
+        ref = _ref(selection["ref"], evidence)
+        text = _text(selection["text"], 512)
+        if (ref not in refs or not reading_text(text).strip()
+                or reading_text(text) not in reading_text(evidence[ref]["text"])):
+            raise ValueError("unproven_responsibility_basis")
+        bases[key] = source_basis(evidence[ref])
+    return bases
+
+
 def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(row, dict) or not isinstance(row.get("action"), str):
         raise ValueError("invalid_action")
@@ -544,6 +589,7 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
               path="memory" if action == "CREATE" else "patch")
         if not fields:
             raise ValueError("empty_patch")
+        result["field_bases"] = _review_fields(row, fields, state, evidence, refs)
         if action == "CREATE":
             fields["type"] = _normalize_type(fields.get("type"))
         kind = fields.get("type") if action == "CREATE" else state["targets"][result["target_ref"]]["memory"]["type"]
@@ -604,6 +650,8 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
                     raise ValueError("unverified_deadline_clear")
             else:
                 fields["deadline"] = deadline
+                if state.get("extraction_contract") == EXTRACTION_CONTRACT:
+                    result["field_bases"]["deadline"] = deadline["anchor"]
         if "effective" in row:
             result["effective"] = _selected(row["effective"], evidence, refs)
         if "reopen" in row and (row["reopen"] is not True or fields.get("status") != "active"):
@@ -641,7 +689,16 @@ def _compile_group(rows: list[dict[str, Any]], state: Mapping[str, Any]) -> dict
             fields[name] = value
             group = _GROUP.get(name)
             if group:
-                basis = row["basis"]
+                if (state.get("extraction_contract") == EXTRACTION_CONTRACT
+                        and group == "responsibility"):
+                    # Unknown CREATE values and inherited UPDATE values do not
+                    # establish a responsibility observation. Explicit UPDATE
+                    # clearing still records the cancellation observation.
+                    if not target and value is None:
+                        continue
+                    if target and value == old.get(name) and name not in row.get("field_bases", {}):
+                        continue
+                basis = row.get("field_bases", {}).get(name, row["basis"])
                 current_basis = old.get("field_basis", {}).get(group, {})
                 if isinstance(current_basis, dict) and _order(basis, current_basis) == -1:
                     raise ValueError("stale_observation")

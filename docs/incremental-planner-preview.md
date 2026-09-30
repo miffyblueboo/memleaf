@@ -59,6 +59,36 @@ CREATE proposals have no permanent ID. UPDATE proposals carry the original
 
 The version is `incremental-items-v1`; only `{"items": [...]}` is accepted.
 
+New prepared requests also carry `extraction_contract=field-reviewed-v1`:
+
+- Every CREATE/UPDATE includes row-level `deadline_decision`. Use `selected`
+  with `memory.deadline` for CREATE or `patch.deadline` for UPDATE; use `none`
+  for CREATE without an established deadline, or `unchanged` for UPDATE without
+  a deadline change. A deadline mentioned only in prose is insufficient.
+- CREATE explicitly supplies `memory.assignee`, using null when the executor
+  is unknown. New or changed non-null `assignee`/`waiting_on` requires row-level
+  `responsibility_basis`, keyed by that field, with `{ref, text}` citing an exact
+  source quote in the row's evidence. An unchanged inherited owner needs no new
+  quote. Field provenance uses the selected source rather than the generic row
+  observation; merely inheriting responsibility does not advance its basis.
+- The model compares established identifiers and other new facts against old
+  unknowns before choosing NO_CHANGE, including project facts when it also
+  creates an independent task. Existing `actionable` metadata is projected.
+
+Core checks explicit choices, shape and source provenance; it does not classify
+the meaning of a quote or automatically merge similar titles. Model semantic
+errors remain possible. Invalid rows become unresolved through the existing
+partial handling, without an additional model dispatch.
+
+Frozen snapshots without this marker retain their original contract and digest.
+Partial repair retains the original contract; replanning uses the current one.
+The semantic request version advances so a pre-commit request prepared under an
+older prompt cannot silently continue under this new prompt.
+These snapshot rules preserve capsule reading and reconstruction; the existing
+runtime protocol gate still applies. An older partial run may return
+`partial_protocol_upgrade_required` before repair/replan; this change does not
+authorize continuing that historical run across protocol versions.
+
 | action | Required fields besides action/evidence | Behavior |
 |---|---|---|
 | CREATE | memory.type/scope/title/body; todo also status | Independent new assertion; Core defaults validity=valid |
