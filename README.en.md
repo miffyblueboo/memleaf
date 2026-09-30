@@ -4,7 +4,7 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.81.**
+> **Version: 0.2.82.**
 > Automatic extraction and review share one future-value standard: the model weighs likely reuse, information gain, direct usability when read again, and the cost of forgetting. It keeps only the smallest core that can materially help future understanding, decisions, or actions; information without clear value is not extracted, and no business-specific exclusion rule is hard-coded.
 > A single Chinese semantic contract is sent for extraction, topic selection, candidate repair, and `semantic_maintenance`; the older English B3 prompt has been deleted and B3 remains only as a compatibility read format. One topic is written once.
 > Core no longer discards a whole candidate over ownership, dates, task basis or cross-project wording. A missing owner normalizes to the single project named by that candidate's own evidence, otherwise `global`. A deadline is accepted only when it appears in the candidate's own evidence and can be anchored to ISO (`明天`, `周五`, `月底` all resolve); when it cannot, only the date field is dropped and the memory is still written. An unauthorized ownership change keeps the target's existing scope.
@@ -148,12 +148,12 @@ Both installation paths automatically:
 4. Activate `memory.provider=memleaf`.
 5. Configure the memleaf MCP entry through Hermes' official CLI.
 6. Configure MCP lazy/idle lifecycle settings.
-7. Verify that the MCP server exposes all 13 tools.
+7. Verify that the MCP server exposes all tools declared by the installed version.
 8. Record the local Agent integration status.
 
 Restart Hermes after installation.
 
-If Hermes cannot be detected, no complete model route can be configured, Provider activation fails, or the 13-tool MCP verification fails, the installer returns an explicit failure rather than reporting an incomplete integration as successful.
+If Hermes cannot be detected, no complete model route can be configured, Provider activation fails, or MCP tool-discovery verification fails, the installer returns an explicit failure rather than reporting an incomplete integration as successful.
 
 The repository `install.sh` remains for source development, offline source installation, and troubleshooting. Normal PyPI users do not need to run it.
 
@@ -250,7 +250,7 @@ python -m memleaf.mcp_server --vault "$HOME/.memleaf"
 
 Without `--vault`, the server uses `~/.memleaf`; `MEMLEAF_VAULT` can also specify the Vault. In normal use the server does not need to be kept running manually: Hermes or Codex starts it on demand. stdout contains only JSON-RPC messages so logs do not corrupt the protocol stream.
 
-The server currently exposes 13 tools:
+The server exposes the following tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -262,6 +262,7 @@ The server currently exposes 13 tools:
 | `read` | Read a selected memory body in pages using the current `retrieval_id` |
 | `process` | Process complete inbox turns under the admission rules; `background=true` enqueues a job |
 | `process_status` | Read the status of a background processing job |
+| `recover_failed_run` | Preview and explicitly recover terminal transport failures within the original request budget |
 | `remember` | Create or update memory after an explicit request |
 | `forget_memory` | Delete one memory by exact ID |
 | `forget_about` | Forget an unambiguous topic; return candidates when ambiguous |

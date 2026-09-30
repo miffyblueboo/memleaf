@@ -4,6 +4,16 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.82 — 2026-09-30
+
+### Hermes installation tool discovery
+
+- Derive the Hermes MCP installation check from the installed server tool
+  declarations instead of a separately maintained tool-count constant. This
+  fixes the 0.2.81 installation rollback after adding `recover_failed_run`.
+- Verify actual stdio tool discovery and Hermes count acceptance/rejection in
+  both installed distributions on every supported CI platform.
+
 ## 0.2.81 — 2026-09-30
 
 ### HTTP failure classification and controlled run recovery

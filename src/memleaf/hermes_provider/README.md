@@ -61,7 +61,8 @@ mcp_servers:
 
 Use `python -m memleaf install` to configure both entries. The installer writes
 the MCP entry through `hermes config set`, reads `config.yaml` back, and tests
-that all 13 tools are discoverable before it reports success. When two memleaf
+that all tools declared by the installed MCP server are discoverable before it
+reports success. When two memleaf
 virtual environments are present, use `--mcp-runtime current` to migrate to the
 runtime executing the installer or `--mcp-runtime existing` to retain an
 already configured executable after an exact version check. See the

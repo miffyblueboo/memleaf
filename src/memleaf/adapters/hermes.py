@@ -24,8 +24,14 @@ from .base import (
 
 
 _MCP_IDLE_TIMEOUT_SECONDS = 60
-MCP_EXPECTED_TOOL_COUNT = 13
-_MCP_EXPECTED_TOOL_COUNT = MCP_EXPECTED_TOOL_COUNT
+
+
+def expected_mcp_tool_count() -> int:
+    """Read the installed server's declarations instead of a second tool inventory."""
+
+    from ..mcp_server import _TOOLS
+
+    return len(_TOOLS)
 
 
 def hermes_home_for_platform(
@@ -418,7 +424,7 @@ class HermesAdapter:
         self,
         detection: Detection | None = None,
         *,
-        expected_tools: int = MCP_EXPECTED_TOOL_COUNT,
+        expected_tools: int | None = None,
     ) -> bool:
         """Run the official MCP test and require the expected tool count."""
 
@@ -426,7 +432,9 @@ class HermesAdapter:
         executable = detection.executable if detection.detected else None
         if detection.confidence != "high" or not executable:
             return False
-        if isinstance(expected_tools, bool) or expected_tools < 0:
+        if expected_tools is None:
+            expected_tools = expected_mcp_tool_count()
+        if not isinstance(expected_tools, int) or isinstance(expected_tools, bool) or expected_tools < 0:
             return False
         try:
             result = run_argv(

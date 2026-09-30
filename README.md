@@ -4,7 +4,7 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **版本：0.2.81。**
+> **版本：0.2.82。**
 > 自动提炼和复核共用同一条“未来记忆价值”标准：模型综合未来复用、信息增量、再次读取时的直接可用性和忘记成本，只保留对未来理解、判断或行动有实质影响的最小核心；没有明确价值的信息不提炼，不按具体业务场景硬编码排除。
 > 提炼契约现在只有一份中文语义契约（旧版英文 B3 提示词已删除），首轮、主题选择、候选修复和 `semantic_maintenance` 使用同一套保留价值判断；同一件事只写一次。
 > Core 不再因为归属、日期、任务依据或跨项目而丢弃整条候选：归属缺失会归一到证据里唯一被点名的项目、否则落 `global`；日期只接受能在本候选证据里找到出处、且能锚定成 ISO 的写法（`明天`、`周五`、`月底` 都会被解析），无法解析时只丢掉日期字段，记忆照常写入；未获授权的改归属沿用目标原归属。
@@ -148,12 +148,12 @@ python -m pip install -U memleaf && python -m memleaf install
 4. 激活 `memory.provider=memleaf`；
 5. 通过 Hermes 官方 CLI 配置 memleaf MCP；
 6. 配置 MCP lazy/idle 生命周期；
-7. 验证 MCP Server 能发现 13 个工具；
+7. 验证 MCP Server 能发现当前版本声明的全部工具；
 8. 写入本地 Agent 状态索引。
 
 完成后重启 Hermes。
 
-如果没有检测到 Hermes、无法取得完整模型路由、Provider 激活失败或 MCP 的 13 工具验证失败，安装会明确返回失败，不会把未完成的接入报告为成功。
+如果没有检测到 Hermes、无法取得完整模型路由、Provider 激活失败或 MCP 工具发现验证失败，安装会明确返回失败，不会把未完成的接入报告为成功。
 
 仓库中的 `install.sh` 保留给源码开发、离线源码安装和故障排查；普通 PyPI 用户不需要执行它。
 
@@ -250,7 +250,7 @@ python -m memleaf.mcp_server --vault "$HOME/.memleaf"
 
 不传 `--vault` 时默认使用 `~/.memleaf`；也可以设置 `MEMLEAF_VAULT`。正常情况下不需要手工常驻，Hermes 或 Codex 会按需启动它。stdout 只输出 JSON-RPC，日志不会污染协议通道。
 
-当前提供 13 个工具：
+当前提供以下工具：
 
 | 工具 | 用途 |
 | --- | --- |
@@ -258,6 +258,7 @@ python -m memleaf.mcp_server --vault "$HOME/.memleaf"
 | `context` | 兼容保留的有界轻量目录，不用于自动检索路径 |
 | `scope_catalog` | 返回 Scope、父级和别名，不返回具体记忆正文 |
 | `search` | 返回有界候选目录和 `found`/`no_match` 状态 |
+| `list_todos` | 跨 Scope 按状态和日期筛选并分页列出当前待办 |
 | `read` | 使用当前 `retrieval_id` 分页读取选中的记忆正文 |
 | `process` | 处理完整 inbox 轮次并按准入规则提炼；`background=true` 时异步入队 |
 | `process_status` | 只读查询异步处理 job 状态 |

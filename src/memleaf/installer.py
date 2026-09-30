@@ -30,7 +30,7 @@ from .adapters.base import (
 from .adapters.codex import CodexAdapter
 from .adapters.hermes import (
     HermesAdapter,
-    MCP_EXPECTED_TOOL_COUNT,
+    expected_mcp_tool_count,
     hermes_home_for_platform,
 )
 from .cli import _home_from_environment, _prepare_model_route
@@ -1227,10 +1227,11 @@ def install_hermes(
                         vault.root,
                     ),
                 )
-            if not adapter.test_mcp(detection, expected_tools=MCP_EXPECTED_TOOL_COUNT):
+            expected_tools = expected_mcp_tool_count()
+            if not adapter.test_mcp(detection, expected_tools=expected_tools):
                 raise _HermesInstallFailure(
                     stage="mcp_test",
-                    reason=f"Hermes MCP test did not confirm {MCP_EXPECTED_TOOL_COUNT} tools",
+                    reason=f"Hermes MCP test did not confirm {expected_tools} tools",
                     mcp=configured.to_dict(),
                     user_action="Inspect the MCP process error, then rerun the installer.",
                     recovery_commands=[
