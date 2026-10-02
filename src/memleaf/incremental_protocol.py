@@ -24,7 +24,7 @@ from .turn_plan import revision_digest
 from .validation import ModelOutputError, parse_strict_json
 
 PROTOCOL_VERSION = "incremental-items-v1"
-SEMANTIC_PROTOCOL = "incremental-turn-v11"
+SEMANTIC_PROTOCOL = "incremental-turn-v12"
 EXTRACTION_CONTRACT = "field-reviewed-v1"
 MAX_BYTES = 128 * 1024
 MAX_ITEMS = 64
@@ -496,14 +496,11 @@ def _review_fields(row: Mapping[str, Any], fields: Mapping[str, Any], state: Map
     if state.get("extraction_contract") != EXTRACTION_CONTRACT:
         return {}
     create = row["action"].strip().upper() == "CREATE"
-    decision = row.get("deadline_decision")
-    if decision is None:
-        raise ValueError("missing_deadline_decision")
+    # The patch already expresses the operation. Older outputs may retain this
+    # redundant assertion; validate it when present rather than overriding it.
     expected = "selected" if "deadline" in fields else ("none" if create else "unchanged")
-    if decision != expected:
+    if "deadline_decision" in row and row["deadline_decision"] != expected:
         raise ValueError("deadline_decision_mismatch")
-    if create and "assignee" not in fields:
-        raise ValueError("missing_assignee_decision")
     offered = row.get("responsibility_basis", {})
     if not isinstance(offered, dict) or set(offered) - {"assignee", "waiting_on"}:
         raise ValueError("invalid_responsibility_basis")
@@ -589,6 +586,10 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
               path="memory" if action == "CREATE" else "patch")
         if not fields:
             raise ValueError("empty_patch")
+        if action == "CREATE" and state.get("extraction_contract") == EXTRACTION_CONTRACT:
+            # Omission means unknown for a new record only. UPDATE omission
+            # inherits the existing owner and must never clear it.
+            fields.setdefault("assignee", None)
         result["field_bases"] = _review_fields(row, fields, state, evidence, refs)
         if action == "CREATE":
             fields["type"] = _normalize_type(fields.get("type"))

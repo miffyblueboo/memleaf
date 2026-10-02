@@ -4,7 +4,7 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.84.**
+> **Version: 0.2.85.**
 > Automatic extraction and review share one future-value standard: the model weighs likely reuse, information gain, direct usability when read again, and the cost of forgetting. It keeps only the smallest core that can materially help future understanding, decisions, or actions; information without clear value is not extracted, and no business-specific exclusion rule is hard-coded.
 > Extraction compares existing identifiers, objectives, progress, responsibility and deadlines first. Filling an unknown also maintains the original item; a separate task does not replace updating shared project facts. Core does not merge matching titles.
 > New requests use `field-reviewed-v1`: CREATE/UPDATE explicitly decide structural deadlines; unknown executors use `null`, and new or changed non-null responsibility requires a source quote. Core validates fields and provenance while the model judges business meaning; invalid rows use existing partial handling. Source time resolves relative dates without inventing factual dates.

@@ -61,12 +61,15 @@ The version is `incremental-items-v1`; only `{"items": [...]}` is accepted.
 
 New prepared requests also carry `extraction_contract=field-reviewed-v1`:
 
-- Every CREATE/UPDATE includes row-level `deadline_decision`. Use `selected`
-  with `memory.deadline` for CREATE or `patch.deadline` for UPDATE; use `none`
-  for CREATE without an established deadline, or `unchanged` for UPDATE without
-  a deadline change. A deadline mentioned only in prose is insufficient.
-- CREATE explicitly supplies `memory.assignee`, using null when the executor
-  is unknown. New or changed non-null `assignee`/`waiting_on` requires row-level
+- CREATE supplies `memory.deadline` only for an established deadline. UPDATE
+  supplies `patch.deadline` for a change or explicit cancellation; omission
+  preserves the current deadline. The model does not need `deadline_decision`.
+  Older outputs may retain it, but contradictions with the actual fields are
+  still rejected. A deadline mentioned only in prose is insufficient; Core
+  does not infer a deadline from the body or detect every semantic omission.
+- CREATE may omit `memory.assignee` when the executor is unknown; Core stores
+  null. UPDATE omission preserves the current executor. New or changed non-null
+  `assignee`/`waiting_on` requires row-level
   `responsibility_basis`, keyed by that field, with `{ref, text}` citing an exact
   source quote in the row's evidence. An unchanged inherited owner needs no new
   quote. Field provenance uses the selected source rather than the generic row

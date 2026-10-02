@@ -4,6 +4,18 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.85 — 2026-10-03
+
+### Incremental field protocol
+
+- Stop requiring redundant model `deadline_decision` assertions; absent UPDATE
+  deadline fields preserve the current deadline. Older assertions remain checked
+  for contradictions, and selected/cancelled deadlines still require source quotes.
+- Allow CREATE to omit an unknown assignee and store null without inventing a
+  responsibility observation. Non-null responsibility changes still require proof.
+- Consolidate the model field instructions and examples without extra model calls;
+  advance the semantic protocol to `incremental-turn-v12` for cached-run guards.
+
 ## 0.2.84 — 2026-09-30
 
 ### Task lifecycle, Hermes source times and read-linked comparison
