@@ -15,10 +15,11 @@ REVIEW_SYSTEM = """核验拟写入的持续行动。original_input 是唯一事�
 每个 draft.items 都必须有且只有一个 decision，item 是从 0 开始的位置。keep 判断该事项本身是否由原文确立且持续值得保留。临时操作及助手额外建议不能产生用户长期待办，原话只证明另一个操作时 keep:false。独立事实不因其他候选有误而拒绝。
 keep:true 时，field_support 必须逐个列出候选 memory/patch 中的业务字段，每个布尔值判断该字段的拟议值是否受来源支持；不列 responsibility_basis、effective、at、reopen 等引用/控制字段。没有 replace 的 NO_CHANGE/DEFERRED/NO_MEMORY 的 field_support 为 {}。keep:false 时 field_support 为 {}。unverified_fields 是系统发现未能验证引用的可选责任字段，必须判为 false；不能补造引用。这不影响其他有依据的事实或任务。归属/客户尚未确定不自动表示行动被阻塞。
 不能仅检查引文存在：必须判断原话是否确立该具体行动、责任、状态和期限。assistant 的建议/计划不能赋予 user 新义务。转发、协调、记录不等于本人执行；支持旧任务不等于接受新安排。
+body 必须逐个事实分句核验；assistant 自行增加的原因、影响判断、条件或后续步骤不受 user 原话支持，不能因整段主题相符就判 true。剔除无依据分句，保留其余已确认事实，可用 replace 修正 CREATE 的 title/body；没有修正时 body:false。title 只标识事项，交期/发生日/进度放正文与结构字段；名称固有的年度等身份信息保留。UPDATE/NO_CHANGE 的旧标题仍含交期时，在现有 replace/updates 中一起维护。
 尤其检查拟改 deadline：依赖条件、交接执行人、进度、尚未完成都不证明原期限已取消；只有明确取消/替换这个期限才支持变更。没有明确期限变化时 deadline:false，原期限沿用。卡点和等待条件仅在正文中维护，并清除已经解决的旧卡点。
 新引用只能来自 new；context 和旧目标只供比较，不能重新推动旧变化。候选若仅重新陈述旧目标已覆盖的内容，不应作为新 UPDATE。同一事项补充/纠正维护原目标，独立事项允许 CREATE，不能凭标题相似合并。
 逐字段判断后输出 decisions；对共同事实变更，检查所有候选记忆中是否仍有旧职责或旧状态，不能认可只更新一条而遗留冲突。确认 MERGE 各方确为同一事项且完整保留有效内容；独立生命周期的项目/任务不可合并。
-修正遗漏时，decision 可增加 replace（同 target 的完整 UPDATE），field_support 判断替换后的字段；不得替换 DEFERRED，也不得新增义务或猜测未知。还可输出 updates:[{"row":UPDATE,"field_support":{...}}] 更新原 draft 未涉及的可写候选目标，证据仍只取原输入 new。没有修正就省略 replace/updates。每条修正必须保留仍有效的旧事实与原期限；撤回用 validity=retracted。不要输出解释。
+修正遗漏时，decision 可增加 replace（同 target 的完整 UPDATE，或原 CREATE 仅改 title/body 的完整副本），field_support 判断替换后的字段；CREATE 修正不得改变其 evidence、scope、type、责任、期限或引用。不得替换 DEFERRED，也不得新增义务或猜测未知。还可输出 updates:[{"row":UPDATE,"field_support":{...}}] 更新原 draft 未涉及的可写候选目标，证据仍只取原输入 new。没有修正就省略 replace/updates。每条修正必须保留仍有效的旧事实与原期限；撤回用 validity=retracted。不要输出解释。
 """
 
 _METADATA = {"responsibility_basis", "effective", "at", "reopen"}
@@ -165,11 +166,30 @@ def apply_review(request, response):
                 raise ValueError
             row = rows[i]
             if "replace" in decision:
-                if (i in data.get("invalid_representation_items", []) or not decision["keep"]
-                        or row.get("action") not in {"UPDATE", "NO_CHANGE"}):
+                if i in data.get("invalid_representation_items", []) or not decision["keep"]:
                     raise ValueError
-                replacement = _maintenance_update(decision["replace"], support, data["original_input"])
-                if replacement["target"] != row["target"]:
+                if row.get("action") == "CREATE":
+                    replacement = deepcopy(decision["replace"])
+                    if (not isinstance(replacement, dict) or replacement.get("action") != "CREATE"
+                            or not isinstance(replacement.get("memory"), dict)
+                            or not isinstance(row.get("memory"), dict)
+                            or set(support) != fields(replacement)
+                            or any(v is not True for v in support.values())):
+                        raise ValueError
+                    # Review can repair prose, not rewrite the draft's source,
+                    # authority, identity, lifecycle or field annotations.
+                    def without_prose(value):
+                        value = deepcopy(value)
+                        for key in ("title", "body"):
+                            value["memory"].pop(key, None)
+                        return value
+                    if without_prose(row) != without_prose(replacement):
+                        raise ValueError
+                elif row.get("action") in {"UPDATE", "NO_CHANGE"}:
+                    replacement = _maintenance_update(decision["replace"], support, data["original_input"])
+                    if replacement["target"] != row["target"]:
+                        raise ValueError
+                else:
                     raise ValueError
                 row = rows[i] = replacement
                 data.get("unverified_fields", [[] for _ in rows])[i] = []
@@ -224,7 +244,8 @@ def apply_review(request, response):
                 rows[i] = None
         rows = [r for r in rows if r is not None]
         additions = review.get("updates", [])
-        if not isinstance(additions, list) or len(additions) > 20:
+        from .incremental_protocol import MAX_ITEMS
+        if not isinstance(additions, list) or len(rows) + len(additions) > MAX_ITEMS:
             raise ValueError
         used = {row.get("target") for row in rows if isinstance(row, dict)}
         for entry in additions:

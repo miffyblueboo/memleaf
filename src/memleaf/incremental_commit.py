@@ -56,7 +56,7 @@ def _arguments(source, session_id, turn_id, scope, priority_memory_ids, candidat
     source, session_id = safe_component(source, "source"), safe_component(session_id, "session id")
     if not isinstance(turn_id, str) or not turn_id or len(turn_id) > 800:
         raise ValueError("invalid_turn_id")
-    if type(candidate_limit) is not int or not 1 <= candidate_limit <= 20:
+    if type(candidate_limit) is not int or candidate_limit < 1:
         raise ValueError("invalid_candidate_limit")
     if type(allow_new_scopes) is not bool:
         raise ValueError("invalid_context_flags")

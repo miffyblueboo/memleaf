@@ -40,6 +40,7 @@ _SAFE_ERROR_MESSAGES = {
     "retrieval_call_id_invalid": "retrieval tool call id is invalid",
     "retrieval_read_budget_exceeded": "retrieval read budget exceeded",
     "retrieval_todo_pagination_mismatch": "todo pagination does not match the current retrieval chain",
+    "retrieval_body_continuation_mismatch": "body continuation does not match the current retrieval chain",
     "retrieval_full_view_forbidden": "use directory search followed by bounded read",
     "retrieval_reader_invalid": "retrieval reader returned an invalid result",
     "retrieval_ledger_unavailable": "retrieval gate state is unavailable",
@@ -536,6 +537,9 @@ def observe_todo_list(
                 if pending and previous_filter and previous_filter != filter_hash:
                     raise RetrievalGateError("retrieval_todo_pagination_mismatch")
                 entry["todo_list_pages"] = 0
+                # A new list query starts a new body queue. Audit read_ids are
+                # retained; only the next continuation's result set changes.
+                entry["body_continuations"] = []
             entry["todo_list_filter_hash"] = filter_hash
             entry["todo_list_pages"] = int(entry.get("todo_list_pages", 0) or 0) + 1
             entry["todo_list_pending"] = bool(has_more)
@@ -673,7 +677,24 @@ def snapshot_read_context(vault: Vault | Path | str, retrieval_id: str, *,
                     raise RetrievalGateError("retrieval_turn_mismatch")
         identities = list(dict.fromkeys(x for x in entry.get("read_ids", []) if isinstance(x, str)))
         return {"retrieval_id": retrieval_id, "turn_id": turn_id,
-                "memory_ids": identities[:20], "overflow": len(identities) > 20}
+                "memory_ids": identities, "overflow": False}
+
+
+def body_continuation(vault, retrieval_id, *, current_source):
+    """Resolve one server-owned unfinished body; clients never choose its tuple."""
+    retrieval_id = _retrieval_id(retrieval_id)
+    root = _coerce_vault(vault)
+    with _with_lock(root):
+        ledger = _read_ledger(_ledger_path(root))
+        entry = _entry_for(ledger, retrieval_id)
+        if not _is_current_entry(ledger["entries"], retrieval_id, entry, current_source):
+            raise RetrievalGateError("retrieval_turn_mismatch")
+        if entry.get("status") != "FOUND":
+            raise RetrievalGateError("retrieval_search_required")
+        pending = entry.get("body_continuations", [])
+        if not isinstance(pending, list):
+            raise RetrievalGateError("retrieval_body_continuation_mismatch")
+        return dict(pending[0]) if pending else None
 
 
 def guarded_read(
@@ -683,6 +704,7 @@ def guarded_read(
     reader: Callable[[int], Mapping[str, Any] | None],
     *,
     current_source: str | None = None,
+    expected_continuation: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any] | None:
     """Read one bounded page while keeping per-turn read counters for audit only."""
 
@@ -701,6 +723,11 @@ def guarded_read(
                 raise RetrievalGateError("retrieval_turn_mismatch")
         if entry.get("status") != "FOUND":
             raise RetrievalGateError("retrieval_search_required")
+        pending = entry.get("body_continuations", [])
+        if not isinstance(pending, list):
+            raise RetrievalGateError("retrieval_body_continuation_mismatch")
+        if expected_continuation is not None and (not pending or pending[0] != expected_continuation):
+            raise RetrievalGateError("retrieval_body_continuation_mismatch")
         read_ids = entry.get("read_ids")
         if not isinstance(read_ids, list):
             read_ids = []
@@ -714,6 +741,27 @@ def guarded_read(
         body = result.get("body")
         if not isinstance(body, str) or len(body) > MAX_READ_PAGE_CHARS:
             raise RetrievalGateError("retrieval_reader_invalid")
+        # Both list-bundled prefixes and ordinary reads carry their actual
+        # page/version. Only successful pages advance an unfinished body;
+        # errors leave the exact target/version/offset available for retry.
+        if "has_more" in result:
+            offset = result.get("next_offset")
+            version = result.get("version")
+            if (type(result["has_more"]) is not bool
+                    or result["has_more"] and (type(offset) is not int or offset < 1
+                                               or not isinstance(version, str) or not version)):
+                raise RetrievalGateError("retrieval_reader_invalid")
+            prior = next((i for i, page in enumerate(pending) if page.get("memory_id") == memory_id), None)
+            if result["has_more"]:
+                page = {"memory_id": memory_id, "offset": offset, "expected_version": version,
+                        "include_history": result.get("history") is True}
+                if prior is None:
+                    pending.append(page)
+                else:
+                    pending[prior] = page
+            elif prior is not None:
+                pending.pop(prior)
+            entry["body_continuations"] = pending
         if body:
             if memory_id not in read_ids:
                 read_ids.append(memory_id)

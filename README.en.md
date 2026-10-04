@@ -4,7 +4,7 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.88.**
+> **Version: 0.2.89.**
 > Automatic extraction and review share one future-value standard: the model weighs likely reuse, information gain, direct usability when read again, and the cost of forgetting. It keeps only the smallest core that can materially help future understanding, decisions, or actions; information without clear value is not extracted, and no business-specific exclusion rule is hard-coded.
 > Extraction compares existing identifiers, objectives, progress, responsibility and deadlines first. Filling an unknown also maintains the original item; a separate task does not replace updating shared project facts. Confirmed duplicates can be merged in the existing processing requests with their sources and history preserved. Independent project and task lifecycles remain separate; Core does not merge matching titles.
 > New requests accept equivalent field representations. Unknown executors remain `null`; new or changed responsibility and deadlines require actual source evidence. Dependencies belong in the body; `waiting_on` is no longer extracted. Proposed actions and related fields undergo bounded semantic verification within a shared five-request limit per work item, stopping on success; failed verification blocks writes. Source time resolves relative dates without inventing factual dates.
@@ -147,13 +147,13 @@ Both installation paths automatically:
 3. Discover and save a callable chat-model route. Redacted credentials returned by the Hermes CLI are never treated as real API keys; discovery falls through to environment variables and Hermes `.env`, while preserving an existing valid memleaf route.
 4. Activate `memory.provider=memleaf`.
 5. Configure the memleaf MCP entry through Hermes' official CLI.
-6. Configure MCP lazy/idle lifecycle settings and the source-bound native Hermes retention tool.
+6. Configure MCP lazy/idle lifecycle settings and the source-bound Hermes MCP save route.
 7. Verify that the MCP server exposes all tools declared by the installed version.
 8. Record the local Agent integration status.
 
 Restart Hermes after installation.
 
-Hermes uses native `memleaf_remember` to queue a request bound to the current turn, then retain the actual user messages after the turn completes. Queued does not mean saved. The installer excludes standalone MCP `remember` in Hermes while preserving other tool choices; the Core/Python API and other clients keep `remember`. Upgrading only the pip package does not refresh the Provider or this tool configuration.
+Hermes uses MCP `save_turn` to queue a request bound to the current turn, then retain the actual user messages after the turn completes. Queued does not mean saved. It shares the deferred MCP tool space with retrieval; the Provider no longer exposes a separate native save schema. The installer excludes standalone MCP `remember` in Hermes while preserving other tool choices; the Core/Python API and other clients keep `remember`. Upgrading only the pip package does not refresh the Provider or this tool configuration.
 
 If Hermes cannot be detected, no complete model route can be configured, Provider activation fails, or MCP tool-discovery verification fails, the installer returns an explicit failure rather than reporting an incomplete integration as successful.
 

@@ -1371,7 +1371,8 @@ class MemleafMemoryProvider(MemoryProvider):
         return (
             "# Memleaf Memory\n"
             "For a request to save, correct, complete, cancel, reopen, or withdraw memory, "
-            "call memleaf_remember once with this turn's retrieval_id. It queues the actual "
+            "discover and call the deferred MCP tool mcp__memleaf__save_turn once with this turn's retrieval_id, "
+            "using the exact name returned by tool_search through tool_call. It queues the actual "
             "whole turn; no rewritten content, target revision, or message time is needed. "
             "Use the returned user_message as the save acknowledgement. A queued request "
             "starts processing only after your final reply, so its changes are pending.\n"
@@ -1390,8 +1391,8 @@ class MemleafMemoryProvider(MemoryProvider):
             "todos, all unfinished work, urgent work, or work due in a time range, call memleaf MCP "
             "list_todos(view=full) instead of relevance search; omit scope for a global query. "
             "Use the returned continuation arguments until has_more=false, without copying a cursor. "
-            "Each row includes a body; read only truncated rows with offset=body_next_offset "
-            "and expected_version=version, following their remaining body pages. "
+            "Each row includes a body; after list pagination, follow the returned body_continuation "
+            "with MCP read until it is absent. The server owns the memory ID, version and offset. "
             "Never exclude a todo because another Hermes session or another Agent created it. Hermes has a soft "
             "observer only: do not claim a search happened unless the visible tool "
             "messages show it. Visible Hermes "
@@ -2067,8 +2068,10 @@ class MemleafMemoryProvider(MemoryProvider):
         if not tool_name.startswith(prefix):
             return None
         name = tool_name[len(prefix):]
-        if name not in {"search", "read", "list_todos", "scope_catalog", "remember", "update_memory"}:
+        if name not in {"search", "read", "list_todos", "scope_catalog", "remember", "update_memory", "save_turn"}:
             return None
+        if name == "save_turn" and (not self._write_enabled or not self._gate_enabled):
+            raise ValueError("memory_host_retention_disabled")
         turn_id = _host_turn_id(turn_context)
         session = turn_context.get("session_id") if isinstance(turn_context, Mapping) else None
         ordinal = turn_context.get("turn_number") if isinstance(turn_context, Mapping) else None
@@ -2105,13 +2108,11 @@ class MemleafMemoryProvider(MemoryProvider):
         return bound
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        # Hermes registers schemas before initialize_all. Execution remains
-        # gated by the initialized host identity and write policy.
-        if not self._write_enabled:
-            return []
-        return [{"name": "memleaf_remember", "description": "Queue the actual complete user turn for a request to save/correct memory, complete/cancel/reopen a task, or withdraw a fact/preference. Call once, with only the current retrieval_id. Reply with the returned user_message to acknowledge the queued request; processing starts after the final reply, so no changes are completed yet.",
-                 "parameters": {"type": "object", "properties": {"retrieval_id": {"type": "string"}},
-                                "required": ["retrieval_id"], "additionalProperties": False}}]
+        # One discoverable MCP save_turn route avoids the host's split between
+        # native provider tools and deferred tool_call dispatch. Keep the old
+        # handler below for already registered native clients, without exposing
+        # two competing ways to save the same turn.
+        return []
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs: Any) -> str:
         if (tool_name != "memleaf_remember" or not self._write_enabled or not self._gate_enabled

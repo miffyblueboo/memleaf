@@ -6,9 +6,10 @@ INCREMENTAL_SYSTEM = """从完整可见对话提炼长期记忆，返回严格 J
 - 用户明确撤回旧事实或偏好：UPDATE 原 target，patch.validity=retracted；撤回说明转入历史，不作为仍有效的偏好保留。用户明确给出替代事实/新偏好：UPDATE 原 target 为新的有效内容。撤回后“需要时另说”不代表已建立替代偏好。
 - user 的已确认事实、决定、持续目标、责任、期限、进展、偏好可保留。临时操作请求及普通应答不自动产生长期待办。
 - assistant 仅能解释已确认事实、报告有依据的已执行结果。assistant 的建议、计划、推测、额外安排不产生用户/第三人义务、承诺、偏好或期限；用户确认一件事不等于确认回复的其他建议。不要把“建议以后做”改写成“需要做”。
+- 逐分句核验正文：assistant 增加的原因、影响、条件或后续步骤，user 未确认则省略；其余已确认事实保留。
 - use=new 是本轮变化依据；context、旧目标、explicit_writes 仅供比较，不能独立产生新事实。逐项核对证据是否支持拟写事实、归属、执行人和日期。
 
-维护前先比较 new 与目标 observed 的先后。new 已被较新 context/目标覆盖时，不重放较新变化，本轮无变化用 NO_CHANGE；不得借 context 推动 deadline 清空。按身份/编号、主体、目标和业务上下文比较所有候选旧事项，包含已完成项和跨会话来源。缺编号的旧目标得到编号、旧状态被纠正、结构字段得到明确依据，都 UPDATE 原目标；完整涵盖且无变化才 NO_CHANGE。独立新事项 CREATE，不凭同标题或词语相似合并。同一事实变更同步维护全部相关候选；项目/任务旧职责不能遗漏为 NO_CHANGE。项目与独立任务各自保留生命周期。只有确认为同一事项的重复记录才 MERGE，不凭标题相似合并。保留旧目标其余仍有效信息；当前正文表达当前状态，不追加日志。
+比较 new 与目标 observed 的先后；已被较新 context/目标覆盖的变化不重放，无变化 NO_CHANGE，不借 context 清空 deadline。按身份/编号、主体、目标和业务上下文比较全部候选，包含已完成项和跨会话来源。补编号、纠正状态、补有依据的结构字段均 UPDATE 原目标；完整覆盖才 NO_CHANGE。独立新事项 CREATE；同一变化同步维护全部相关候选，旧职责不可遗漏。项目与独立任务各保留生命周期；确为同一事项的重复记录才 MERGE，不凭标题相似合并。保留其余有效旧事实，正文表达当前状态，不追加日志。
 
 动作：
 CREATE：action、非空 evidence、memory；memory 必填 type/scope/title/body。
@@ -18,13 +19,13 @@ NO_CHANGE：action、非空 evidence、target；正文及结构化字段均已�
 DEFERRED：action、非空 evidence、reason、need；reason=missing_identity|missing_context|conflict，need 说明无法确定的内容。
 NO_MEMORY：仅 action；自动模式整轮无值得维护/新增的内容时独占 items。
 每项 evidence 是引用字符串数组，例如 ["e1","e2"]，不能复制整个证据对象。至少一个 use=new 引用，必须实际支持本项，不要求覆盖每条消息。
-结构示例（省略号替换为实际内容）：
+结构示例：
 {"action":"CREATE","evidence":["e1"],"memory":{"type":"fact","scope":"unscoped","title":"…","body":"…"}}
 {"action":"UPDATE","evidence":["e1"],"target":"m1","patch":{"body":"…"}}
-{"action":"NO_CHANGE","evidence":["e1"],"target":"m1"}
 {"items":[{"action":"NO_MEMORY"}]}
 
 字段：
+title 标识事项，不放交期/发生日/进度，改存正文与结构字段；旧标题交期一并清理。名称固有年度等身份日期保留。
 type=fact|todo|preference|project|event|identity|other。有独立完成条件的持续行动设 actionable:true（todo 隐含）；事实类别与行动属性可分开表达。
 status=active|completed|cancelled；完成/取消/交接同时纠正冲突的 title/body；独立未完行动不能被兄弟项完成吞掉。重新开启 UPDATE 使用 reopen:true 和 patch.status=active，需要较新明确依据。
 assignee 是实际执行人，只有明确由用户本人执行才 user，其他执行人用明确名称，未知为 null。用户记录/转发/协调不证明本人执行。等待依赖、卡点仅在正文维护，按最新事实替换过时内容，不生成等待字段。

@@ -24,7 +24,7 @@ from .turn_plan import revision_digest
 from .validation import ModelOutputError, parse_strict_json
 
 PROTOCOL_VERSION = "incremental-items-v1"
-SEMANTIC_PROTOCOL = "incremental-turn-v16"
+SEMANTIC_PROTOCOL = "incremental-turn-v17"
 EXTRACTION_CONTRACT = "field-reviewed-v1"
 MAX_BYTES = 128 * 1024
 MAX_ITEMS = 64
@@ -341,7 +341,7 @@ class PlanningSnapshot:
                 for status in basis_statuses.values())):
             raise ValueError("invalid_basis_status")
         targets = targets or {}
-        if len(targets) > 20 or (writable and set(writable) - set(targets)):
+        if writable and set(writable) - set(targets):
             raise ValueError("invalid_targets")
         for ref, memory in targets.items():
             if not re.fullmatch(r"m[1-9][0-9]*", ref) or not isinstance(memory, Memory):

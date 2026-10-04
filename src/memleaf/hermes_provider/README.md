@@ -10,14 +10,14 @@ Automatic capture and processing use only the visible user and assistant text.
 Tool calls and results, email or attachment bodies, and other hidden payloads are
 not automatic memory input.
 Hermes uses MCP `search` and `read` with the current `retrieval_id` for recall.
-The native `memleaf_remember` tool queues explicit retention bound to the current
+The deferred MCP `save_turn` tool queues explicit retention bound to the current
 turn; the completed capture supplies the original user messages and source times.
 A queued response is not a saved memory. The installer excludes standalone MCP
 `remember` in Hermes while preserving other configured tool choices. MCP still
 supports `remember` for other clients, plus `forget` and maintenance operations.
 This is a Soft Gate, not a guarantee that every answer has performed retrieval.
 
-The bound native route also handles conversational corrections, completion,
+The bound MCP route also handles conversational corrections, completion,
 cancellation, reopening and withdrawal. A successful full-turn retention receipt
 settles automatic extraction without another model request. Partial selections
 remain separate. MCP lifecycle updates do not accept model-supplied source times;

@@ -4,6 +4,31 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.89 — 2026-10-04
+
+### Complete comparison context and bound tool continuation
+
+- Remove the 20-memory comparison ceiling and capture truncation. Keep all
+  required read, receipt and revision targets, limiting only optional recall
+  and the existing total request size. Preserve strict source, scope and
+  missing-target validation; incomplete historical capsules remain protected.
+- Use one discoverable Hermes MCP `save_turn` route for source-bound retention
+  and lifecycle requests. Stop exposing a competing native save schema while
+  preserving its legacy handler and internal completion interface. Queueing
+  remains idempotent and does not claim that changes have already been saved.
+- Bind long-body continuation to server-owned memory IDs, versions, offsets
+  and history flags. Clients follow `body_continuation` without copying record
+  tuples; version changes require an explicit restart of the same target.
+  Preserve direct versioned reads and strict current-turn checks.
+- Keep delivery dates and progress out of task titles, retaining years that
+  identify the subject. Verify body clauses against actual user-confirmed
+  facts and repair unsupported prose in the existing review pass without
+  changing evidence, ownership or deadlines. No model stage is added.
+- Validation: 411 affected local checks, an isolated replay of the real
+  21-action conversation, and three real DeepSeek extraction/review samples
+  passed. Formal Vault data and historical jobs were not changed; updated
+  Hermes desktop behavior still requires installation and a host restart.
+
 ## 0.2.88 — 2026-10-04
 
 ### Reliable queued retention and bounded action queries

@@ -30,13 +30,14 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
 
     At this stage evidence units are complete visible messages, not per-sentence
     heuristic fragments. Caller-provided target IDs are required context and are
-    never dropped to fit the budget. Other candidates share the budget by query.
+    never dropped to fit a count limit. candidate_limit bounds optional recall;
+    required comparison targets expand that count within the request byte budget.
     """
     source = safe_component(source, "source")
     session_id = safe_component(session_id, "session id")
     if not isinstance(turn_id, str) or not turn_id:
         raise ValueError("invalid_turn_id")
-    if type(candidate_limit) is not int or not 1 <= candidate_limit <= 20:
+    if type(candidate_limit) is not int or candidate_limit < 1:
         raise ValueError("invalid_candidate_limit")
     from .incremental_scopes import registry_view, resolve_scope
     registry, scope_guard, scope_aliases = registry_view(service.vault.config())
@@ -47,8 +48,6 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
     if isinstance(priority_memory_ids, (str, bytes)):
         raise ValueError("invalid_priority_ids")
     priority = list(dict.fromkeys(priority_memory_ids))
-    if len(priority) > candidate_limit:
-        raise ValueError("blocked_context")
     for identity in priority:
         safe_component(identity, "memory id")
     # Do not use the mutation boundary: it would resume compaction writes.
@@ -149,15 +148,13 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
             if context.get("overflow") is not False:
                 raise ValueError("blocked_context")
             identities = context.get("memory_ids")
-            if not isinstance(identities, list) or len(identities) > 20:
+            if not isinstance(identities, list):
                 raise ValueError("invalid_comparison_context")
             for identity in identities:
                 safe_component(identity, "memory id")
             read_ids.extend(identities)
     priority = list(dict.fromkeys(explicit_ids + read_ids + priority))
     priority += sorted(x for x in prior_ids if x.casefold() in records and x not in priority)
-    if len(priority) > candidate_limit:
-        raise ValueError("blocked_context")
     chosen = []
     for identity in priority:
         if identity.casefold() not in records:
@@ -165,15 +162,19 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
         chosen.append(records[identity.casefold()])
     from .planning_candidates import ComparisonRanker
     ranker = ComparisonRanker(records)
+    # Required reads/receipts are supplied in full. Recall adds only enough
+    # optional targets to reach the caller's preferred count, without ranking
+    # unrelated memories when required context already exceeds it.
+    optional_limit = min(max(0, candidate_limit - len(chosen)), len(records))
+    seen = {memory.memory_id.casefold() for memory in chosen}
     query_rows = []
-    for event in evidence:
+    for event in evidence if optional_limit else ():
         for is_native in (False, True):
-            keys = [key for key in records if (key in native_keys) == is_native]
-            query_rows.append([records[key] for key in ranker.rank(event["text"], keys, candidate_limit)])
+            keys = [key for key in records if key not in seen and (key in native_keys) == is_native]
+            query_rows.append([records[key] for key in ranker.rank(event["text"], keys, optional_limit)])
     # Reuse the pure retrieval functions, not service._search_unlocked(),
     # whose index accessor may rebuild files or recover compaction.
-    seen = {memory.memory_id.casefold() for memory in chosen}
-    for rank in range(candidate_limit):
+    for rank in range(optional_limit):
         for candidates in query_rows:
             if len(chosen) >= candidate_limit:
                 break

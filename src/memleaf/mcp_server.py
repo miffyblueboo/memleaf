@@ -34,6 +34,7 @@ from .retrieval_gate import (
     RetrievalGateError,
     begin_turn,
     guarded_read,
+    body_continuation,
     observe_search,
     observe_todo_list,
     todo_filter_key,
@@ -80,7 +81,7 @@ INSTRUCTIONS = (
     "and a current FOUND search or list_todos result; NO_MATCH, ERROR, and DEGRADED turns cannot read. "
     "For global current-action questions use list_todos rather than relevance search, omit scope to cover "
     "all scopes. Use view=full on server-managed turns, follow returned continuation arguments "
-    "until has_more=false, and read only truncated bodies using body_next_offset/version. "
+    "until has_more=false, then follow body_continuation with read until it is absent. "
     "Directory clients pass next_cursor as cursor, then read each relevant action body. "
     "For 'my work' use list_todos responsibility=mine; use delegated or all for others' work. "
     "Unassigned ownership is uncertain. A dependency alone does not create a user follow-up task; "
@@ -103,7 +104,7 @@ INSTRUCTIONS = (
     "Use remember only when the user explicitly asks to remember something. If the user has "
     "previously or currently explicitly said not to record corresponding text, skip capture for it. "
     "For conversation-based memory corrections, task completion/cancellation/reopening or "
-    "withdrawal of a fact/preference, use the host's memleaf_remember with its current retrieval_id. "
+    "withdrawal of a fact/preference in Hermes, use MCP save_turn with its current retrieval_id. "
     "It binds the actual user request and preserves history. If unavailable, update_memory "
     "with retrieval_id queues the same source-bound edit. Bare explicit edits may omit the token. "
     "Withdraw facts/preferences with validity=retracted, not task status=cancelled. "
@@ -270,7 +271,7 @@ _TOOLS: tuple[dict[str, Any], ...] = (
             "page; memleaf returns one that must be reused for pagination and read. Server-managed clients continue with "
             "continue=true with only retrieval_id until has_more=false; the server carries the exact cursor and filters. "
             "Use view=full to receive bounded action bodies in the list; read only rows with body_has_more=true "
-            "using offset=body_next_offset and expected_version=version. Directory clients may copy next_cursor into cursor, then read the matching action bodies with the same "
+            "by following body_continuation with read(continue=true,retrieval_id); the server binds the exact memory, version and offset. Directory clients may copy next_cursor into cursor, then read the matching action bodies with the same "
             "retrieval_id. Displayed list numbers are turn-local; resolve a later numbered update "
             "against the previously shown title and memory_id, and clarify if that mapping is ambiguous. "
             "responsibility=mine selects only explicit assignee=user; delegated selects other named owners, "
@@ -305,6 +306,8 @@ _TOOLS: tuple[dict[str, Any], ...] = (
             "characters and contains only identifiers, scopes, body, and paging/version fields; "
             "retrieval_id is required, and the retrieval turn must have a current FOUND search; "
             "NO_MATCH, ERROR, and DEGRADED turns are rejected. "
+            "Prefer returned body_continuation: pass only continue=true and retrieval_id to read the next unfinished body, with its ID/version/offset held by the server. "
+            "On memory_version_changed, add restart=true to that continuation to restart the same bound memory at offset 0 with its new version. "
             "continue with next_offset only when has_more is true, passing the returned version "
             "as expected_version. If the version changes, restart at offset=0 without it."
         ),
@@ -315,10 +318,17 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                 "offset": {"type": "integer", "minimum": 0},
                 "max_chars": {"type": "integer", "minimum": 1},
                 "expected_version": {"type": "string"},
+                "continue": {"type": "boolean", "description": "Use only continue=true and retrieval_id to follow a returned body_continuation."},
+                "restart": {"type": "boolean", "description": "With continue=true only, restart the bound unfinished body at offset 0 after memory_version_changed."},
                 "retrieval_id": {"type": "string"},
             },
-            required=["memory_id"],
+            any_of=[{"required": ["memory_id"]}, {"required": ["continue"]}],
         ),
+    },
+    {
+        "name": "save_turn",
+        "description": "Hermes only: queue the actual user turn to save/correct memory, complete/cancel/reopen an action or withdraw a preference. Call once with the current retrieval_id. No rewritten text or target IDs. Return user_message as the acknowledgement; queued is not completed. This is a deferred MCP tool, invoked with the exact name returned by tool_search.",
+        "inputSchema": _object_schema({"retrieval_id": {"type": "string"}}, required=["retrieval_id"]),
     },
     {
         "name": "process",
@@ -1152,10 +1162,36 @@ def _invoke_tool(
             if args.get("view") == "full":
                 for row in value["results"]:
                     guarded_read(service.vault, retrieval_id, row["memory_id"],
-                        lambda allowed, row=row: {"body": row["body"]}, current_source=managed_state["source"])
+                        lambda allowed, row=row: {"body": row["body"], "has_more": row["body_has_more"],
+                            "next_offset": row["body_next_offset"], "version": row["version"], "history": row["history"]},
+                        current_source=managed_state["source"])
+                if body_continuation(service.vault, retrieval_id, current_source=managed_state["source"]):
+                    value["body_continuation"] = {"continue": True, "retrieval_id": retrieval_id}
             if value.get("has_more") and managed_state is not None:
                 value["continuation"] = {"continue": True, "retrieval_id": retrieval_id}
         elif name == "read":
+            continuation = args.pop("continue", False)
+            restart = args.pop("restart", False)
+            retrieval_id = args.pop("retrieval_id")
+            state = validate_turn(service.vault, retrieval_id)
+            current_source = state.get("source")
+            if not isinstance(current_source, str) or not current_source:
+                raise RetrievalGateError("retrieval_identity_invalid")
+            expected = None
+            if continuation:
+                if args:
+                    raise RetrievalGateError("retrieval_body_continuation_mismatch")
+                expected = body_continuation(service.vault, retrieval_id, current_source=current_source)
+                if expected is None:
+                    raise RetrievalGateError("retrieval_body_continuation_mismatch")
+                args = dict(expected)
+                if restart:
+                    args["offset"] = 0
+                    args.pop("expected_version")
+            elif restart:
+                raise RetrievalGateError("retrieval_body_continuation_mismatch")
+            elif "memory_id" not in args:
+                raise ValueError("memory_id_required")
             # Keep the protocol boundary hard-capped even if a caller sends a
             # larger value.  Core read_page performs the same authoritative
             # validation; this prevents a future adapter regression from
@@ -1165,23 +1201,29 @@ def _invoke_tool(
                 args["max_chars"] = min(requested_max_chars, _MAX_READ_PAGE_CHARS)
             else:
                 args["max_chars"] = _MAX_READ_PAGE_CHARS
-            retrieval_id = args.pop("retrieval_id")
 
             def read_page(allowed_chars: int) -> dict[str, Any] | None:
                 page_args = {**args, "max_chars": min(args["max_chars"], allowed_chars)}
-                return _read_page_result(service.read_page(**page_args))
+                page = _read_page_result(service.read_page(**page_args))
+                if page is not None:
+                    page["history"] = page_args.get("include_history") is True
+                return page
 
-            state = validate_turn(service.vault, retrieval_id)
-            current_source = state.get("source")
-            if not isinstance(current_source, str) or not current_source:
-                raise RetrievalGateError("retrieval_identity_invalid")
             value = guarded_read(
                 service.vault,
                 retrieval_id,
                 args["memory_id"],
                 read_page,
                 current_source=current_source,
+                expected_continuation=expected,
             )
+            if value is not None:
+                value.pop("history", None)
+            if value is not None and body_continuation(service.vault, retrieval_id, current_source=current_source):
+                value["body_continuation"] = {"continue": True, "retrieval_id": retrieval_id}
+        elif name == "save_turn":
+            from .host_retention import remember_turn
+            value = remember_turn(service, phase="queue", retrieval_id=args["retrieval_id"])
         elif name == "process":
             background = args.pop("background", False)
             if background is True:

@@ -40,9 +40,13 @@ assistant event, including the immutable capture receipt and payload digest.
 It accepts no caller-supplied list of IDs through this interface. The capsule is
 comparison metadata, not factual evidence, and its token is not projected into
 the model request. Automatic preparation gives these required targets priority
-alongside explicit-write receipts before filling the bounded candidate budget.
-A missing target or insufficient budget blocks preparation instead of silently
-replacing or dropping the required target. No model call is added to capture.
+alongside explicit-write receipts. There is no 20-ID truncation or target-count
+ceiling: required targets expand the preferred candidate count; optional recall
+only fills remaining slots. A missing target or an oversized request still blocks
+preparation instead of silently dropping required context. The existing request
+byte budget remains; no model call is added to capture. Legacy capsules already
+marked overflow remain incomplete and cannot be silently reconstructed from a
+later live gate.
 
 A delayed callback can use its own unexpired gate even after a later turn starts.
 Once the capsule is captured, gate expiry cannot erase it or break a duplicate
