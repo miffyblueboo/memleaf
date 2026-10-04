@@ -4,6 +4,27 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.90 — 2026-10-05
+
+### Expose withdrawal state in explicit historical retrieval
+
+- Include matching retracted current heads when historical retrieval is
+  explicitly requested. Ordinary retrieval continues to exclude them.
+- Project bounded lifecycle facts through search and paged MCP reads: the
+  historical snapshot flag, exact current identity link, invalidation reason,
+  and current validity from the same validated query scan. Keep missing,
+  unreadable, conflicting or ambiguous links unknown; support legacy links
+  without guessing from titles or content.
+- Preserve archived validity and distinguish past withdrawal from later
+  restoration. Associate successful lifecycle-only reads with the captured
+  turn's comparison context without fabricating body characters.
+- Reuse query scans and existing pagination, permissions and version checks.
+  No model stage, model call, tool or persistence format is added.
+- Validation: 97 affected checks passed, plus an isolated real-conversation
+  replay through a source MCP process. One legacy test still expects the
+  previously removed waiting_on field and fails identically on the prior
+  release. Replay used zero model calls and left the formal Vault unchanged.
+
 ## 0.2.89 — 2026-10-04
 
 ### Complete comparison context and bound tool continuation

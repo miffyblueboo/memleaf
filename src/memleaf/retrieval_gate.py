@@ -762,7 +762,9 @@ def guarded_read(
             elif prior is not None:
                 pending.pop(prior)
             entry["body_continuations"] = pending
-        if body:
+        # A verified empty tombstone still supplies lifecycle facts and must
+        # remain available to the captured turn's comparison context.
+        if body or isinstance(result.get("lifecycle"), Mapping):
             if memory_id not in read_ids:
                 read_ids.append(memory_id)
             entry["read_ids"] = read_ids

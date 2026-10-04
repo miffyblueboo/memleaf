@@ -244,6 +244,8 @@ _TOOLS: tuple[dict[str, Any], ...] = (
             "MCP client may omit it only on the first page; memleaf returns a short-lived retrieval_id "
             "for pagination/read. Errors are failures, never no_match. Managed MCP search is "
             "directory-only; view=full is rejected. "
+            "For explicit history/withdrawal questions use include_history=true. Results include lifecycle: "
+            "historical snapshot, linked current ID/validity and invalidation reason; null current validity is unknown. "
             "Python search(view='full') remains the compatibility interface."
         ),
         "inputSchema": _object_schema(
@@ -303,9 +305,10 @@ _TOOLS: tuple[dict[str, Any], ...] = (
         "name": "read",
         "description": (
             "Read one memory by exact memory_id in pages. Each page is capped at 2000 body "
-            "characters and contains only identifiers, scopes, body, and paging/version fields; "
+            "characters with bounded content, state, and paging/version fields; "
             "retrieval_id is required, and the retrieval turn must have a current FOUND search; "
             "NO_MATCH, ERROR, and DEGRADED turns are rejected. "
+            "Read historical or retracted records with include_history=true; lifecycle distinguishes past invalidation from current validity. "
             "Prefer returned body_continuation: pass only continue=true and retrieval_id to read the next unfinished body, with its ID/version/offset held by the server. "
             "On memory_version_changed, add restart=true to that continuation to restart the same bound memory at offset 0 with its new version. "
             "continue with next_offset only when has_more is true, passing the returned version "
@@ -693,6 +696,9 @@ def _read_page_result(value: Any) -> dict[str, Any] | None:
             result[name] = field
     if "due_anchor" in value:
         result["due_anchor"] = _jsonable(value.get("due_anchor"))
+    if "lifecycle" in value:
+        from .retrieval_lifecycle import project_lifecycle
+        result["lifecycle"] = project_lifecycle(value["lifecycle"])
     result.update(_query_metadata(value))
     if "read_accounting" in value:
         if not isinstance(value["read_accounting"], str) or value["read_accounting"] not in {"counted", "not_counted", "unavailable"}:
@@ -734,7 +740,7 @@ def _search_result(value: Any) -> dict[str, Any]:
     entries = value.get("results")
     if not isinstance(entries, list):
         raise ValueError("invalid search results")
-    results: list[dict[str, str]] = []
+    results: list[dict[str, Any]] = []
     for entry in entries:
         if not isinstance(entry, Mapping):
             raise ValueError("invalid search entry")
@@ -744,7 +750,11 @@ def _search_result(value: Any) -> dict[str, Any]:
             raise ValueError("invalid search identifiers")
         # Search is intentionally narrower than the legacy directory helper:
         # do not leak per-memory scope/tags/aliases/keywords into candidates.
-        results.append({"memory_id": memory_id, "title": title})
+        row = {"memory_id": memory_id, "title": title}
+        if "lifecycle" in entry:
+            from .retrieval_lifecycle import project_lifecycle
+            row["lifecycle"] = project_lifecycle(entry["lifecycle"])
+        results.append(row)
     if bool(results) != (value["status"] == "found"):
         raise ValueError("inconsistent search results")
     paging = _paging_fields(value)

@@ -58,6 +58,7 @@ from .scope_state import (
 )
 from .vault import Vault, safe_component
 from .query_scan import QueryScan, ScanRecord, scan_memories, ensure_scan_current
+from .retrieval_lifecycle import current_validities, lifecycle
 from .query_progress import observe_progress
 
 
@@ -989,7 +990,9 @@ class Memleaf:
                     revision=revision_digest(memory),
                     structured_fields=memory.extra,
                     record=record,
-                ), **self._query_envelope(snapshot, scope=memory.scopes)}
+                ), **({"lifecycle": lifecycle(record, current_validities(snapshot))}
+                      if include_history else {}),
+                    **self._query_envelope(snapshot, scope=memory.scopes)}
 
             from .native_index import NativeIndexer
 
@@ -1157,8 +1160,8 @@ class Memleaf:
 
     @staticmethod
     def _candidate_directory(record: _Record) -> dict[str, Any]:
-        # The finalized retrieval contract deliberately keeps candidate
-        # entries to memory_id + title. Scope selection already happened
+        # Ordinary candidate entries remain memory_id + title. Explicit
+        # historical queries add lifecycle separately. Scope selection happened
         # before search via the bounded Scope Map and search input.
         display = directory_entry(record.memory)
         return {
@@ -1259,6 +1262,8 @@ class Memleaf:
     ) -> dict[str, Any]:
         """Search and return only a bounded directory of candidate memories."""
 
+        if type(include_history) is not bool:
+            raise ValueError("include_history must be a boolean")
         page_limit = self._page_limit(
             limit,
             MAX_SEARCH_CANDIDATE_ITEMS,
@@ -1289,6 +1294,7 @@ class Memleaf:
                 limit=None,
                 stable=True,
                 strict_candidates=True,
+                include_retracted=include_history,
                 query_snapshot=snapshot,
             )
             records = [
@@ -1296,7 +1302,10 @@ class Memleaf:
                 for record in records
                 if candidate_matches_query(record.memory, query_value)
             ]
-            candidates = [self._candidate_directory(record) for record in records]
+            current = current_validities(snapshot) if include_history else {}
+            candidates = [{**self._candidate_directory(record),
+                           **({"lifecycle": lifecycle(record, current)} if include_history else {})}
+                          for record in records]
             fingerprint = self._search_fingerprint(
                 records,
                 query=query_value,

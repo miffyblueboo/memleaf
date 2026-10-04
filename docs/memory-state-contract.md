@@ -83,6 +83,26 @@ Ordinary `read`, `read_page`, `search`, `context`, and `list_todos` exclude retr
 
 The derived active index excludes retracted heads. History indexing remains available only through APIs that explicitly include history. Closed todos remain in `knowledge/`; status filtering, rather than age-based deletion, controls their normal presentation.
 
+For explicit historical questions, `search_candidates(include_history=True)` and
+MCP `search` also expose matching retracted current heads. Candidate entries and
+`read_page`/MCP `read` with `include_history=True` carry a bounded `lifecycle`:
+
+- `historical` distinguishes an archived snapshot from a current head.
+- `active_memory_id`, when present, is the stored exact current-identity link.
+- `invalidated_reason`, when present, describes why that snapshot was archived.
+- `current_validity` comes from the validated current head in the same query
+  observation. It is `null` when the linked head is missing, unreadable or
+  ambiguous; conflicting or missing legacy links are not inferred from titles.
+
+An archived snapshot's own `validity=valid` describes its past assertion. A past
+`invalidated_reason=retracted` does not establish current withdrawal after a
+later restoration. Use `lifecycle.current_validity` for that distinction. The
+projection contains no current body and grants no edit authority. Ordinary
+retrieval remains unchanged and excludes retracted assertions. Historical body
+pages retain their existing explicit history permission and version checks.
+Successful lifecycle-only reads also associate the exact ID with the captured
+turn's comparison context; an empty assertion does not fabricate body characters.
+
 ## Compatibility boundary
 
 `closed_todo_retention_days` remains accepted so existing config files continue to load, but it no longer retires the stable current identity. Optional structured fields stored in frontmatter participate in the protected revision. The incremental model protocol supports UPDATE.patch.validity and an explicit restore with current content. The legacy planner still excludes retracted heads; its older protocol is not silently extended. Deterministic Python retraction and explicit update use the same current identity and protected revision semantics.
