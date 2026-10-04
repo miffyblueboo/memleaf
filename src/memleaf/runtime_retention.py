@@ -222,46 +222,71 @@ def compact_runtime_state(service: Any, *, dry_run: bool = True, expected_revisi
         _, _, _, result = _prepare(service, max_records)
         return result
     with service.vault.lock():
-        raw, changes, encoded, result = _prepare(service, max_records)
-        if expected_revision != result["state_revision"]:
-            raise ValueError("runtime_state_changed")
-        result.update(read_only=False, execution_status="completed", applied_files=[])
-        paths = _paths(service)
+        return _compact_unlocked(service, expected_revision=expected_revision, max_records=max_records)
 
-        def verify_current(expected):
-            # Once apply has started, preserve verified earlier replacements
-            # even when a later observation fails. Raw I/O details stay private.
-            try:
-                observed = {name: _bytes(path) for name, path in paths.items()}
-            except (OSError, ValueError) as error:
-                result.update(execution_status="interrupted", code="runtime_state_observation_failed")
-                raise RuntimeRetentionError(result) from error
-            if observed != expected:
-                result.update(execution_status="interrupted", code="runtime_state_changed")
-                raise RuntimeRetentionError(result)
-            return observed
 
-        for key, value in changes.items():
-            # Detect edits to either dependency before each replacement. This
-            # does not claim atomicity against an uncooperative external editor.
-            expected = {name: encoded[name] if name in result["applied_files"] else old for name, old in raw.items()}
-            verify_current(expected)
+def _compact_unlocked(service, *, expected_revision=None, max_records=64):
+    """Caller holds the writer lock; share the exact verified apply path."""
+    raw, changes, encoded, result = _prepare(service, max_records)
+    if expected_revision is not None and expected_revision != result["state_revision"]:
+        raise ValueError("runtime_state_changed")
+    result.update(read_only=False, execution_status="completed", applied_files=[])
+    paths = _paths(service)
+
+    def verify_current(expected):
+        # Once apply has started, preserve verified earlier replacements
+        # even when a later observation fails. Raw I/O details stay private.
+        try:
+            observed = {name: _bytes(path) for name, path in paths.items()}
+        except (OSError, ValueError) as error:
+            result.update(execution_status="interrupted", code="runtime_state_observation_failed")
+            raise RuntimeRetentionError(result) from error
+        if observed != expected:
+            result.update(execution_status="interrupted", code="runtime_state_changed")
+            raise RuntimeRetentionError(result)
+        return observed
+
+    for key, value in changes.items():
+        # Detect edits to either dependency before each replacement. This
+        # does not claim atomicity against an uncooperative external editor.
+        expected = {name: encoded[name] if name in result["applied_files"] else old for name, old in raw.items()}
+        verify_current(expected)
+        try:
+            atomic_write_json(paths[key], value)
+        except OSError as error:
             try:
-                atomic_write_json(paths[key], value)
-            except OSError as error:
-                try:
-                    observed = _bytes(paths[key])
-                    if observed == encoded[key]:
-                        result["applied_files"].append(key)
-                    elif observed != expected[key]:
-                        result.setdefault("uncertain_files", []).append(key)
-                except (OSError, ValueError):
+                observed = _bytes(paths[key])
+                if observed == encoded[key]:
+                    result["applied_files"].append(key)
+                elif observed != expected[key]:
                     result.setdefault("uncertain_files", []).append(key)
-                result.update(execution_status="interrupted", code="runtime_state_write_failed")
-                raise RuntimeRetentionError(result) from error
-            result["applied_files"].append(key)
-        # A final read is evidence, not just a new revision token: compare it
-        # with the exact intended state, including no-op applies.
-        expected = {name: encoded.get(name, old) for name, old in raw.items()}
-        result["state_revision"] = _plan_revision(verify_current(expected), max_records)
-        return result
+            except (OSError, ValueError):
+                result.setdefault("uncertain_files", []).append(key)
+            result.update(execution_status="interrupted", code="runtime_state_write_failed")
+            raise RuntimeRetentionError(result) from error
+        result["applied_files"].append(key)
+    # A final read is evidence, not just a new revision token: compare it
+    # with the exact intended state, including no-op applies.
+    expected = {name: encoded.get(name, old) for name, old in raw.items()}
+    result["state_revision"] = _plan_revision(verify_current(expected), max_records)
+    return result
+
+
+def maintain_runtime_unlocked(service, processed):
+    """Release proven terminal working slots before a new run is reserved.
+
+    Runs, source receipts, and spent allowances retain exactly the same meaning.
+    Incomplete work is never expired. Read/status and cached replays do not invoke
+    this maintenance. Caller holds the Vault lock and has checked live owners.
+    """
+    run_usage = ledger_usage(processed.get(runs.KEY, {}), compact_version=runs.COMPACT_VERSION)
+    work_usage = ledger_usage(processed.get(commits.KEY, {}), compact_version=commits.COMPACT_VERSION)
+    budget = budgets._read_budget_state_unlocked(service.vault)
+    active = sum(not row.get("retired", False) for row in budget["works"].values())
+    if (run_usage["full"] < runs.MAX_RUNS * 3 // 4
+            and work_usage["full"] < runs.MAX_RUNS * 3 // 4
+            and active < budgets._MAX_WORKS * 3 // 4
+            and sum(len(_dump(processed.get(key, {}))) for key in (runs.KEY, commits.KEY)) < 12 * 1024 * 1024):
+        return False
+    result = _compact_unlocked(service, max_records=MAX_BATCH)
+    return bool(result["applied_files"])

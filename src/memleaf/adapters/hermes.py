@@ -420,6 +420,58 @@ class HermesAdapter:
                 return False
         return True
 
+    def configure_retention_tools(self, detection=None):
+        """Keep one host-bound retention entry, preserving unrelated tool choices."""
+        import fnmatch
+        detection = detection or self.detect()
+        if detection.confidence != "high" or not detection.executable:
+            return False
+        key = "mcp_servers.memleaf.tools"
+        command = [detection.executable, "config", "get", key, "--json"]
+        try:
+            result = run_argv(self.runner, command, env=self.env)
+            if result.returncode == 0:
+                filters = json.loads(result.stdout)
+                if not isinstance(filters, dict):
+                    return False
+            elif "Config key not set: " + key in result.stdout + result.stderr:
+                filters = {}
+            else:
+                return False
+            updated = dict(filters)
+            from ..mcp_server import _TOOLS
+            def patterns(value):
+                if isinstance(value, str):
+                    return [value]
+                if isinstance(value, list) and all(isinstance(x, str) for x in value):
+                    return value
+                raise ValueError("invalid tool filter")
+            if "include" in updated:
+                selected = patterns(updated["include"])
+                managed = updated.pop("memleaf_bound_retention", None)
+                if (isinstance(managed, dict) and set(managed) == {"patterns", "applied"}
+                        and managed["applied"] == selected):
+                    selected = patterns(managed["patterns"])
+                known = [tool["name"] for tool in _TOOLS if tool["name"] != "remember"
+                    and any(fnmatch.fnmatchcase(tool["name"], pattern) for pattern in selected)]
+                # Retain explicit future names and original wildcard intent so
+                # reinstalling a newer declaration set does not freeze it.
+                literal = [name for name in selected if name != "remember" and not any(c in name for c in "*?[")]
+                updated["include"] = list(dict.fromkeys([*known, *literal]))
+                updated["memleaf_bound_retention"] = {"patterns": selected, "applied": updated["include"]}
+            else:
+                updated["exclude"] = list(dict.fromkeys([*patterns(updated.get("exclude", [])), "remember"]))
+            if updated == filters:
+                return True
+            written = run_argv(self.runner, [detection.executable, "config", "set", key,
+                json.dumps(updated, ensure_ascii=False)], env=self.env)
+            if written.returncode != 0:
+                return False
+            confirmed = run_argv(self.runner, command, env=self.env)
+            return confirmed.returncode == 0 and json.loads(confirmed.stdout) == updated
+        except (OSError, ValueError, TypeError):
+            return False
+
     def test_mcp(
         self,
         detection: Detection | None = None,

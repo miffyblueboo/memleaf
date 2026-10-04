@@ -9,6 +9,16 @@ Apply only to a compatible checkout after `git apply --check`. Future Hermes
 updates may require rebasing the patch. Restart a host to load changed Python
 code; identical on-disk files do not prove a running process loaded them.
 
+## Current retention integration
+
+The patch below documents the trusted external-dispatch extension. Deployed
+Hermes versions may not invoke that optional hook. Memleaf 0.2.86 therefore uses
+its native `memleaf_remember` tool for explicit retention: it binds and queues
+an intent, then retains original captured user events when the turn completes.
+The installer excludes standalone MCP `remember` from Hermes' model tool surface.
+This route does not depend on the optional external-dispatch hook; bare MCP and
+Python clients retain their existing APIs. Restart Hermes after installation.
+
 ## Boundaries
 
 - The host records a stable turn ID and each visible user's durable message UID.

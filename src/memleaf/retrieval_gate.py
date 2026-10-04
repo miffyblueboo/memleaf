@@ -630,8 +630,23 @@ def snapshot_read_context(vault: Vault | Path | str, retrieval_id: str, *,
     with _with_lock(root):
         entry = _entry_for(_read_ledger(_ledger_path(root)), retrieval_id)
         if any(entry.get(key) != value for key, value in (
-                ("source", source), ("session_id", session_id), ("turn_id", turn_id))):
+                ("source", source), ("turn_id", turn_id))):
             raise RetrievalGateError("retrieval_turn_mismatch")
+        if entry.get("session_id") != session_id:
+            # Only a queued capture may freeze reads from its original gate
+            # across an explicit host rotation. Live read/current-turn checks
+            # remain exact; no token is rebound and no allowance is created.
+            from .host_turn_identity import continuation_path
+            from .process_common import _read_processed
+            from .recording_policy import recording_allowed
+            from .index import turn_key
+            with root.lock():
+                processed = _read_processed(root.processed_state_path)
+                path = (continuation_path(processed, source, session_id, entry.get("session_id"))
+                        if source == "hermes" else None)
+                if path is None or any(not recording_allowed(processed, source, identity, turn_key(turn_id))
+                                       for identity in path):
+                    raise RetrievalGateError("retrieval_turn_mismatch")
         identities = list(dict.fromkeys(x for x in entry.get("read_ids", []) if isinstance(x, str)))
         return {"retrieval_id": retrieval_id, "turn_id": turn_id,
                 "memory_ids": identities[:20], "overflow": len(identities) > 20}

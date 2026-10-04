@@ -66,6 +66,9 @@ def load_work(processed: dict[str, Any], work_id: str) -> dict[str, Any] | None:
     kind = work.get("request_kind", "automatic")
     if not isinstance(kind, str) or kind not in {"automatic", "explicit_remember"} or (kind == "explicit_remember") != bool(selection):
         raise ValueError("invalid_incremental_intent")
+    from .host_retention import validate_origin
+    validate_origin(work.get("host_retention_origin"), source=work["source"], turn_key=work["turn_key"],
+                    intent_id=selection["intent_id"] if selection else None)
     if "recovery_parent" in work and (not isinstance(work["recovery_parent"], str)
             or not work["recovery_parent"].startswith("inc-") or len(work["recovery_parent"]) != 68
             or work["recovery_parent"] == work_id):

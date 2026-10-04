@@ -4,10 +4,10 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **版本：0.2.85。**
+> **版本：0.2.86。**
 > 自动提炼和复核共用同一条“未来记忆价值”标准：模型综合未来复用、信息增量、再次读取时的直接可用性和忘记成本，只保留对未来理解、判断或行动有实质影响的最小核心；没有明确价值的信息不提炼，不按具体业务场景硬编码排除。
 > 提炼先比较旧事项中的编号、目标、进展、责任和期限；补全未知信息也应维护原事项，另建独立待办不能替代项目事实更新。Core 不按标题强行合并。
-> 新请求使用 `field-reviewed-v1`：CREATE/UPDATE 显式判断结构化期限；未知执行人填 `null`，新增或变更非空负责人必须引用来源原文。Core 校验字段和来源，模型判断业务含义；非法行进入现有 partial 处理。来源时间用于解析相对日期，不补造事实日期。
+> 新请求兼容等价的字段表示；未知执行人保持 `null`，新增或变更负责人、等待方和期限需要真实来源。行动及相关字段经过有界语义复核，提炼与复核共用每份工作的最多两次模型请求额度；复核失败不写入。来源时间用于解析相对日期，不补造事实日期。
 > 待办 `due_date` 只表示待办动作本身明确声明的截止日；属于待办主题或预期结果的日期不会被误作截止日。项目归属由模型按语义判断，不要求项目名在证据里逐字出现。复核阶段会保留首轮已选定的更新目标，避免“状态变更”被降级成新增记忆。Markdown 仍是唯一事实源。
 > **当前版本支持 Hermes 和 Codex。** Antigravity（反重力）不检测、不安装、不配置。
 
@@ -147,11 +147,13 @@ python -m pip install -U memleaf && python -m memleaf install
 3. 发现并保存可用的聊天模型路由；Hermes CLI 返回的脱敏凭证不会被当成真实 API key，而会继续尝试环境变量和 Hermes `.env`；已有有效 memleaf 路由会保留；
 4. 激活 `memory.provider=memleaf`；
 5. 通过 Hermes 官方 CLI 配置 memleaf MCP；
-6. 配置 MCP lazy/idle 生命周期；
+6. 配置 MCP lazy/idle 生命周期，以及绑定真实用户消息的 Hermes 原生保存工具；
 7. 验证 MCP Server 能发现当前版本声明的全部工具；
 8. 写入本地 Agent 状态索引。
 
 完成后重启 Hermes。
+
+Hermes 显式保存使用原生 `memleaf_remember`：先绑定本轮并排队，轮次完成后再以真实用户消息提炼，排队不表示已保存。安装器会在 Hermes 中屏蔽独立 MCP `remember`，保留其他工具选择；Core/Python API 和其他客户端的 `remember` 继续可用。仅升级 pip 包不足以更新 Provider 和这项工具配置。
 
 如果没有检测到 Hermes、无法取得完整模型路由、Provider 激活失败或 MCP 工具发现验证失败，安装会明确返回失败，不会把未完成的接入报告为成功。
 
@@ -339,6 +341,8 @@ python -m memleaf.mcp_server --vault /path/to/your/vault \
 ## 模型路由
 
 捕获、索引、目录检索和读取可离线运行；`process()`、`remember()` 和 `compact()` 需要可用的模型能力。
+
+包含行动或责任、期限变更的增量候选通常会追加一次语义复核；每份增量工作最多两次请求，格式修复也计入同一额度。
 
 `llm.mode` 支持：
 

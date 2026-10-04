@@ -84,8 +84,8 @@ def process_incremental(service: Any, *, source: str, session_id: str, turn_id: 
         if run is not None and run["status"] == "retryable" and not recover:
             return _receipt(public_result(run))
         stored_commit = run is not None and run["commit_work_id"] in processed.get("incremental_commits", {})
-        needs_model = run is None or (run["status"] not in TERMINAL | {"response_ready", "committing"}
-                                    and not stored_commit)
+        needs_model = run is None or (not stored_commit and run["status"] not in TERMINAL
+            and (run["status"] not in {"response_ready", "committing"} or run.get("semantic_review_required", False)))
     backend = _resolve(service, model, router) if needs_model else None
     if run is not None:
         result = resume_incremental_run(service, run["run_id"], backend=backend)

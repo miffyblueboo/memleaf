@@ -155,6 +155,10 @@ def recover_incremental_partial(service: Any, run_id: str, *, mode: str = "repla
                        commit_work_id="inc-" + digest([run["source"], run["session_id"], run["turn_key"], commit_intent]),
                        request=request, request_digest=digest(request), snapshot_id=snapshot.snapshot_id,
                        source_window=window, status="response_ready" if response is not None else "ready", code=None)
+            if mode == "replan":
+                run.pop("semantic_stage", None)
+                run.pop("semantic_unverified_fields", None)
+                run["semantic_review_required"] = False
             if response is not None:
                 run["response"] = response
             else:

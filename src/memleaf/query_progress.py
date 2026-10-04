@@ -122,7 +122,9 @@ def observe_progress(vault) -> dict:
         changed = before != _control_stamp(vault.processed_state_path) or job_before != _control_stamp(jobs_path)
         explicit_after = explicit_mutation_inventory(vault)
         changed = changed or explicit_before != explicit_after
-        pending_explicit = explicit_after["retractions"] + explicit_after["explicit_updates"]
+        from .host_retention import pending_intents
+        intents = pending_intents(state)
+        pending_explicit = explicit_after["retractions"] + explicit_after["explicit_updates"] + len(intents)
         pending_commits += pending_explicit
         unresolved = unresolved_runs + len(state.get("pending_turn_plans", {}))
         status = "unknown" if unknown or changed else "pending" if (

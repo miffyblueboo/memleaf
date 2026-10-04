@@ -411,7 +411,9 @@ class MemoryWriter:
     ) -> str:
         history_id = self._history_id(old)
         extra = dict(old.extra)
-        history_sources, source_metadata = merge_sources([], old.sources, extra=extra)
+        # Archive an existing provenance state, without counting its retained
+        # sources as new observations or changing a previously bounded digest.
+        history_sources, source_metadata = merge_sources(old.sources, [], extra=extra)
         extra.update(source_metadata)
         extra.update(
             {
@@ -452,7 +454,15 @@ class MemoryWriter:
             except (OSError, UnicodeError, ValueError) as error:
                 raise ModelOutputError("existing history version is invalid") from error
             if not self._same_content(current, historical, ignore_archived_at=True):
-                raise ModelOutputError("history version collision")
+                # Older writers recounted retained sources during archiving.
+                # A crash may leave that exact archive while the head is still
+                # old. Accept only its reproducible legacy representation;
+                # never rewrite history or ignore arbitrary provenance changes.
+                legacy_sources, legacy_metadata = merge_sources([], old.sources, extra=old.extra)
+                legacy = Memory.from_mapping({**historical.to_dict(), **legacy_metadata,
+                                              "sources": legacy_sources})
+                if not self._same_content(current, legacy, ignore_archived_at=True):
+                    raise ModelOutputError("history version collision")
         else:
             atomic_write_text(path, historical.to_markdown())
         return history_id

@@ -196,7 +196,7 @@ def plan_suite(suite: dict, *, repeats: int = 5) -> dict:
     turns = sum(len(c["turns"]) for c in suite["cases"])
     return {"version": VERSION, "suite_id": suite["suite_id"], "suite_sha256": _hash(_canonical(suite)),
             "cases": len(suite["cases"]), "turns_per_repeat": turns, "repeats": repeats,
-            "normal_request_upper_bound": turns * repeats,
+            "normal_request_upper_bound": turns * repeats * 2,
             "recovery_request_upper_bound": turns * repeats * 2,
             "model_calls": 0, "mode": "plan", "semantic_status": "not_run",
             "switch_authorized": False, "prompt_sha256": _hash(INCREMENTAL_SYSTEM.encode("utf-8")),

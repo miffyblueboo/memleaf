@@ -42,7 +42,8 @@ def restore_snapshot(state: Any) -> PlanningSnapshot:
 
 
 def seed(snapshot: PlanningSnapshot, response: str) -> dict[str, Any]:
-    rows = parse_strict_json(response)["items"]
+    from .incremental_semantics import envelope
+    rows = envelope(parse_strict_json(response))["items"]
     return {"version": 1, "snapshot": snapshot.state(), "snapshot_id": snapshot.snapshot_id, "rows": rows}
 
 

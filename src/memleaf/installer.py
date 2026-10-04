@@ -1227,6 +1227,9 @@ def install_hermes(
                         vault.root,
                     ),
                 )
+            if not adapter.configure_retention_tools(detection):
+                raise _HermesInstallFailure(stage="retention_tools",
+                    reason="Hermes bound retention tools could not be configured", mcp=configured.to_dict())
             expected_tools = expected_mcp_tool_count()
             if not adapter.test_mcp(detection, expected_tools=expected_tools):
                 raise _HermesInstallFailure(

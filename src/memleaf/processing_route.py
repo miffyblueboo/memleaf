@@ -151,6 +151,7 @@ def _row(turn, result):
             "turn_index": turn.turn_index, "run_id": result.get("run_id"),
             "work_id": result.get("commit_work_id"), "execution_status": result["execution_status"],
             "code": result.get("code"), "memory_ids": ids,
+            "unverified_fields": result.get("unverified_fields", []),
             **({"http_status": result["http_status"]} if "http_status" in result else {}),
             "model_calls": result.get("model_calls_this_invocation", 0),
             "reservations": result.get("reserved_requests", 0),
@@ -213,12 +214,22 @@ def process_inbox(service: Any, *, source: str | None = None, session_id: str | 
             rows.append(_row(turn, {**public_result(run), "execution_status": "retryable", "code": "explicit_recovery_required"}))
             continue
         attempted += 1
+        retained = None
+        retention_before = {}
+        for identity in state.get(COMMIT_KEY, {}):
+            work = load_work(state, identity)
+            if (work["source"], work["session_id"], work["turn_key"]) == (turn.source, turn.session_id, turn.turn_key):
+                retention_before.update(_applied({"commit": commit_result(work)}))
         before = _applied({"commit": commit_result(saved_work)}) if saved_work else (_applied(public_result(run)) if run else {})
         try:
             if service.vault.config().get("process", {}).get("automatic_pipeline", "incremental") != initial_config:
                 rows.append(_row(turn, {"execution_status": "blocked", "code": "processing_pipeline_changed"}))
                 break
-            if run is not None:
+            from .host_retention import complete_for_captured_turn
+            retained = complete_for_captured_turn(service, turn, model=model, router=router)
+            if retained is not None and retained["execution_status"] != "completed":
+                result = retained
+            elif run is not None:
                 from .incremental_execution import resume_incremental_run
                 # A pre-existing frozen commit needs no model even if its run
                 # receipt was not yet changed to response_ready.
@@ -251,7 +262,14 @@ def process_inbox(service: Any, *, source: str | None = None, session_id: str | 
                     result = {**result, "commit": commit_result(observed_work)}
             except (OSError, ValueError):
                 result = {**result, "execution_status": "recovery_required", "code": "commit_state_unavailable"}
-        rows.append(_row(turn, result))
+        row = _row(turn, result)
+        if retained is not None and retained["execution_status"] == "completed":
+            row["explicit_retention"] = _row(turn, retained)
+            row["model_calls"] += retained.get("model_calls_this_invocation", 0)
+            row["memory_ids"] = sorted(set(row["memory_ids"] + row["explicit_retention"]["memory_ids"]))
+        if retained is not None:
+            newly_applied.update({op: mid for op, mid in _applied(retained).items() if op not in retention_before})
+        rows.append(row)
         newly_applied.update({op: mid for op, mid in _applied(result).items() if op not in before})
         if result.get("code") in {"processing_busy", "incremental_model_busy", "legacy_processing_busy", "model_unavailable", "model_auth_failed"}:
             break

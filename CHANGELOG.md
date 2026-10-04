@@ -4,6 +4,42 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.86 — 2026-10-04
+
+### Source-bound Hermes retention and general extraction compatibility
+
+- Queue Hermes explicit retention against a stable host turn, then use the
+  actual captured user messages, IDs, timestamps and order. Register the native
+  `memleaf_remember` tool before Provider initialization and configure Hermes to
+  exclude the unbound standalone MCP `remember` tool without changing the public
+  MCP tool list. Queued retention is not reported as a completed save.
+- Preserve bound intent identity across a unique declared compression lineage.
+  Atomically admit one run per intent and check recording authorization across
+  the whole lineage before model dispatch, commit and frozen-work recovery.
+  Unrelated sessions, stale live tokens and ambiguous lineage remain rejected.
+- Normalize equivalent flat/nested field representations with the same compiler
+  and review rules; reject conflicts, retain unknown fields as unknown, and store
+  retraction explanations separately from the empty retracted body.
+- Add a bounded semantic veto for proposed actions, responsibility and deadlines.
+  It can only reject unsupported proposals or remove unverified fields, never
+  invent facts or authorization. Extraction and verification share the existing
+  two-request limit; malformed verification blocks writes.
+- Rank existing comparison candidates using generic normalized terms and their
+  rarity. Keep scope, revision and candidate bounds; explicit write receipts
+  prioritize comparison without skipping independent new information or forcing
+  similar-title merges.
+- Maintain proven completed runtime records before admitting new work, using
+  existing lossless compaction under the writer lock. Preserve unresolved runs
+  and spent allowances. Return specific capacity errors and explicit partial or
+  stale-query guidance instead of implying all work completed.
+- Fix history source statistics double counting while retaining exact legacy
+  recovery compatibility. No historical memory or failed-run migration occurs.
+- Validation: 587 affected checks, 32 checks in the actual Hermes interpreter,
+  64 isolated real-model turns and 58 developer semantic checks passed. Native
+  Hermes MemoryManager/stdio MCP tests covered source times, compression,
+  cross-midnight updates and repeated callbacks. Full Desktop acceptance still
+  requires installation and a Hermes restart.
+
 ## 0.2.85 — 2026-10-03
 
 ### Incremental field protocol

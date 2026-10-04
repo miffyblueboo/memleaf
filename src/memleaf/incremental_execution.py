@@ -1,6 +1,7 @@
 """Opt-in, one-plus-one model dispatch on the shared incremental commit bridge.
 
-Whole-response retry and explicit partial recovery share the same allowance.
+Whole-response retry, semantic verification and explicit partial recovery
+share the same allowance.
 Only partial recovery with actual changed context can replan unresolved sources;
 accepted decisions are immutable. No legacy planner fallback exists.
 """
@@ -47,7 +48,8 @@ def _protocol_digest():
     A pre-commit response from an older prompt/protocol must never be silently
     reinterpreted after an upgrade.
     """
-    return digest({"wire": PROTOCOL_VERSION, "semantic": SEMANTIC_PROTOCOL, "system": INCREMENTAL_SYSTEM})
+    from .incremental_semantics import REVIEW_SYSTEM
+    return digest({"wire": PROTOCOL_VERSION, "semantic": SEMANTIC_PROTOCOL, "system": INCREMENTAL_SYSTEM, "review": REVIEW_SYSTEM})
 
 
 class IncrementalRunError(RuntimeError):
@@ -70,6 +72,8 @@ def _guard_legacy(service, processed):
 
 
 def _check_sources(service, processed, run):
+    from .host_retention import check_run_authority
+    check_run_authority(processed, run)
     if run.get("partial_used"):
         from .incremental_partial import recheck_snapshot
         return recheck_snapshot(service, processed, run)
@@ -130,6 +134,12 @@ def run_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
             if not equivalent_arguments(args, run["arguments"]):
                 raise ValueError("incremental_run_arguments_changed")
         else:
+            from .host_retention import admit_unlocked
+            retention_origin = (admit_unlocked(processed, source=source, session_id=session_id,
+                turn_key=turn.turn_key, intent_id=selection["intent_id"], run_id=identity) if selection else None)
+            from .runtime_retention import maintain_runtime_unlocked
+            if maintain_runtime_unlocked(service, processed):
+                processed = _read(service)
             if not recording_allowed(processed, source, session_id, turn.turn_key):
                 raise ValueError("source_recording_revoked")
             if turn_identity_key(source, session_id, turn.turn_key) in processed.get("pending_turn_plans", {}):
@@ -182,6 +192,8 @@ def run_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
             if selection:
                 run.update(request_kind="explicit_remember", retention_request=retention_request,
                            authorization_intent=selection["intent_id"])
+                if retention_origin is not None:
+                    run["host_retention_origin"] = retention_origin
             save_run(service, processed, run)
     return resume_incremental_run(service, run["run_id"], backend=backend)
 
@@ -215,7 +227,23 @@ def _drive(service, run_id, token, backend, calls):
                     return public_result(run, calls=calls[0])
                 if run["status"] in {"response_ready", "committing"}:
                     try:
-                        compile_incremental(run["response"], snapshot)
+                        compiled = compile_incremental(run["response"], snapshot)
+                        from .incremental_semantics import needs_review, review_request
+                        if (not (run.get("partial_used") and run.get("partial_recovery", {}).get("mode") == "repair")
+                                and run.get("semantic_stage") != "reviewed"
+                                and needs_review(compiled, run["response"])):
+                            if run["reserved_requests"] >= 2:
+                                _finish(service, processed, run, "blocked", "semantic_review_budget_exhausted")
+                                return public_result(run, calls=calls[0])
+                            run["request"] = review_request(run["request"], run["response"], snapshot)
+                            run["request_digest"] = digest(run["request"])
+                            if sum(len(v.encode("utf-8")) for v in run["request"].values()) > MAX_BYTES:
+                                _finish(service, processed, run, "blocked", "blocked_context")
+                                return public_result(run, calls=calls[0])
+                            run.update(status="ready", semantic_stage="review", semantic_review_required=True)
+                            run.pop("response", None)
+                            save_run(service, processed, run)
+                            continue
                         if not run.get("partial_used"):
                             from .incremental_recovery import seed
                             run["recovery_seed"] = seed(snapshot, run["response"])
@@ -292,7 +320,7 @@ def _drive(service, run_id, token, backend, calls):
             run["status"] = "dispatching"
             save_run(service, processed, run)
             request = dict(run["request"])
-            if ordinal > 1 and not run.get("partial_used"):
+            if ordinal > 1 and not run.get("partial_used") and run.get("semantic_stage") != "review":
                 request["system"] += RETRY_SYSTEM
         error_code = None
         http_status = None
@@ -326,6 +354,23 @@ def _drive(service, run_id, token, backend, calls):
                 continue
             run["attempts"][-1]["outcome"] = "response"
             run.update(status="response_ready", response=response)
+            if run.get("semantic_stage") == "review":
+                try:
+                    from .incremental_semantics import apply_review
+                    review_input = json.loads(run["request"]["user"])
+                    run["semantic_unverified_fields"] = review_input.get("unverified_fields", [])
+                    run["response"] = apply_review(run["request"], response)
+                except ValueError:
+                    run["attempts"][-1]["outcome"] = "invalid_response"
+                    _finish(service, processed, run, "failed", "invalid_semantic_review")
+                    return public_result(run, calls=calls[0])
+                run.update(semantic_stage="reviewed", semantic_review_required=False)
+            elif not run.get("partial_used"):
+                try:
+                    from .incremental_semantics import needs_review
+                    run["semantic_review_required"] = needs_review(compile_incremental(response, snapshot), response)
+                except (ValueError, TypeError):
+                    run["semantic_review_required"] = False
             save_run(service, processed, run)
 
 

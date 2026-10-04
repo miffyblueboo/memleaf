@@ -150,6 +150,8 @@ def _source_valid(service, processed, work):
     if not recording_allowed(processed, work["source"], work["session_id"], work["turn_key"]):
         return False
     try:
+        from .host_retention import check_run_authority
+        check_run_authority(processed, work)
         turn, window = _window(service, work["source"], work["session_id"], work["turn_key"])
         from .incremental_explicit import bindings_current
         if not bindings_current(service, processed, work):
@@ -287,6 +289,8 @@ def _check_run_guard(processed, guard):
     if (run is None or run["status"] in RUN_TERMINAL
             or processed.get(OWNER, {}).get("token") != token):
         raise ValueError("incremental_run_revoked")
+    from .host_retention import check_run_authority
+    check_run_authority(processed, run)
 
 
 def apply_incremental(service: Any, *, response: str, expected_snapshot: str, intent_id: str,
@@ -321,6 +325,7 @@ def apply_incremental(service: Any, *, response: str, expected_snapshot: str, in
         if turn_identity_key(source, session_id, selected.turn_key) in processed.get("pending_turn_plans", {}):
             raise ValueError("legacy_pending_plan")
         recovery_run = None
+        candidate_run = None
         if _run_guard is not None:
             from .incremental_run_state import load_run
             candidate_run = load_run(processed, _run_guard[0])
@@ -328,6 +333,10 @@ def apply_incremental(service: Any, *, response: str, expected_snapshot: str, in
                 if candidate_run["arguments"] != args or candidate_run["commit_intent"] != intent_id:
                     raise ValueError("partial_commit_binding_changed")
                 recovery_run = candidate_run
+        from .host_retention import INTENT_PREFIX
+        if (selection and selection["intent_id"].startswith(INTENT_PREFIX)
+                and (candidate_run is None or candidate_run.get("host_retention_origin") is None)):
+            raise ValueError("host_retention_run_required")
         if recovery_run is not None:
             from .incremental_partial import recheck_snapshot
             snapshot = recheck_snapshot(service, processed, recovery_run)
@@ -372,6 +381,8 @@ def apply_incremental(service: Any, *, response: str, expected_snapshot: str, in
             from .incremental_explicit import freeze_bindings
             work["explicit_write_bindings"] = freeze_bindings(
                 snapshot.state()["explicit_writes"], snapshot.state()["targets"])
+        if candidate_run is not None and candidate_run.get("host_retention_origin") is not None:
+            work["host_retention_origin"] = deepcopy(candidate_run["host_retention_origin"])
         if recovery_run is not None:
             work["recovery_parent"] = parent["work_id"]
         save_work(service, processed, work)

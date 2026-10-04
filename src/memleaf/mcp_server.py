@@ -449,6 +449,11 @@ _INTERNAL_TOOLS: tuple[dict[str, Any], ...] = (
     },
 )
 
+_INTERNAL_TOOLS += ({"name": "remember_turn", "description": "Trusted host retention lifecycle.",
+    "inputSchema": _object_schema({"phase": {"type": "string", "enum": ["queue", "complete"]},
+        "retrieval_id": {"type": "string"}, "source": {"type": "string"},
+        "session_id": {"type": "string"}, "turn_id": {"type": "string"}}, required=["phase"])},)
+
 _TOOL_BY_NAME = {tool["name"]: tool for tool in (*_TOOLS, *_INTERNAL_TOOLS)}
 
 
@@ -591,6 +596,8 @@ def _query_metadata(value: Mapping[str, Any]) -> dict[str, Any]:
                 raise ValueError("invalid pipeline code")
             projection["code"] = pipeline["code"]
         result["pipeline_status"] = projection
+        if pipeline["status"] != "current":
+            result["answer_guidance"] = "These are stored records; pending or unknown processing may leave them behind the latest conversation. Qualify current-state claims and do not treat an old unfinished state as proof that work is still unfinished."
     return result
 
 
@@ -778,6 +785,16 @@ def _tool_result(value: Any, *, is_error: bool = False) -> dict[str, Any]:
     structured = _jsonable(value)
     if not isinstance(structured, dict):
         structured = {"result": structured}
+    status = structured.get("execution_status")
+    if status in {"completed", "completed_with_unresolved", "partial", "blocked", "failed", "retryable", "recovery_required", "cancelled"}:
+        commit = structured.get("commit") or {}
+        unresolved = status != "completed" or commit.get("coverage_status") == "partial"
+        structured["outcome"] = {"complete": not unresolved,
+            "guidance": ("Report only individually committed changes; the whole request is unfinished. Do not claim all changes were saved or all errors were resolved."
+                         if unresolved else "The reported operations completed; this does not establish unreported facts or guarantee semantic quality.")}
+    if structured.get("unverified_fields") and "outcome" in structured:
+        structured["outcome"]["unverified_fields"] = structured["unverified_fields"]
+        structured["outcome"]["guidance"] += " Unverified field proposals were not applied; do not claim those values were confirmed."
     result: dict[str, Any] = {
         "content": [{"type": "text", "text": _json_text(structured)}],
         "structuredContent": structured,
@@ -811,6 +828,11 @@ def _safe_model_diagnostics(error: BaseException, *, default_reason: str | None 
 
 def _tool_error(error: BaseException) -> dict[str, Any]:
     from .incremental_failed_recovery import FailedRecoveryError
+    from .extraction_work_state import ExtractionWorkStateError
+    if isinstance(error, ExtractionWorkStateError) and str(error) in {
+            "extraction request budget state is full", "extraction request budget state exceeds byte bound"}:
+        return _tool_result({"execution_status": "blocked", "retry_available": False,
+            "error": {"code": "extraction_budget_full", "message": "Request allowance ledger is full; unresolved work and spent allowances are retained."}}, is_error=True)
     if isinstance(error, FailedRecoveryError):
         return _tool_result({"status": "error", "error": {"code": error.code, "message": "failed run recovery rejected"}}, is_error=True)
     if isinstance(error, (RetrievalError, RetrievalGateError)):
@@ -867,6 +889,13 @@ def _tool_error(error: BaseException) -> dict[str, Any]:
         payload.update(_safe_model_diagnostics(error, default_reason="schema_violation"))
         return _tool_result({"error": payload}, is_error=True)
     elif isinstance(error, (ValueError, TypeError)):
+        capacity_codes = {"incremental_runs_full", "incremental_ledger_full", "receipt_retention_full",
+                          "extraction_budget_full", "extraction_work_budget_full", "runtime_state_too_large", "host_retention_intents_full"}
+        if str(error) in capacity_codes:
+            return _tool_result({"execution_status": "blocked", "coverage_status": "unknown",
+                "error": {"code": str(error), "message": "Runtime capacity is exhausted; original sources and recovery receipts are retained."},
+                "retry_available": False, "model_calls": 0,
+                "guidance": "Do not retry or rewrite the same request to bypass capacity. Resolve unfinished work or inspect runtime retention."}, is_error=True)
         message = "tool rejected request"
         code = "tool_rejected_request"
     else:
@@ -1149,6 +1178,9 @@ def _invoke_tool(
                 from .process_journal import processing_health
 
                 value = processing_health(service.vault.root)
+        elif name == "remember_turn":
+            from .host_retention import remember_turn
+            value = remember_turn(service, **args)
         elif name == "remember":
             value = service.remember(**args)
         elif name == "update_memory":

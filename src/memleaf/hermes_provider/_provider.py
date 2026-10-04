@@ -1380,6 +1380,7 @@ class MemleafMemoryProvider(MemoryProvider):
             "current turn's retrieval_id exactly as supplied; a missing or mismatched "
             "token is a read failure, never a reason to fall back to a file tool. "
             "Read more only if needed; for ordinary relevance queries, do not read all entries to filter unrelated items. "
+            "When pipeline_status is pending/unknown, memory can lag recent conversation: qualify current-state claims. For partial or completed_with_unresolved writes, report only the individually committed changes, and say which remain unresolved; never claim the entire request succeeded. "
             "When the user asks for current "
             "todos, all unfinished work, urgent work, or work due in a time range, call memleaf MCP "
             "list_todos instead of relevance search; omit scope for a global query, follow every "
@@ -1390,7 +1391,7 @@ class MemleafMemoryProvider(MemoryProvider):
             "turns are durably captured into the local memleaf inbox. Automatic "
             "capture → process runs after your final answer and is authoritative: "
             "a capture only proves that the inbox received the turn. Until a "
-            "successful explicit remember or update tool result is visible, never "
+            "explicit tool result proves execution_status=completed and complete coverage, never "
             "say that the turn was saved to permanent memory, persisted, or "
             "记好了/已落库. For automatic handling, say only that you will process "
             "it through the workflow or that it is recorded in the current "
@@ -1402,7 +1403,8 @@ class MemleafMemoryProvider(MemoryProvider):
             "file writes to simulate success, and do not infer automatic success merely because "
             "active or history files exist. Automatic recall is a directory of "
             "scope identifiers, hierarchy, and aliases only; it never contains "
-            "memory IDs, titles, or bodies. Use deliberate remember/forget tools "
+            "memory IDs, titles, or bodies. For explicit retention use memleaf_remember with the current retrieval_id; it retains verified user messages after the complete turn is captured. Pending means not yet saved. Do not submit assistant-written facts through legacy MCP remember. "
+            "Use deliberate remember/forget tools "
             "only when the user explicitly asks for that operation. Automatic "
             "capture and processing use only visible user and assistant text; "
             "tool calls/results, email or attachment bodies, and other hidden "
@@ -2027,6 +2029,10 @@ class MemleafMemoryProvider(MemoryProvider):
                         retrieval_turn_id=retrieval_turn_id if role == "assistant" else None,
                     ):
                         return
+                if self._gate_enabled:
+                    self._call("remember_turn", {"phase": "complete", "source": "hermes",
+                        "session_id": effective_session, "turn_id": turn_id},
+                        stage="remember_turn", session_id=effective_session, turn_id=turn_id)
                 if not self._auto_process:
                     return
                 if not lineage_ready:
@@ -2072,9 +2078,9 @@ class MemleafMemoryProvider(MemoryProvider):
             bound.update(source="hermes", session_id=session, turn_id=turn_id,
                          intent_id="host-op-" + sha256((turn_id + "/" + tool_call_id + "/" + name).encode()).hexdigest())
             bound.pop("event_id", None)
-            # No source timestamp is assigned to an assistant-written composite
-            # explicit request; only the submitted text itself is its evidence.
-            bound.pop("source_time", None)
+            # New hosts route retention to the source-bound lifecycle tool.
+            # Never authorize the model's rewritten text as user evidence.
+            raise ValueError("memory_host_retention_requires_bound_tool")
         elif name == "scope_catalog":
             bound.update(source="hermes", session_id=session, turn_id=turn_id)
         else:
@@ -2092,10 +2098,25 @@ class MemleafMemoryProvider(MemoryProvider):
         return bound
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        # memleaf-mcp remains configured separately for deliberate search,
-        # remember, and forget operations. The native provider owns automatic
-        # recall/capture only, avoiding duplicate tool names in Hermes.
-        return []
+        # Hermes registers schemas before initialize_all. Execution remains
+        # gated by the initialized host identity and write policy.
+        if not self._write_enabled:
+            return []
+        return [{"name": "memleaf_remember", "description": "Use only for an explicit user request to remember. Bind the actual complete user turn; never submit rewritten facts or scopes. Returns pending until the turn is captured and processed.",
+                 "parameters": {"type": "object", "properties": {"retrieval_id": {"type": "string"}},
+                                "required": ["retrieval_id"], "additionalProperties": False}}]
+
+    def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs: Any) -> str:
+        if (tool_name != "memleaf_remember" or not self._write_enabled or not self._gate_enabled
+                or not isinstance(args, dict) or set(args) != {"retrieval_id"}):
+            return json.dumps({"error": {"code": "invalid_host_retention_request"}})
+        session = self._canonical_session_id(self._session_id)
+        if not isinstance(args["retrieval_id"], str) or args["retrieval_id"] != self._current_gate_id(session):
+            return json.dumps({"error": {"code": "host_retention_turn_mismatch"}, "saved": False})
+        result = self._call("remember_turn", {"phase": "queue", "retrieval_id": args["retrieval_id"]}, stage="remember_turn")
+        if result is _CALL_FAILED:
+            return json.dumps({"error": {"code": "host_retention_not_queued"}, "saved": False})
+        return json.dumps(result, ensure_ascii=False)
 
     def shutdown(self) -> None:
         with self._sync_lock:

@@ -24,7 +24,7 @@ from .turn_plan import revision_digest
 from .validation import ModelOutputError, parse_strict_json
 
 PROTOCOL_VERSION = "incremental-items-v1"
-SEMANTIC_PROTOCOL = "incremental-turn-v12"
+SEMANTIC_PROTOCOL = "incremental-turn-v15"
 EXTRACTION_CONTRACT = "field-reviewed-v1"
 MAX_BYTES = 128 * 1024
 MAX_ITEMS = 64
@@ -124,6 +124,9 @@ def _normalize_model_row(row: Any, state: Mapping[str, Any], *, only_row: bool) 
             normalized.pop(key)
             warnings.append("null_branch_placeholder_normalized")
     if action == "CREATE":
+        if isinstance(normalized.get("memory"), dict) and normalized["memory"].get("deadline", "absent") is None:
+            normalized["memory"].pop("deadline")
+            warnings.append("null_create_deadline_normalized")
         if "memory" in normalized and normalized["memory"] is None:
             normalized.pop("memory")
             warnings.append("null_memory_wrapper_normalized")
@@ -138,6 +141,28 @@ def _normalize_model_row(row: Any, state: Mapping[str, Any], *, only_row: bool) 
             warnings.append("create_memory_wrapper_normalized")
     elif action == "UPDATE" and isinstance(normalized.get("patch"), dict):
         warnings.extend(_normalize_enum_fields(normalized["patch"]))
+    if action in {"CREATE", "UPDATE"}:
+        fields = normalized.get("memory" if action == "CREATE" else "patch")
+        if isinstance(fields, dict):
+            for metadata_key in ("effective", "at", "reopen"):
+                if metadata_key in fields:
+                    supplied = fields.pop(metadata_key)
+                    if metadata_key in normalized and normalized[metadata_key] != supplied:
+                        raise ValueError("conflicting_operation_metadata")
+                    normalized[metadata_key] = supplied
+                    warnings.append("nested_operation_metadata_normalized")
+        if isinstance(fields, dict) and "responsibility_basis" in fields:
+            # A source selection annotates the fields regardless of which
+            # wrapper a model uses. Move only supplied selections; never derive
+            # a responsible person or a quote from the memory's prose.
+            nested = fields.pop("responsibility_basis")
+            offered = normalized.get("responsibility_basis", {})
+            if not isinstance(nested, dict) or not isinstance(offered, dict):
+                raise ValueError("invalid_responsibility_basis")
+            if any(key in offered and offered[key] != value for key, value in nested.items()):
+                raise ValueError("conflicting_responsibility_basis")
+            normalized["responsibility_basis"] = {**offered, **nested}
+            warnings.append("nested_responsibility_basis_normalized")
     return normalized, list(dict.fromkeys(warnings))
 
 
@@ -411,6 +436,7 @@ class PlanningSnapshot:
         projected_evidence = []
         for event in state["evidence"]:
             projection = {key: event[key] for key in ("ref", "use", "role", "text", "source_time", "source_sequence") if key in event}
+            projection["authority"] = ("user_statement" if event["role"] == "user" else "reported_facts_only_no_new_user_obligations")
             hints = calendar_hints(event)
             if hints:
                 projection["calendar_hints"] = hints
@@ -520,6 +546,8 @@ def _review_fields(row: Mapping[str, Any], fields: Mapping[str, Any], state: Map
         if (ref not in refs or not reading_text(text).strip()
                 or reading_text(text) not in reading_text(evidence[ref]["text"])):
             raise ValueError("unproven_responsibility_basis")
+        if key == "assignee" and fields[key] == "user" and evidence[ref]["role"] != "user":
+            raise ValueError("unconfirmed_user_responsibility")
         bases[key] = source_basis(evidence[ref])
     return bases
 
@@ -628,7 +656,7 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
                 _text(fields[key], 256 if key == "title" else 16384,
                       empty=key == "body" and fields.get("validity") == "retracted")
         cited_events = [evidence[ref] for ref in refs]
-        if "body" in fields:
+        if "body" in fields and fields.get("validity") != "retracted":
             normalized_body = remove_source_time_provenance_date(fields["body"], cited_events)
             if normalized_body != fields["body"]:
                 fields["body"] = normalized_body
@@ -726,9 +754,13 @@ def _compile_group(rows: list[dict[str, Any]], state: Mapping[str, Any]) -> dict
         if _order(bases.get("validity", {}), old.get("field_basis", {}).get("validity", {})) != 1:
             raise ValueError("unverified_restore_time")
     if fields.get("validity") == "retracted":
-        if fields.get("body"):
-            raise ValueError("retracted_body_must_be_empty")
+        # Retraction is an explicit lifecycle operation. An explanatory body
+        # belongs to the audit metadata, never to the active assertion. Retain
+        # it after all row/group validation, including conflicting patches.
+        retraction_reason = fields.get("body") or None
         fields["body"] = ""
+    else:
+        retraction_reason = None
     state_change = bool(target and any(
         key in fields and fields[key] != old.get(key)
         for key in ("status", "actionable", "assignee", "waiting_on", "validity", "scopes")
@@ -740,6 +772,10 @@ def _compile_group(rows: list[dict[str, Any]], state: Mapping[str, Any]) -> dict
         if effective["date"] > anchor.date().isoformat():
             raise ValueError("future_state_change")
     memory = deepcopy(old) if target else {"validity": "valid"}
+    if retraction_reason is not None:
+        memory["retraction_reason"] = retraction_reason
+        for row in rows:
+            row.setdefault("warnings", []).append("retraction_explanation_normalized")
     deadline = fields.pop("deadline", None)
     memory.update(fields)
     if target and memory.get("status") != old.get("status"):
@@ -779,6 +815,8 @@ def compile_incremental(raw: str, snapshot: PlanningSnapshot) -> dict[str, Any]:
         value = parse_strict_json(raw)
     except (ModelOutputError, RecursionError) as error:
         raise ValueError("invalid_json") from error
+    from .incremental_semantics import envelope
+    value = envelope(value)
     _keys(value, {"items"}, {"items"}, path="root")
     if not isinstance(value["items"], list) or len(value["items"]) > MAX_ITEMS:
         raise ValueError("invalid_items")

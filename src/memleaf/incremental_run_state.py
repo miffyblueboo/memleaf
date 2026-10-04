@@ -75,6 +75,10 @@ def load_run(processed: dict[str, Any], run_id: str) -> dict[str, Any] | None:
             validate_request(run.get("retention_request"), selection)
         elif "retention_request" in run:
             raise ValueError("terminal_retention_payload")
+    origin = run.get("host_retention_origin")
+    if origin is not None:
+        from .host_retention import validate_origin
+        validate_origin(origin, source=run["source"], turn_key=run["turn_key"], intent_id=run.get("authorization_intent"))
     ordinals = [a.get("ordinal") for a in run["attempts"] if isinstance(a, dict)]
     if (any(type(v) is not int for v in ordinals) or ordinals != sorted(set(ordinals))
             or type(run.get("budget_finalized", False)) is not bool):
@@ -107,6 +111,14 @@ def load_run(processed: dict[str, Any], run_id: str) -> dict[str, Any] | None:
     if "protocol_digest" in run and (not isinstance(run["protocol_digest"], str)
             or re.fullmatch(r"[0-9a-f]{64}", run["protocol_digest"]) is None):
         raise ValueError("invalid_incremental_protocol_digest")
+    stage = run.get("semantic_stage")
+    if (stage is not None and (not isinstance(stage, str) or stage not in {"review", "reviewed"})
+            or type(run.get("semantic_review_required", False)) is not bool):
+        raise ValueError("invalid_semantic_review_state")
+    unverified = run.get("semantic_unverified_fields", [])
+    if (not isinstance(unverified, list) or len(unverified) > 64
+            or any(not isinstance(row, list) or any(name not in ("assignee", "waiting_on") for name in row) for row in unverified)):
+        raise ValueError("invalid_semantic_review_state")
     if "response" in run and not isinstance(run["response"], str):
         raise ValueError("invalid_incremental_response")
     from .incremental_recovery import validate_recovery
@@ -211,6 +223,7 @@ def public_result(run: dict[str, Any], *, calls: int = 0) -> dict[str, Any]:
         "commit": run.get("commit_result"),
         "partial_recovery_available": run["status"] == "completed_with_unresolved" and "partial_basis" in run and not run.get("partial_used"),
         "partial_recovery_mode": run.get("partial_recovery", {}).get("mode"),
+        "unverified_fields": sorted({name for row in run.get("semantic_unverified_fields", []) for name in row}),
         "native_comparison": run.get("native_comparison", {"status": "not_evaluated"}),
         "limitations": ["opt_in_captured_turn_only", "native_conflict_coordination_not_automatic",
                         "partial_recovery_requires_explicit_request", "semantic_quality_not_verified"],

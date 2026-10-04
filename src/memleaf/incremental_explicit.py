@@ -12,6 +12,7 @@ from typing import Any, Mapping
 from .capture import _payload_digest
 from .explicit_text_source import validate_origin
 from .index import extract_event_metadata
+from .incremental_journal import digest
 from .recording_policy import recording_allowed
 
 
@@ -74,7 +75,15 @@ def matching_writes(service: Any, processed: Mapping[str, Any], work: Mapping[st
         raise ValueError("invalid_capture_receipts")
     for evidence in work["evidence"]:
         origin = validate_origin(evidence.get("explicit_input"))
-        if origin is None or origin["turn_key"] != turn_key:
+        captured = origin is None
+        if captured:
+            selection = work.get("binding", {}).get("arguments", {}).get("selection")
+            if (not selection or work["session_id"] != session_id or work["turn_key"] != turn_key
+                    or evidence.get("use") != "new" or evidence["event_key"] not in selection["source_refs"]):
+                continue
+            origin = {"version": 2, "session_id": session_id, "turn_key": turn_key,
+                      "selection_hash": digest(selection)}
+        if origin["turn_key"] != turn_key:
             continue
         if origin["session_id"] != session_id and not _verified_continuation(processed,
                 source=source, session_id=session_id, origin_session_id=origin["session_id"], turn_key=turn_key):
@@ -82,7 +91,7 @@ def matching_writes(service: Any, processed: Mapping[str, Any], work: Mapping[st
         if not recording_allowed(processed, source, origin["session_id"], turn_key):
             continue
         receipt = events.get(evidence["event_key"])
-        if (not isinstance(receipt, dict) or receipt.get("explicit_input") != origin
+        if (not isinstance(receipt, dict) or (receipt.get("explicit_input") is not None if captured else receipt.get("explicit_input") != origin)
                 or receipt.get("source") != source or receipt.get("session_id") != work["session_id"]
                 or receipt.get("turn_key") != work["turn_key"] or receipt.get("role") != "user"
                 or not isinstance(receipt.get("payload_digest"), str)):
@@ -146,7 +155,15 @@ def validate_links(value: Any, targets: Mapping[str, Any]) -> list[dict[str, Any
                     or any(not isinstance(item[k], str) or not re.fullmatch(r"[0-9a-f]{64}", item[k])
                            for k in ("event_key", "payload_digest"))):
                 raise ValueError("invalid_explicit_write_links")
-            if validate_origin(item["origin"]) is None:
+            origin = item["origin"]
+            if isinstance(origin, dict) and origin.get("version") == 2:
+                from .vault import safe_component
+                if (set(origin) != {"version", "session_id", "turn_key", "selection_hash"}
+                        or any(not isinstance(origin[k], str) or not re.fullmatch(r"[0-9a-f]{64}", origin[k])
+                               for k in ("turn_key", "selection_hash"))):
+                    raise ValueError("invalid_explicit_write_links")
+                safe_component(origin["session_id"], "session id")
+            elif validate_origin(origin) is None:
                 raise ValueError("invalid_explicit_write_links")
             if "text" in item:
                 if not isinstance(item["text"], str) or not item["text"].strip() or "\0" in item["text"]:
