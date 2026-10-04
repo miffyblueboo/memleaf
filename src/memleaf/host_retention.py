@@ -138,7 +138,10 @@ def remember_turn(service, *, phase, retrieval_id=None, source=None, session_id=
         turn, _ = _window(service, source, session_id, turn_key(turn_id))
         users = [event for event in turn.events if event.role == "user"]
         request = "\n\n".join(event.content for event in users)
-        refs = [event.event_key for event in users]
+        # One host completion evaluates the entire captured turn. The actual
+        # user request still bounds explicit retention; the assistant remains
+        # a visible source, never authority for new user obligations.
+        refs = [event.event_key for event in turn.events]
         selection, request = bind_selection(intent, refs, request)
         run = load_run(processed, explicit_run_id(source, session_id, selection))
     if run is not None and run["status"] in {"completed", "completed_with_unresolved", "blocked", "failed", "cancelled"}:
@@ -165,3 +168,16 @@ def complete_for_captured_turn(service, turn, *, model=None, router=None):
     _, row = bound
     return remember_turn(service, phase="complete", source=turn.source, session_id=turn.session_id,
                          turn_id=row["turn_id"], model=model, router=router)
+
+
+def covers_complete_turn(service, turn, result):
+    """Only a verified immutable full-source commit may replace automatic work."""
+    from .incremental_journal import load_work
+    from .turn_plan import input_digest
+    with service.vault.lock():
+        processed = _read_processed(service.vault.processed_state_path)
+        work = load_work(processed, result.get('commit_work_id', ''))
+        if (work is None or not work.get('host_retention_origin') or not work['receipt_settled']
+                or work['source_digest'] != input_digest(turn)):
+            return False
+        return {e['event_key'] for e in work['evidence'] if e['use'] == 'new'} == set(turn.event_keys)

@@ -1403,7 +1403,7 @@ class MemleafMemoryProvider(MemoryProvider):
             "file writes to simulate success, and do not infer automatic success merely because "
             "active or history files exist. Automatic recall is a directory of "
             "scope identifiers, hierarchy, and aliases only; it never contains "
-            "memory IDs, titles, or bodies. For explicit retention use memleaf_remember with the current retrieval_id; it retains verified user messages after the complete turn is captured. Pending means not yet saved. Do not submit assistant-written facts through legacy MCP remember. "
+            "memory IDs, titles, or bodies. For explicit retention or corrections, task completion/cancellation/reopening, and withdrawing a fact/preference, use memleaf_remember with the current retrieval_id. It processes the actual complete turn and preserves audit history. Do not perform a conversational lifecycle edit through an unbound MCP update or infer message time from a deadline. Pending means not yet saved. Do not submit assistant-written facts through legacy MCP remember. "
             "Use deliberate remember/forget tools "
             "only when the user explicitly asks for that operation. Automatic "
             "capture and processing use only visible user and assistant text; "
@@ -2060,7 +2060,7 @@ class MemleafMemoryProvider(MemoryProvider):
         if not tool_name.startswith(prefix):
             return None
         name = tool_name[len(prefix):]
-        if name not in {"search", "read", "list_todos", "scope_catalog", "remember"}:
+        if name not in {"search", "read", "list_todos", "scope_catalog", "remember", "update_memory"}:
             return None
         turn_id = _host_turn_id(turn_context)
         session = turn_context.get("session_id") if isinstance(turn_context, Mapping) else None
@@ -2102,7 +2102,7 @@ class MemleafMemoryProvider(MemoryProvider):
         # gated by the initialized host identity and write policy.
         if not self._write_enabled:
             return []
-        return [{"name": "memleaf_remember", "description": "Use only for an explicit user request to remember. Bind the actual complete user turn; never submit rewritten facts or scopes. Returns pending until the turn is captured and processed.",
+        return [{"name": "memleaf_remember", "description": "Use for an explicit user request to remember or maintain existing memory: corrections, task completion/cancellation/reopening, or withdrawal of a fact/preference. Bind the actual complete user turn; never submit rewritten facts, dates or scopes. Returns pending until the turn is captured and processed.",
                  "parameters": {"type": "object", "properties": {"retrieval_id": {"type": "string"}},
                                 "required": ["retrieval_id"], "additionalProperties": False}}]
 

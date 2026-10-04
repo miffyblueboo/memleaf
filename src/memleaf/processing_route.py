@@ -154,6 +154,7 @@ def _row(turn, result):
             "unverified_fields": result.get("unverified_fields", []),
             **({"http_status": result["http_status"]} if "http_status" in result else {}),
             "model_calls": result.get("model_calls_this_invocation", 0),
+            **({"model_metrics": result["model_metrics"]} if result.get("model_metrics") else {}),
             "reservations": result.get("reserved_requests", 0),
             "unresolved_evidence_count": len(unresolved_refs),
             "unlocated_issue_count": sum(not issue.get("evidence") for issue in commit.get("issues", [])),
@@ -215,6 +216,7 @@ def process_inbox(service: Any, *, source: str | None = None, session_id: str | 
             continue
         attempted += 1
         retained = None
+        reused_retention = False
         retention_before = {}
         for identity in state.get(COMMIT_KEY, {}):
             work = load_work(state, identity)
@@ -225,10 +227,13 @@ def process_inbox(service: Any, *, source: str | None = None, session_id: str | 
             if service.vault.config().get("process", {}).get("automatic_pipeline", "incremental") != initial_config:
                 rows.append(_row(turn, {"execution_status": "blocked", "code": "processing_pipeline_changed"}))
                 break
-            from .host_retention import complete_for_captured_turn
+            from .host_retention import complete_for_captured_turn, covers_complete_turn
             retained = complete_for_captured_turn(service, turn, model=model, router=router)
             if retained is not None and retained["execution_status"] != "completed":
                 result = retained
+            elif retained is not None and covers_complete_turn(service, turn, retained):
+                result = retained
+                reused_retention = True
             elif run is not None:
                 from .incremental_execution import resume_incremental_run
                 # A pre-existing frozen commit needs no model even if its run
@@ -265,7 +270,12 @@ def process_inbox(service: Any, *, source: str | None = None, session_id: str | 
         row = _row(turn, result)
         if retained is not None and retained["execution_status"] == "completed":
             row["explicit_retention"] = _row(turn, retained)
-            row["model_calls"] += retained.get("model_calls_this_invocation", 0)
+            if not reused_retention:
+                row["model_calls"] += retained.get("model_calls_this_invocation", 0)
+                from .process_jobs import _aggregate_model_metrics
+                combined = _aggregate_model_metrics([value for value in (row.get("model_metrics"), retained.get("model_metrics")) if value])
+                if combined:
+                    row["model_metrics"] = combined
             row["memory_ids"] = sorted(set(row["memory_ids"] + row["explicit_retention"]["memory_ids"]))
         if retained is not None:
             newly_applied.update({op: mid for op, mid in _applied(retained).items() if op not in retention_before})
@@ -309,11 +319,17 @@ def process_inbox(service: Any, *, source: str | None = None, session_id: str | 
     return result
 
 
+def _model_metrics(rows):
+    from .process_jobs import _aggregate_model_metrics
+    return _aggregate_model_metrics([r['model_metrics'] for r in rows if r.get('model_metrics')])
+
+
 def _summary(rows, outstanding, pending_count, applied, attempted):
     all_rows = rows + outstanding
     errors = [r for r in all_rows if r["execution_status"] != "completed"]
     incomplete = bool(errors or pending_count)
     statuses = Counter(r["execution_status"] for r in errors)
+    metrics = _model_metrics(rows)
     return {
         "pipeline": "incremental", "execution_status": "partial" if incomplete else "completed",
         "coverage_status": "partial" if incomplete else "complete", "processed_turns": sum(r["execution_status"] == "completed" for r in rows),
@@ -324,6 +340,7 @@ def _summary(rows, outstanding, pending_count, applied, attempted):
         "unresolved_evidence_count": sum(r.get("unresolved_evidence_count", 0) for r in errors),
         "unlocated_issue_count": sum(r.get("unlocated_issue_count", 0) for r in errors),
         "model_calls": sum(r.get("model_calls", 0) for r in rows),
+        **({"model_metrics": metrics} if metrics else {}),
         "results": all_rows[:MAX_RESULT_ROWS], "results_truncated": len(all_rows) > MAX_RESULT_ROWS,
         "compaction": {"status": "not_run", "reason": "outside_extraction_critical_path"},
         "limitations": ["semantic_quality_not_verified", "native_os_acceptance_pending",

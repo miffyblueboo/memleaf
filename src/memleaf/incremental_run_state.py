@@ -15,6 +15,7 @@ from .incremental_journal import canonical, digest
 from .locking import atomic_write_json
 from .validation import parse_strict_json
 from .receipt_codec import decode_receipt, encode_receipt, is_compact, ledger_usage
+from .extraction_budget import MAX_INCREMENTAL_REQUESTS
 
 KEY = "incremental_runs"
 OWNER = "incremental_run_owner"
@@ -26,6 +27,37 @@ MAX_LEDGER_BYTES = 16 * 1024 * 1024
 TERMINAL = frozenset({"completed", "completed_with_unresolved", "blocked", "failed", "cancelled"})
 _ACTIVE_TOKENS: set[str] = set()
 STATES = TERMINAL | {"ready", "dispatching", "response_ready", "committing", "retryable"}
+TOKEN_METRIC_FIELDS = frozenset({
+    "prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens",
+    "prompt_cache_miss_tokens", "reasoning_tokens",
+})
+
+
+def safe_call_metrics(value: Any) -> dict[str, int]:
+    """Retain provider-observed usage only; missing usage is never estimated."""
+    from collections.abc import Mapping
+    if not isinstance(value, Mapping):
+        return {}
+    return {key: value[key] for key in TOKEN_METRIC_FIELDS
+            if type(value.get(key)) is int and 0 <= value[key] <= 10_000_000}
+
+
+def _model_metrics(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    total: dict[str, int] = {}
+    stages: dict[str, dict[str, int]] = {}
+    rows = []
+    for attempt in attempts:
+        metrics = safe_call_metrics(attempt.get("metrics"))
+        if not metrics:
+            continue
+        stage = attempt.get("metric_stage", "single_pass")
+        for key, value in metrics.items():
+            total[key] = total.get(key, 0) + value
+            bucket = stages.setdefault(stage, {})
+            bucket[key] = bucket.get(key, 0) + value
+        rows.append({"stage": stage, "operation": stage + "_primary",
+                     "call_index": attempt["ordinal"], **metrics})
+    return {"total": total, "stages": stages, "calls": rows} if rows else {}
 
 
 def valid_run_id(value: Any) -> bool:
@@ -60,7 +92,7 @@ def load_run(processed: dict[str, Any], run_id: str) -> dict[str, Any] | None:
             or not isinstance(run.get("source_keys"), list) or not isinstance(run.get("target_ids"), list)
             or any(not isinstance(v, str) for k in ("source_keys", "target_ids") for v in run[k])
             or type(run.get("legacy_source_unchanged")) is not bool
-            or not isinstance(run.get("attempts"), list) or len(run["attempts"]) > 2
+            or not isinstance(run.get("attempts"), list) or len(run["attempts"]) > MAX_INCREMENTAL_REQUESTS
             or type(run.get("reserved_requests")) is not int or run["reserved_requests"] < 0):
         raise ValueError("invalid_incremental_run")
     from .incremental_selection import validate_selection, validate_request
@@ -85,11 +117,16 @@ def load_run(processed: dict[str, Any], run_id: str) -> dict[str, Any] | None:
         raise ValueError("invalid_incremental_attempts")
     for attempt in run["attempts"]:
         if (not isinstance(attempt, dict) or type(attempt.get("ordinal")) is not int
-                or not 1 <= attempt["ordinal"] <= 2 or attempt.get("outcome") not in
+                or not 1 <= attempt["ordinal"] <= MAX_INCREMENTAL_REQUESTS or attempt.get("outcome") not in
                 ("unknown", "response", "invalid_response", "model_timeout", "model_rate_limited", "model_network_error", "model_failed", "model_auth_failed", "model_unavailable", "model_http_error", "model_invalid_response")):
             raise ValueError("invalid_incremental_attempt")
         if "http_status" in attempt and (type(attempt["http_status"]) is not int or not 100 <= attempt["http_status"] <= 599):
             raise ValueError("invalid_incremental_http_status")
+        if ("metrics" in attempt and (not isinstance(attempt["metrics"], dict)
+                or safe_call_metrics(attempt["metrics"]) != attempt["metrics"])
+                or "metric_stage" in attempt and (not isinstance(attempt["metric_stage"], str)
+                    or attempt["metric_stage"] not in {"single_pass", "semantic_review"})):
+            raise ValueError("invalid_incremental_metrics")
     audit = run.get("terminal_recovery")
     if audit is not None:
         required = {"version", "expected_revision", "allow_legacy_http", "previous_code",
@@ -204,7 +241,12 @@ def owned_turns(processed: dict[str, Any], source: str, session_id: str, *, prot
     return result
 
 
-def public_result(run: dict[str, Any], *, calls: int = 0) -> dict[str, Any]:
+def public_result(run: dict[str, Any], *, calls: int = 0,
+                  metric_ordinals: list[int] | None = None) -> dict[str, Any]:
+    invocation_attempts = ([a for a in run["attempts"] if a["ordinal"] in metric_ordinals]
+                           if metric_ordinals is not None else [])
+    metrics = _model_metrics(invocation_attempts)
+    total_metrics = _model_metrics(run["attempts"])
     return {
         "run_id": run["run_id"], "execution_status": run["status"],
         "request_kind": run.get("request_kind", "automatic"),
@@ -215,7 +257,14 @@ def public_result(run: dict[str, Any], *, calls: int = 0) -> dict[str, Any]:
                                   "previous_code": run["terminal_recovery"]["previous_code"]}} if "terminal_recovery" in run else {}),
         "model_calls_this_invocation": calls,
         "model_calls_known": sum(a["outcome"] != "unknown" for a in run["attempts"]),
-        "reserved_requests": run["reserved_requests"], "request_limit": 2,
+        **({"model_metrics": metrics} if metrics else {}),
+        **({"model_metrics_total": total_metrics} if total_metrics else {}),
+        "token_usage_observed_attempts": sum(bool(safe_call_metrics(a.get("metrics"))) for a in run["attempts"]),
+        "token_usage_missing_attempts": sum(not bool(safe_call_metrics(a.get("metrics"))) for a in run["attempts"]),
+        "token_usage_complete": bool(run["attempts"]) and run["reserved_requests"] == len(run["attempts"])
+            and all({"prompt_tokens", "completion_tokens", "total_tokens"} <= set(a.get("metrics", {}))
+                    for a in run["attempts"]),
+        "reserved_requests": run["reserved_requests"], "request_limit": MAX_INCREMENTAL_REQUESTS,
         "budget_finalized": run.get("budget_finalized", False),
         "unattributed_reservations": max(0, run["reserved_requests"] - len(run["attempts"])),
         "responses_observed": sum(a["outcome"] in {"response", "invalid_response"} for a in run["attempts"]),

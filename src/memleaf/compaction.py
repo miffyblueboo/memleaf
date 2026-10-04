@@ -427,7 +427,7 @@ class Compactor:
         value = _content_mapping(candidate.memory)
         value["memory_id"] = candidate.memory.memory_id
         value["validity"] = candidate.memory.validity
-        for key in ("assignee", "waiting_on", "due_text"):
+        for key in ("assignee", "due_text"):
             if key in candidate.memory.extra:
                 value[key] = deepcopy(candidate.memory.extra[key])
         return value

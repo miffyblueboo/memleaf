@@ -18,6 +18,7 @@ from .incremental_journal import digest, load_work
 from .incremental_preview import _prepare_incremental_unlocked
 from .incremental_prompts import INCREMENTAL_SYSTEM
 from .incremental_protocol import MAX_BYTES
+from .extraction_budget import MAX_INCREMENTAL_REQUESTS
 from .incremental_run_state import TERMINAL, MAX_RUNS, COMPACT_VERSION, load_run, owner_live, public_result, save_run
 from .llm.base import HTTP_RETRYABLE_STATUSES
 from .models import utc_now
@@ -122,7 +123,8 @@ def _plan(service: Any, run_id: str, *, allow_legacy_http: bool):
                        'snapshot': snapshot.snapshot_id, 'protocol': _protocol_digest(),
                        'allow_legacy_http': allow_legacy_http, 'run_id': run_id})
     result = {'run_id': run_id, 'recoverable': True, 'read_only': True, 'model_calls': 0,
-              'expected_revision': revision, 'remaining_requests': 1,
+              'expected_revision': revision,
+              'remaining_requests': min(row['request_limit_at_creation'], MAX_INCREMENTAL_REQUESTS) - row['requests'],
               'http_status': status, 'legacy_http_status_unknown': legacy,
               'source_unchanged': True, 'source_window_changed': window != run['source_window'],
               'snapshot_changed': snapshot.snapshot_id != run['snapshot_id'],

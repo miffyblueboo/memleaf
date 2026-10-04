@@ -280,6 +280,8 @@ def new_revision(memory: Memory) -> str:
 
 def recovery_input(snapshot: PlanningSnapshot, work: dict[str, Any], *, mode: str) -> dict[str, Any]:
     value = snapshot.model_input()
+    if work.get("host_retention_origin") is not None:
+        value["whole_host_turn"] = True
     state = snapshot.state()
     refs = {t["memory"]["memory_id"]: r for r, t in state["targets"].items()}
     value["recovery"] = {"mode": mode, "settled": [

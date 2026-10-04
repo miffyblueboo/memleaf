@@ -1,4 +1,4 @@
-"""Opt-in, one-plus-one model dispatch on the shared incremental commit bridge.
+"""Bounded model dispatch on the shared incremental commit bridge.
 
 Whole-response retry, semantic verification and explicit partial recovery
 share the same allowance.
@@ -17,6 +17,7 @@ from .extraction_work_state import (
     ExtractionWorkStateError, extraction_work_id, reserve_model_request,
     complete_turn_budget, _read_budget_state_unlocked,
 )
+from .extraction_budget import MAX_INCREMENTAL_REQUESTS
 from .incremental_commit import equivalent_arguments
 from .incremental_commit import _arguments, _window, apply_incremental, resume_incremental
 from .incremental_journal import digest, load_work, public_result as commit_result
@@ -26,6 +27,7 @@ from .incremental_protocol import compile_incremental, MAX_BYTES, PROTOCOL_VERSI
 from .incremental_run_state import (
     VERSION, OWNER, TERMINAL, load_run, save_run, strip_payload, owner_live, public_result,
     register_owner, unregister_owner,
+    safe_call_metrics,
 )
 from .index import turn_key
 from .inbox import captured_turn_selector
@@ -168,8 +170,11 @@ def run_incremental(service: Any, *, source: str, session_id: str, turn_id: str,
                         and prior["turn_key"] == turn.turn_key and prior["status"] not in TERMINAL):
                     raise ValueError("incremental_source_already_owned")
             snapshot = _prepare_incremental_unlocked(service, retention_request=retention_request, **args)
+            payload = snapshot.model_input()
+            if retention_origin is not None:
+                payload["whole_host_turn"] = True
             request = {"system": INCREMENTAL_SYSTEM,
-                       "user": json.dumps(snapshot.model_input(), ensure_ascii=False, separators=(",", ":"))}
+                       "user": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}
             if sum(len(s.encode("utf-8")) for s in request.values()) + len(RETRY_SYSTEM.encode("utf-8")) > MAX_BYTES:
                 raise ValueError("blocked_context")
             commit_intent = "dispatch-" + budget_id
@@ -208,23 +213,23 @@ def _owned(service, run_id, token):
     return processed, run
 
 
-def _drive(service, run_id, token, backend, calls):
+def _drive(service, run_id, token, backend, calls, metric_ordinals):
     while True:
         with service.vault.lock():
             processed, run = _owned(service, run_id, token)
             if run["status"] in TERMINAL:
-                return public_result(run, calls=calls[0])
+                return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
             stored_commit = load_work(processed, run["commit_work_id"])
             phase = "resume_commit" if stored_commit is not None else "dispatch"
             if stored_commit is None and run.get("protocol_digest") != _protocol_digest():
                 _finish(service, processed, run, "blocked", "protocol_upgrade_required")
-                return public_result(run, calls=calls[0])
+                return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
             if stored_commit is None:
                 try:
                     snapshot = _check_sources(service, processed, run)
                 except (OSError, ValueError):
                     _finish(service, processed, run, "blocked", "source_or_snapshot_changed")
-                    return public_result(run, calls=calls[0])
+                    return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
                 if run["status"] in {"response_ready", "committing"}:
                     try:
                         compiled = compile_incremental(run["response"], snapshot)
@@ -232,14 +237,14 @@ def _drive(service, run_id, token, backend, calls):
                         if (not (run.get("partial_used") and run.get("partial_recovery", {}).get("mode") == "repair")
                                 and run.get("semantic_stage") != "reviewed"
                                 and needs_review(compiled, run["response"])):
-                            if run["reserved_requests"] >= 2:
+                            if run["reserved_requests"] >= MAX_INCREMENTAL_REQUESTS:
                                 _finish(service, processed, run, "blocked", "semantic_review_budget_exhausted")
-                                return public_result(run, calls=calls[0])
+                                return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
                             run["request"] = review_request(run["request"], run["response"], snapshot)
                             run["request_digest"] = digest(run["request"])
                             if sum(len(v.encode("utf-8")) for v in run["request"].values()) > MAX_BYTES:
                                 _finish(service, processed, run, "blocked", "blocked_context")
-                                return public_result(run, calls=calls[0])
+                                return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
                             run.update(status="ready", semantic_stage="review", semantic_review_required=True)
                             run.pop("response", None)
                             save_run(service, processed, run)
@@ -250,7 +255,7 @@ def _drive(service, run_id, token, backend, calls):
                     except ValueError:
                         if run.get("partial_used"):
                             _finish(service, processed, run, "failed", "invalid_partial_response")
-                            return public_result(run, calls=calls[0])
+                            return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
                         run["attempts"][-1]["outcome"] = "invalid_response"
                         run.pop("response", None)
                         _finish(service, processed, run, "retryable", "invalid_model_response")
@@ -261,7 +266,7 @@ def _drive(service, run_id, token, backend, calls):
                 elif backend is None or getattr(backend, "single_pass_safe", False) is not True or not callable(getattr(backend, "complete", None)):
                     code = "backend_required" if backend is None else "backend_not_single_dispatch"
                     _finish(service, processed, run, "retryable", code)
-                    return public_result(run, calls=calls[0])
+                    return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
         # Public commit and budget functions own their locks. Never nest the
         # non-reentrant OS file lock. The persistent owner fences other runners;
         # commit's guard/CAS still rechecks concurrent manual edits and Forget.
@@ -278,13 +283,13 @@ def _drive(service, run_id, token, backend, calls):
                     processed, run = _owned(service, run_id, token)
                     if run["status"] not in TERMINAL:
                         _finish(service, processed, run, "blocked", "commit_precondition_changed")
-                    return public_result(run, calls=calls[0])
+                    return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
             with service.vault.lock():
                 processed, run = _owned(service, run_id, token)
                 if run["status"] not in TERMINAL:
                     run["commit_result"] = result
                     _finish(service, processed, run, result["execution_status"])
-            return public_result(run, calls=calls[0])
+            return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
         try:
             with service.vault.lock():
                 # A missing/regressed budget must not reopen dispatch when this
@@ -292,7 +297,7 @@ def _drive(service, run_id, token, backend, calls):
                 if _budget_count(service, run) < run["reserved_requests"]:
                     raise ExtractionWorkStateError("request budget lost committed consumption")
             ordinal = reserve_model_request(service.vault, work_id=run["budget_id"], turn_id=run["turn_budget_id"],
-                                            request_limit=2,
+                                            request_limit=MAX_INCREMENTAL_REQUESTS,
                                             legacy_turn_id=(None if run.get("request_kind") == "explicit_remember" else run["turn_budget_id"]),
                                             legacy_source_unchanged=run["legacy_source_unchanged"])
         except ExtractionWorkStateError:
@@ -300,15 +305,15 @@ def _drive(service, run_id, token, backend, calls):
                 processed, run = _owned(service, run_id, token)
                 if run["status"] not in TERMINAL:
                     _finish(service, processed, run, "blocked", "budget_state_or_migration_required")
-                return public_result(run, calls=calls[0])
+                return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
         with service.vault.lock():
             processed, run = _owned(service, run_id, token)
             if run["status"] in TERMINAL:
-                return public_result(run, calls=calls[0])
+                return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
             run["reserved_requests"] = _budget_count(service, run)
             if ordinal is None:
                 _finish(service, processed, run, "failed", "request_budget_exhausted")
-                return public_result(run, calls=calls[0])
+                return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
             # A reserve may precede a crash or a cancellation. Conservatively
             # consume it, but never label it confirmed provider billing.
             run["attempts"].append({"ordinal": ordinal, "outcome": "unknown"})
@@ -316,7 +321,7 @@ def _drive(service, run_id, token, backend, calls):
                 _check_sources(service, processed, run)
             except (OSError, ValueError):
                 _finish(service, processed, run, "blocked", "source_or_snapshot_changed")
-                return public_result(run, calls=calls[0])
+                return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
             run["status"] = "dispatching"
             save_run(service, processed, run)
             request = dict(run["request"])
@@ -325,31 +330,49 @@ def _drive(service, run_id, token, backend, calls):
         error_code = None
         http_status = None
         response = None
+        metrics = {}
+        consume_metrics = getattr(backend, "consume_call_metrics", None)
+        if callable(consume_metrics):
+            try:
+                consume_metrics()  # Discard usage left over from another call.
+            except Exception:
+                pass
         try:
             calls[0] += 1
+            metric_ordinals.append(ordinal)
             response = backend.complete(request["user"], system=request["system"], purpose="single_pass")
         except ModelError as error:
             error_code = error.code
             http_status = error.http_status
         except Exception:
             error_code = "model_failed"  # Never persist provider exception text.
+        finally:
+            if callable(consume_metrics):
+                try:
+                    metrics = safe_call_metrics(consume_metrics())
+                except Exception:
+                    pass
         with service.vault.lock():
             processed, run = _owned(service, run_id, token)
             if run["status"] in TERMINAL:
-                return public_result(run, calls=calls[0])
+                return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
+            if metrics:
+                run["attempts"][-1]["metrics"] = metrics
+                run["attempts"][-1]["metric_stage"] = (
+                    "semantic_review" if run.get("semantic_stage") == "review" else "single_pass")
             if error_code is not None:
                 run["attempts"][-1]["outcome"] = error_code
                 if http_status is not None:
                     run["attempts"][-1]["http_status"] = http_status
                 retryable = (error_code in TRANSIENT or
-                             (error_code == "model_http_error" and http_status in HTTP_RETRYABLE_STATUSES)) and run["reserved_requests"] < 2
+                             (error_code == "model_http_error" and http_status in HTTP_RETRYABLE_STATUSES)) and run["reserved_requests"] < MAX_INCREMENTAL_REQUESTS
                 _finish(service, processed, run, "retryable" if retryable else "failed", error_code)
-                return public_result(run, calls=calls[0])
+                return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
             if not isinstance(response, str) or not response.strip() or len(response.encode("utf-8")) > MAX_BYTES:
                 run["attempts"][-1]["outcome"] = "invalid_response"
                 if run.get("partial_used"):
                     _finish(service, processed, run, "failed", "invalid_partial_response")
-                    return public_result(run, calls=calls[0])
+                    return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
                 _finish(service, processed, run, "retryable", "invalid_response_size")
                 continue
             run["attempts"][-1]["outcome"] = "response"
@@ -363,7 +386,7 @@ def _drive(service, run_id, token, backend, calls):
                 except ValueError:
                     run["attempts"][-1]["outcome"] = "invalid_response"
                     _finish(service, processed, run, "failed", "invalid_semantic_review")
-                    return public_result(run, calls=calls[0])
+                    return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
                 run.update(semantic_stage="reviewed", semantic_review_required=False)
             elif not run.get("partial_used"):
                 try:
@@ -377,6 +400,7 @@ def _drive(service, run_id, token, backend, calls):
 def resume_incremental_run(service: Any, run_id: str, *, backend: Any = None) -> dict[str, Any]:
     """Continue a stored response/commit first. Transport retries are explicit."""
     calls = [0]
+    metric_ordinals = []
     token = uuid.uuid4().hex
     run = None
     register_owner(token)
@@ -392,13 +416,13 @@ def resume_incremental_run(service: Any, run_id: str, *, backend: Any = None) ->
                 _guard_legacy(service, processed)
                 processed[OWNER] = {"run_id": run_id, "token": token, "pid": os.getpid()}
                 save_run(service, processed, run)
-        result = public_result(run) if run["status"] in TERMINAL else _drive(service, run_id, token, backend, calls)
+        result = public_result(run) if run["status"] in TERMINAL else _drive(service, run_id, token, backend, calls, metric_ordinals)
     except OSError as error:
         with service.vault.lock():
             durable = load_run(_read(service), run_id)
         if durable is None:
             raise
-        raise IncrementalRunError(public_result(durable, calls=calls[0])) from error
+        raise IncrementalRunError(public_result(durable, calls=calls[0], metric_ordinals=metric_ordinals)) from error
     finally:
         try:
             with service.vault.lock():
@@ -411,7 +435,7 @@ def resume_incremental_run(service: Any, run_id: str, *, backend: Any = None) ->
                         durable = load_run(_read(service), run_id)
                         if durable is None:
                             raise
-                        raise IncrementalRunError(public_result(durable, calls=calls[0])) from error
+                        raise IncrementalRunError(public_result(durable, calls=calls[0], metric_ordinals=metric_ordinals)) from error
         finally:
             unregister_owner(token)
     # Budget finalization is derived control work. Its failure does not
@@ -427,5 +451,5 @@ def resume_incremental_run(service: Any, run_id: str, *, backend: Any = None) ->
                     save_run(service, processed, run)
                 except OSError as error:
                     raise IncrementalRunError(result) from error
-            return public_result(run, calls=calls[0])
+            return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
     return result

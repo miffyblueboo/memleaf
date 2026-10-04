@@ -327,7 +327,7 @@ def _checks(expected: dict, records: list[dict], observations: list[dict], calls
         else:  # forbidden
             good = all(not any(matches(r, forbidden) for r in records) for forbidden in value)
         results.append({"check": key, "passed": good})
-    results.append({"check": "per_work_request_cap", "passed": result.get("reserved_requests", 0) <= 2})
+    results.append({"check": "per_work_request_cap", "passed": result.get("reserved_requests", 0) <= result["request_limit"]})
     return results
 
 

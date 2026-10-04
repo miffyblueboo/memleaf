@@ -24,17 +24,18 @@ from .turn_plan import revision_digest
 from .validation import ModelOutputError, parse_strict_json
 
 PROTOCOL_VERSION = "incremental-items-v1"
-SEMANTIC_PROTOCOL = "incremental-turn-v15"
+SEMANTIC_PROTOCOL = "incremental-turn-v16"
 EXTRACTION_CONTRACT = "field-reviewed-v1"
 MAX_BYTES = 128 * 1024
 MAX_ITEMS = 64
 _TYPES = frozenset(("fact", "todo", "preference", "project", "event", "identity", "other"))
 _TYPE_ALIASES = {"decision": "fact", "task": "todo", "action": "todo", "action_item": "todo", "note": "other"}
-_PATCH = frozenset(("title", "body", "scope", "status", "actionable", "assignee", "waiting_on", "deadline", "validity"))
+_PATCH = frozenset(("title", "body", "scope", "status", "actionable", "assignee", "deadline", "validity"))
 _CREATE = (_PATCH - {"validity"}) | {"type"}
 _BRANCHES = {
     "CREATE": ({"memory"}, {"memory", "at", "effective", "deadline_decision", "responsibility_basis"}),
     "UPDATE": ({"target", "patch"}, {"target", "patch", "at", "effective", "reopen", "deadline_decision", "responsibility_basis"}),
+    "MERGE": ({"target", "duplicates", "patch"}, {"target", "duplicates", "patch", "at", "effective", "reopen", "deadline_decision", "responsibility_basis"}),
     "NO_CHANGE": ({"target"}, {"target", "at"}),
     "NO_MEMORY": (set(), set()),
     "DEFERRED": ({"reason", "need"}, {"reason", "need"}),
@@ -139,9 +140,20 @@ def _normalize_model_row(row: Any, state: Mapping[str, Any], *, only_row: bool) 
         normalized, flattened = _normalize_flat_create_row(normalized)
         if flattened:
             warnings.append("create_memory_wrapper_normalized")
-    elif action == "UPDATE" and isinstance(normalized.get("patch"), dict):
+    elif action in {"UPDATE", "MERGE"} and isinstance(normalized.get("patch"), dict):
         warnings.extend(_normalize_enum_fields(normalized["patch"]))
-    if action in {"CREATE", "UPDATE"}:
+    if action in {"CREATE", "UPDATE", "MERGE"}:
+        for owner in (normalized, normalized.get("memory"), normalized.get("patch")):
+            if isinstance(owner, dict):
+                if "waiting_on" in owner:
+                    owner.pop("waiting_on")
+                    warnings.append("retired_waiting_field_ignored")
+                owner.pop("waiting_on_basis", None)
+                annotation = owner.get("responsibility_basis")
+                if isinstance(annotation, dict):
+                    annotation.pop("waiting_on", None)
+                    if not annotation:
+                        owner.pop("responsibility_basis")
         fields = normalized.get("memory" if action == "CREATE" else "patch")
         if isinstance(fields, dict):
             for metadata_key in ("effective", "at", "reopen"):
@@ -415,7 +427,7 @@ class PlanningSnapshot:
         for ref, target in state["targets"].items():
             memory = target["memory"]
             fields = {key: deepcopy(memory[key]) for key in (
-                "type", "title", "body", "status", "validity", "actionable", "assignee", "waiting_on",
+                "type", "title", "body", "status", "validity", "actionable", "assignee",
                 "due_date", "due_text", "due_status", "completed_at",
             ) if key in memory}
             values = memory.get("scopes", ["global"])
@@ -553,6 +565,8 @@ def _review_fields(row: Mapping[str, Any], fields: Mapping[str, Any], state: Map
 
 
 def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
+    if isinstance(row, dict) and str(row.get("action", "")).strip().upper() == "MERGE":
+        raise ValueError("invalid_merge")
     if not isinstance(row, dict) or not isinstance(row.get("action"), str):
         raise ValueError("invalid_action")
     action = row["action"].strip().upper()
@@ -821,6 +835,10 @@ def compile_incremental(raw: str, snapshot: PlanningSnapshot) -> dict[str, Any]:
     if not isinstance(value["items"], list) or len(value["items"]) > MAX_ITEMS:
         raise ValueError("invalid_items")
     state = snapshot.state()
+    from .incremental_merge import expand_merges, bind_merges
+    value["items"], merge_groups = expand_merges(value["items"], state)
+    if len(value["items"]) > MAX_ITEMS:
+        raise ValueError("invalid_items")
     known = {e["ref"] for e in state["evidence"]}
     new = {e["ref"] for e in state["evidence"] if e["use"] == "new"}
     parsed, issues, poisoned = [], [], set()
@@ -878,6 +896,7 @@ def compile_incremental(raw: str, snapshot: PlanningSnapshot) -> dict[str, Any]:
                 if "native" in target:
                     output["native"] = deepcopy(target["native"])
             operations.append(output)
+    bind_merges(operations, merge_groups, state, issues)
     turn_wide = [op for op in operations if op["action"] == "NO_MEMORY" and op.get("_turn_wide")]
     if turn_wide and (len(value["items"]) != 1 or len(turn_wide) != 1 or len(operations) != 1):
         operations = [op for op in operations if not op.get("_turn_wide")]

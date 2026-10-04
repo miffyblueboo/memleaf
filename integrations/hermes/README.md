@@ -12,12 +12,19 @@ code; identical on-disk files do not prove a running process loaded them.
 ## Current retention integration
 
 The patch below documents the trusted external-dispatch extension. Deployed
-Hermes versions may not invoke that optional hook. Memleaf 0.2.86 therefore uses
+Hermes versions may not invoke that optional hook. Memleaf 0.2.87 therefore uses
 its native `memleaf_remember` tool for explicit retention: it binds and queues
 an intent, then retains original captured user events when the turn completes.
 The installer excludes standalone MCP `remember` from Hermes' model tool surface.
 This route does not depend on the optional external-dispatch hook; bare MCP and
 Python clients retain their existing APIs. Restart Hermes after installation.
+
+The bound native route also handles conversational corrections, completion,
+cancellation, reopening and withdrawal. A successful full-turn retention receipt
+settles automatic extraction without another model request. Partial selections
+remain separate. MCP lifecycle updates do not accept model-supplied source times;
+trusted Python callers keep their explicit metadata API. Restart Hermes after
+upgrading to load the current Provider.
 
 ## Boundaries
 

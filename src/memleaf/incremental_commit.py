@@ -105,7 +105,7 @@ def _freeze_operation(proposal: dict[str, Any], snapshot: Any, now: str, active:
     else:
         value.update(memory_id=before.memory_id, created=before.created, updated=now)
     after = Memory.from_mapping(value)
-    if before is not None and dedup_digest(before.to_dict()) == dedup_digest(after.to_dict()):
+    if before is not None and not op.get("merge_from") and dedup_digest(before.to_dict()) == dedup_digest(after.to_dict()):
         op.update(action="NO_CHANGE", expected_revision=revision_digest(before))
         return op
     if before is None:
@@ -118,8 +118,14 @@ def _freeze_operation(proposal: dict[str, Any], snapshot: Any, now: str, active:
             return op
     from .incremental_dates import source_basis
     provenance = [source_basis(e) for e in state["evidence"] if e["ref"] in op["evidence"]]
-    after.sources, source_meta = merge_sources(before.sources if before else [], provenance,
-                                               extra=before.extra if before else {})
+    old_sources, old_meta = (before.sources, before.extra) if before else ([], {})
+    if op.get("merge_from"):
+        from .source_policy import merge_memory_provenance
+        peers = [Memory.from_mapping(t["memory"]) for t in state["targets"].values()
+                 if t["memory"]["memory_id"] in op["merge_from"]]
+        old_sources, old_meta = merge_memory_provenance([before, *peers])
+        op["merge_revisions"] = {m.memory_id: revision_digest(m) for m in peers}
+    after.sources, source_meta = merge_sources(old_sources, provenance, extra=old_meta)
     after.extra.update(source_meta)
     after.extra["incremental_operation_id"] = op["operation_id"]
     if any(t["memory"]["memory_id"] == op["memory_id"] and t.get("basis_status") == "external_change_detected"
@@ -162,8 +168,17 @@ def _source_valid(service, processed, work):
 
 
 def _settle_source(service, processed, work, *, source_valid):
+    whole_host_turn = False
+    if source_valid and work.get("host_retention_origin") is not None:
+        # A scoped selection alone cannot prove whole-turn coverage. Only a
+        # verified host intent, evaluated against every current source event,
+        # may settle the automatic route as well.
+        turn, _ = _window(service, work["source"], work["session_id"], work["turn_key"])
+        selected = work.get("binding", {}).get("arguments", {}).get("selection", {})
+        whole_host_turn = (set(selected.get("source_refs", [])) == set(turn.event_keys)
+                           == {e["event_key"] for e in work["evidence"] if e["use"] == "new"})
     if (work.get("request_kind", "automatic") == "explicit_remember"
-            and not any(e.get("explicit_input") for e in work["evidence"])):
+            and not whole_host_turn and not any(e.get("explicit_input") for e in work["evidence"])):
         # This authorization only selected some material. Its own work receipt
         # settles it; it never consumes the automatic turn or changes cleanup.
         return
@@ -232,6 +247,18 @@ def _resume_unlocked(service, processed, work):
                     if not guard_matches(current_guard, work["scope_guard"], applied_additions(work)):
                         raise ValueError("scope_registry_changed")
                 if op["action"] in {"CREATE", "UPDATE"}:
+                    if op.get("merged_into"):
+                        survivor = next((item for item in work["operations"]
+                                         if item.get("memory_id") == op["merged_into"]), None)
+                        current, _ = service._revision_target_unlocked(op["merged_into"])
+                        if (survivor is None or survivor["state"] not in {"applied", "settled"}
+                                or current is None or revision_digest(current.memory) != survivor.get("replacement_revision")):
+                            raise ValueError("merge_survivor_not_committed")
+                        op["merge_revisions"] = {op["merged_into"]: survivor["replacement_revision"]}
+                    for identity, expected in op.get("merge_revisions", {}).items():
+                        current, _ = service._revision_target_unlocked(identity)
+                        if current is None or revision_digest(current.memory) != expected:
+                            raise ValueError("merge_target_changed")
                     # Pin the configuration already authorized above through
                     # the shared writer's history/head boundary as well.
                     guarded_op = {**op, "scope_guard": current_guard} if work.get("scope_guard") is not None else op

@@ -4,10 +4,10 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.86.**
+> **Version: 0.2.87.**
 > Automatic extraction and review share one future-value standard: the model weighs likely reuse, information gain, direct usability when read again, and the cost of forgetting. It keeps only the smallest core that can materially help future understanding, decisions, or actions; information without clear value is not extracted, and no business-specific exclusion rule is hard-coded.
-> Extraction compares existing identifiers, objectives, progress, responsibility and deadlines first. Filling an unknown also maintains the original item; a separate task does not replace updating shared project facts. Core does not merge matching titles.
-> New requests accept equivalent field representations. Unknown executors remain `null`; new or changed responsibility, dependencies and deadlines require actual source evidence. Proposed actions and related fields undergo bounded semantic verification within the existing two-request limit per work item; failed verification blocks writes. Source time resolves relative dates without inventing factual dates.
+> Extraction compares existing identifiers, objectives, progress, responsibility and deadlines first. Filling an unknown also maintains the original item; a separate task does not replace updating shared project facts. Confirmed duplicates can be merged in the existing processing requests with their sources and history preserved. Independent project and task lifecycles remain separate; Core does not merge matching titles.
+> New requests accept equivalent field representations. Unknown executors remain `null`; new or changed responsibility and deadlines require actual source evidence. Dependencies belong in the body; `waiting_on` is no longer extracted. Proposed actions and related fields undergo bounded semantic verification within a shared five-request limit per work item, stopping on success; failed verification blocks writes. Source time resolves relative dates without inventing factual dates.
 > A todo's `due_date` means only the explicit deadline of the todo action; dates describing its subject or desired outcome are not deadlines. Project ownership remains the model's semantic judgement and needs no literal name match. The review stage now keeps the update target chosen by the first pass, so a state change is no longer downgraded into a new memory. Markdown remains the sole source of truth.
 > **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.
 
@@ -266,7 +266,7 @@ The server exposes the following tools:
 | `process_status` | Read the status of a background processing job |
 | `recover_failed_run` | Preview and explicitly recover terminal transport failures within the original request budget |
 | `remember` | Create or update memory after an explicit request |
-| `update_memory` | Complete, cancel or reopen a task using its current revision; retain body and history |
+| `update_memory` | Maintain tasks or retract facts/preferences using their current revision; host-bound calls queue actual source messages |
 | `forget_memory` | Permanently delete an exact ID after explicit user forgetting, with `confirm_delete=true` |
 | `forget_about` | Forget an unambiguous topic with `confirm_delete=true`; return candidates when ambiguous |
 | `rebuild_index` | Rebuild local derived indexes |

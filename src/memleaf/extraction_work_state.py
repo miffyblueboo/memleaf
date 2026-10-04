@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .locking import atomic_write_json, read_json
-from .extraction_budget import MAX_MODEL_REQUESTS
+from .extraction_budget import MAX_MODEL_REQUESTS, MAX_INCREMENTAL_REQUESTS
 from .validation import parse_strict_json
 
 
@@ -307,7 +307,7 @@ def reserve_model_request(
         raise ExtractionWorkStateError("invalid extraction work id")
     if not _valid_identifier(turn_id, maximum=800):
         raise ExtractionWorkStateError("invalid extraction turn id")
-    if type(request_limit) is not int or not 1 <= request_limit <= MAX_MODEL_REQUESTS:
+    if type(request_limit) is not int or not 1 <= request_limit <= max(MAX_MODEL_REQUESTS, MAX_INCREMENTAL_REQUESTS):
         raise ExtractionWorkStateError("invalid extraction request limit")
     if type(legacy_source_unchanged) is not bool:
         raise ExtractionWorkStateError("invalid legacy source compatibility flag")

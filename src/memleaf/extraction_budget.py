@@ -14,6 +14,8 @@ from .llm import ModelError
 
 
 MAX_MODEL_REQUESTS = 3
+# Incremental drafting, format repair and review share one durable allowance.
+MAX_INCREMENTAL_REQUESTS = 5
 TARGET_TOTAL_SECONDS = 10.0
 
 
@@ -205,6 +207,7 @@ def budget_single_pass_backend(
 
 __all__ = [
     "MAX_MODEL_REQUESTS",
+    "MAX_INCREMENTAL_REQUESTS",
     "TARGET_TOTAL_SECONDS",
     "ExtractionTiming",
     "aggregate_extraction_metrics",

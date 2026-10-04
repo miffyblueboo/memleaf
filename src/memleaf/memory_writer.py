@@ -622,6 +622,20 @@ class MemoryWriter:
         from .query_scan import ensure_scan_current, scan_memories
         record, snapshot = self.service._revision_target_unlocked(after.memory_id)
         ensure_scan_current(self.service.vault, snapshot)
+        def check_merge_guard():
+            expected = operation.get("merge_revisions", {})
+            if not isinstance(expected, dict):
+                raise ValueError("invalid_merge_guard")
+            if not expected:
+                return
+            # Validate against THIS writer snapshot, not a new post-edit
+            # baseline. It is rechecked again after history IO below.
+            for identity, revision in expected.items():
+                peer = next((item for item in snapshot.records
+                             if item.memory.memory_id == identity), None)
+                if peer is None or revision_digest(peer.memory) != revision:
+                    raise MemoryVersionError("merge_target_changed")
+        check_merge_guard()
         if record is not None and revision_digest(record.memory) == operation["replacement_revision"]:
             return "applied"
         if action == "UPDATE" and (record is None or revision_digest(record.memory) != operation["expected_revision"]):
@@ -655,6 +669,7 @@ class MemoryWriter:
         # view, not just the version read before the history write.
         ensure_scan_current(self.service.vault, snapshot)
         check_scope_guard()
+        check_merge_guard()
         atomic_write_text(path, after.to_markdown())
         return "applied"
 

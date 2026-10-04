@@ -85,6 +85,7 @@ def merge_sources(
     metadata = {
         "source_count": count,
         "source_digest": digest,
+        **({"source_count_is_upper_bound": True} if extra and extra.get("source_count_is_upper_bound") else {}),
         "sources_omitted": max(0, count - len(retained)),
     }
     return retained, metadata
@@ -95,11 +96,13 @@ def merge_memory_provenance(memories: Iterable[Any]) -> tuple[list[dict[str, Any
     retained: list[dict[str, Any]] = []
     total_count = 0
     digest_parts: list[str] = []
+    uncertain = False
     for memory in values:
         count, digest, sources = source_state(
             getattr(memory, "sources", ()), getattr(memory, "extra", {})
         )
         total_count += count
+        uncertain = uncertain or count > len(sources) or bool(getattr(memory, "extra", {}).get("source_count_is_upper_bound"))
         digest_parts.append(digest)
         retained.extend(sources)
     # De-duplicate retained projections while keeping deterministic source order.
@@ -111,6 +114,9 @@ def merge_memory_provenance(memories: Iterable[Any]) -> tuple[list[dict[str, Any
             continue
         seen.add(fingerprint)
         unique.append(source)
+    # Known overlaps are counted once. With truncated histories this count
+    # is an upper bound: unseen source overlap cannot be reconstructed.
+    total_count -= len(retained) - len(unique)
     unique = _bounded(unique)
     combined_digest = hashlib.sha256(
         "\0".join(digest_parts).encode("ascii")
@@ -118,6 +124,7 @@ def merge_memory_provenance(memories: Iterable[Any]) -> tuple[list[dict[str, Any
     return unique, {
         "source_count": max(total_count, len(unique)),
         "source_digest": combined_digest,
+        **({"source_count_is_upper_bound": True} if uncertain else {}),
         "sources_omitted": max(0, total_count - len(unique)),
     }
 

@@ -31,7 +31,7 @@
           "expected": {
             "execution_status": "completed",
             "coverage_status": "complete",
-            "max_calls": 1,
+            "max_calls": 2,
             "count": 1,
             "required": [
               {
@@ -215,14 +215,13 @@
           "expected": {
             "execution_status": "completed",
             "coverage_status": "complete",
-            "max_calls": 1,
+            "max_calls": 2,
             "count": 1,
             "required": [
               {
                 "memory_id": "mem-report",
                 "status": "active",
                 "assignee": "林工",
-                "waiting_on": "客户验收",
                 "due_date": "2026-09-25"
               }
             ]
@@ -330,7 +329,7 @@
           "expected": {
             "execution_status": "completed",
             "coverage_status": "complete",
-            "max_calls": 1,
+            "max_calls": 2,
             "required": [
               {
                 "memory_id": "mem-report",
@@ -421,7 +420,7 @@
           "expected": {
             "execution_status": "completed",
             "coverage_status": "complete",
-            "max_calls": 1,
+            "max_calls": 2,
             "count": 2,
             "required": [
               {
@@ -471,7 +470,7 @@
           "expected": {
             "execution_status": "completed",
             "coverage_status": "complete",
-            "max_calls": 1,
+            "max_calls": 2,
             "count": 1,
             "required": [
               {
@@ -524,7 +523,7 @@
           "expected": {
             "execution_status": "completed",
             "coverage_status": "complete",
-            "max_calls": 1,
+            "max_calls": 2,
             "count": 1,
             "required": [
               {
@@ -564,7 +563,7 @@
           "expected": {
             "execution_status": "completed",
             "coverage_status": "complete",
-            "max_calls": 1,
+            "max_calls": 2,
             "count": 1,
             "required": [
               {
@@ -665,7 +664,7 @@
           "expected": {
             "execution_status": "completed",
             "coverage_status": "complete",
-            "max_calls": 1,
+            "max_calls": 2,
             "count": 2,
             "required": [
               {
@@ -732,7 +731,7 @@
           "expected": {
             "execution_status": "completed",
             "coverage_status": "complete",
-            "max_calls": 1,
+            "max_calls": 2,
             "count": 1,
             "required": [
               {

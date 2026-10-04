@@ -1016,7 +1016,6 @@ def _native_result(value: Any) -> list[dict[str, Any]]:
         "due_date",
         "validity",
         "assignee",
-        "waiting_on",
         "due_text",
         "due_anchor",
     }

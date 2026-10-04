@@ -13,6 +13,7 @@ from .incremental_commit import _window
 from .incremental_journal import digest, load_work, public_result as commit_result
 from .incremental_preview import _prepare_incremental_unlocked
 from .incremental_protocol import compile_incremental, MAX_BYTES
+from .extraction_budget import MAX_INCREMENTAL_REQUESTS
 from .incremental_prompts import INCREMENTAL_SYSTEM
 from .incremental_recovery import (RECOVERY_SYSTEM, restore_snapshot, recovery_snapshot,
                                   recovery_input, context_changed, normalized_rows,
@@ -140,7 +141,7 @@ def recover_incremental_partial(service: Any, run_id: str, *, mode: str = "repla
                     raise ValueError("partial_budget_state_lost") from error
                 if consumed < run["reserved_requests"]:
                     raise ValueError("partial_budget_state_lost")
-                if consumed >= 2:
+                if consumed >= MAX_INCREMENTAL_REQUESTS:
                     return {**public_result(run), "partial_recovery_code": "request_budget_exhausted"}
             request = {"system": INCREMENTAL_SYSTEM + (RECOVERY_SYSTEM if mode == "replan" else ""),
                        "user": json.dumps(recovery_input(snapshot, parent, mode=mode), ensure_ascii=False, separators=(",", ":"))}

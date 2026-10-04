@@ -17,6 +17,13 @@ A queued response is not a saved memory. The installer excludes standalone MCP
 supports `remember` for other clients, plus `forget` and maintenance operations.
 This is a Soft Gate, not a guarantee that every answer has performed retrieval.
 
+The bound native route also handles conversational corrections, completion,
+cancellation, reopening and withdrawal. A successful full-turn retention receipt
+settles automatic extraction without another model request. Partial selections
+remain separate. MCP lifecycle updates do not accept model-supplied source times;
+trusted Python callers keep their explicit metadata API. Restart Hermes after
+upgrading to load the current Provider.
+
 Hermes discovers this directory when it is installed as:
 
 ```text

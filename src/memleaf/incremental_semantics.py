@@ -1,8 +1,8 @@
-"""Bounded semantic veto for proposed actions, grounded in original input.
+"""Source-bound review and maintenance in the existing request allowance.
 
-Review can reject a draft or omit unsupported optional fields. It cannot invent
-facts, targets, references or grant authority. Both calls share the existing
-request allowance; a missing or malformed review never commits the draft.
+Review may reject fields or repair maintenance on known writable targets. It
+cannot invent facts, targets, references or grant authority. A missing or
+malformed review never commits the draft.
 """
 from __future__ import annotations
 
@@ -11,17 +11,18 @@ import json
 
 from .validation import parse_strict_json, ModelOutputError
 
-REVIEW_SYSTEM = """核验拟写入的持续行动。original_input 是唯一事实和权限来源；draft 是待审候选，不能当作事实。不要重写 items。返回 JSON 对象，唯一键 decisions，值为数组；每项有 item（整数）、keep（布尔值）、field_support（对象）。按输入 fields_to_review 的实际字段填 field_support，不能复制其他事项的字段名。
+REVIEW_SYSTEM = """核验拟写入的持续行动。original_input 是唯一事实和权限来源；draft 是待审候选，不能当作事实。返回 JSON 对象，必填 decisions，值为数组；每项有 item（整数）、keep（布尔值）、field_support（对象）。按输入 fields_to_review 的实际字段填 field_support，不能复制其他事项的字段名。
 每个 draft.items 都必须有且只有一个 decision，item 是从 0 开始的位置。keep 判断该事项本身是否由原文确立且持续值得保留。临时操作及助手额外建议不能产生用户长期待办，原话只证明另一个操作时 keep:false。独立事实不因其他候选有误而拒绝。
-keep:true 时，field_support 必须逐个列出候选 memory/patch 中的业务字段，每个布尔值判断该字段的拟议值是否受来源支持；不列 responsibility_basis、effective、at、reopen 等引用/控制字段。NO_CHANGE/DEFERRED/NO_MEMORY 的 field_support 为 {}。keep:false 时 field_support 为 {}。unverified_fields 是系统发现未能验证引用的可选责任字段，必须判为 false；不能补造引用。这不影响其他有依据的事实或任务。归属/客户尚未确定不自动表示行动被阻塞。
+keep:true 时，field_support 必须逐个列出候选 memory/patch 中的业务字段，每个布尔值判断该字段的拟议值是否受来源支持；不列 responsibility_basis、effective、at、reopen 等引用/控制字段。没有 replace 的 NO_CHANGE/DEFERRED/NO_MEMORY 的 field_support 为 {}。keep:false 时 field_support 为 {}。unverified_fields 是系统发现未能验证引用的可选责任字段，必须判为 false；不能补造引用。这不影响其他有依据的事实或任务。归属/客户尚未确定不自动表示行动被阻塞。
 不能仅检查引文存在：必须判断原话是否确立该具体行动、责任、状态和期限。assistant 的建议/计划不能赋予 user 新义务。转发、协调、记录不等于本人执行；支持旧任务不等于接受新安排。
-尤其检查拟改 deadline：依赖条件、交接执行人、进度、尚未完成都不证明原期限已取消；只有明确取消/替换这个期限才支持变更。没有明确期限变化时 deadline:false，原期限沿用。waiting_on 与实际阻塞一致，不以正文代替字段。
+尤其检查拟改 deadline：依赖条件、交接执行人、进度、尚未完成都不证明原期限已取消；只有明确取消/替换这个期限才支持变更。没有明确期限变化时 deadline:false，原期限沿用。卡点和等待条件仅在正文中维护，并清除已经解决的旧卡点。
 新引用只能来自 new；context 和旧目标只供比较，不能重新推动旧变化。候选若仅重新陈述旧目标已覆盖的内容，不应作为新 UPDATE。同一事项补充/纠正维护原目标，独立事项允许 CREATE，不能凭标题相似合并。
-逐字段判断后输出 decisions；不得添加字段、事实、引用或目标。不要输出解释或其他键。
+逐字段判断后输出 decisions；对共同事实变更，检查所有候选记忆中是否仍有旧职责或旧状态，不能认可只更新一条而遗留冲突。确认 MERGE 各方确为同一事项且完整保留有效内容；独立生命周期的项目/任务不可合并。
+修正遗漏时，decision 可增加 replace（同 target 的完整 UPDATE），field_support 判断替换后的字段；不得替换 DEFERRED，也不得新增义务或猜测未知。还可输出 updates:[{"row":UPDATE,"field_support":{...}}] 更新原 draft 未涉及的可写候选目标，证据仍只取原输入 new。没有修正就省略 replace/updates。每条修正必须保留仍有效的旧事实与原期限；撤回用 validity=retracted。不要输出解释。
 """
 
 _METADATA = {"responsibility_basis", "effective", "at", "reopen"}
-_REQUIRED = {"CREATE": {"type", "scope", "title", "body"}, "UPDATE": {"title", "body"}}
+_REQUIRED = {"CREATE": {"type", "scope", "title", "body"}, "UPDATE": {"title", "body"}, "MERGE": {"body"}}
 
 
 def envelope(value):
@@ -46,6 +47,9 @@ def fields(row):
 def needs_review(compiled, response=None):
     if response is not None:
         rows = envelope(parse_strict_json(response))["items"]
+        actions = {str(row.get("action", "")).strip().upper() for row in rows if isinstance(row, dict)}
+        if "MERGE" in actions or {"UPDATE", "NO_CHANGE"} <= actions:
+            return True
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -54,7 +58,7 @@ def needs_review(compiled, response=None):
             payload = row.get("memory") if action == "CREATE" else row.get("patch")
             if isinstance(payload, dict) and (
                     action == "CREATE" and payload.get("type") in {"todo", "event"}
-                    or any(k in payload for k in ("deadline", "assignee", "waiting_on")) and any(payload.get(k) is not None for k in ("deadline", "assignee", "waiting_on"))):
+                    or any(k in payload for k in ("deadline", "assignee")) and any(payload.get(k) is not None for k in ("deadline", "assignee"))):
                 return True
     return any(op["action"] in {"CREATE", "UPDATE"}
                and ((op["action"] == "CREATE" and op.get("memory", {}).get("type") in {"todo", "event"})
@@ -81,7 +85,7 @@ def unverified_fields(row, original):
                     return []  # A conflict stays an error in the original compiler.
                 citations[name] = selection
     missing = []
-    for name in ("assignee", "waiting_on"):
+    for name in ("assignee",):
         if payload.get(name) is None:
             continue
         selection = citations.get(name)
@@ -121,19 +125,36 @@ def review_request(original, response, snapshot=None):
                                ensure_ascii=False, separators=(",", ":"))}
 
 
+def _maintenance_update(row, support, original):
+    """No arbitrary new target or CREATE is authorized by a review correction."""
+    if (not isinstance(row, dict) or row.get("action") != "UPDATE"
+            or not isinstance(row.get("patch"), dict) or not row["patch"]
+            or not isinstance(support, dict) or set(support) != fields(row)
+            or any(value is not True for value in support.values())):
+        raise ValueError("invalid_maintenance_correction")
+    target = next((m for m in original.get("memories", []) if m.get("ref") == row.get("target")), None)
+    new = {e["ref"] for e in original["evidence"] if e["use"] == "new"}
+    if (target is None or target.get("writable") is not True
+            or not isinstance(row.get("evidence"), list) or not set(row["evidence"]) & new
+            or unverified_fields(row, original)):
+        raise ValueError("invalid_maintenance_correction")
+    return deepcopy(row)
+
+
 def apply_review(request, response):
-    """Only subtract unapproved proposals; never synthesize business values."""
+    """Review proposals and source-bound maintenance in the same existing pass."""
     try:
         data = json.loads(request["user"])
         draft = deepcopy(data["draft"])
         review = parse_strict_json(response)
         rows = draft["items"]
         decisions = review["decisions"]
-        if set(review) != {"decisions"} or not isinstance(decisions, list) or len(decisions) != len(rows):
+        if set(review) - {"decisions", "updates"} or not isinstance(decisions, list) or len(decisions) != len(rows):
             raise ValueError
         positions = set()
         for decision in decisions:
-            if not isinstance(decision, dict) or set(decision) != {"item", "keep", "field_support"}:
+            if (not isinstance(decision, dict) or not {"item", "keep", "field_support"} <= set(decision)
+                    or set(decision) - {"item", "keep", "field_support", "replace"}):
                 raise ValueError
             i = decision["item"]
             if type(i) is not int or not 0 <= i < len(rows) or i in positions or type(decision["keep"]) is not bool:
@@ -143,6 +164,15 @@ def apply_review(request, response):
             if not isinstance(support, dict) or any(type(v) is not bool for v in support.values()):
                 raise ValueError
             row = rows[i]
+            if "replace" in decision:
+                if (i in data.get("invalid_representation_items", []) or not decision["keep"]
+                        or row.get("action") not in {"UPDATE", "NO_CHANGE"}):
+                    raise ValueError
+                replacement = _maintenance_update(decision["replace"], support, data["original_input"])
+                if replacement["target"] != row["target"]:
+                    raise ValueError
+                row = rows[i] = replacement
+                data.get("unverified_fields", [[] for _ in rows])[i] = []
             if decision["keep"] and (not isinstance(row, dict) or not isinstance(row.get("action"), str)):
                 raise ValueError
             expected = fields(row) if decision["keep"] else set()
@@ -183,7 +213,7 @@ def apply_review(request, response):
                         # unrecognized citation annotation. Drop only its exact
                         # reference-shaped wrapper, never arbitrary extensions
                         # or a proof for a value that remains in the candidate.
-                        if name in {"assignee", "waiting_on"}:
+                        if name in {"assignee"}:
                             annotation = owner.get(name + "_basis")
                             if (isinstance(annotation, dict) and set(annotation) == {"ref", "text"}
                                     and all(isinstance(v, str) for v in annotation.values())):
@@ -193,6 +223,18 @@ def apply_review(request, response):
             if row["action"].upper() == "UPDATE" and not payload:
                 rows[i] = None
         rows = [r for r in rows if r is not None]
+        additions = review.get("updates", [])
+        if not isinstance(additions, list) or len(additions) > 20:
+            raise ValueError
+        used = {row.get("target") for row in rows if isinstance(row, dict)}
+        for entry in additions:
+            if not isinstance(entry, dict) or set(entry) != {"row", "field_support"}:
+                raise ValueError
+            row = _maintenance_update(entry["row"], entry["field_support"], data["original_input"])
+            if row["target"] in used:
+                raise ValueError
+            rows.append(row)
+            used.add(row["target"])
         if not rows:
             original = data["original_input"]
             if original.get("request_kind") == "explicit_remember":

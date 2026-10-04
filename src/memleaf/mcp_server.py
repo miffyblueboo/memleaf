@@ -80,7 +80,7 @@ INSTRUCTIONS = (
     "For global current-action questions use list_todos rather than relevance search, omit scope to cover "
     "all scopes, follow next_cursor until has_more=false, then read each relevant action body. "
     "For 'my work' use list_todos responsibility=mine; use delegated or all for others' work. "
-    "Unassigned ownership is uncertain. waiting_on alone does not create a user follow-up task; "
+    "Unassigned ownership is uncertain. A dependency alone does not create a user follow-up task; "
     "an active item is not automatically the user's personal work. "
     "Legacy context is an explicit compatibility interface, not an alternative to this "
     "scope/search/read flow. Managed MCP search is directory-only and rejects view=full; "
@@ -99,8 +99,11 @@ INSTRUCTIONS = (
     "process_status; accepted does not mean completed. "
     "Use remember only when the user explicitly asks to remember something. If the user has "
     "previously or currently explicitly said not to record corresponding text, skip capture for it. "
-    "For a completed, closed or cancelled task, read its current revision and use update_memory "
-    "with patch.status=completed or cancelled. This preserves its facts and history. "
+    "For conversation-based memory corrections, task completion/cancellation/reopening or "
+    "withdrawal of a fact/preference, use the host's memleaf_remember with its current retrieval_id. "
+    "It binds the actual user request and preserves history. If unavailable, update_memory "
+    "with retrieval_id queues the same source-bound edit. Bare explicit edits may omit the token. "
+    "Withdraw facts/preferences with validity=retracted, not task status=cancelled. "
     "Forgetting permanently deletes the selected memory and its history. Use forget_memory or "
     "forget_about only for an explicit user request to permanently forget a reliably identified "
     "target, with confirm_delete=true; task completion is not such a request. A do-not-remember "
@@ -376,9 +379,10 @@ _TOOLS: tuple[dict[str, Any], ...] = (
             "Complete, cancel or explicitly reopen an existing action without deleting its facts "
             "or history. Read the target first and pass its revision as expected_revision. "
             "Use patch.status=completed for finished/closed tasks, cancelled for abandoned tasks, "
-            "or active with reopen=true for an explicitly reopened task. Only supply source_time "
-            "when the event time is explicitly known; it supplies completed_at for completion. "
-            "Omit it when unknown; never substitute the current processing time. "
+            "or active with reopen=true for an explicitly reopened task. Withdraw facts/preferences "
+            "with patch.validity=retracted. With a host retrieval_id this queues the actual user turn; "
+            "it does not immediately apply model-written fields. Never supply model-inferred source_time. "
+            "Bare explicit edits have unknown source time; the trusted Python API accepts source metadata. "
             "Retry the same arguments after an interrupted call."
         ),
         "inputSchema": _object_schema(
@@ -386,10 +390,11 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                 "memory_id": {"type": "string"},
                 "expected_revision": {"type": "string"},
                 "patch": _object_schema(
-                    {"status": {"type": "string", "enum": ["active", "completed", "cancelled"]}},
-                    required=["status"],
+                    {"status": {"type": "string", "enum": ["active", "completed", "cancelled"]},
+                     "validity": {"type": "string", "enum": ["retracted"]},
+                     "body": {"type": "string"}},
                 ),
-                "source_time": {"type": "string"},
+                "retrieval_id": {"type": "string"},
                 "reopen": {"type": "boolean"},
             },
             required=["memory_id", "expected_revision", "patch"],
@@ -663,7 +668,7 @@ def _read_page_result(value: Any) -> dict[str, Any] | None:
         result["validity"] = validity
     if "revision" in value:
         result["revision"] = revision
-    for name in ("assignee", "waiting_on", "due_text", "due_status"):
+    for name in ("assignee", "due_text", "due_status"):
         field = value.get(name)
         if field is not None and not isinstance(field, str):
             raise ValueError(f"invalid read {name}")
@@ -1185,15 +1190,31 @@ def _invoke_tool(
             value = service.remember(**args)
         elif name == "update_memory":
             patch = args["patch"]
-            if (not isinstance(patch, dict) or set(patch) != {"status"}
-                    or not isinstance(patch["status"], str)
-                    or patch["status"] not in {"active", "completed", "cancelled"}):
-                raise ValueError("MCP update_memory requires a valid patch.status")
+            if (not isinstance(patch, dict) or not patch or set(patch) - {"status", "validity", "body"}
+                    or "status" in patch and patch["status"] not in {"active", "completed", "cancelled"}
+                    or "validity" in patch and patch["validity"] != "retracted"):
+                raise ValueError("MCP update_memory requires a lifecycle patch")
+            if "source_time" in args:
+                raise ValueError("source_time_requires_trusted_message_binding")
+            token = args.pop("retrieval_id", None)
+            if token is not None:
+                from .retrieval_gate import snapshot_read_context
+                state = validate_turn(service.vault, token)
+                validate_current_turn(service.vault, token, state["source"])
+                reads = snapshot_read_context(service.vault, token, source=state["source"], session_id=state["session_id"], turn_id=state["turn_id"])
+                if args["memory_id"] not in reads["memory_ids"]:
+                    raise ValueError("update_target_not_read_this_turn")
+                if service.memory_revision(args["memory_id"]) != args["expected_revision"]:
+                    raise ValueError("memory version mismatch")
+                from .host_retention import remember_turn
+                value = remember_turn(service, phase="queue", retrieval_id=token)
+                return _tool_result(value)
             patch = dict(patch)
-            # This is an explicitly supplied event time, never the clock at
-            # which the adapter happens to execute the command.
-            if patch["status"] == "completed" and "source_time" in args:
-                patch["completed_at"] = args["source_time"]
+            current = service.read(args["memory_id"])
+            if "status" in patch and not (current.type in {"todo", "event", "project"} or current.actionable):
+                raise ValueError("non_action_withdrawal_requires_validity_retracted")
+            if patch.get("validity") == "retracted":
+                patch["body"] = ""
             args["patch"] = patch
             value = service.update_memory(**args)
         elif name == "forget_memory":

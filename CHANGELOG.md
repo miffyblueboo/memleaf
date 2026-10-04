@@ -4,6 +4,39 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.87 — 2026-10-04
+
+### Shared source-bound maintenance with bounded model cost
+
+- Allow up to five actual requests per incremental work item, stopping on
+  success. Extraction, format retries, review and recovery share the durable
+  allowance; older work retains its smaller creation-time limit.
+- Bind conversational lifecycle updates to the captured host turn. MCP
+  `update_memory` no longer accepts model-supplied source times or directly
+  commits rewritten facts when host-bound. Preserve the trusted Python API.
+- Retire `waiting_on` from extraction and model/read/list projections; maintain
+  dependencies in the current body. Legacy stored data remains readable.
+- Merge confirmed duplicate memories through the existing processing requests.
+  Preserve combined facts, provenance and history; reject incompatible targets.
+  Commit the survivor before retracting duplicates, with dependency revisions
+  checked at the final writer boundary and recoverable frozen operations.
+- Maintain shared facts across related project and task records using the
+  existing source-bound review. Independent lifecycles remain separate.
+- Retract withdrawn facts/preferences through validity, retaining their history;
+  explicit replacement preferences remain valid. Task cancellation is not a
+  substitute for preference withdrawal.
+- Reuse successful, verified full-turn host retention to settle automatic work
+  without another model request. Partial selected retention does not claim
+  complete automatic coverage. Record actual API token usage without extra
+  requests or counting cached replay usage again.
+- Count known provenance overlaps once; mark counts for truncated histories as
+  upper bounds when their unseen overlap cannot be reconstructed.
+- Validation: 483 affected regression and installation/acceptance checks passed;
+  nine isolated real DeepSeek scenarios and the installed Hermes background
+  callback with current source passed. Saved faulty time arguments were rejected
+  in an isolated zero-call replay. No production memory migration or historical
+  failed-run retry was performed.
+
 ## 0.2.86 — 2026-10-04
 
 ### Source-bound Hermes retention and general extraction compatibility

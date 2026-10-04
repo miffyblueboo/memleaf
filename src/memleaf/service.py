@@ -959,7 +959,7 @@ class Memleaf:
                 "read_accounting": hit_status,
             }
             structured_fields = structured_fields or {}
-            for name in ("assignee", "waiting_on", "due_text", "due_anchor", "due_status"):
+            for name in ("assignee", "due_text", "due_anchor", "due_status"):
                 if name in structured_fields:
                     result[name] = structured_fields[name]
             return result
@@ -1483,7 +1483,6 @@ class Memleaf:
                     "status": record.memory.status or "active",
                     "assignee": record.memory.extra.get("assignee"),
                     "responsibility": _todo_responsibility(record.memory),
-                    "waiting_on": record.memory.extra.get("waiting_on"),
                     "history": record.area == "history",
                     **(
                         {"active_memory_id": record.memory.extra.get("active_memory_id")}

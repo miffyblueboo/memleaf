@@ -75,7 +75,7 @@ _MEMORY_FIELDS = frozenset({
     "shadow_native_ids",
 })
 _LOCAL_FIELDS = (
-    "memory_id", "title", "body", "type", "scopes", "actionable", "status", "assignee", "waiting_on", "completed_at", "due_date"
+    "memory_id", "title", "body", "type", "scopes", "actionable", "status", "assignee", "completed_at", "due_date"
 )
 _EVIDENCE_FIELDS = ("unit_id", "role", "content", "origin", "section_path", "timestamp")
 _SCOPE_REGISTRY_FIELDS = ("scope", "aliases", "parent")
