@@ -1368,7 +1368,18 @@ class Memleaf:
             }
             if payload_chars(proposed) > MAX_SEARCH_CANDIDATE_CHARS:
                 if not selected:
-                    raise RetrievalError("search_result_too_large", "todo result exceeds the response budget")
+                    # Full views keep the same response cap. A long body is
+                    # explicitly paged instead of hiding or skipping the row.
+                    row = dict(candidates[index])
+                    while isinstance(row.get("body"), str) and len(row["body"]) > 1:
+                        row["body"] = row["body"][:len(row["body"]) // 2]
+                        row.update(body_has_more=True, body_next_offset=len(row["body"]))
+                        if payload_chars({**proposed, "results": [row]}) <= MAX_SEARCH_CANDIDATE_CHARS:
+                            candidates[index] = row
+                            break
+                    else:
+                        raise RetrievalError("search_result_too_large", "todo result exceeds the response budget")
+                    continue
                 break
             selected.append(candidates[index])
             index = next_index
@@ -1395,6 +1406,7 @@ class Memleaf:
         limit: int | None = None,
         as_of: str | None = None,
         timezone: str | None = None,
+        view: str = "directory",
     ) -> dict[str, Any]:
         """Enumerate explicitly tracked actions, including legacy todo memories."""
 
@@ -1402,6 +1414,8 @@ class Memleaf:
             raise ValueError("invalid todo status")
         if responsibility not in {"all", "mine", "delegated", "unassigned"}:
             raise ValueError("invalid todo responsibility")
+        if view not in {"directory", "full"}:
+            raise ValueError("invalid todo view")
         if type(include_overdue) is not bool or type(include_unscheduled) is not bool:
             raise ValueError("todo inclusion flags must be booleans")
         lower = self._todo_date(due_from, "due_from")
@@ -1484,6 +1498,10 @@ class Memleaf:
                     "assignee": record.memory.extra.get("assignee"),
                     "responsibility": _todo_responsibility(record.memory),
                     "history": record.area == "history",
+                    **({"body": record.memory.body[:512],
+                        "body_has_more": len(record.memory.body) > 512,
+                        "body_next_offset": 512 if len(record.memory.body) > 512 else None,
+                        "version": _memory_version(record.memory)} if view == "full" else {}),
                     **(
                         {"active_memory_id": record.memory.extra.get("active_memory_id")}
                         if record.area == "history" and isinstance(record.memory.extra.get("active_memory_id"), str)
@@ -1504,6 +1522,7 @@ class Memleaf:
                         "include_unscheduled": include_unscheduled,
                         "clock": clock,
                         "generation": snapshot.generation,
+                        **({"view": view} if view == "full" else {}),
                     },
                     "records": [
                         {

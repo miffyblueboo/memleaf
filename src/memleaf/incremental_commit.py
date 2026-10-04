@@ -291,6 +291,10 @@ def _resume_unlocked(service, processed, work):
         # These two changes share the final atomic ledger replacement.
         work["receipt_settled"] = True
         _settle_source(service, processed, work, source_valid=source_valid)
+        if source_valid and work.get("host_retention_origin") is not None:
+            from .host_retention import settle_completed_intent_unlocked
+            turn, _ = _window(service, work["source"], work["session_id"], work["turn_key"])
+            settle_completed_intent_unlocked(processed, work, turn)
         save_work(service, processed, work)
     except OSError as error:
         for op in work["operations"]:

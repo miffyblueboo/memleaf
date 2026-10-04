@@ -68,6 +68,22 @@ def _snapshot(service, source, session_id):
     runs = {k: load_run(processed, k) for k in processed.get(RUN_KEY, {})}
     works = {k: load_work(processed, k) for k in processed.get(COMMIT_KEY, {})}
     grouped = journal._turns_by_session()
+    # A process can stop after its committed receipt but before the old host
+    # completion returned. Clear only a verified full-source intent, without
+    # selecting the completed turn for another model request.
+    from .host_retention import settle_completed_intent_unlocked
+    retention_works = {}
+    for work in works.values():
+        if work.get("host_retention_origin") is not None:
+            retention_works.setdefault((work["source"], work["session_id"], work["turn_key"]), []).append(work)
+    settled = False
+    for turns in grouped.values():
+        for turn in turns:
+            if turn.complete and turn.processable and _matches(source, session_id, vars(turn)):
+                for work in retention_works.get((turn.source, turn.session_id, turn.turn_key), ()):
+                    settled = settle_completed_intent_unlocked(processed, work, turn) or settled
+    if settled:
+        journal._write_processed_unlocked(processed)
     actions, skipped = [], []
     available_identities = set()
     for _, available in sorted(grouped.items()):

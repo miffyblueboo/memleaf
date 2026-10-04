@@ -37,6 +37,7 @@ from .retrieval_gate import (
     observe_search,
     observe_todo_list,
     todo_filter_key,
+    todo_continuation,
     validate_current_turn,
     validate_turn,
 )
@@ -78,7 +79,9 @@ INSTRUCTIONS = (
     "at the execution boundary (supplied by a bound host or explicitly by a bare client), "
     "and a current FOUND search or list_todos result; NO_MATCH, ERROR, and DEGRADED turns cannot read. "
     "For global current-action questions use list_todos rather than relevance search, omit scope to cover "
-    "all scopes, follow next_cursor until has_more=false, then read each relevant action body. "
+    "all scopes. Use view=full on server-managed turns, follow returned continuation arguments "
+    "until has_more=false, and read only truncated bodies using body_next_offset/version. "
+    "Directory clients pass next_cursor as cursor, then read each relevant action body. "
     "For 'my work' use list_todos responsibility=mine; use delegated or all for others' work. "
     "Unassigned ownership is uncertain. A dependency alone does not create a user follow-up task; "
     "an active item is not automatically the user's personal work. "
@@ -264,8 +267,10 @@ _TOOLS: tuple[dict[str, Any], ...] = (
         "description": (
             "Enumerate explicitly tracked actions (including non-todo memories with status) by status/date across all scopes. "
             "This is not relevance search. A bare MCP client may omit retrieval_id only on the first "
-            "page; memleaf returns one that must be reused for pagination and read. Continue with "
-            "next_cursor until has_more=false, then read the matching action bodies with the same "
+            "page; memleaf returns one that must be reused for pagination and read. Server-managed clients continue with "
+            "continue=true with only retrieval_id until has_more=false; the server carries the exact cursor and filters. "
+            "Use view=full to receive bounded action bodies in the list; read only rows with body_has_more=true "
+            "using offset=body_next_offset and expected_version=version. Directory clients may copy next_cursor into cursor, then read the matching action bodies with the same "
             "retrieval_id. Displayed list numbers are turn-local; resolve a later numbered update "
             "against the previously shown title and memory_id, and clarify if that mapping is ambiguous. "
             "responsibility=mine selects only explicit assignee=user; delegated selects other named owners, "
@@ -286,6 +291,8 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                 "include_overdue": {"type": "boolean"},
                 "include_unscheduled": {"type": "boolean"},
                 "cursor": {"type": "string"},
+                "continue": {"type": "boolean", "description": "Fetch the next page of this turn's last list_todos query; pass only retrieval_id with continue=true."},
+                "view": {"type": "string", "enum": ["directory", "full"], "description": "Full bundles bounded bodies for server-managed Hermes/bare MCP turns. Host-observed turns retain directory pagination and read accounting."},
                 "limit": {"type": "integer", "minimum": 1},
                 "retrieval_id": {"type": "string"},
             },
@@ -791,6 +798,9 @@ def _tool_result(value: Any, *, is_error: bool = False) -> dict[str, Any]:
     if not isinstance(structured, dict):
         structured = {"result": structured}
     status = structured.get("execution_status")
+    if status == "queued":
+        structured["outcome"] = {"complete": False,
+            "guidance": "The request is queued; acknowledge user_message. No saved or completed change is confirmed by this result."}
     if status in {"completed", "completed_with_unresolved", "partial", "blocked", "failed", "retryable", "recovery_required", "cancelled"}:
         commit = structured.get("commit") or {}
         unresolved = status != "completed" or commit.get("coverage_status") == "partial"
@@ -1017,6 +1027,7 @@ def _observe_mcp_todos(
             if state.get("source") in {"hermes", "mcp"}
             else "hermes"
         ),
+        query_arguments={k: v for k, v in arguments.items() if k != "cursor"},
     )
 
 
@@ -1104,12 +1115,22 @@ def _invoke_tool(
             value = dict(value)
             value["retrieval_id"] = retrieval_id
         elif name == "list_todos":
+            continuation = args.pop("continue", False)
             retrieval_id = args.pop("retrieval_id", None)
             if retrieval_id is None:
-                if args.get("cursor") is not None:
+                if continuation or args.get("cursor") is not None:
                     raise RetrievalGateError("retrieval_id_required")
                 retrieval_id = _open_mcp_retrieval_turn(service, request_id)
             managed_state = _managed_search_state(service, retrieval_id)
+            if continuation:
+                if args or managed_state is None:
+                    raise RetrievalGateError("retrieval_todo_pagination_mismatch")
+                args = todo_continuation(service.vault, retrieval_id, current_source=managed_state["source"])
+            # Host-owned observers retain their existing search/read contract.
+            # Full bodies are bundled only where the server owns accounting.
+            directory_fallback = managed_state is None and args.get("view") == "full"
+            if directory_fallback:
+                args["view"] = "directory"
             observed_args = dict(args)
             try:
                 value = service.list_todos(**args)
@@ -1125,6 +1146,15 @@ def _invoke_tool(
                 return _tool_error(error)
             value = dict(value)
             value["retrieval_id"] = retrieval_id
+            if directory_fallback:
+                value["view"] = "directory"
+                value["answer_guidance"] = "This host observes directory results. Pass next_cursor as cursor until has_more=false, then read matching bodies with the same retrieval_id."
+            if args.get("view") == "full":
+                for row in value["results"]:
+                    guarded_read(service.vault, retrieval_id, row["memory_id"],
+                        lambda allowed, row=row: {"body": row["body"]}, current_source=managed_state["source"])
+            if value.get("has_more") and managed_state is not None:
+                value["continuation"] = {"continue": True, "retrieval_id": retrieval_id}
         elif name == "read":
             # Keep the protocol boundary hard-capped even if a caller sends a
             # larger value.  Core read_page performs the same authoritative

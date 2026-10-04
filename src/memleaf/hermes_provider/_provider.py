@@ -1370,6 +1370,11 @@ class MemleafMemoryProvider(MemoryProvider):
             return ""
         return (
             "# Memleaf Memory\n"
+            "For a request to save, correct, complete, cancel, reopen, or withdraw memory, "
+            "call memleaf_remember once with this turn's retrieval_id. It queues the actual "
+            "whole turn; no rewritten content, target revision, or message time is needed. "
+            "Use the returned user_message as the save acknowledgement. A queued request "
+            "starts processing only after your final reply, so its changes are pending.\n"
             "Memleaf is the active local-first memory provider. Each visible user "
             "turn must call the configured memleaf MCP search tool at least once "
             "before answering, including ordinary greetings; a no-match result is "
@@ -1383,8 +1388,10 @@ class MemleafMemoryProvider(MemoryProvider):
             "When pipeline_status is pending/unknown, memory can lag recent conversation: qualify current-state claims. For partial or completed_with_unresolved writes, report only the individually committed changes, and say which remain unresolved; never claim the entire request succeeded. "
             "When the user asks for current "
             "todos, all unfinished work, urgent work, or work due in a time range, call memleaf MCP "
-            "list_todos instead of relevance search; omit scope for a global query, follow every "
-            "next_cursor until has_more=false, and read every matching todo body with the same retrieval_id. "
+            "list_todos(view=full) instead of relevance search; omit scope for a global query. "
+            "Use the returned continuation arguments until has_more=false, without copying a cursor. "
+            "Each row includes a body; read only truncated rows with offset=body_next_offset "
+            "and expected_version=version, following their remaining body pages. "
             "Never exclude a todo because another Hermes session or another Agent created it. Hermes has a soft "
             "observer only: do not claim a search happened unless the visible tool "
             "messages show it. Visible Hermes "
@@ -1403,7 +1410,7 @@ class MemleafMemoryProvider(MemoryProvider):
             "file writes to simulate success, and do not infer automatic success merely because "
             "active or history files exist. Automatic recall is a directory of "
             "scope identifiers, hierarchy, and aliases only; it never contains "
-            "memory IDs, titles, or bodies. For explicit retention or corrections, task completion/cancellation/reopening, and withdrawing a fact/preference, use memleaf_remember with the current retrieval_id. It processes the actual complete turn and preserves audit history. Do not perform a conversational lifecycle edit through an unbound MCP update or infer message time from a deadline. Pending means not yet saved. Do not submit assistant-written facts through legacy MCP remember. "
+            "memory IDs, titles, or bodies. Do not infer message time from a deadline or submit assistant-written facts through legacy MCP remember. "
             "Use deliberate remember/forget tools "
             "only when the user explicitly asks for that operation. Automatic "
             "capture and processing use only visible user and assistant text; "
@@ -2102,7 +2109,7 @@ class MemleafMemoryProvider(MemoryProvider):
         # gated by the initialized host identity and write policy.
         if not self._write_enabled:
             return []
-        return [{"name": "memleaf_remember", "description": "Use for an explicit user request to remember or maintain existing memory: corrections, task completion/cancellation/reopening, or withdrawal of a fact/preference. Bind the actual complete user turn; never submit rewritten facts, dates or scopes. Returns pending until the turn is captured and processed.",
+        return [{"name": "memleaf_remember", "description": "Queue the actual complete user turn for a request to save/correct memory, complete/cancel/reopen a task, or withdraw a fact/preference. Call once, with only the current retrieval_id. Reply with the returned user_message to acknowledge the queued request; processing starts after the final reply, so no changes are completed yet.",
                  "parameters": {"type": "object", "properties": {"retrieval_id": {"type": "string"}},
                                 "required": ["retrieval_id"], "additionalProperties": False}}]
 

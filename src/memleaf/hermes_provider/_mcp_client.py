@@ -236,7 +236,9 @@ class _MCPClient:
                 result = self._request_locked(
                     "tools/call",
                     {"name": name, "arguments": dict(arguments)},
-                    timeout=self.process_timeout if name == "process" else self.timeout,
+                    timeout=(self.process_timeout if name == "process"
+                             or name == "remember_turn" and arguments.get("phase") == "complete"
+                             else self.timeout),
                 )
             except _MCPToolError as error:
                 # A local compatibility gate refusal is not a transport failure.

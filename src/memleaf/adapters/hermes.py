@@ -24,6 +24,7 @@ from .base import (
 
 
 _MCP_IDLE_TIMEOUT_SECONDS = 60
+_HOST_RETENTION_TOOLS = frozenset({"remember", "update_memory"})
 
 
 def expected_mcp_tool_count() -> int:
@@ -452,15 +453,15 @@ class HermesAdapter:
                 if (isinstance(managed, dict) and set(managed) == {"patterns", "applied"}
                         and managed["applied"] == selected):
                     selected = patterns(managed["patterns"])
-                known = [tool["name"] for tool in _TOOLS if tool["name"] != "remember"
+                known = [tool["name"] for tool in _TOOLS if tool["name"] not in _HOST_RETENTION_TOOLS
                     and any(fnmatch.fnmatchcase(tool["name"], pattern) for pattern in selected)]
                 # Retain explicit future names and original wildcard intent so
                 # reinstalling a newer declaration set does not freeze it.
-                literal = [name for name in selected if name != "remember" and not any(c in name for c in "*?[")]
+                literal = [name for name in selected if name not in _HOST_RETENTION_TOOLS and not any(c in name for c in "*?[")]
                 updated["include"] = list(dict.fromkeys([*known, *literal]))
                 updated["memleaf_bound_retention"] = {"patterns": selected, "applied": updated["include"]}
             else:
-                updated["exclude"] = list(dict.fromkeys([*patterns(updated.get("exclude", [])), "remember"]))
+                updated["exclude"] = list(dict.fromkeys([*patterns(updated.get("exclude", [])), *sorted(_HOST_RETENTION_TOOLS)]))
             if updated == filters:
                 return True
             written = run_argv(self.runner, [detection.executable, "config", "set", key,

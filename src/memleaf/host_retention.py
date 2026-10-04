@@ -11,6 +11,7 @@ from .retrieval_gate import validate_turn, validate_current_turn
 KEY = "host_retention_intents"
 MAX_PENDING = 128
 INTENT_PREFIX = "host-retain-"
+PENDING_MESSAGE = "保存请求已排队，后台处理完成后生效。"
 
 
 def pending_intents(processed):
@@ -122,7 +123,8 @@ def remember_turn(service, *, phase, retrieval_id=None, source=None, session_id=
             processed[KEY] = pending
             atomic_write_json(service.vault.processed_state_path, processed)
             return {"execution_status": "queued", "saved": False,
-                    "guidance": "The actual user messages will be retained after this turn finishes. Do not claim permanent memory was saved yet."}
+                    "user_message": PENDING_MESSAGE,
+                    "guidance": "Acknowledge only that the request is queued. Use user_message for the save acknowledgement; do not report any change as completed. Processing starts after your final reply."}
         if bound is None:
             return {"execution_status": "not_requested", "saved": False, "model_calls": 0}
         # A started intent already owns its source and allowance. Compression
@@ -156,6 +158,32 @@ def remember_turn(service, *, phase, retrieval_id=None, source=None, session_id=
                 processed[KEY].pop(identity)
                 atomic_write_json(service.vault.processed_state_path, processed)
     return result
+
+
+def settle_completed_intent_unlocked(processed, work, turn):
+    """Consume only the matching, committed full-turn authority in the same ledger write."""
+    from .incremental_journal import public_result
+    from .turn_plan import input_digest
+    origin = work.get("host_retention_origin")
+    if (origin is None or not work.get("receipt_settled")
+            or public_result(work)["execution_status"] != "completed"
+            or (work["source"], work["session_id"], work["turn_key"])
+               != (turn.source, turn.session_id, turn.turn_key)
+            or work["source_digest"] != input_digest(turn)
+            or {e["event_key"] for e in work["evidence"] if e["use"] == "new"} != set(turn.event_keys)):
+        return False
+    identity = digest([origin[k] for k in ("source", "session_id", "turn_id")])
+    pending = pending_intents(processed)
+    if pending.get(identity) != origin:
+        return False
+    try:
+        check_run_authority(processed, work)
+    except ValueError as error:
+        if str(error) != "source_recording_revoked":
+            raise
+        return False
+    pending.pop(identity)
+    return True
 
 
 def complete_for_captured_turn(service, turn, *, model=None, router=None):

@@ -495,6 +495,7 @@ def observe_todo_list(
     has_more: bool,
     next_cursor: str | None,
     current_source: str | None = None,
+    query_arguments: Mapping[str, Any] | None = None,
 ) -> None:
     """Record one real list_todos page and enforce a single current-turn cursor chain."""
 
@@ -539,6 +540,9 @@ def observe_todo_list(
             entry["todo_list_pages"] = int(entry.get("todo_list_pages", 0) or 0) + 1
             entry["todo_list_pending"] = bool(has_more)
             entry["todo_list_expected_cursor_hash"] = next_hash if has_more else ""
+            if query_arguments is not None:
+                entry["todo_list_next_cursor"] = next_cursor if has_more else None
+                entry["todo_list_query_arguments"] = dict(query_arguments) if has_more else None
         entry["status"] = {"found": "FOUND", "no_match": "NO_MATCH", "error": "ERROR"}[status]
         seen = [item for item in seen if isinstance(item, str)][-255:]
         seen.append(call_hash)
@@ -547,6 +551,26 @@ def observe_todo_list(
         entry["continuation_pending"] = False
         ledger["entries"][retrieval_id] = entry
         _write_ledger(path, ledger)
+
+
+def todo_continuation(vault, retrieval_id, *, current_source):
+    """Return only this live turn's last server-issued page, never a model's cursor rewrite."""
+    retrieval_id = _retrieval_id(retrieval_id)
+    root = _coerce_vault(vault)
+    with _with_lock(root):
+        ledger = _read_ledger(_ledger_path(root))
+        entry = _entry_for(ledger, retrieval_id)
+        if not _is_current_entry(ledger["entries"], retrieval_id, entry, current_source):
+            raise RetrievalGateError("retrieval_turn_mismatch")
+        cursor = entry.get("todo_list_next_cursor")
+        arguments = entry.get("todo_list_query_arguments")
+        if (entry.get("todo_list_pending") is not True or not isinstance(cursor, str)
+                or not isinstance(arguments, dict)
+                or _optional_hash(cursor) != entry.get("todo_list_expected_cursor_hash")
+                or hashlib.sha256(todo_filter_key(arguments).encode()).hexdigest()
+                   != entry.get("todo_list_filter_hash")):
+            raise RetrievalGateError("retrieval_todo_pagination_mismatch")
+        return {**arguments, "cursor": cursor}
 
 
 def request_gate_retry(vault: Vault | Path | str, retrieval_id: str) -> int:
@@ -719,6 +743,7 @@ __all__ = [
     "observe_search",
     "observe_todo_list",
     "todo_filter_key",
+    "todo_continuation",
     "request_gate_retry",
     "validate_current_turn",
     "validate_turn",

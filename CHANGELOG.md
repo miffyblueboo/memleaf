@@ -4,6 +4,31 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.88 — 2026-10-04
+
+### Reliable queued retention and bounded action queries
+
+- Use the processing timeout for Hermes whole-turn retention completion while
+  keeping queue operations short. Settle fully committed retention intents in
+  the same atomic ledger write as their receipts, including interrupted host
+  callbacks. Reconcile older matching committed intents without model calls;
+  partial, changed-source and revoked-authority intents remain protected.
+- Route conversational saves and lifecycle requests through Hermes's native
+  whole-turn retention tool. Hide bare `remember` and `update_memory` from the
+  Hermes MCP configuration while preserving those public tools for other
+  clients. Return a clear queued acknowledgement before background processing.
+- Add `list_todos(view=full)` with bounded action bodies and explicit versioned
+  continuation for long bodies. Server-managed clients can use `continue=true`
+  with their current retrieval identity instead of copying opaque cursors.
+  Preserve directory/cursor clients, host-owned read accounting and strict
+  stale-turn, cursor and filter validation.
+- Keep absent message times unknown. Explicitly supplied deadlines work without
+  message timestamps; no capture-time fallback or source-time repair is added.
+- Validation: affected local regressions, a zero-model-call replay of the actual
+  committed-intent failure, and isolated real DeepSeek save/deadline and global
+  action-pagination scenarios passed. No additional product model calls,
+  production Vault writes or historical model retries were introduced.
+
 ## 0.2.87 — 2026-10-04
 
 ### Shared source-bound maintenance with bounded model cost
