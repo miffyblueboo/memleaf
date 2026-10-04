@@ -155,6 +155,37 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
             read_ids.extend(identities)
     priority = list(dict.fromkeys(explicit_ids + read_ids + priority))
     priority += sorted(x for x in prior_ids if x.casefold() in records and x not in priority)
+    historical = {}
+    explicit_keys = {identity.casefold() for identity in explicit_ids}
+    if any(identity.casefold() not in records for identity in priority):
+        # Ordinary turns keep their knowledge-only scan. Read/caller-required
+        # identities that are absent there may be exact historical versions.
+        # Reuse the public scanner's duplicate, path and generation checks.
+        library = scan_memories(service.vault, include_history=True)
+        if library.ambiguous or native_keys.intersection(r.memory.memory_id.casefold() for r in library.records):
+            raise ValueError("duplicate_memory_id")
+        if library.issues:
+            raise ValueError("incomplete_library")
+        records = {r.memory.memory_id.casefold(): r.memory for r in library.area("knowledge")}
+        records.update({key.casefold(): memory for key, memory in native.memories.items()})
+        archives = {r.memory.memory_id.casefold(): r for r in library.area("history")}
+        from .retrieval_lifecycle import current_validities, lifecycle
+        current = current_validities(library)
+        current_priority = []
+        for identity in priority:
+            if identity.casefold() in records:
+                current_priority.append(identity)
+                continue
+            archive = archives.get(identity.casefold())
+            if archive is None or identity.casefold() in explicit_keys:
+                raise ValueError("required_target_unavailable")
+            life = lifecycle(archive, current)
+            historical[archive.memory.memory_id] = {"memory": archive.memory, "lifecycle": life}
+            # A stored unambiguous local link supplies comparison context, not
+            # new write authority; the existing scope boundary still applies.
+            if life["current_validity"] is not None:
+                current_priority.append(life["active_memory_id"])
+        priority = list(dict.fromkeys(current_priority))
     chosen = []
     for identity in priority:
         if identity.casefold() not in records:
@@ -202,6 +233,7 @@ def _prepare_incremental_unlocked(service: Any, *, source: str, session_id: str,
     return PlanningSnapshot.build(evidence=evidence, targets=targets, scopes=scope_refs,
                                   write_scopes=boundary, writable=writable,
                                   allow_new_scopes=allow_new_scopes, native_targets=native_targets,
+                                  history_context=historical,
                                   native_guard=native.guard if native.guard["sources"] else None,
                                   request_kind="explicit_remember" if selection else "automatic",
                                   retention_request=retention_request, scope_guard=scope_guard,

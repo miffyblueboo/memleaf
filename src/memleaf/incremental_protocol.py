@@ -287,6 +287,7 @@ class PlanningSnapshot:
               allow_new_scopes: bool = False, context_complete: bool = True,
               native_targets: Mapping[str, dict[str, Any]] | None = None,
               native_guard: dict[str, Any] | None = None,
+              history_context: Mapping[str, Any] | None = None,
               retention_request: str | None = None, scope_guard: dict[str, Any] | None = None,
               scope_aliases: Mapping[str, list[str]] | None = None,
               basis_statuses: Mapping[str, str] | None = None,
@@ -371,6 +372,10 @@ class PlanningSnapshot:
         state = {"protocol_version": PROTOCOL_VERSION, "evidence": evidence, "targets": target_values,
                  "scopes": scopes, "write_scopes": write_scopes, "request_kind": request_kind,
                  "allow_new_scopes": allow_new_scopes, "context_complete": context_complete}
+        from .historical_context import freeze_history
+        historical = freeze_history(history_context, target_values)
+        if historical:
+            state["history_context"] = historical
         if extraction_contract is not None:
             state["extraction_contract"] = extraction_contract
         from .incremental_explicit import validate_links
@@ -415,6 +420,9 @@ class PlanningSnapshot:
         state["targets"] = {ref: {"revision": item["revision"], "writable": item["writable"],
                                   **({"native": item["native"]} if "native" in item else {})}
                             for ref, item in state["targets"].items()}
+        if "history_context" in state:
+            state["history_context"] = {identity: {"revision": item["revision"], "lifecycle": item["lifecycle"]}
+                                        for identity, item in state["history_context"].items()}
         return hashlib.sha256(_json(state).encode("utf-8")).hexdigest()
 
     def state(self) -> dict[str, Any]:
@@ -454,6 +462,7 @@ class PlanningSnapshot:
                 projection["calendar_hints"] = hints
             projected_evidence.append(projection)
         from .incremental_explicit import project_links
+        from .historical_context import project_history
         return {
             "protocol_version": PROTOCOL_VERSION, "request_kind": state["request_kind"],
             **({"extraction_contract": state["extraction_contract"]} if "extraction_contract" in state else {}),
@@ -463,6 +472,7 @@ class PlanningSnapshot:
                if state.get("scope_aliases") else {}),
             "allow_new_scopes": state["allow_new_scopes"], "context_complete": state["context_complete"],
             "evidence": projected_evidence, "memories": memories,
+            **({"history_context": project_history(state, reverse_scope)} if state.get("history_context") else {}),
             **({"explicit_writes": project_links(state["explicit_writes"], state["targets"])}
                if state.get("explicit_writes") else {}),
         }

@@ -39,4 +39,5 @@ patch 只含 title/body/scope/status/actionable/assignee/deadline/validity；typ
 request_kind=explicit_remember：所选 new 有保留授权，仍按用户实际要求选择内容并整理去重，不得 NO_MEMORY；独立不被要求保留的内容不强行建项。
 仅 whole_host_turn=true 的宿主完整回合显式请求：遵守用户指定的保存/排除范围，同时按自动记忆标准处理整轮其余有价值的独立新信息；不要因已保存一项而跳过其他。助手建议仍不能变成用户义务。
 explicit_writes 是系统核验的已写目标关联，不是新证据或整轮已覆盖声明：先比较当前目标与 new，完整无变化 NO_CHANGE，同一事项新增 UPDATE，独立新事项仍 CREATE。不用旧回执覆盖较新目标。
+history_context 是已读历史版本，只供比较，不是新事实或操作 target；current_target 指向当前候选，current_validity=null 表示未知。历史正文及当时状态不覆盖当前候选。
 """

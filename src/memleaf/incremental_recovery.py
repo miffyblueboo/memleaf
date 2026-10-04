@@ -12,6 +12,7 @@ from typing import Any
 from .incremental_protocol import PlanningSnapshot, MAX_ITEMS
 from .models import Memory
 from .validation import parse_strict_json
+from .historical_context import thaw_history, history_signature
 
 RECOVERY_SYSTEM = "\n本次仅重规划未结算的 new；settled 只读，不重出、不改写。新增前文和已有记忆仅帮助理解原事项，不据此新建无关事项。沿用 JSON 协议。\n"
 
@@ -36,6 +37,7 @@ def restore_snapshot(state: Any) -> PlanningSnapshot:
             vault_binding=state.get("vault_binding"),
             explicit_writes=state.get("explicit_writes"),
             extraction_contract=state.get("extraction_contract"),
+            history_context=thaw_history(state.get("history_context")),
         )
     except (KeyError, TypeError) as error:
         raise ValueError("invalid_partial_snapshot") from error
@@ -175,6 +177,7 @@ def context_changed(original: PlanningSnapshot, current: PlanningSnapshot, work:
     new_e = {e["event_key"]: {k: v for k, v in e.items() if k != "ref"} for e in new["evidence"]}
     from .incremental_scopes import guard_matches, applied_additions
     if (old_e != new_e or old.get("native_guard") != new.get("native_guard")
+            or history_signature(old) != history_signature(new)
             or not guard_matches(new.get("scope_guard"), old.get("scope_guard"), applied_additions(work))):
         return True
     expected = {t["memory"]["memory_id"]: t["revision"] for t in old["targets"].values()}
@@ -247,6 +250,8 @@ def recovery_snapshot(original: PlanningSnapshot, current: PlanningSnapshot, wor
             raise ValueError("repair_context_changed")
         if old.get("native_guard") != new.get("native_guard"):
             raise ValueError("repair_context_changed")
+        if history_signature(old) != history_signature(new):
+            raise ValueError("repair_context_changed")
         # A structural repair may not silently adapt any referenced target's
         # earlier business decision to a different complete target snapshot.
         for row in work.get("_repair_rows", []):
@@ -270,6 +275,7 @@ def recovery_snapshot(original: PlanningSnapshot, current: PlanningSnapshot, wor
                                   scope_guard=new.get("scope_guard"), scope_aliases=new.get("scope_aliases"),
                                   basis_statuses=statuses, vault_binding=new.get("vault_binding"),
                                   explicit_writes=explicit_links,
+                                  history_context=thaw_history(new.get("history_context")),
                                   extraction_contract=(old if mode == "repair" else new).get("extraction_contract"))
 
 

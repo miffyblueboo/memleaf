@@ -4,6 +4,29 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+## 0.2.91 — 2026-10-05
+
+### Preserve historical reads in incremental comparison
+
+- Accept successfully read historical versions as read-only comparison context
+  instead of blocking the whole turn with required_target_unavailable. Preserve
+  every required read identity and include its current head only through a
+  validated exact link; missing or conflicting links remain unknown.
+- Keep historical versions outside operation targets and source evidence. Their
+  scopes do not grant write authority, and current heads retain existing scope
+  boundaries. Ordinary turns continue to scan current knowledge only.
+- Protect historical content and lifecycle links in planning snapshots and
+  preserve them through partial recovery with stable current-target references.
+  Existing snapshots without historical context retain their original digest.
+- No new model stage, model output field or tool is added. Only required archive
+  versions enter model input; a short prompt clarification distinguishes them
+  from current records and new evidence.
+- Validation: 189 focused checks passed, including 19 new history-context
+  regressions, plus isolated replay of the original 19-read real turn. Six
+  existing legacy-suite failures reproduce on 0.2.90 and are recorded locally.
+  Replay used supplied responses with zero external model calls and left the
+  formal Vault unchanged; new live-model acceptance remains separate.
+
 ## 0.2.90 — 2026-10-05
 
 ### Expose withdrawal state in explicit historical retrieval
