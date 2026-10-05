@@ -7,8 +7,9 @@ extraction, a task-state update, or a multi-ID deduplication service.
 ## One existing entry, one narrower model job
 
 `service.compact(model=..., router=...)` keeps the existing explicit maintenance
-entry and threshold/low-priority candidate selection. Normal extraction still
-never invokes it on its return path. The configured threshold is a local storage
+entry and threshold/low-priority candidate selection. Completed `process` and
+`remember` calls can also schedule threshold-driven body maintenance within the
+source turn's remaining request budget. The configured threshold is a local storage
 estimate, not a claim about a model's context capacity. No default route,
 package version, incremental prompt or automatic request allowance changes.
 
@@ -58,7 +59,13 @@ counts this invocation boundary, not independently observed provider billing or
 hidden transport retries within an externally supplied backend.
 
 The output must reduce both the existing content estimate and the actual stored
-record bytes. Results expose `record_bytes_before` and `record_bytes_after` for
+record bytes, including new maintenance metadata. Each valid proposal with no
+net savings is skipped independently; other safe proposals in the same response
+can still be committed. If none have savings, the result is `noop` with no
+history or journal writes. All rows are validated before applying this filter;
+invalid structure, identities or protected fields still reject the batch.
+Skipping a row does not trigger another model call. Results expose
+`record_bytes_before` and `record_bytes_after` for
 changed records; these exclude the retained historical copy and are not total
 Vault-disk savings. `active_tokens_*` remain local estimates, not tokenizer or
 latency measurements. A more concise body is not proof of semantic equivalence:

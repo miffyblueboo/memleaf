@@ -5,6 +5,24 @@ All notable changes to memleaf are documented here.
 ## Unreleased
 
 
+## 0.2.93 — 2026-10-05
+
+### Keep useful body compaction when another candidate has no net savings
+
+- Skip each valid compaction proposal that does not reduce both the content
+  estimate and stored record bytes, including maintenance metadata. Other safe
+  proposals in the same response can still commit; all-no-gain batches return
+  noop without writing history or a compaction journal.
+- Keep strict whole-response validation, protected metadata, selected-source
+  snapshot checks and transactional recovery. Invalid identities, duplicate rows,
+  multi-ID merges and extra business fields still reject the batch.
+- Add no model request or retry. Automatic maintenance keeps its existing
+  durable budget and input deduplication, including across restarts.
+- Validation: 58 focused regressions and 12 isolated replays of saved real
+  DeepSeek responses passed. The original mixed-gain case now shortens its useful
+  record while keeping the other file byte-for-byte unchanged. Replays made no
+  external model calls; they are not a new live-model run.
+
 ## 0.2.92 — 2026-10-05
 
 ### Preserve unresolved review outcomes and schedule bounded lifecycle maintenance

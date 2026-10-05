@@ -546,10 +546,13 @@ class Compactor:
             if summary["body"] == source_candidates[0].memory.body:
                 continue
             replacement = self._build_replacement(summary, source_candidates, now=now)
+            # A valid proposal without net savings is a per-record no-op.
+            # Include maintenance metadata in byte cost; other safe rows may
+            # still be useful. Protocol and snapshot errors remain batch errors.
             if len(replacement.raw.encode("utf-8")) >= len(source_candidates[0].raw.encode("utf-8")):
-                raise CompactionError("compaction replacement does not reduce stored bytes")
+                continue
             if replacement.replacement_tokens >= replacement.source_tokens:
-                raise CompactionError("compaction replacement is not smaller than its sources")
+                continue
             replacements.append(replacement)
         return replacements
 
