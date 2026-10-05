@@ -29,6 +29,23 @@ def _capture_assistant_text(value: str) -> str:
                   flags=re.IGNORECASE)
 
 
+def _source_messages(messages: Any) -> Any:
+    """Use the host's durable transcript boundary, not its internal nudges.
+
+    Hermes may retain synthetic user/assistant rows while continuing after an
+    empty response. Its persistence contract excludes those rows. Follow that
+    exact host predicate rather than recognizing wording or scanning past a
+    real user. Hosts without this predicate retain the strict legacy boundary.
+    """
+    if not isinstance(messages, list):
+        return messages
+    try:
+        from agent.session_persistence import _is_ephemeral_scaffolding
+        return [row for row in messages if not _is_ephemeral_scaffolding(row)]
+    except (ImportError, AttributeError, TypeError, ValueError):
+        return messages
+
+
 def _assistant_source_matches(messages: Any, content: str) -> bool:
     """Accept exact text or an exactly reconstructed native verifier footer.
 
@@ -163,6 +180,7 @@ def _sync_source_metadata(messages: Any, user_content: str, assistant_content: s
     from datetime import datetime
     from math import isfinite
 
+    messages = _source_messages(messages)
     if not isinstance(messages, list) or not messages:
         logger.info("memleaf source-metadata reason=messages_missing")
         return {}
@@ -1939,7 +1957,7 @@ class MemleafMemoryProvider(MemoryProvider):
         # Snapshot the list at invocation; subsequent tool/turn appends cannot
         # change which source rows this callback verifies.
         import copy
-        messages = copy.deepcopy(messages)
+        messages = _source_messages(copy.deepcopy(messages))
         # Hermes serializes provider sync work, but this lock also protects
         # direct/plugin-level concurrent calls and makes process one-shot per
         # captured turn within this provider instance.

@@ -559,7 +559,12 @@ def _review_fields(row: Mapping[str, Any], fields: Mapping[str, Any], state: Map
     if needed - set(offered):
         raise ValueError("missing_responsibility_basis")
     for key, selection in offered.items():
-        if key not in fields or fields[key] is None:
+        # An unchanged owner may be omitted from UPDATE while its annotation
+        # is repeated. Validate that annotation without changing the owner or
+        # advancing its field basis. CREATE and explicit clears cannot borrow
+        # an old owner to satisfy a supplied annotation.
+        value = fields.get(key) if key in fields else old.get(key)
+        if value is None:
             raise ValueError("invalid_responsibility_basis")
         if not isinstance(selection, dict) or set(selection) != {"ref", "text"}:
             raise ValueError("invalid_responsibility_basis")
@@ -568,9 +573,10 @@ def _review_fields(row: Mapping[str, Any], fields: Mapping[str, Any], state: Map
         if (ref not in refs or not reading_text(text).strip()
                 or reading_text(text) not in reading_text(evidence[ref]["text"])):
             raise ValueError("unproven_responsibility_basis")
-        if key == "assignee" and fields[key] == "user" and evidence[ref]["role"] != "user":
+        if key == "assignee" and value == "user" and evidence[ref]["role"] != "user":
             raise ValueError("unconfirmed_user_responsibility")
-        bases[key] = source_basis(evidence[ref])
+        if key in fields:
+            bases[key] = source_basis(evidence[ref])
     return bases
 
 

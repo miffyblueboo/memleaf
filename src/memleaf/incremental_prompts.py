@@ -31,7 +31,7 @@ status=active|completed|cancelled；完成/取消/交接同时纠正冲突的 ti
 assignee 是实际执行人，只有明确由用户本人执行才 user，其他执行人用明确名称，未知为 null。用户记录/转发/协调不证明本人执行。等待依赖、卡点仅在正文维护，按最新事实替换过时内容，不生成等待字段。
 scope 采用输入引用；通用为 global，归属未知为 unscoped；只有 allow_new_scopes 才可提出 project:新名称。不把 scopes 当搜索提示，不扩大 write_scopes。
 patch 只含 title/body/scope/status/actionable/assignee/deadline/validity；type 沿用目标。
-新增/变更非空 assignee 必须提供 responsibility_basis:{"assignee":{"ref":"e1","text":"确立执行人的原文"}}；放行级或对应 memory/patch 内均可，不能冲突。ref 必须在 evidence，text 是实际原文；新增用户执行责任必须引用 user 原文，assistant 不能赋予用户新义务。原文必须确立这个实际行动的责任，引用另一件事的请求不算。沿用不需重复引用。
+新增/变更非空 assignee 必须提供 responsibility_basis:{"assignee":{"ref":"e1","text":"确立执行人的原文"}}；放行级或对应 memory/patch 内均可，不能冲突。ref 必须在 evidence，text 是实际原文；新增用户执行责任必须引用 user 原文，assistant 不能赋予用户新义务。原文必须确立这个实际行动的责任，引用另一件事的请求不算。沿用无需重复引用；冗余引用仍须有效，但不刷新旧依据。
 
 日期：有明确期限时放 memory.deadline 或 patch.deadline:{"ref":"e1","text":"期限原文"}，不能只留正文。没有期限变更时省略 deadline。负责人交接、等待验收、尚未完成不能取消旧期限。取消期限用 {"ref":"e1","clear":true,"text":"取消期限原文"}；new 未取消时保留原期限。source_time 只用于解释相对日，不补造发生日；每个相对日按其自己的消息时间解析。无来源时间保持未知，不借处理时间。正文日期与期限、材料日期、发生日期区分；无日期也能记完成事实。CREATE/UPDATE 可给 effective:{"ref":"e1","text":"生效时间原文"}。
 

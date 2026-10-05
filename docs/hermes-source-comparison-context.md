@@ -8,6 +8,11 @@ an event does not create a source time.
 
 The legacy callback checks the final assistant and the nearest user. It has no
 32-message lookback limit. It does not borrow a matching user from an older turn.
+Before checking that boundary, it excludes ephemeral rows using the installed
+Hermes persistence predicate. Internal continuation nudges are not user events,
+even when their role is `user`. It never identifies them by wording or arbitrary
+private flags. If the host predicate is unavailable, the strict legacy boundary
+is retained. Source checks and turn association use the same filtered snapshot.
 
 Some Hermes versions persist a reply before adding their file-mutation verifier
 footer. The Provider accepts that display transformation only when the installed

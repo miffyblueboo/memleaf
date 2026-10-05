@@ -5,6 +5,26 @@ All notable changes to memleaf are documented here.
 ## Unreleased
 
 
+## 0.2.95 — 2026-10-05
+
+### Preserve turn identity around internal Hermes continuations
+
+- Exclude ephemeral transcript rows using the installed Hermes persistence
+  contract before checking sources and resolving capture identity. Internal
+  continuation nudges with role=user no longer hide the actual user admission.
+  Keep exact real-user boundaries, unsupported-host fallback, source checks and
+  duplicate-delivery handling; never identify scaffolding by business wording.
+- Accept valid redundant responsibility annotations for unchanged existing
+  assignees in UPDATE. Preserve the original responsibility basis; unknown
+  assignees, conflicting clears, invalid citations and unauthorized changes
+  remain rejected. Bind the adjusted instructions to the protocol digest.
+- Add no model stage, request or retry. Source callback and saved-candidate
+  replays used no external model calls. All 58 affected checks passed in the
+  native Hermes runtime. Three live Hermes acceptance turns updated, completed
+  and reopened the original two memories correctly: six Memleaf requests,
+  24,758 observed tokens, and no unresolved post-fix retention intents.
+
+
 ## 0.2.94 — 2026-10-05
 
 ### Reopen existing memories without redundant model fields
