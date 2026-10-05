@@ -332,7 +332,10 @@ def process_inbox(service: Any, *, source: str | None = None, session_id: str | 
         result["cleanup_status"] = "recovery_required"
         result["execution_status"] = "partial"
         # Do not replace known per-source coverage or successful writes.
-    return result
+    from .lifecycle_maintenance import maintain_lifecycle
+    return maintain_lifecycle(service, result, model=model, router=router,
+        run_ids=[r["run_id"] for r in rows if r.get("run_id") and r["execution_status"] == "completed"
+                 and r.get("model_calls", 0) > 0])
 
 
 def _model_metrics(rows):

@@ -71,6 +71,7 @@ _MODEL_METRIC_STAGES = frozenset({
     "coordination",
     "target_reconciliation",
     "single_pass",
+    "compact",
     "other",
 })
 _MODEL_METRIC_OPERATIONS = frozenset(
@@ -415,11 +416,22 @@ def _safe_result(value: Any) -> dict[str, Any]:
         result["memory_ids"] = [item[:200] for item in ids if isinstance(item, str)][:100]
     if isinstance(value.get("pipeline"), str) and value["pipeline"] in {"legacy", "incremental"}:
         result["pipeline"] = value["pipeline"]
-    for key in ("model_calls", "attempted_turns", "unlocated_issue_count"):
+    for key in ("model_calls", "maintenance_model_calls", "attempted_turns", "unlocated_issue_count"):
         if type(value.get(key)) is int and value[key] >= 0:
             result[key] = value[key]
     if value.get("cleanup_status") == "recovery_required":
         result["cleanup_status"] = "recovery_required"
+    for key in ("retention", "compaction"):
+        detail = value.get(key)
+        if isinstance(detail, Mapping):
+            safe = {name: detail[name][:100] for name in ("status", "maintenance_status", "code", "reason", "history_policy", "deduplication_status")
+                    if isinstance(detail.get(name), str)}
+            for name in ("history_pruned", "provenance_rewritten", "closed_todos_retired", "protected_history_groups",
+                         "backend_calls", "request_ordinal", "compacted", "active_tokens_before", "active_tokens_after"):
+                if type(detail.get(name)) is int and detail[name] >= 0:
+                    safe[name] = detail[name]
+            if safe:
+                result[key] = safe
     if isinstance(value.get("execution_status"), str):
         result["execution_status"] = value["execution_status"][:80]
     rows = value.get("results")
@@ -530,7 +542,7 @@ def _aggregate_attempt_results(attempts: list[Any]) -> dict[str, Any]:
         value = attempt.get("result", {}) if isinstance(attempt, Mapping) else {}
         if not isinstance(value, Mapping):
             continue
-        for key in ("pipeline", "execution_status", "results", "results_truncated", "cleanup_status"):
+        for key in ("pipeline", "execution_status", "results", "results_truncated", "cleanup_status", "retention", "compaction"):
             if key in value:
                 aggregate[key] = value[key]
         break
@@ -542,7 +554,7 @@ def _aggregate_attempt_results(attempts: list[Any]) -> dict[str, Any]:
                     "deferred_inbox_turns", "unresolved_evidence_count", "unlocated_issue_count", "retryable_deferred_turns"):
             if key in last:
                 aggregate[key] = last[key]
-        for key in ("model_calls", "attempted_turns", "unlocated_issue_count"):
+        for key in ("model_calls", "maintenance_model_calls", "attempted_turns", "unlocated_issue_count"):
             aggregate[key] = sum(v.get(key, 0) for v in incremental if type(v.get(key, 0)) is int)
         if "cleanup_status" in last:
             aggregate["cleanup_status"] = last["cleanup_status"]

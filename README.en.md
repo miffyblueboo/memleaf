@@ -4,7 +4,7 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.91.**
+> **Version: 0.2.92.**
 > Automatic extraction and review share one future-value standard: the model weighs likely reuse, information gain, direct usability when read again, and the cost of forgetting. It keeps only the smallest core that can materially help future understanding, decisions, or actions; information without clear value is not extracted, and no business-specific exclusion rule is hard-coded.
 > Extraction compares existing identifiers, objectives, progress, responsibility and deadlines first. Filling an unknown also maintains the original item; a separate task does not replace updating shared project facts. Confirmed duplicates can be merged in the existing processing requests with their sources and history preserved. Independent project and task lifecycles remain separate; Core does not merge matching titles.
 > New requests accept equivalent field representations. Unknown executors remain `null`; new or changed responsibility and deadlines require actual source evidence. Dependencies belong in the body; `waiting_on` is no longer extracted. Proposed actions and related fields undergo bounded semantic verification within a shared five-request limit per work item, stopping on success; failed verification blocks writes. Source time resolves relative dates without inventing factual dates.
@@ -442,8 +442,9 @@ history:
 - Each active Markdown memory retains at most 16 detailed provenance rows while tracking cumulative `source_count`, `source_digest`, and omitted rows, so repeated UPDATEs cannot grow `sources` without bound.
 - Completed/cancelled todos remain in `knowledge/` as stable current identities. The default active view hides them, while `list_todos(status=completed|cancelled|all)` and later maintenance can still resolve the original ID. `closed_todo_retention_days` remains only as a legacy configuration key.
 - With `history.policy: bounded`, each stable memory identity keeps at most 32 full historical versions, and versions older than 3650 days are eligible for pruning. Set `history.policy: keep_all` explicitly when permanent audit retention is required.
-- Compaction preserves an existing canonical `memory_id` instead of creating a new `mem-compact-*` identity; a single-memory rewrite keeps its ID and a multi-memory merge chooses one stable survivor.
-- Maintenance runs through normal `process()` / `remember()` / `compact()` lifecycle calls and requires no daemon. Ordinary read-only retrieval does not trigger maintenance writes.
+- Body compaction shortens each memory independently, preserving its ID, provenance, responsibility, status and deadline. Semantic consolidation of the same matter uses the extraction protocol's `MERGE` operation.
+- Normal `process()` / `remember()` calls perform deterministic history maintenance after processing. Pending mutations and recovery dependencies postpone maintenance and preserve recovery inputs. Read-only retrieval does not trigger maintenance writes.
+- Freshly completed turns can schedule at most one compaction request per batch when the configured threshold is reached, sharing that turn's durable five-request allowance with extraction. Below-threshold turns, cached replays and recently attempted identical inputs add no calls. The latest 64 input fingerprints are persisted, including no-op, failed and interrupted attempts. Maintenance results are reported separately without undoing committed facts. Explicit `compact()` remains body-only and does not implicitly prune history. No daemon is required.
 
 Directories are normally created with mode `0700`, and files are stored as plaintext by default. memleaf has no built-in encryption layer; protect the Vault, backups, and model credentials yourself.
 

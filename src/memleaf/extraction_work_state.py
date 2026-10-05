@@ -28,6 +28,7 @@ _MAX_BUDGET_BYTES = 8 * 1024 * 1024
 _PROCESS_JOB_VERSION = 1
 _MAX_WORKS = 128
 _MAX_TURNS_PER_WORK = 64
+_MAX_MAINTENANCE_SNAPSHOTS = 64
 
 
 class ExtractionWorkStateError(RuntimeError):
@@ -95,11 +96,15 @@ def _normalize_turn_state(value: Any) -> dict[str, Any]:
     completed = value.get("completed", False)
     if not isinstance(completed, bool):
         raise ExtractionWorkStateError("invalid extraction request budget completion")
+    maintenance_reserved = value.get("maintenance_reserved", False)
+    if type(maintenance_reserved) is not bool or (maintenance_reserved and not completed):
+        raise ExtractionWorkStateError("invalid maintenance request reservation")
     return {
         "requests": requests,
         "started_at_epoch": float(started) if started is not None else None,
         "request_limit_at_creation": stored_limit,
         "completed": completed,
+        **({"maintenance_reserved": True} if maintenance_reserved else {}),
     }
 
 
@@ -164,7 +169,13 @@ def _read_budget_state_unlocked(vault: Any) -> dict[str, Any]:
     retired_count = sum(w.get("retired", False) for w in normalized_works.values())
     if len(normalized_works) - retired_count > _MAX_WORKS or retired_count > _MAX_RETIRED_WORKS:
         raise ExtractionWorkStateError("extraction request budget state exceeds bound")
-    return {"version": value["version"], "works": normalized_works, "order": normalized_order}
+    snapshots = value.get("maintenance_snapshots", [])
+    if (not isinstance(snapshots, list) or len(snapshots) > _MAX_MAINTENANCE_SNAPSHOTS
+            or any(not isinstance(s, str) or re.fullmatch(r"[0-9a-f]{64}", s) is None for s in snapshots)
+            or len(set(snapshots)) != len(snapshots)):
+        raise ExtractionWorkStateError("invalid maintenance snapshots")
+    return {"version": value["version"], "works": normalized_works, "order": normalized_order,
+            **({"maintenance_snapshots": snapshots} if snapshots else {})}
 
 
 def _save_budget_state_unlocked(vault: Any, state: dict[str, Any]) -> None:
@@ -399,6 +410,42 @@ def complete_turn_budget(vault: Any, *, work_id: str, turn_id: str) -> bool:
         # conservative stale budget row must never turn a successful memory
         # commit into a reported failure.
         return False
+
+
+def _remember_maintenance_snapshot_unlocked(vault: Any, state: dict[str, Any], snapshot: str) -> None:
+    if not isinstance(snapshot, str) or re.fullmatch(r"[0-9a-f]{64}", snapshot) is None:
+        raise ExtractionWorkStateError("invalid maintenance snapshot")
+    snapshots = [s for s in state.get("maintenance_snapshots", []) if s != snapshot]
+    state["maintenance_snapshots"] = (snapshots + [snapshot])[-_MAX_MAINTENANCE_SNAPSHOTS:]
+    _save_budget_state_unlocked(vault, state)
+
+
+def _reserve_maintenance_unlocked(vault: Any, *, work_id: str, turn_id: str,
+                                  snapshot: str, minimum_requests: int = 0) -> tuple[int | None, str | None]:
+    """Caller holds the lock and proves the linked run fully committed.
+
+    Only one optional maintenance call can use the remaining allowance of a
+    completed turn. Completion stays sealed; extraction can never resume from
+    this reservation. Count and input deduplication precede outbound IO in the
+    same atomic file write, including uncertain process exits.
+    """
+    state = _read_budget_state_unlocked(vault)
+    work = state["works"].get(work_id)
+    turn = work.get("turns", {}).get(turn_id) if work else None
+    if not turn or not turn["completed"] or work.get("retired"):
+        return None, "maintenance_budget_unavailable"
+    if turn["requests"] < minimum_requests:
+        raise ExtractionWorkStateError("maintenance budget evidence incomplete")
+    if snapshot in state.get("maintenance_snapshots", []):
+        return None, "maintenance_snapshot_already_attempted"
+    if turn.get("maintenance_reserved"):
+        return None, "maintenance_already_reserved"
+    if turn["requests"] >= min(turn["request_limit_at_creation"], MAX_INCREMENTAL_REQUESTS):
+        return None, "request_budget_exhausted"
+    turn["requests"] += 1
+    turn["maintenance_reserved"] = True
+    _remember_maintenance_snapshot_unlocked(vault, state, snapshot)
+    return turn["requests"], None
 
 
 __all__ = [

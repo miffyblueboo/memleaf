@@ -171,27 +171,12 @@ class RetentionManager:
         closed_days, policy, retention_days, max_versions = self._settings()
         with self.service._mutation_boundary():
             processed = _read_processed(self.service.vault.processed_state_path)
-            pending = {
-                "pending_operations": processed.get("pending_operations", {}),
-                "pending_turn_plans": processed.get("pending_turn_plans", {}),
-            }
             # History/provenance are recovery inputs, not merely display data.
             # Defer this optional pass while any retained mutation may need them.
             # The conservative whole-pass hold is bounded and has no new model IO.
-            from .incremental_journal import KEY as COMMIT_KEY, load_work, public_result, resolved_parent_ids
-            from .incremental_run_state import KEY as RUN_KEY, load_run, TERMINAL
-            from .memory_update import pending_explicit_mutations
-            try:
-                resolved = resolved_parent_ids(processed)
-                works = [load_work(processed, key) for key in processed.get(COMMIT_KEY, {})]
-                runs = [load_run(processed, key) for key in processed.get(RUN_KEY, {})]
-                explicit, _, protected = pending_explicit_mutations(self.service.vault)
-                unresolved = (any(pending.values()) or any(
-                    w["work_id"] not in resolved and public_result(w)["execution_status"] != "completed"
-                    for w in works) or any(run["status"] not in TERMINAL for run in runs)
-                    )
-            except (OSError, ValueError, TypeError, KeyError, RuntimeError, RecursionError) as error:
-                raise RetentionError("cannot validate pending mutation dependencies") from error
+            pending, protected, unresolved = self._dependencies_unlocked(processed)
+            from .incremental_run_state import owner_live
+            unresolved = unresolved or owner_live(processed)
             if unresolved:
                 return {"provenance_rewritten": 0, "closed_todos_retired": 0, "history_pruned": 0,
                         "history_policy": policy, "maintenance_status": "deferred",
@@ -218,6 +203,25 @@ class RetentionManager:
             "protected_history_groups": len(protected),
             **({"code": "pending_mutation_dependencies", "maintenance_status": "partial"} if protected else {}),
         }
+
+    def _dependencies_unlocked(self, processed):
+        """Share the recovery barrier with optional content maintenance."""
+        from .incremental_journal import KEY as COMMIT_KEY, load_work, public_result, resolved_parent_ids
+        from .incremental_run_state import KEY as RUN_KEY, load_run, TERMINAL
+        from .memory_update import pending_explicit_mutations
+        pending = {"pending_operations": processed.get("pending_operations", {}),
+                   "pending_turn_plans": processed.get("pending_turn_plans", {})}
+        try:
+            resolved = resolved_parent_ids(processed)
+            works = [load_work(processed, key) for key in processed.get(COMMIT_KEY, {})]
+            runs = [load_run(processed, key) for key in processed.get(RUN_KEY, {})]
+            _, _, protected = pending_explicit_mutations(self.service.vault)
+            unresolved = (any(pending.values()) or any(
+                w["work_id"] not in resolved and public_result(w)["execution_status"] != "completed"
+                for w in works) or any(run["status"] not in TERMINAL for run in runs))
+        except (OSError, ValueError, TypeError, KeyError, RuntimeError, RecursionError) as error:
+            raise RetentionError("cannot validate pending mutation dependencies") from error
+        return pending, protected, unresolved
 
 
 __all__ = ["RetentionError", "RetentionManager"]

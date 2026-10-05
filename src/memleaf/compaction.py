@@ -605,10 +605,13 @@ class Compactor:
         replacements: list[_Replacement],
         *,
         now: str,
+        before_commit: Any = None,
     ) -> tuple[list[str], list[str]]:
         replacement_ids = [replacement.memory.memory_id for replacement in replacements]
         selected_by_id = {candidate.memory.memory_id: candidate for candidate in selected}
         with self.service._mutation_boundary():
+            if before_commit is not None:
+                before_commit()
             current_scan = scan_memories(self.service.vault)
             if current_scan.issues:
                 raise CompactionError("current-memory scan changed during compaction")
@@ -737,7 +740,8 @@ class Compactor:
             "history_written": [],
         }
 
-    def _run(self, *, model: Any = None, router: Any = None, explicit: bool) -> dict[str, Any]:
+    def _run(self, *, model: Any = None, router: Any = None, explicit: bool,
+             admit: Any = None, before_commit: Any = None) -> dict[str, Any]:
         threshold, ratio = self._config()
         now = _clock_now(getattr(self.service, "clock", None))
         selected, all_active, active_tokens = self._snapshot(threshold, ratio)
@@ -758,6 +762,11 @@ class Compactor:
                 raise CompactionError("compaction input exceeds size limit")
             result["request_bytes"] = request_bytes
             backend = self._resolve_backend(model=model, router=router)
+            if admit is not None:
+                reason = admit(selected, threshold, ratio)
+                if reason is not None:
+                    result.update(status="deferred", code=reason)
+                    return result
             try:
                 result["backend_calls"] += 1
                 raw = backend.complete(
@@ -788,6 +797,7 @@ class Compactor:
                 all_active,
                 replacements,
                 now=now,
+                before_commit=before_commit,
             )
             with self.service.vault.lock():
                 active_after = [record.memory for record in self.service._read_memories_unlocked("knowledge")]
@@ -826,9 +836,11 @@ class Compactor:
     def compact(self, *, model: Any = None, router: Any = None) -> dict[str, Any]:
         return self._run(model=model, router=router, explicit=True)
 
-    def auto(self, *, model: Any = None, router: Any = None) -> dict[str, Any]:
+    def auto(self, *, model: Any = None, router: Any = None,
+             admit: Any = None, before_commit: Any = None) -> dict[str, Any]:
         try:
-            return self._run(model=model, router=router, explicit=False)
+            return self._run(model=model, router=router, explicit=False,
+                             admit=admit, before_commit=before_commit)
         except Exception as error:
             status = _error_kind(error)
             return {

@@ -4,6 +4,35 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+
+## 0.2.92 — 2026-10-05
+
+### Preserve unresolved review outcomes and schedule bounded lifecycle maintenance
+
+- Retain source-bound DEFERRED when review rejects UPDATE, MERGE, or explicitly
+  requested CREATE, even if other NO_CHANGE candidates survive. Only a validated
+  same-target correction covering the evidence and fields can resolve a rejected
+  UPDATE. Unrelated candidates cannot consume an unresolved host retention intent.
+- Run deterministic history/provenance maintenance after normal process and
+  remember operations. Apply bounded version/age retention or keep_all, and
+  protect pending mutation and recovery dependencies without replaying old work.
+- Schedule at most one optional body-compaction request per processing batch
+  after the configured threshold is reached. Use a freshly completed turn's
+  remaining durable allowance, with extraction and maintenance sharing its
+  five-request limit; never reopen completed budgets or allocate a new allowance.
+- Persist recent input fingerprints and reservations before dispatch, including
+  no-op, failed and interrupted requests. Preserve compaction identity and all
+  metadata, serialize model ownership, recheck dependencies at commit, and report
+  maintenance status and observed token usage independently of committed facts.
+- Ordinary turns below the threshold and cached replays add no model calls.
+  No new user-facing tool or model-output protocol field is introduced.
+- Validation: 175 focused checks and seven isolated replay scenarios passed,
+  including the frozen real draft under approval and veto, host-intent retention,
+  process exit/restart, budget exhaustion, concurrent mutation protection, and
+  41 public-process updates retaining one identity, 32 historical versions and
+  cumulative source accounting. External model calls were zero; new live-model
+  acceptance remains separate.
+
 ## 0.2.91 — 2026-10-05
 
 ### Preserve historical reads in incremental comparison

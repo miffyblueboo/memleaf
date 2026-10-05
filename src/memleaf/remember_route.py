@@ -128,8 +128,11 @@ def remember_text(service: Any, *, content: str | None = None, text: str | None 
     commit = result.get("commit") or {}
     ids = sorted({op["memory_id"] for op in commit.get("operations", [])
                   if op.get("memory_id") and not op.get("native") and op["state"] in {"applied", "settled"}})
-    return {**result, "pipeline": "incremental", "intent_id": intent, "memory_ids": ids,
+    summary = {**result, "pipeline": "incremental", "intent_id": intent, "memory_ids": ids,
             "memories_written": len(after - before), "metadata_merged": 0,
             "processed_turns": int(result["execution_status"] == "completed" and not was_completed),
             "cleaned_turns": 0,
             "compaction": {"status": "not_run", "reason": "outside_extraction_critical_path"}}
+    from .lifecycle_maintenance import maintain_lifecycle
+    return maintain_lifecycle(service, summary, model=model, router=router,
+        run_ids=[rid] if result.get("model_calls_this_invocation", 0) > 0 else [])

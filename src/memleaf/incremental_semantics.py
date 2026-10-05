@@ -153,6 +153,15 @@ def apply_review(request, response):
         if set(review) - {"decisions", "updates"} or not isinstance(decisions, list) or len(decisions) != len(rows):
             raise ValueError
         positions = set()
+        rejected = []
+        def discard(row):
+            # A rejected maintenance proposal is not proof that the source
+            # needs no change. Keep its unresolved disposition even when other
+            # candidates survive the review. Ordinary rejected automatic
+            # CREATEs can still mean there was no durable fact to retain.
+            if (row.get("action") in {"UPDATE", "MERGE"}
+                    or data["original_input"].get("request_kind") == "explicit_remember"):
+                rejected.append(deepcopy(row))
         for decision in decisions:
             if (not isinstance(decision, dict) or not {"item", "keep", "field_support"} <= set(decision)
                     or set(decision) - {"item", "keep", "field_support", "replace"}):
@@ -206,6 +215,7 @@ def apply_review(request, response):
             if isinstance(row, dict) and row.get("action") in {"NO_CHANGE", "NO_MEMORY", "DEFERRED"}:
                 continue  # Review cannot erase an unresolved control disposition.
             if not decision["keep"] or any(not support.get(k, True) for k in _REQUIRED.get(row["action"].upper(), set())):
+                discard(row)
                 rows[i] = None
                 continue
             payload = row.get("memory" if row["action"].upper() == "CREATE" else "patch", {})
@@ -241,6 +251,7 @@ def apply_review(request, response):
                     if name == "deadline":
                         row.pop("deadline_decision", None)
             if row["action"].upper() == "UPDATE" and not payload:
+                discard(row)
                 rows[i] = None
         rows = [r for r in rows if r is not None]
         additions = review.get("updates", [])
@@ -256,6 +267,21 @@ def apply_review(request, response):
                 raise ValueError
             rows.append(row)
             used.add(row["target"])
+        for rejected_row in rejected:
+            # The same review can supply a complete, independently validated
+            # correction for this target. An unrelated NO_CHANGE cannot cover
+            # a rejected proposal, nor can UPDATE stand in for a rejected MERGE.
+            if rejected_row.get("action") == "UPDATE" and any(
+                    row.get("action") == "UPDATE" and row.get("target") == rejected_row.get("target")
+                    and set(rejected_row.get("evidence", [])) <= set(row.get("evidence", []))
+                    and fields(rejected_row) <= fields(row)
+                    for row in rows):
+                continue
+            rows.append({"action": "DEFERRED", "evidence": rejected_row.get("evidence", []),
+                         "reason": "missing_context",
+                         "need": "The proposed retention or maintenance was rejected by source review."})
+        if len(rows) > MAX_ITEMS:
+            raise ValueError
         if not rows:
             original = data["original_input"]
             if original.get("request_kind") == "explicit_remember":
