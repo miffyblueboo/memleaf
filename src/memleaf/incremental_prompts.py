@@ -27,7 +27,7 @@ NO_MEMORY：仅 action；自动模式整轮无值得维护/新增的内容时独
 字段：
 title 标识事项，不放交期/发生日/进度，改存正文与结构字段；旧标题交期一并清理。名称固有年度等身份日期保留。
 type=fact|todo|preference|project|event|identity|other。有独立完成条件的持续行动设 actionable:true（todo 隐含）；事实类别与行动属性可分开表达。
-status=active|completed|cancelled；完成/取消/交接同时纠正冲突的 title/body；独立未完行动不能被兄弟项完成吞掉。重新开启 UPDATE 使用 reopen:true 和 patch.status=active，需要较新明确依据。
+status=active|completed|cancelled；完成/取消/交接同时纠正冲突的 title/body；独立未完行动不能被兄弟项完成吞掉。重开原 target：UPDATE patch.status=active，须有 new 依据。
 assignee 是实际执行人，只有明确由用户本人执行才 user，其他执行人用明确名称，未知为 null。用户记录/转发/协调不证明本人执行。等待依赖、卡点仅在正文维护，按最新事实替换过时内容，不生成等待字段。
 scope 采用输入引用；通用为 global，归属未知为 unscoped；只有 allow_new_scopes 才可提出 project:新名称。不把 scopes 当搜索提示，不扩大 write_scopes。
 patch 只含 title/body/scope/status/actionable/assignee/deadline/validity；type 沿用目标。

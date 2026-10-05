@@ -150,9 +150,11 @@ scanned and auto-filled as deadlines. This does **not** prove that a model-selec
 ISO date was semantically a deadline: that remains a live-model acceptance item.
 
 `field_basis` is self-contained source metadata, never eN or a list offset.
-Provably older conflicting field changes are rejected. Explicit reopen/restore
-requires a later comparable basis; legacy heads lacking it produce a visible
-unverified-time issue rather than a fabricated business time. Unknown completion
+Provably older conflicting field changes are rejected. Reopening uses UPDATE
+with `patch.status=active`; the legacy `reopen:true` flag remains optional.
+Reopen/restore reject a known older or identical observation. Missing optional
+source time/order remains unknown and does not block the proposed transition;
+the normal source review checks whether the change is supported. Unknown completion
 time is not replaced with observation time. Future effective state changes are
 blocked, while a fact describing a plan can still be proposed. No timer executes
 future plans. This is bounded observation-order checking, not a bitemporal database.

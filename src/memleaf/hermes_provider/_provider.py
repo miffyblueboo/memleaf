@@ -135,6 +135,18 @@ def _sync_delivery_digest(messages: Any, users: Any, user_content: str, assistan
                 identities = []
                 break
             identities.append((uid, timestamp))
+    elif (isinstance(messages, list) and messages
+          and isinstance(messages[-1], Mapping) and messages[-1].get("role") == "assistant"
+          and not messages[-1].get("tool_calls")):
+        user = next((row for row in reversed(messages[:-1])
+                     if isinstance(row, Mapping) and row.get("role") == "user"), None)
+        if user is not None and user.get("content") == user_content:
+            uid = user.get("message_uid") or user.get("message_id")
+            timestamp = _independent_source_time(user, "user").get("user", {}).get("source_time")
+            if uid or timestamp:
+                # Only the verified user identifies this delivery; do not
+                # bind the host's transformed reply to an assistant source.
+                identities.append((uid, timestamp))
     payload = f"{user_content}\x00{_capture_assistant_text(assistant_content)}"
     if identities:
         payload += "\x00" + json.dumps(identities, ensure_ascii=False, separators=(",", ":"))
@@ -155,9 +167,12 @@ def _sync_source_metadata(messages: Any, user_content: str, assistant_content: s
         logger.info("memleaf source-metadata reason=messages_missing")
         return {}
     assistant = messages[-1]
-    if not _assistant_source_matches(messages, assistant_content):
+    assistant_matches = _assistant_source_matches(messages, assistant_content)
+    if not assistant_matches:
         logger.info("memleaf source-metadata reason=assistant_mismatch")
-        return {}
+        if (not isinstance(assistant, Mapping) or assistant.get("role") != "assistant"
+                or assistant.get("tool_calls")):
+            return {}
     # Tool rounds do not define a turn boundary. Stop at the nearest user,
     # even if its text mismatches; never borrow an older matching message.
     preceding = reversed(messages)
@@ -166,10 +181,15 @@ def _sync_source_metadata(messages: Any, user_content: str, assistant_content: s
                  if isinstance(item, Mapping) and item.get("role") == "user"), None)
     if user is None:
         logger.info("memleaf source-metadata reason=user_missing")
-        return _independent_assistant_time(assistant, assistant_content)
+        return _independent_assistant_time(assistant, assistant_content) if assistant_matches else {}
     if user.get("content") != user_content:
         logger.info("memleaf source-metadata reason=user_mismatch")
-        return _independent_assistant_time(assistant, assistant_content)
+        return _independent_assistant_time(assistant, assistant_content) if assistant_matches else {}
+    if not assistant_matches:
+        # Host warnings/display transformations cannot invalidate an exact
+        # current user source. Keep its time independently, without binding
+        # the unverified assistant or inventing paired identities/order.
+        return _independent_source_time(user, "user")
     result: dict[str, dict[str, Any]] = {}
     for role, item in (("user", user), ("assistant", assistant)):
         row: dict[str, Any] = {}
@@ -213,11 +233,15 @@ def _sync_source_metadata(messages: Any, user_content: str, assistant_content: s
 
 
 def _independent_assistant_time(assistant: Mapping[str, Any], content: str) -> dict[str, dict[str, Any]]:
+    return _independent_source_time(assistant, "assistant")
+
+
+def _independent_source_time(message: Mapping[str, Any], role: str) -> dict[str, dict[str, Any]]:
     from datetime import datetime
     from math import isfinite
-    value = assistant.get("source_time")
+    value = message.get("source_time")
     if value is None:
-        value = assistant.get("timestamp")
+        value = message.get("timestamp")
     parsed = None
     try:
         if type(value) in (int, float) and isfinite(value) and 0 <= value < 253402300800:
@@ -225,7 +249,7 @@ def _independent_assistant_time(assistant: Mapping[str, Any], content: str) -> d
         elif isinstance(value, str) and len(value) <= 80:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         if parsed is not None and parsed.tzinfo is not None and parsed.utcoffset() is not None:
-            return {"assistant": {"source_time": parsed.isoformat()}}
+            return {role: {"source_time": parsed.isoformat()}}
     except (ValueError, OSError, OverflowError):
         pass
     return {}
@@ -1152,6 +1176,7 @@ class MemleafMemoryProvider(MemoryProvider):
         user_content: str,
         assistant_content: str,
         delivery_digest: Optional[str] = None,
+        source_fallback: bool = False,
     ) -> str:
         pair_digest = delivery_digest or sha256(f"{user_content}\x00{assistant_content}".encode("utf-8")).hexdigest()[:16]
         pair_key = (session_id, pair_digest)
@@ -1160,6 +1185,8 @@ class MemleafMemoryProvider(MemoryProvider):
             self._turn_ids_by_pair.move_to_end(pair_key)
             return existing
         resolved = _turn_id(turn_number, user_content, assistant_content)
+        if source_fallback and delivery_digest and resolved.startswith("turn-fallback-"):
+            resolved = "turn-fallback-" + delivery_digest
         if existing is not None and existing == resolved:
             self._turn_ids_by_pair.move_to_end(pair_key)
             return existing
@@ -1965,6 +1992,7 @@ class MemleafMemoryProvider(MemoryProvider):
                     user_content,
                     captured_assistant_content,
                     delivery_digest=delivery_digest,
+                    source_fallback=not _assistant_source_matches(messages, raw_assistant_content),
                 )
                 source_metadata = ({} if host_events is not None or correction_users else
                                    _sync_source_metadata(messages, user_content, raw_assistant_content))

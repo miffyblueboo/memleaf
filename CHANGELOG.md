@@ -5,6 +5,29 @@ All notable changes to memleaf are documented here.
 ## Unreleased
 
 
+## 0.2.94 — 2026-10-05
+
+### Reopen existing memories without redundant model fields
+
+- Treat an evidence-backed UPDATE with status=active as the reopen intent for a
+  closed memory. Keep legacy reopen=true compatible and reject known older or
+  same-observation updates; missing source ordering stays unknown. Apply the
+  same ordering rule to explicitly restoring retracted facts.
+- Preserve an independently verified user's source time when the final assistant
+  display cannot be matched. Keep assistant metadata unknown and distinguish
+  verified user deliveries while keeping repeated callbacks idempotent. Never
+  infer timestamps, borrow an older matching user message, or weaken target,
+  permission, conflict or semantic-review checks.
+- Remove the redundant reopen flag requirement from extraction instructions.
+  Add no model request, retry or stage; the existing request budget is unchanged.
+- Validation: 267 applicable checks and four isolated frozen-fault replays passed
+  against the current contract. Eight pre-existing obsolete test expectations
+  were recorded separately. An isolated live-model acceptance reopened one
+  existing memory with the correct deadline and no source time or reopen flag:
+  two successful requests, 3,089 observed tokens. Installed Hermes acceptance
+  remains separate from source and package verification.
+
+
 ## 0.2.93 — 2026-10-05
 
 ### Keep useful body compaction when another candidate has no net savings

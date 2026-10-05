@@ -717,6 +717,8 @@ def _parse_row(row: Any, state: Mapping[str, Any]) -> dict[str, Any]:
 def _order(new: Mapping[str, Any], old: Mapping[str, Any]) -> int | None:
     # These fields prove observation order, not inferred business effectiveness.
     same_stream = all(new.get(k) is not None and new.get(k) == old.get(k) for k in ("source", "session_id"))
+    if same_stream and new.get("event_key") and new.get("event_key") == old.get("event_key"):
+        return 0  # The same observation cannot revive its own closed state.
     if same_stream and type(new.get("source_sequence")) is int and type(old.get("source_sequence")) is int:
         a, b = new["source_sequence"], old["source_sequence"]
         return (a > b) - (a < b)
@@ -768,15 +770,16 @@ def _compile_group(rows: list[dict[str, Any]], state: Mapping[str, Any]) -> dict
     if boundary is not None and (set(chosen) - set(boundary) or (target and set(old["scopes"]) - set(boundary))):
         raise ValueError("blocked_scope")
     if old.get("status") in {"completed", "cancelled"} and fields.get("status") == "active":
-        if not any(row.get("reopen") for row in rows):
-            raise ValueError("explicit_reopen_required")
-        if _order(bases.get("status", {}), old.get("field_basis", {}).get("status", {})) != 1:
-            raise ValueError("unverified_reopen_time")
+        # The explicit patch already expresses reopening. A model flag cannot
+        # prove source support; the existing semantic review checks the change.
+        # Missing optional time/order stays unknown, not an automatic veto.
+        if _order(bases.get("status", {}), old.get("field_basis", {}).get("status", {})) in (-1, 0):
+            raise ValueError("stale_observation")
     if old.get("validity") == "retracted":
         if fields.get("validity") != "valid" or not fields.get("body"):
             raise ValueError("explicit_restore_required")
-        if _order(bases.get("validity", {}), old.get("field_basis", {}).get("validity", {})) != 1:
-            raise ValueError("unverified_restore_time")
+        if _order(bases.get("validity", {}), old.get("field_basis", {}).get("validity", {})) in (-1, 0):
+            raise ValueError("stale_observation")
     if fields.get("validity") == "retracted":
         # Retraction is an explicit lifecycle operation. An explanatory body
         # belongs to the audit metadata, never to the active assertion. Retain
