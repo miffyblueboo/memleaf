@@ -5,6 +5,31 @@ All notable changes to memleaf are documented here.
 ## Unreleased
 
 
+## 0.2.96 — 2026-10-06
+
+### Preserve existing information when replacing memory bodies
+
+- Expose omitted old prose to semantic review for UPDATE and every MERGE
+  member. Require dispositions bound to the final body or new user evidence;
+  boolean body approval alone cannot erase existing information. Unconfirmed
+  replacements remain DEFERRED with the previous memory preserved.
+- Allow the existing review to repair the full body while retaining candidate
+  identity, evidence and other fields. Check the final replacement, accept valid
+  redundant coverage, and isolate invalid optional maintenance corrections from
+  independently valid decisions. Protect manual partial repairs as well.
+- Reuse the existing review request for ongoing actions; add a second review
+  only where a previously unreviewed fact update could omit existing prose.
+  Ordinary fact additions and repeated no-change turns remain single-request.
+  No third review, automatic retry or request-budget increase is added.
+- Validation: 122 affected checks and isolated frozen-candidate replays passed.
+  The final three live Hermes turns preserved unchanged requirements, avoided
+  duplicate writes and applied only an explicitly withdrawn requirement:
+  five Memleaf requests, 30,821 observed tokens, no issues or unresolved items.
+  Intermediate development failures were preserved separately; historical raw
+  review responses were not reconstructed. Equivalence still relies on semantic
+  review, while Core verifies complete coverage and source/quote bindings.
+
+
 ## 0.2.95 — 2026-10-05
 
 ### Preserve turn identity around internal Hermes continuations

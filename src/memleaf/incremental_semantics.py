@@ -10,8 +10,10 @@ from copy import deepcopy
 import json
 
 from .validation import parse_strict_json, ModelOutputError
+from .body_preservation import omissions, covered
 
-REVIEW_SYSTEM = """核验拟写入的持续行动。original_input 是唯一事实和权限来源；draft 是待审候选，不能当作事实。返回 JSON 对象，必填 decisions，值为数组；每项有 item（整数）、keep（布尔值）、field_support（对象）。按输入 fields_to_review 的实际字段填 field_support，不能复制其他事项的字段名。
+REVIEW_SYSTEM = """核验拟写入的记忆及持续行动。original_input 是唯一事实和权限来源；draft 是待审候选，不能当作事实。返回 JSON 对象，必填 decisions，值为数组；每项有 item（整数）、keep（布尔值）、field_support（对象）。按输入 fields_to_review 的实际字段填 field_support，不能复制其他事项的字段名。
+存在 body_omissions 时，keep:true 的 UPDATE/MERGE 必须逐项说明省略的去向；仅 body:true 不足以通过。body_omissions 按 item 列出拟议正文中不再原样出现的旧片段（比较辅助，不表示已经失效）。逐项核对完整含义，不能因主题相同、进展重复或用户未再次提及就删除。需要补回或修正文句时，直接在 decision 增加 body（修正后的完整正文字符串），field_support.body=true；不必复制 action、target、evidence，也不要把该 target 放入 updates。Core 沿用该候选的身份、证据和其他字段；已有 replace 方式仍可用，但不能同时使用 body 和 replace。对最终 UPDATE/MERGE（包括 body、replace 和 updates 修正）的剩余省略片段，在对应 decision/updates 项增加 body_coverage 数组：每项 {"target":"旧目标ref","old":"旧片段原文","body":"最终正文中完整承接该片段含义的逐字引文"}，或 {"target":"旧目标ref","old":"旧片段原文","source":{"ref":"new用户证据ref","text":"明确纠正/撤回该内容的逐字引文"}}。body 引文必须完整等价且真实存在于最终正文；不能只引用旧目标中的文字却忘了将它写入修正正文。source 不能引用旧上下文或助手建议。修正后原样保留的片段无需列入。MERGE 对所有被合并目标逐项核对，撤回整个目标也需明确用户依据。无法确认则 keep:false；不要猜测或提供主题相符但实际无关的引文。没有剩余省略时省略 body_coverage。
 每个 draft.items 都必须有且只有一个 decision，item 是从 0 开始的位置。keep 判断该事项本身是否由原文确立且持续值得保留。临时操作及助手额外建议不能产生用户长期待办，原话只证明另一个操作时 keep:false。独立事实不因其他候选有误而拒绝。
 keep:true 时，field_support 必须逐个列出候选 memory/patch 中的业务字段，每个布尔值判断该字段的拟议值是否受来源支持；不列 responsibility_basis、effective、at、reopen 等引用/控制字段。没有 replace 的 NO_CHANGE/DEFERRED/NO_MEMORY 的 field_support 为 {}。keep:false 时 field_support 为 {}。unverified_fields 是系统发现未能验证引用的可选责任字段，必须判为 false；不能补造引用。这不影响其他有依据的事实或任务。归属/客户尚未确定不自动表示行动被阻塞。
 不能仅检查引文存在：必须判断原话是否确立该具体行动、责任、状态和期限。assistant 的建议/计划不能赋予 user 新义务。转发、协调、记录不等于本人执行；支持旧任务不等于接受新安排。
@@ -45,15 +47,23 @@ def fields(row):
     return {key for key in payload if key not in _METADATA} if isinstance(payload, dict) else set()
 
 
-def needs_review(compiled, response=None):
+def needs_review(compiled, response=None, snapshot=None):
     if response is not None:
         rows = envelope(parse_strict_json(response))["items"]
+        original = snapshot.model_input() if snapshot is not None else None
+        update_ids = {op.get("target") for op in compiled["operations"] if op["action"] == "UPDATE"}
+        writable_updates = ({ref for ref, target in snapshot.state()["targets"].items()
+                             if target["memory"]["memory_id"] in update_ids} if snapshot is not None else set())
         actions = {str(row.get("action", "")).strip().upper() for row in rows if isinstance(row, dict)}
         if "MERGE" in actions or {"UPDATE", "NO_CHANGE"} <= actions:
             return True
         for row in rows:
             if not isinstance(row, dict):
                 continue
+            target = row.get("target")
+            if (original is not None and isinstance(target, str) and target.strip() in writable_updates
+                    and omissions(row, original)):
+                return True
             action = row.get("action")
             action = action.strip().upper() if isinstance(action, str) else ""
             payload = row.get("memory") if action == "CREATE" else row.get("patch")
@@ -118,10 +128,12 @@ def review_request(original, response, snapshot=None):
             row["action"] = row["action"].strip().upper()
         rows.append(row)
     draft["items"] = rows
+    missing = [omissions(row, source) for row in rows]
     return {"system": REVIEW_SYSTEM,
             "user": json.dumps({"original_input": source, "draft": draft,
                                 "fields_to_review": [sorted(fields(row)) for row in draft["items"]],
                                 "unverified_fields": [unverified_fields(row, source) for row in draft["items"]],
+                                **({"body_omissions": missing} if any(missing) else {}),
                                 **({"invalid_representation_items": invalid} if invalid else {})},
                                ensure_ascii=False, separators=(",", ":"))}
 
@@ -164,7 +176,7 @@ def apply_review(request, response):
                 rejected.append(deepcopy(row))
         for decision in decisions:
             if (not isinstance(decision, dict) or not {"item", "keep", "field_support"} <= set(decision)
-                    or set(decision) - {"item", "keep", "field_support", "replace"}):
+                    or set(decision) - {"item", "keep", "field_support", "replace", "body", "body_coverage"}):
                 raise ValueError
             i = decision["item"]
             if type(i) is not int or not 0 <= i < len(rows) or i in positions or type(decision["keep"]) is not bool:
@@ -174,6 +186,14 @@ def apply_review(request, response):
             if not isinstance(support, dict) or any(type(v) is not bool for v in support.values()):
                 raise ValueError
             row = rows[i]
+            if "body" in decision:
+                if (not decision["keep"] or "replace" in decision
+                        or i in data.get("invalid_representation_items", [])
+                        or row.get("action") not in {"CREATE", "UPDATE", "MERGE"}
+                        or "body" not in fields(row) or support.get("body") is not True
+                        or not isinstance(decision["body"], str)):
+                    raise ValueError
+                row["memory" if row["action"] == "CREATE" else "patch"]["body"] = decision["body"]
             if "replace" in decision:
                 if i in data.get("invalid_representation_items", []) or not decision["keep"]:
                     raise ValueError
@@ -253,6 +273,9 @@ def apply_review(request, response):
             if row["action"].upper() == "UPDATE" and not payload:
                 discard(row)
                 rows[i] = None
+            elif not covered(row, data["original_input"], decision.get("body_coverage")):
+                discard(row)
+                rows[i] = None
         rows = [r for r in rows if r is not None]
         additions = review.get("updates", [])
         from .incremental_protocol import MAX_ITEMS
@@ -260,12 +283,24 @@ def apply_review(request, response):
             raise ValueError
         used = {row.get("target") for row in rows if isinstance(row, dict)}
         for entry in additions:
-            if not isinstance(entry, dict) or set(entry) != {"row", "field_support"}:
-                raise ValueError
-            row = _maintenance_update(entry["row"], entry["field_support"], data["original_input"])
-            if row["target"] in used:
-                raise ValueError
-            rows.append(row)
+            try:
+                if (not isinstance(entry, dict) or not {"row", "field_support"} <= set(entry)
+                        or set(entry) - {"row", "field_support", "body_coverage"}):
+                    raise ValueError
+                row = _maintenance_update(entry["row"], entry["field_support"], data["original_input"])
+                if row["target"] in used:
+                    raise ValueError
+            except (KeyError, TypeError, ValueError):
+                # Optional correction is not an authority grant. Reject it
+                # explicitly without erasing independently valid decisions.
+                rows.append({"action": "DEFERRED", "evidence": [e["ref"] for e in data["original_input"]["evidence"]
+                             if e["use"] == "new"], "reason": "missing_context",
+                             "need": "The additional maintenance correction is not source-verified."})
+                continue
+            if covered(row, data["original_input"], entry.get("body_coverage")):
+                rows.append(row)
+            else:
+                discard(row)
             used.add(row["target"])
         for rejected_row in rejected:
             # The same review can supply a complete, independently validated

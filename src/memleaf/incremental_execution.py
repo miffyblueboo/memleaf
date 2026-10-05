@@ -232,11 +232,14 @@ def _drive(service, run_id, token, backend, calls, metric_ordinals):
                     return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
                 if run["status"] in {"response_ready", "committing"}:
                     try:
+                        if (run.get("partial_used") and run.get("partial_recovery", {}).get("mode") == "repair"):
+                            from .body_preservation import defer_unreviewed
+                            run["response"] = defer_unreviewed(run["response"], snapshot)
                         compiled = compile_incremental(run["response"], snapshot)
                         from .incremental_semantics import needs_review, review_request
                         if (not (run.get("partial_used") and run.get("partial_recovery", {}).get("mode") == "repair")
                                 and run.get("semantic_stage") != "reviewed"
-                                and needs_review(compiled, run["response"])):
+                                and needs_review(compiled, run["response"], snapshot)):
                             if run["reserved_requests"] >= MAX_INCREMENTAL_REQUESTS:
                                 _finish(service, processed, run, "blocked", "semantic_review_budget_exhausted")
                                 return public_result(run, calls=calls[0], metric_ordinals=metric_ordinals)
@@ -391,7 +394,7 @@ def _drive(service, run_id, token, backend, calls, metric_ordinals):
             elif not run.get("partial_used"):
                 try:
                     from .incremental_semantics import needs_review
-                    run["semantic_review_required"] = needs_review(compile_incremental(response, snapshot), response)
+                    run["semantic_review_required"] = needs_review(compile_incremental(response, snapshot), response, snapshot)
                 except (ValueError, TypeError):
                     run["semantic_review_required"] = False
             save_run(service, processed, run)

@@ -4,7 +4,7 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Version: 0.2.95.**
+> **Version: 0.2.96.**
 > Automatic extraction and review share one future-value standard: the model weighs likely reuse, information gain, direct usability when read again, and the cost of forgetting. It keeps only the smallest core that can materially help future understanding, decisions, or actions; information without clear value is not extracted, and no business-specific exclusion rule is hard-coded.
 > Extraction compares existing identifiers, objectives, progress, responsibility and deadlines first. Filling an unknown also maintains the original item; a separate task does not replace updating shared project facts. Confirmed duplicates can be merged in the existing processing requests with their sources and history preserved. Independent project and task lifecycles remain separate; Core does not merge matching titles.
 > New requests accept equivalent field representations. Unknown executors remain `null`; new or changed responsibility and deadlines require actual source evidence. Dependencies belong in the body; `waiting_on` is no longer extracted. Proposed actions and related fields undergo bounded semantic verification within a shared five-request limit per work item, stopping on success; failed verification blocks writes. Source time resolves relative dates without inventing factual dates.
