@@ -34,6 +34,35 @@ jobs:
         run: python -m compileall -q src
       - name: Build wheel and source distribution once
         run: python -m build --wheel --sdist
+      - name: Check release payload boundaries
+        shell: python
+        run: |
+          from pathlib import Path, PurePosixPath
+          import tarfile
+          import zipfile
+
+          artifacts = sorted(Path("dist").glob("*.whl")) + sorted(Path("dist").glob("*.tar.gz"))
+          if len(artifacts) != 2:
+              raise SystemExit("expected one wheel and one source distribution")
+          private_dirs = {"tests", "tests_public", "__pycache__", ".git", ".codegraph", ".memleaf", ".hermes", ".venv"}
+          development_files = {"acceptance.py", "query_benchmark.py", "incremental_acceptance.json"}
+          for artifact in artifacts:
+              if artifact.suffix == ".whl":
+                  with zipfile.ZipFile(artifact) as archive:
+                      names = archive.namelist()
+              else:
+                  with tarfile.open(artifact) as archive:
+                      names = archive.getnames()
+              forbidden = []
+              for name in names:
+                  path = PurePosixPath(name)
+                  if (set(path.parts) & private_dirs or path.name in development_files
+                          or path.name.startswith("test_") or path.name.endswith("_acceptance.py")
+                          or path.name == ".env" or path.name.startswith(".env.") and path.name != ".env.example"):
+                      forbidden.append(name)
+              if forbidden:
+                  raise SystemExit(f"development/private files in {artifact.name}: {forbidden}")
+              print(f"{artifact.name}: release payload clean")
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
@@ -84,6 +113,7 @@ jobs:
           import venv
 
           smoke = '''
+          import importlib.util
           import json
           from pathlib import Path
           import subprocess
@@ -92,6 +122,8 @@ jobs:
           import memleaf
           from memleaf.adapters.base import CommandResult, Detection
           from memleaf.adapters.hermes import HermesAdapter, expected_mcp_tool_count
+
+          assert importlib.util.find_spec("memleaf.acceptance") is None
 
           with tempfile.TemporaryDirectory(prefix="memleaf-mcp-contract-") as temp:
               vault = Path(temp) / "vault"

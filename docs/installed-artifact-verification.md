@@ -11,12 +11,15 @@ The build job:
 
 1. compiles `src/` with Python's standard-library compiler;
 2. builds one wheel and one source distribution;
-3. uploads only those two distributions as the workflow artifact.
+3. rejects development harnesses, tests, private runtime directories and local
+   environment files in either artifact;
+4. uploads only those two distributions as the workflow artifact.
 
 The `verify-artifacts` job downloads those exact bytes and installs each artifact
 in its own fresh virtual environment. It imports `memleaf` and checks the
 reported package version. It does not read a source-tree checkout, run a model,
-access a production Vault or create a release.
+access a production Vault or create a release. The former developer-only
+`memleaf.acceptance` module must not be importable from either installation.
 
 The matrix is:
 

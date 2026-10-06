@@ -46,14 +46,11 @@ Do not return API keys, tokens, authentication headers, credential-bearing URLs,
 full configuration, chat bodies, native-memory text or backups. Keep raw paths
 and necessary private fingerprints in local evidence rather than public CI.
 
-Prepare the existing public suite with the exact candidate Python:
+Acceptance planning uses the exact candidate Python, locally retained tooling and approved
+fixtures. Neither the runner nor its suite is included in an installed package;
+do not construct a production runtime to replace a missing development tool.
 
-```sh
-python -m memleaf.acceptance --suite examples/incremental_acceptance.json --repeat 5
-```
-
-The suite path must point to the selected checkout; an installed wheel alone need
-not place `examples/` in the current directory. Planning accepts no backend,
+The suite path must point to the controlled local development checkout. Planning accepts no backend,
 output or execution flags. Save stdout by the caller into the evidence directory,
 not with the tool's `--output` option, which belongs to execution. Record both
 file SHA-256 and the normalized suite digest in the result. This planning command

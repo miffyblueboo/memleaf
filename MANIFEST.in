@@ -5,9 +5,8 @@ include install.ps1
 include README.md
 include README.en.md
 recursive-include examples *.md *.ndjson *.py
-recursive-exclude examples *_acceptance.py
+recursive-exclude examples *_acceptance.py query_benchmark.py incremental_acceptance.json
 prune tests
+prune tests_public
 
 include docs/*.md
-
-include examples/incremental_acceptance.json

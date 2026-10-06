@@ -5,6 +5,28 @@ All notable changes to memleaf are documented here.
 ## Unreleased
 
 
+## 1.0.0 — 2026-10-06
+
+### Stable public interfaces and production-only distributions
+
+- Define the 1.x compatibility scope for documented Python exports, CLI entry
+  points, MCP tools, configuration and persisted memory formats. Preserve the
+  0.2.96 production runtime, prompts, existing storage/recovery contracts and
+  five-request budget; no model request or Vault migration is added.
+- Move the isolated acceptance harness, synthetic acceptance suite and query
+  benchmark into the ignored local development directory. Remove the former
+  `python -m memleaf.acceptance` developer entry point from public artifacts;
+  normal Python/CLI/MCP interfaces and usage/discovery examples remain.
+- Remove obsolete packaged-tool instructions and prevent developer/private files
+  from re-entering wheel or source distributions through the release CI. Keep
+  the existing five-cell native installation matrix and publish verified bytes.
+- The 0.2.96 installed Hermes acceptance remains evidence for the unchanged
+  production runtime: four successful turns, eight Memleaf requests and 42,518
+  observed tokens. The 1.0.0 release verifies interface compatibility, isolated
+  installed regressions and clean artifact payloads separately; a stable version
+  is not a guarantee of perfect future model responses.
+
+
 ## 0.2.96 — 2026-10-06
 
 ### Preserve existing information when replacing memory bodies

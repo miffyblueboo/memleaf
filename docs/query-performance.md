@@ -39,12 +39,11 @@ snapshot nor claimed to be eliminated.
 
 ## Reproduce an isolated local measurement
 
-```sh
-# Source checkout; for an installed wheel omit PYTHONPATH.
-PYTHONPATH=src python examples/query_benchmark.py --sizes 100 1000 10000 --repeat 5
-```
+The isolated benchmark is retained only in the local development directory.
+It is not distributed as an example or installed package tool. A measurement
+must record the exact source or installed artifact being imported.
 
-The example accepts sizes/repetitions only, not a production Vault, model config
+The local runner accepts sizes/repetitions only, not a production Vault, model config
 or credentials. Each size uses a fresh TemporaryDirectory, 1..10,000 synthetic
 independent Todo heads, and a fixed source clock. Fixture creation is outside the
 timed section and does not rebuild an index for each inserted file. One warmup is
@@ -86,9 +85,9 @@ unchanged recheck parsing fell from N to zero. No business records were omitted
 to improve latency. At 10,000 heads the fixture contains 7,550,000 bytes; it is not
 a sample of private user conversations or an actual production Vault.
 
-The harness is included in sdist through the existing examples manifest. Running
-it against an installed wheel must use that wheel's imports, not an editable
-checkout. The measurements do not cover provider latency, tokens, recall/semantic
+The harness is excluded from both wheel and sdist. Local runs against an
+installed wheel must use that wheel's imports, not an editable checkout.
+The measurements do not cover provider latency, tokens, recall/semantic
 quality, native Hermes installation or Windows/macOS performance. Those remain
 separate G5 acceptance gates; successful timings never authorize switching.
 

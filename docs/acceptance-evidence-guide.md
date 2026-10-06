@@ -24,7 +24,7 @@ the suite count or from module-name references.
 
 ## Current route semantics
 
-The v0.2.67 candidate has one processing engine: incremental. New Vaults default
+The supported runtime has one processing engine: incremental. New Vaults default
 both `process.automatic_pipeline` and `process.remember_pipeline` to
 `incremental`. A retained `legacy` value from an older Vault is not executable;
 migration preflight reports it as `legacy_pipeline_configuration`, and runtime
@@ -38,23 +38,17 @@ preflight result.
 
 ## Preparation with no paid calls
 
-Use the existing entry point on a known candidate installation:
+Acceptance runners and synthetic fixtures are local development tools, not
+entry points shipped with an installed package. Use a controlled development
+checkout to plan the approved suite without constructing a model, loading
+credentials or opening a production Vault. Record the suite file and normalized
+hashes, prompt hash, repetitions and request bound from that exact checkout.
 
-```sh
-python -m memleaf.acceptance --suite examples/incremental_acceptance.json --repeat 5
-```
-
-This is plan-only: it validates the suite and reports hashes and request bounds;
-it does not load a backend configuration or create a Vault. `process --dry-run`
-is different and may call the configured model. Do not use it as a free preview.
-
-The shipped suite is public synthetic regression material. Take case count, turn
-count, repetitions, normalized suite hash, prompt hash and request bounds from
-this command on the selected candidate; do not inherit numbers from an older
-report. Also record the original suite file SHA-256: it is not the normalized
-semantic suite hash. The reported bound is not a spending authorization. A private
-held-out suite requires its own provenance, permission and count. Merely adding
-a label `holdout` does not prove the examples were unseen in tuning.
+`process --dry-run` is a product processing preview and may call the configured
+model. It is not a free substitute for local acceptance planning. A request bound
+is not a spending authorization; a private held-out suite also needs provenance
+and explicit data/route permission. A `holdout` label alone proves nothing about
+whether those examples were used in development.
 
 Do not execute until the actual route/model, local credential reference, suite
 hash, repeats and total allowance are approved. Keep credentials local. Do not
