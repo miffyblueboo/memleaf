@@ -58,6 +58,18 @@ class HostMemory:
                 raise ValueError()
             if any(not isinstance(payload[k], dict) for k in ("works", "sources", "requests", "cursors", "plans")):
                 raise ValueError()
+            # Reject impossible saved receipts left by older interrupted
+            # freezing, including cached replay of a false completion.
+            for work in payload["works"].values():
+                for entry in work["items"].values():
+                    receipt = entry["receipt"]
+                    if receipt["status"] == "saved":
+                        ids = receipt["memory_ids"]
+                        committed = receipt["committed_revisions"]
+                        if (not ids or len(ids) != len(set(ids))
+                                or [row["memory_id"] for row in committed] != ids
+                                or receipt["applied"] is not True or receipt["settled"] is not True):
+                            raise ValueError()
             return payload
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise V2Error("STATE_CORRUPT", "Host work ledger cannot be verified") from exc
@@ -561,16 +573,20 @@ class HostMemory:
                     self.auth.check(context, "memory.maintain", work=work)
                 if item.get("update_kind") == "retract_memory" or any(p.get("op") == "retract" for p in item.get("body_patch", [])):
                     self.auth.check(context, "memory.retract", work=work)
-                self._freeze(entry, plan, snapshot)
+                frozen_entry = deepcopy(entry)
+                self._freeze(frozen_entry, plan, snapshot)
                 if item["action"] == "COMPACT":
                     approval_plan = plan.get("approval_plan")
                     if approval_plan is None:
                         approval_plan = {"target": item["target"], "revision": snapshot["targets"][item["target"]]["revision"],
                                          "new_body": item["new_body"], "mapping": item["mapping"]}
                     self.auth.consume_approval(context, item["approval_ref"], "body_compaction", "sha256:" + digest(approval_plan), work_id=work["work_id"], locked=True)
+                entry.update(frozen_entry)
                 entry["removed_ranges"] = plan.get("removed_ranges", {})
                 proposals.append(entry)
-            except V2Error as exc:
+            except ValueError as exc:
+                if not isinstance(exc, V2Error):
+                    exc = V2Error("INVALID_SCHEMA", "Memory cannot be serialized into a valid frozen group")
                 exc.budget_charged = True
                 receipt["error"] = exc.public()
         # Reject implicit dependencies across independently submitted Items.
@@ -589,12 +605,15 @@ class HostMemory:
         if receipt["action"] == "DEFERRED":
             receipt["status"] = "deferred"
             return
-        receipt.update(operation_id=_id("op_"), group_id=_id("group_") if plan["changes"] else None, status="prepared")
+        # Publish prepared only after every group member can be serialized and
+        # validated. A later member failure must leave no executable prefix.
+        operation_id = _id("op_")
+        operations = []
         now = utc_now()
         for change in plan["changes"]:
             before = Memory.from_mapping(change["before"]) if change.get("before") else None
             after = Memory.from_mapping(change["after"])
-            after.extra["incremental_operation_id"] = receipt["operation_id"]
+            after.extra["incremental_operation_id"] = operation_id
             after.updated = now
             if before:
                 after.created = before.created
@@ -604,15 +623,71 @@ class HostMemory:
                             "message_revision": source["revision"], "trust": source["trust"], "role": source["role"]}
                 if evidence not in after.sources:
                     after.sources.append(evidence)
-            entry["operations"].append({"action": "UPDATE" if before else "CREATE", "memory_id": after.memory_id,
-                                         "operation_id": receipt["operation_id"], "prepared_at": now,
+            operations.append({"action": "UPDATE" if before else "CREATE", "memory_id": after.memory_id,
+                                         "operation_id": operation_id, "prepared_at": now,
                                          "before": before.to_markdown() if before else None, "after": after.to_markdown(),
                                          "expected_revision": revision(before).removeprefix("sha256:") if before else None,
                                          "replacement_revision": revision(after).removeprefix("sha256:"), "applied": False})
-        receipt["memory_ids"] = [c["memory_id"] for c in entry["operations"]]
+        frozen_receipt = {**receipt, "operation_id": operation_id,
+                          "group_id": _id("group_") if operations else None,
+                          "status": "prepared", "memory_ids": [c["memory_id"] for c in operations]}
         if not plan["changes"]:
-            receipt["memory_ids"] = [snapshot["targets"][r]["memory"]["memory_id"] for r in plan.get("target_refs", [])]
-            receipt.update(status="not_recorded" if receipt["action"] == "NO_MEMORY" else "unchanged", settled=True)
+            if receipt["action"] not in {"NO_CHANGE", "NO_MEMORY"}:
+                raise V2Error("STATE_CORRUPT", "A write requires a complete frozen operation group")
+            frozen_receipt["memory_ids"] = [snapshot["targets"][r]["memory"]["memory_id"] for r in plan.get("target_refs", [])]
+            frozen_receipt.update(status="not_recorded" if receipt["action"] == "NO_MEMORY" else "unchanged", settled=True)
+        else:
+            self._validate_frozen({**entry, "receipt": frozen_receipt, "operations": operations}, snapshot)
+        entry.update(operations=operations, frozen_digest=self._frozen_digest(operations))
+        receipt.update(frozen_receipt)
+
+    @staticmethod
+    def _frozen_digest(operations: list[dict[str, Any]]) -> str:
+        # Application bookkeeping changes during recovery; frozen payloads do not.
+        fields = ("action", "memory_id", "operation_id", "prepared_at", "before", "after",
+                  "expected_revision", "replacement_revision")
+        return digest([{key: operation[key] for key in fields} for operation in operations])
+
+    def _validate_frozen(self, entry: dict[str, Any], snapshot: dict[str, Any]) -> None:
+        """Prove complete membership and payloads before any write or settlement.
+
+        Old complete groups have no digest but retain their full receipt IDs and
+        proposal participants. Old incomplete groups fail closed without repair
+        from an inferred/recompiled plan.
+        """
+        try:
+            receipt, operations = entry["receipt"], entry["operations"]
+            ids = [op["memory_id"] for op in operations]
+            if not ids or len(ids) != len(set(ids)) or ids != receipt["memory_ids"]:
+                raise ValueError()
+            proposal = entry["proposal"]
+            action = receipt["action"]
+            if proposal["action"] != action or action not in {"CREATE", "UPDATE", "MERGE", "COMPACT"}:
+                raise ValueError()
+            if action == "CREATE":
+                if len(operations) != 1 or operations[0]["action"] != "CREATE":
+                    raise ValueError()
+            else:
+                refs = [proposal["target"], *proposal.get("duplicates", [])]
+                expected = [snapshot["targets"][ref]["memory"]["memory_id"] for ref in refs]
+                if ids != expected or any(op["action"] != "UPDATE" for op in operations):
+                    raise ValueError()
+            if "frozen_digest" in entry and entry["frozen_digest"] != self._frozen_digest(operations):
+                raise ValueError()
+            for op in operations:
+                after = Memory.from_markdown(op["after"])
+                before = Memory.from_markdown(op["before"]) if op["before"] is not None else None
+                if (op["operation_id"] != receipt["operation_id"]
+                        or after.memory_id != op["memory_id"]
+                        or after.extra.get("incremental_operation_id") != op["operation_id"]
+                        or revision(after) != "sha256:" + op["replacement_revision"]
+                        or (op["action"] == "CREATE" and (before is not None or op["expected_revision"] is not None))
+                        or (op["action"] == "UPDATE" and (before is None or before.memory_id != after.memory_id
+                            or revision(before) != "sha256:" + op["expected_revision"]))):
+                    raise ValueError()
+        except (KeyError, TypeError, ValueError) as exc:
+            raise V2Error("RECOVERY_REQUIRED", "Frozen operation group is incomplete or invalid",
+                          next_action="contact_owner") from exc
 
     def _verify_source(self, state: dict[str, Any], work: dict[str, Any]) -> None:
         for source in work["snapshot"]["sources"].values():
@@ -661,19 +736,26 @@ class HostMemory:
             try:
                 if entry.get("deleted_dependency_ids"):
                     raise V2Error("RECOVERY_REQUIRED", "A deleted dependency requires an exact new owner disposition", next_action="contact_owner")
+                self._validate_frozen(entry, work["snapshot"])
                 self.auth.check(context, "memory.write", work=work)
                 # Guard every member before beginning a multi-file dependency group.
                 for op in entry["operations"]:
                     actual = self._applied(op)
                     if actual is None:
                         raise V2Error("REVISION_CONFLICT", retryable=True, next_action="contact_owner")
+                    if actual is False and op.get("applied") is True:
+                        raise V2Error("RECOVERY_REQUIRED", "Previously applied content is no longer present", next_action="contact_owner")
                     self.auth.check(context, "memory.write", scopes=Memory.from_markdown(op["after"]).scopes, work=work)
                 for op in entry["operations"]:
                     self.auth.check(context, "memory.write", work=work)
                     if self._applied(op) is not True:
                         writer.write_frozen_unlocked(op)
+                    if self._applied(op) is not True:
+                        raise V2Error("IO_INTERRUPTED", "Frozen write cannot be confirmed on disk", retryable=True, next_action="resume")
                     op["applied"] = True
                     self._save(state)
+                if not all(self._applied(op) is True for op in entry["operations"]):
+                    raise V2Error("RECOVERY_REQUIRED", "Complete group persistence cannot be confirmed", next_action="contact_owner")
                 r.update(status="saved", applied=True, settled=True, error=None,
                          committed_revisions=[{"memory_id": o["memory_id"], "revision": "sha256:" + o["replacement_revision"]} for o in entry["operations"]])
                 for key, ranges in entry.get("removed_ranges", {}).items():

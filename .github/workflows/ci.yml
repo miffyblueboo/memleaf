@@ -205,7 +205,7 @@ jobs:
                   capabilities = writer.tool('memory_capabilities', {})
                   assert capabilities['executor'] == 'host'
                   assert not capabilities['sampling_required'] and not capabilities['independent_model_fallback']
-                  text = 'The delivery project uses SQLite and is currently active.'
+                  text = 'The delivery project uses SQLite.\\nIt is currently active.'
                   prepared = writer.tool('prepare_memory', {'mode': 'new', 'purpose': 'explicit', 'request_id': 'create-prepare',
                       'source': {'kind': 'inline', 'messages': [{'role': 'user', 'text': text}]}})
                   work, snapshot = prepared['work'], prepared['snapshot']

@@ -307,9 +307,13 @@ def _dump_scalar(value: Any) -> str:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return str(value)
     if isinstance(value, str):
-        if "\n" in value or "\r" in value:
-            raise FrontmatterError("multiline strings are not supported")
-        return json.dumps(value, ensure_ascii=False)
+        # JSON escapes retain line breaks in a single YAML quoted scalar.
+        # Escape the remaining Unicode line separators too: splitlines() is
+        # used by the restricted parser and must not split inside a scalar.
+        return (json.dumps(value, ensure_ascii=False)
+                .replace("\u0085", "\\u0085")
+                .replace("\u2028", "\\u2028")
+                .replace("\u2029", "\\u2029"))
     raise FrontmatterError("unsupported value type")
 
 

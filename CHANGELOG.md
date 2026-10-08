@@ -5,6 +5,30 @@ All notable changes to memleaf are documented here.
 ## Unreleased
 
 
+## 1.0.2 — 2026-10-08
+
+### Reliable host recovery and Codex todo retrieval
+
+- Freeze host write groups only after every member is serialized and validated.
+  Reject empty/incomplete recovery groups and impossible legacy saved receipts;
+  verify actual heads and history before settlement, including Owner accounting.
+- Preserve multiline evidence in Markdown metadata through escaped quoted
+  strings, with lossless LF/CR/CRLF and Unicode line-separator round trips.
+- Include `list_todos` in Codex retrieval Hooks and accept its current directory
+  fields. Reinstallation safely upgrades known older matchers with backup;
+  unrelated or shared third-party Hook groups are preserved.
+- Validate the installed host workflow with multiline evidence in the existing
+  cross-platform wheel/source-distribution matrix. All 24 added regressions and
+  152 existing host checks passed locally, including real stdio/Hook subprocesses
+  and isolated installed-package checks. One additional historical assertion
+  failed identically on the original 1.0.1 baseline and remains outside this fix.
+- No model call or retry was added. This patch used deterministic synthetic
+  acceptance; the earlier 1.0.1 macOS live-client evidence remains historical,
+  and no new real-model or production-Vault acceptance is claimed.
+- Existing Codex model-profile installations need the installer run again to
+  update their known old Hook matchers, followed by the existing Hook review and
+  trust flow. Updating the Python package alone does not rewrite host settings.
+
 ## 1.0.1 — 2026-10-08
 
 ### Optional host-model MCP workflow for Codex

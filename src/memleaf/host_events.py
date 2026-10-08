@@ -403,7 +403,11 @@ def _codex_todo_result(value: Any) -> tuple[str, bool, str | None]:
         return "error", False, None
     if not all(
         isinstance(item, Mapping)
-        and set(item) == {"memory_id", "title", "due_date"}
+        # Directory rows also carry status, ownership, scope and history
+        # metadata. Only the identity/date fields are required to observe
+        # retrieval; rejecting those additive fields would mark real lists
+        # as errors and block the following bounded read.
+        and {"memory_id", "title", "due_date"}.issubset(item)
         and isinstance(item.get("memory_id"), str) and bool(item.get("memory_id"))
         and isinstance(item.get("title"), str) and bool(item.get("title"))
         and (item.get("due_date") is None or isinstance(item.get("due_date"), str))

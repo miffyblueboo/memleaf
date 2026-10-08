@@ -56,12 +56,19 @@ def account_work(host: Any, work_id: str) -> dict[str, Any]:
                 continue
             operations = entry.get("operations", [])
             actual = [host._applied(operation) for operation in operations]
+            complete = False
+            if operations and not entry.get("deleted_dependency_ids"):
+                try:
+                    host._validate_frozen(entry, work["snapshot"])
+                    complete = True
+                except V2Error:
+                    pass
             for operation, applied in zip(operations, actual):
                 # Keep a remembered application true even if a later external
                 # deletion makes the current CREATE head absent. Do not revive.
                 if applied is not False or not operation.get("applied"):
                     operation["applied"] = applied
-            if operations and all(applied is True for applied in actual):
+            if complete and all(applied is True for applied in actual):
                 receipt.update(status="saved", applied=True, settled=True, error=None,
                     committed_revisions=[{"memory_id": operation["memory_id"],
                         "revision": "sha256:" + operation["replacement_revision"]}
@@ -170,6 +177,8 @@ def _check_recovery_resources(host: Any, state: dict[str, Any], context: dict[st
     for entry in work["items"].values():
         if entry["receipt"]["status"] in _FINAL:
             continue
+        if entry.get("operations"):
+            host._validate_frozen(entry, work["snapshot"])
         if entry["receipt"]["action"] in {"MERGE", "COMPACT"}:
             host.auth.check(context, "memory.maintain")
         proposal = entry.get("proposal", {})

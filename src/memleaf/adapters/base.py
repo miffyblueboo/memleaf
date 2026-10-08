@@ -592,6 +592,7 @@ def merge_hook_config(
     *,
     container_key: str | None = None,
     dry_run: bool = False,
+    matcher_upgrades: Mapping[str, Mapping[str, str]] | None = None,
 ) -> HookMergeResult:
     """Merge command handlers into a host hook JSON file.
 
@@ -599,6 +600,8 @@ def merge_hook_config(
     a top-level ``hooks`` object and passes ``container_key="hooks"``.
     Existing handlers are left untouched; a matching memleaf command is
     idempotent and a different memleaf command is treated as a conflict.
+    An adapter may explicitly migrate known old matchers on groups owned
+    entirely by the matching command; unrelated groups stay unchanged.
     """
 
     target = Path(path)
@@ -659,6 +662,23 @@ def merge_hook_config(
                 command = requested_handler.get("command")
                 if not isinstance(command, str) or not command:
                     return HookMergeResult("diagnostic", "hook command is invalid; unchanged")
+                # Upgrade only an explicitly recognized old matcher belonging
+                # entirely to this command. Never rewrite a shared host group
+                # whose matcher also controls unrelated hooks.
+                upgrades = (matcher_upgrades or {}).get(event, {})
+                for index, item in enumerate(existing_items):
+                    if not isinstance(item, Mapping) or not isinstance(item.get("matcher"), str):
+                        continue
+                    replacement = upgrades.get(item["matcher"])
+                    hooks = item.get("hooks") if container_key == "hooks" else None
+                    if replacement is None or not isinstance(hooks, list) or not hooks:
+                        continue
+                    if not any(isinstance(hook, Mapping) and hook.get("command") == command for hook in hooks):
+                        continue
+                    if not all(isinstance(hook, Mapping) and hook.get("command") == command for hook in hooks):
+                        return HookMergeResult("diagnostic", "existing memleaf matcher shares unrelated hooks; unchanged")
+                    existing_items[index] = {**item, "matcher": replacement}
+                    updated = True
                 matching, conflict = _hook_command_state(existing_items, command, event, container_key)
                 if conflict:
                     return HookMergeResult("diagnostic", "existing memleaf hook conflicts; unchanged")

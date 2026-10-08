@@ -30,14 +30,23 @@ scope. An internal protocol change may fence pending model responses and require
 an explicit recovery action; it must not silently reinterpret saved work, erase
 unresolved outcomes or reset consumed request budgets.
 
-## Upgrade to 1.0.1
+## Upgrade to 1.0.2
 
-The 1.0.1 release preserves the 1.0.0 public interfaces, existing Model Routes,
+The 1.0.2 release preserves the 1.0.0 public interfaces, existing Model Routes,
 default entry points and Markdown/history formats. The new host-model MCP route
 is optional and selected with `--profile host`; upgrading does not convert an
 existing Codex or Hermes connection to it. No formal Vault migration is required.
 The host contract identifier remains `memleaf-host-v2.0-rc1`; protocol identity
 and package release numbers are separate.
+
+Version 1.0.2 fixes incomplete host freezing/recovery, multiline evidence
+serialization and Codex todo retrieval Hooks. Complete older frozen groups
+remain recoverable; incomplete groups and impossible saved receipts fail closed
+without inventing writes or refunding processing budgets. Existing model-profile
+Codex users should rerun the installer to update known old Hook matchers, then
+follow Codex's Hook review/trust flow. Shared third-party Hook groups are preserved
+and reported for explicit resolution. A package upgrade alone does not alter
+host configuration.
 
 The host route uses the running Agent model and does not require a separate
 Memleaf model API key. A local Owner still supplies client credentials,
@@ -96,3 +105,8 @@ independent Memleaf model calls; host requests and token usage remain separate.
 Corrections and explicit Owner-approved budgets were part of acceptance. This
 evidence does not certify every model/client or live Windows/Linux model use;
 native installation and package CI are distinct from real-model acceptance.
+
+For 1.0.2, 24 new deterministic regressions and all 152 existing host checks
+passed, including isolated installed-package and real stdio/Hook subprocess
+checks. No new real Codex/Hermes model session or production-Vault migration was
+performed for this patch; those scopes remain distinct from native package CI.

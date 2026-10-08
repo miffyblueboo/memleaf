@@ -484,6 +484,10 @@ def _configure_codex_hooks(
         definition,
         container_key="hooks",
         dry_run=dry_run,
+        matcher_upgrades={
+            "PreToolUse": {r"^mcp__memleaf__(search|read)$": r"^mcp__memleaf__(search|list_todos|read)$"},
+            "PostToolUse": {r"^mcp__memleaf__search$": r"^mcp__memleaf__(search|list_todos)$"},
+        },
     )
 
 
@@ -513,13 +517,13 @@ def _codex_hook_definition(
         "UserPromptSubmit": [{"hooks": [user_prompt]}],
         "PreToolUse": [
             {
-                "matcher": r"^mcp__memleaf__(search|read)$",
+                "matcher": r"^mcp__memleaf__(search|list_todos|read)$",
                 "hooks": [pre_tool],
             }
         ],
         "PostToolUse": [
             {
-                "matcher": r"^mcp__memleaf__search$",
+                "matcher": r"^mcp__memleaf__(search|list_todos)$",
                 "hooks": [post_tool],
             }
         ],

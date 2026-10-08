@@ -4,7 +4,7 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **稳定版：1.0.1。** 支持 Hermes 和 Codex；版本与兼容范围见[稳定性约定](docs/stability.md)。
+> **稳定版：1.0.2。** 支持 Hermes 和 Codex；版本与兼容范围见[稳定性约定](docs/stability.md)。
 > **Codex 可通过 `--profile host` 使用当前宿主模型完成记忆闭环，无需另配 Memleaf 模型 API Key。** 本地 Owner 仍需配置客户端身份、读写权限及来源信任；客户端主动调用工具，不代表每轮自动记忆。
 > host profile 支持独立于内容类型的 `actionable` 和结构化 `waiting_on`，每份 work 默认最多三次被接受的 submit；Memleaf 负责确定性校验、落盘与恢复。
 > 默认 `model` profile 和 Hermes 原生接入继续使用独立 Model Route，提炼与语义复核共用每份工作的最多五次模型请求。旧接口、现有记忆和默认入口保留，升级无需正式 Vault 迁移。Antigravity（反重力）当前不支持。
