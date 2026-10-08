@@ -503,6 +503,9 @@ class Memleaf:
         In particular, forget may cancel a pending write before it can replay.
         """
         with self.vault.lock():
+            from .host_v2 import pending_host_memory_ids
+            if pending_host_memory_ids(self):
+                raise RetrievalError("recovery_required", "Host memory work must be resolved before legacy mutation")
             self._recover_compaction_unlocked()
             from .incremental_journal import reconcile_applied_unlocked
             reconcile_applied_unlocked(self)
@@ -864,6 +867,7 @@ class Memleaf:
     def read(self, memory_id: str, *, include_history: bool = False) -> Optional[Memory]:
         safe_component(memory_id, "memory id")
         with self.vault.lock():
+            self._guard_host_read_unlocked(memory_id)
             snapshot = scan_memories(self.vault, include_history)
             snapshot.require_identity(memory_id)
             matches = [r for r in snapshot.records if r.memory.memory_id == memory_id]
@@ -966,7 +970,8 @@ class Memleaf:
             return result
 
         with self.vault.lock():
-            snapshot = scan_memories(self.vault, include_history)
+            self._guard_host_read_unlocked(memory_id)
+            snapshot = self._host_query_snapshot_unlocked(scan_memories(self.vault, include_history))
             snapshot.require_identity(memory_id)
             matches = [r for r in snapshot.records if r.memory.memory_id == memory_id]
             if matches:
@@ -1012,9 +1017,59 @@ class Memleaf:
             ), **self._query_envelope(snapshot)}
 
     def _query_envelope(self, snapshot, *, scope=None) -> dict[str, Any]:
-        return {"knowledge_generation": snapshot.generation,
+        value = {"knowledge_generation": snapshot.generation,
                 "scan_status": snapshot.report(scope, self.vault.config()),
                 "pipeline_status": observe_progress(self.vault)}
+        groups = getattr(snapshot, "host_blocked_groups", [])
+        if scope is not None:
+            allowed = set(inherited_scopes(scope, self.vault.config()))
+            groups = [g for g in groups if allowed.intersection(getattr(snapshot, "host_group_scopes", {}).get(g, []))]
+        if groups:
+            value.update(can_claim_complete=False, integrity={"state": "incomplete", "blocked_group_count": len(groups), "blocked_targets": [],
+                         "code": "RECOVERY_REQUIRED", "can_claim_complete": False})
+        return value
+
+    def _guard_host_read_unlocked(self, memory_id: str) -> None:
+        from .host_v2 import pending_host_memory_ids
+        if memory_id in pending_host_memory_ids(self):
+            raise RetrievalError("recovery_required", "Memory belongs to an unresolved host dependency group")
+
+    def _host_query_snapshot_unlocked(self, snapshot):
+        from .host_v2 import HostMemory
+        from .query_scan import ScanIssue
+        host = HostMemory(self, "")
+        state = host._load()
+        allowed = None
+        if getattr(self, "_host_v2", None) is not None:
+            configured = self._host_v2
+            context = configured._context()
+            configured.auth.check(context)
+            allowed = set(context["read_scopes"])
+            # Filter before pagination, counts, relevance and completeness.
+            snapshot.records = [r for r in snapshot.records if set(r.memory.scopes).issubset(allowed)]
+            snapshot.issues = [i for i in snapshot.issues if i.scopes is None or set(i.scopes).issubset(allowed)]
+        blocked = host._blocked_ids(state)
+        if blocked:
+            retained = []
+            for record in snapshot.records:
+                if record.memory.memory_id in blocked or record.memory.extra.get("active_memory_id") in blocked:
+                    snapshot.issues.append(ScanIssue("recovery_required", "host_work", tuple(record.memory.scopes), record.memory.memory_id))
+                else:
+                    retained.append(record)
+            snapshot.records = retained
+            snapshot.host_blocked_groups = host._groups(state)
+            snapshot.host_group_scopes = {}
+            for work in state["works"].values():
+                for item in work["items"].values():
+                    group = item["receipt"]["group_id"]
+                    if group not in snapshot.host_blocked_groups:
+                        continue
+                    scopes = {s for op in item["operations"] for s in (op.get("scopes") or Memory.from_markdown(op["after"]).scopes)}
+                    snapshot.host_group_scopes[group] = scopes
+            if allowed is not None:
+                snapshot.host_blocked_groups = [g for g in snapshot.host_blocked_groups
+                    if snapshot.host_group_scopes.get(g, set()).issubset(allowed)]
+        return snapshot
 
     @staticmethod
     def _page_limit(value: int | None, default: int, maximum: int) -> int:
@@ -1275,7 +1330,7 @@ class Memleaf:
             query_value = list(query)
         scope_value = self._scope_query_values(scope)
         with self.vault.lock():
-            snapshot = scan_memories(self.vault, include_history)
+            snapshot = self._host_query_snapshot_unlocked(scan_memories(self.vault, include_history))
             # The candidate-directory API is the strict public lookup
             # boundary.  Legacy ``search``/``context`` and the processing
             # pipeline deliberately retain their existing scope inference
@@ -1436,7 +1491,7 @@ class Memleaf:
         from .query_clock import query_clock
         clock = query_clock(cursor, as_of, timezone)
         with self.vault.lock():
-            snapshot = scan_memories(self.vault, status != "active")
+            snapshot = self._host_query_snapshot_unlocked(scan_memories(self.vault, status != "active"))
             active_records = [
                 record
                 for record in snapshot.area("knowledge")
@@ -1614,9 +1669,10 @@ class Memleaf:
             raise ValueError("invalid todo status")
 
         if query_snapshot is None:
-            index = self._read_tags_index_unlocked()
-            active_records = self._read_memories_unlocked("knowledge")
-            history_records = self._read_memories_unlocked("history") if include_history else []
+            query_snapshot = self._host_query_snapshot_unlocked(scan_memories(self.vault, include_history))
+            active_records = query_snapshot.area("knowledge")
+            history_records = query_snapshot.area("history")
+            index = build_tags_index([r.memory for r in active_records], [r.memory for r in history_records])
         else:
             active_records = query_snapshot.area("knowledge")
             history_records = query_snapshot.area("history")

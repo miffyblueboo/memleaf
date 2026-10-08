@@ -5,6 +5,61 @@ All notable changes to memleaf are documented here.
 ## Unreleased
 
 
+## 1.0.1 — 2026-10-08
+
+### Optional host-model MCP workflow for Codex
+
+- Add an explicit `--profile host` route that lets Codex and other compatible
+  MCP hosts use their running model to propose memory changes. Memleaf performs
+  deterministic validation, persistence and recovery with no independent model
+  API key, model discovery, sampling or fallback model calls. The existing
+  `model` profile remains the default; native Hermes processing retains its
+  independent Model Route and shared five-request extraction/review budget.
+- Add seven host tools for capabilities, preparation, paged work inspection,
+  submission, recovery, cancellation and approved forgetting. Local Owner
+  commands bind credentials, permissions, scopes and acceptable source trust;
+  `host-grant` returns MCP configuration without modifying Codex defaults.
+  This route requires deliberate tool calls and does not automatically capture
+  or process every conversation turn.
+- Persist source-bound work, cumulative receipts and a default limit of three
+  accepted submits per work. Preserve successful items during partial repair,
+  request idempotency and target revisions during replay, and frozen operation
+  identities during interrupted I/O recovery. Changed connections or request IDs
+  do not reset source budgets; new processing budgets require exact Owner approval.
+- Support action tracking independently of content type, including projects;
+  distinguish `assignee` from `waiting_on` and retain unknown fields without
+  invented evidence. Include source-checked updates, retraction/restoration,
+  preserve-union MERGE and approved COMPACT/delete operations. Check permissions
+  on every work view, query page, replay and historical deletion target.
+- Render client input schemas without local references or object-union display
+  branches, with concise construction examples and safe field-level errors.
+  This display adaptation does not relax the original Core contract validation
+  or add runtime dependencies. Preserve existing public interfaces, default
+  entry points, Markdown memories and history; no formal Vault migration is required.
+
+### Validation and supported scope
+
+- All 152 added deterministic checks passed, covering contract shapes, real
+  stdio MCP, authorization, source evidence, CAS, recovery, retention and legacy
+  data compatibility. Existing affected regression checks were compared with
+  their prior baseline; this is not a claim that all historical tests passed.
+- Live macOS acceptance used Codex CLI 0.162.0-alpha.2 with GPT-6.1 Sol and
+  Hermes CLI 0.21.5 with DeepSeek v4.1 Flash. Both clients completed eight basic
+  behaviors, including independent-process search/read and distinct memories
+  with identical titles. Codex also verified preserve-union MERGE, reopening
+  and cancelling a project, whole-memory retraction/restoration with the same
+  ID, and precisely approved COMPACT: six advanced changes were saved, applied
+  and settled. Acceptance included corrective submits and Owner-approved new
+  processing budgets; it does not establish universal first-pass success.
+- Memleaf made zero independent model calls in these host runs. Host usage was
+  recorded separately: Codex model request counts were unavailable, while
+  Hermes reported actual request/token usage. MCP call counts are not model
+  request counts, and reusing the host model does not mean zero host usage.
+- These live results do not certify every model or MCP client, Windows/Linux
+  real-model behavior, or a formal production-Vault migration/rollback exercise.
+  Installed-artifact CI and real-model acceptance remain separate release gates.
+
+
 ## 1.0.0 — 2026-10-06
 
 ### Stable public interfaces and production-only distributions

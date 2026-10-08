@@ -1,0 +1,92 @@
+{
+  "type": "object",
+  "properties": {
+    "state": {
+      "enum": [
+        "complete",
+        "incomplete"
+      ]
+    },
+    "blocked_group_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483647
+    },
+    "blocked_targets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/MemoryId"
+      },
+      "minItems": 0,
+      "maxItems": 20,
+      "uniqueItems": true
+    },
+    "code": {
+      "enum": [
+        null,
+        "RECOVERY_REQUIRED",
+        "STATE_CORRUPT"
+      ]
+    },
+    "can_claim_complete": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "state",
+    "blocked_group_count",
+    "blocked_targets",
+    "code",
+    "can_claim_complete"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "complete"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "can_claim_complete": {
+            "const": true
+          },
+          "blocked_group_count": {
+            "const": 0
+          },
+          "blocked_targets": {
+            "maxItems": 0
+          },
+          "code": {
+            "const": null
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "can_claim_complete": {
+            "const": false
+          },
+          "code": {
+            "enum": [
+              "RECOVERY_REQUIRED",
+              "STATE_CORRUPT"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "MemoryId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 800,
+      "pattern": "^[^\\x00-\\x1f\\x7f/\\\\]+$"
+    }
+  }
+}

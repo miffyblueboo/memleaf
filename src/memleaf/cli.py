@@ -31,6 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="memleaf")
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command", required=True)
+    from .host_v2_cli import add_commands
+    add_commands(commands)
     init = commands.add_parser("init", help="initialize a vault and the Hermes MCP adapter")
     init.add_argument("--vault", type=Path, default=None, help="vault directory")
     init.add_argument("--all", action="store_true", help="diagnose all supported hosts, even uncertain ones")
@@ -249,7 +251,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        if args.command == "init":
+        if args.command in {"host-grant", "host-revoke", "host-approve", "host-account", "host-recovery-plan", "host-source-confirm", "host-processing-plan"}:
+            from .host_v2_cli import run
+            output = run(args)
+            print(json.dumps(output, ensure_ascii=False, sort_keys=True, indent=None if args.json else 2))
+            return 0
+        elif args.command == "init":
             output = _init(args)
         elif args.command == "install":
             from .installer import install_codex, install_hermes
@@ -324,7 +331,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             output = _host_event(args)
         else:  # pragma: no cover - argparse requires a known subcommand.
             raise ValueError("unknown command")
-    except Exception:
+    except Exception as error:
+        if getattr(args, "command", None) in {"host-grant", "host-revoke", "host-approve", "host-account", "host-recovery-plan", "host-source-confirm", "host-processing-plan"}:
+            from .host_v2_common import V2Error
+            public = error.public() if isinstance(error, V2Error) else {"code": "OWNER_COMMAND_FAILED"}
+            print(json.dumps({"status": "failure", "error": public}, ensure_ascii=False))
+            return 1
         if getattr(args, "command", None) == "host-event":
             if (
                 getattr(args, "host", None) == "antigravity"

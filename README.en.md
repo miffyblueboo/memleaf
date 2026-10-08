@@ -4,12 +4,10 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Stable release: 1.0.0.** Public interfaces enter stable maintenance; see the [stability policy](docs/stability.md) for versioning and compatibility scope.
-> Automatic extraction and review share one future-value standard: the model weighs likely reuse, information gain, direct usability when read again, and the cost of forgetting. It keeps only the smallest core that can materially help future understanding, decisions, or actions; information without clear value is not extracted, and no business-specific exclusion rule is hard-coded.
-> Extraction compares existing identifiers, objectives, progress, responsibility and deadlines first. Filling an unknown also maintains the original item; a separate task does not replace updating shared project facts. Confirmed duplicates can be merged in the existing processing requests with their sources and history preserved. Independent project and task lifecycles remain separate; Core does not merge matching titles.
-> New requests accept equivalent field representations. Unknown executors remain `null`; new or changed responsibility and deadlines require actual source evidence. Dependencies belong in the body; `waiting_on` is no longer extracted. Proposed actions and related fields undergo bounded semantic verification within a shared five-request limit per work item, stopping on success; failed verification blocks writes. Source time resolves relative dates without inventing factual dates.
-> A todo's `due_date` means only the explicit deadline of the todo action; dates describing its subject or desired outcome are not deadlines. Project ownership remains the model's semantic judgement and needs no literal name match. The review stage now keeps the update target chosen by the first pass, so a state change is no longer downgraded into a new memory. Markdown remains the sole source of truth.
-> **The current release supports Hermes and Codex.** Antigravity is not detected, installed, or configured.
+> **Stable release: 1.0.1.** Hermes and Codex are supported; see the [stability policy](docs/stability.md) for compatibility scope.
+> **Codex can complete the memory workflow with its current host model through `--profile host`, without a separate Memleaf model API key.** A local Owner still configures client identity, permissions and source trust. Clients invoke the tools deliberately; this does not enable automatic memory on every turn.
+> The host profile supports `actionable` independently of content type and structured `waiting_on`, with at most three accepted submits per work by default. Memleaf validates, persists and recovers deterministically.
+> The default `model` profile and native Hermes integration retain their independent Model Route and shared five-request extraction/review budget. Existing interfaces, memories and default entry points remain; no formal Vault migration is required. Antigravity is not supported.
 
 ## Project scope
 
@@ -25,6 +23,8 @@ memleaf stores an AI agent's long-term memory as local Markdown files owned by t
 memleaf does not automatically put the entire Vault or a whole conversation history into the model context. Automatic retrieval follows “Scope Map → candidate directory → controlled body reads.”
 
 ## Current workflow
+
+Original `model` profile / native Hermes workflow:
 
 ```text
 Visible user/assistant conversation
@@ -67,6 +67,16 @@ Hermes uses a native MemoryProvider for lifecycle handling and obtains the Scope
 
 ## Memory admission and maintenance
 
+The following rules apply to the original `model` profile and native Hermes automatic processing. See [Codex host setup](#codex) below for host actions, fields and budgets.
+
+Automatic extraction and review share one future-value standard: the model weighs likely reuse, information gain, direct usability when read again, and the cost of forgetting. It keeps only the smallest core that can materially help future understanding, decisions, or actions; information without clear value is not extracted, and no business-specific exclusion rule is hard-coded.
+
+Extraction compares existing identifiers, objectives, progress, responsibility and deadlines first. Filling an unknown also maintains the original item; a separate task does not replace updating shared project facts. Confirmed duplicates can be merged in the existing processing requests with their sources and history preserved. Independent project and task lifecycles remain separate; Core does not merge matching titles.
+
+New requests accept equivalent field representations. Unknown executors remain `null`; new or changed responsibility and deadlines require actual source evidence. Dependencies belong in the body; `waiting_on` is no longer extracted. Proposed actions and related fields undergo bounded semantic verification within a shared five-request limit per work item, stopping on success; failed verification blocks writes. Source time resolves relative dates without inventing factual dates.
+
+A todo's `due_date` means only the explicit deadline of the todo action; dates describing its subject or desired outcome are not deadlines. Project ownership remains the model's semantic judgement and needs no literal name match. The review stage now keeps the update target chosen by the first pass, so a state change is no longer downgraded into a new memory. Markdown remains the sole source of truth.
+
 **Ten seconds is an extraction performance target, not a failure deadline.** HTTP requests honor `llm.request_timeout` (120 seconds by default). A valid, Core-checked response is not discarded just because processing exceeds ten seconds. Single-pass planning, bounded repair and per-turn commits remain; completion and latency are measured separately. See [extraction latency and timeouts](docs/extraction-latency.md).
 
 memleaf does not save every sentence. When a complete visible user + assistant turn is processed, the model first evaluates whether it has concrete future reuse value:
@@ -92,7 +102,7 @@ For current todos, all unfinished work, urgent items, or work due in a date rang
 
 ## Installation
 
-Python 3.11+ is required. The current release supports Hermes and Codex. Hermes is the default install target; Codex uses an explicit, separate install command.
+Python 3.11+ is required. Hermes is the default install target. For Codex, explicitly select the host MCP setup below or retain the original model profile with automatic processing.
 
 ### Windows
 
@@ -161,6 +171,35 @@ The repository `install.sh` remains for source development, offline source insta
 
 ### Codex
 
+#### Reuse the current Codex model: host profile
+
+Install the package, then have the local Owner authorize the client:
+
+```bash
+python -m pip install -U memleaf
+python -m memleaf host-grant --vault /path/to/vault --principal codex --accept-caller-asserted --json
+```
+
+`host-grant` returns the `mcpServers` command/arguments and a local credential file path; it does not automatically change Codex configuration. The credential binds local authorization, is created with mode `0600`, and is not a model key. Its default path is `<vault>/_state/host_credentials/codex.token`; `--credential-file` can select a new path. Existing credential files are preserved.
+
+Read/write scopes default to `global`. Repeat `--read-scope` and `--write-scope` in the grant command for other scopes. `--accept-caller-asserted` means the Owner trusts the client to report visible conversation accurately; it does not independently verify a user decision. Without that option, use Owner-confirmed or reliably bound sources. Maintenance and permanent deletion require their respective permissions and exact approvals; see the [host-v2 contract](docs/host-v2-contract.md).
+
+Explicitly register the actual Python, Vault and credential absolute paths from the output with Codex, for example:
+
+```bash
+codex mcp add memleaf-host -- /absolute/path/to/python -m memleaf.mcp_server --vault /path/to/vault --profile host --token-file /path/to/credential.token
+```
+
+Restart or reconnect Codex MCP after registration. `memleaf-host` is an example server name; check the profile of any existing connection before configuring two routes to process the same sources. Memleaf does not read or copy Codex model keys. Reasoning uses the running host model and counts toward that host's usage.
+
+Call `memory_capabilities`, then run `prepare_memory → memory_work` (page sources/targets as needed) `→ submit_memory`. Confirm a save only when its receipt has `applied=true` and `settled=true`. Repair only unresolved items in the same work after partial success; use `resume_memory` for interrupted I/O. Later sessions retrieve the committed Markdown with `search → read`. Non-`todo` content, including projects, can carry action fields; `assignee` identifies the executor and `waiting_on` the dependency. Unknown facts remain unknown and field changes require source evidence.
+
+Each work permits at most three accepted submits by default; invalid proposals can consume an attempt. This is not a three-call model API budget. Changing the request ID or connection, or replaying the same sources, does not reset it. The host profile exposes seven v2 tools, `capture` and query tools. Clients invoke the workflow deliberately; existing Model Route hooks do not automatically process every turn through this profile.
+
+#### Original automatic processing: model profile
+
+The following installer and hook flow retains the independent Memleaf Model Route:
+
 Install or upgrade memleaf, then explicitly select Codex:
 
 ```bash
@@ -171,7 +210,7 @@ This command reuses the one Vault already configured for Hermes or Codex, or cre
 
 After installation, open Codex, run `/hooks`, and review and trust the memleaf hooks. Until that approval is complete, an available MCP server does not mean that automatic capture, retrieval gating, and processing are active. The installer reports `pending_user_review` instead of claiming that unreviewed hooks are enabled.
 
-Codex is a host, not memleaf's extraction-model source. An existing independent memleaf Model Route is reused. If the selected Vault has no complete Model Route yet, Codex MCP/hooks can still be configured, but installation explicitly returns `processing_status=model_route_required`; automatic memory extraction is not ready until that route is configured. memleaf does not read, copy, or modify Codex `model`, `model_provider`, `base_url`, or credentials, and it does not silently spend Codex session quota for extraction. A Codex-only user can configure the same Vault with:
+In this original model route, Codex is a host, not memleaf's extraction-model source. An existing independent memleaf Model Route is reused. If the selected Vault has no complete Model Route yet, Codex MCP/hooks can still be configured, but installation explicitly returns `processing_status=model_route_required`; automatic memory extraction is not ready until that route is configured. memleaf does not read, copy, or modify Codex `model`, `model_provider`, `base_url`, or credentials, and it does not silently spend Codex session quota for extraction. A Codex-only user can configure the same Vault with:
 
 ```bash
 python -m memleaf init --no-hermes --vault /path/to/the/same/vault
@@ -204,9 +243,9 @@ memleaf init --no-model-discovery
 memleaf init --json
 ```
 
-Under `init`, `--no-codex` and `--no-antigravity` remain compatibility no-ops; Codex must be installed explicitly with `install --host codex`. Host configuration is changed only when detection evidence is reliable, the structure is understood, and there is no conflict. Backups are created before changes; unknown or conflicting configuration is left unchanged.
+Under `init`, `--no-codex` and `--no-antigravity` remain compatibility no-ops. The original model profile uses `install --host codex`; the host profile uses the explicit MCP registration above. Host configuration is changed only when detection evidence is reliable, the structure is understood, and there is no conflict. Backups are created before changes; unknown or conflicting configuration is left unchanged.
 
-## Codex integration
+## Original Codex model profile integration
 
 - `UserPromptSubmit` injects only a bounded Scope Map and the current-turn retrieval protocol, never memory titles or bodies.
 - `PreToolUse` / `PostToolUse` bind memleaf `search` and `read` to the current `retrieval_id` and record the real search result and read budget.
@@ -216,7 +255,7 @@ Under `init`, `--no-codex` and `--no-antigravity` remain compatibility no-ops; C
 
 Codex hooks require user review and trust. If the hooks are pending, disabled, or unsupported by the installed Codex version, automatic capture and processing are inactive; MCP tool availability and hook lifecycle activation are separate states.
 
-## Hermes integration
+## Native Hermes integration
 
 Hermes' native Provider and the MCP server are separate entry points, but they share the same `$HOME/.memleaf` Vault:
 
@@ -252,7 +291,7 @@ python -m memleaf.mcp_server --vault "$HOME/.memleaf"
 
 Without `--vault`, the server uses `~/.memleaf`; `MEMLEAF_VAULT` can also specify the Vault. In normal use the server does not need to be kept running manually: Hermes or Codex starts it on demand. stdout contains only JSON-RPC messages so logs do not corrupt the protocol stream.
 
-The server exposes the following tools:
+Without `--profile`, the server retains the original `model` profile and the tools below. See the host setup above for its tools and authorization flow.
 
 | Tool | Purpose |
 | --- | --- |
@@ -339,7 +378,7 @@ python -m memleaf.mcp_server --vault /path/to/your/vault \
   < examples/mcp_stdio.ndjson
 ```
 
-## Model routing
+## Original model profile routing
 
 Capture, indexing, directory retrieval, and reading work offline. `process()`, `remember()`, and `compact()` require a usable model route.
 
@@ -471,12 +510,12 @@ python -m build --wheel --sdist
 
 The following should not be interpreted as delivered capabilities:
 
-- Windows, macOS, and Linux provide a Hermes installation entry point; Codex is explicitly configured with `memleaf install --host codex`. The source `install.sh` remains only for development, offline source installation, and troubleshooting.
+- Windows, macOS, and Linux provide a Hermes installation entry point; Codex explicitly selects host MCP or the original model setup with `memleaf install --host codex`. The source `install.sh` remains only for development, offline source installation, and troubleshooting.
 - The current release supports Hermes and Codex. Antigravity is not detected, installed, or configured.
 - Codex lifecycle hooks require user review and trust through `/hooks`; the installer cannot approve them on the user's behalf.
 - Hermes retrieval gating is a Soft Gate and does not guarantee that every answer performed retrieval.
-- Without a model route, memleaf can capture and retrieve but cannot perform automatic extraction, explicit model-backed memory, or compaction.
-- Long-running real-host behavior still depends on the local Agent version, configuration, restart, and model availability.
+- The original model profile and native Hermes processing require a Model Route. The host profile requires no independent model key, but still needs Owner authorization, acceptable sources and deliberate execution by the host.
+- On macOS, 1.0.1 has live Codex CLI and Hermes CLI evidence for basic host behavior, plus advanced Codex maintenance behavior. This does not establish support for every model or MCP client, or live Windows model acceptance. Long-running behavior still depends on local versions, configuration and model availability.
 - There is no Obsidian plugin, web management UI, cloud sync, or transparent encryption layer.
 - Routine read-only retrieval never performs retention writes; history pruning and closed-todo retirement run only during normal processing/maintenance lifecycle calls.
 

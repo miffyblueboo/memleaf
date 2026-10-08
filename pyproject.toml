@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memleaf"
-version = "1.0.0"
+version = "1.0.1"
 description = "A local-first Markdown memory core for AI agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -35,4 +35,5 @@ memleaf-mcpw = "memleaf.mcp_server:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
+"memleaf" = ["host_v2_contracts/tools/*.json", "host_v2_contracts/schemas/*.json"]
 "memleaf.hermes_provider" = ["plugin.yaml", "README.md"]

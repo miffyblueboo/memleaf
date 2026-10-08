@@ -1,0 +1,1007 @@
+{
+  "name": "cancel_memory",
+  "description": "Cancel unapplied work; preserve settled writes and unresolved dependency fences.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "protocol_version": {
+        "const": "memleaf-host-v2.0-rc1"
+      },
+      "work_id": {
+        "$ref": "#/$defs/Id"
+      },
+      "request_id": {
+        "$ref": "#/$defs/Id"
+      },
+      "expected_work_revision": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 2147483647
+      },
+      "reason": {
+        "enum": [
+          "user_cancelled",
+          "no_longer_needed"
+        ]
+      }
+    },
+    "required": [
+      "protocol_version",
+      "work_id",
+      "request_id",
+      "expected_work_revision",
+      "reason"
+    ],
+    "additionalProperties": false,
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$defs": {
+      "Id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9_-]+$"
+      }
+    }
+  },
+  "outputSchema": {
+    "oneOf": [
+      {
+        "type": "object",
+        "properties": {
+          "protocol_version": {
+            "const": "memleaf-host-v2.0-rc1"
+          },
+          "ok": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/$defs/Receipt"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "ok",
+          "data"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "protocol_version": {
+            "const": "memleaf-host-v2.0-rc1"
+          },
+          "ok": {
+            "const": false
+          },
+          "error": {
+            "$ref": "#/$defs/Error"
+          },
+          "work": {
+            "$ref": "#/$defs/WorkSummary"
+          },
+          "receipt": {
+            "$ref": "#/$defs/Receipt"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "ok",
+          "error"
+        ],
+        "additionalProperties": false
+      }
+    ],
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$defs": {
+      "Id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "Revision": {
+        "type": "string",
+        "minLength": 71,
+        "maxLength": 71,
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "MemoryId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 800,
+        "pattern": "^[^\\x00-\\x1f\\x7f/\\\\]+$"
+      },
+      "ErrorCode": {
+        "enum": [
+          "AUTH_REQUIRED",
+          "AUTH_REVOKED",
+          "AUTH_EXPIRED",
+          "FORBIDDEN",
+          "RESOURCE_UNAVAILABLE",
+          "SOURCE_CONFIRMATION_REQUIRED",
+          "SOURCE_NOT_ADMISSIBLE",
+          "SOURCE_CHANGED",
+          "RECORDING_DISABLED",
+          "INVALID_EVIDENCE",
+          "INVALID_COVERAGE",
+          "INVALID_SCHEMA",
+          "INPUT_TOO_LARGE",
+          "ITEM_LIMIT_EXCEEDED",
+          "SCOPE_DENIED",
+          "READ_NOT_QUALIFIED",
+          "CURSOR_EXPIRED",
+          "CURSOR_CONTEXT_MISMATCH",
+          "SNAPSHOT_STALE",
+          "WORK_REVISION_CONFLICT",
+          "SUBMISSION_REVISION_CONFLICT",
+          "IDEMPOTENCY_CONFLICT",
+          "ITEM_ID_REUSE",
+          "ITEM_ALREADY_SETTLED",
+          "ITEM_SET_CHANGED",
+          "BUDGET_EXHAUSTED",
+          "WORK_TERMINAL",
+          "WORK_SET_SPLIT",
+          "SOURCE_ALREADY_OWNED",
+          "PREPARED_OPERATION_IMMUTABLE",
+          "REVISION_CONFLICT",
+          "TARGET_UNAVAILABLE",
+          "TARGET_READ_ONLY",
+          "TARGET_METADATA_CONFLICT",
+          "FIELD_CONFLICT",
+          "PATCH_NOT_UNIQUE",
+          "PATCH_OVERLAP",
+          "FULL_REWRITE_REQUIRES_MAINTENANCE",
+          "MAINTENANCE_AUTH_REQUIRED",
+          "RECOVERY_REQUIRED",
+          "AUTH_RENEWAL_REQUIRED",
+          "ACTION_NOT_SUPPORTED",
+          "DELETE_APPROVAL_REQUIRED",
+          "DELETE_SCOPE_CHANGED",
+          "IO_INTERRUPTED",
+          "STATE_CORRUPT",
+          "CAPACITY_EXCEEDED",
+          "PROTOCOL_VERSION_UNSUPPORTED",
+          "EXPLICIT_RETENTION_REQUIRED"
+        ]
+      },
+      "NextAction": {
+        "enum": [
+          "none",
+          "authenticate",
+          "request_owner_approval",
+          "refresh",
+          "correct",
+          "resume",
+          "new_authorization",
+          "read_more",
+          "retry_same_request",
+          "split_work",
+          "contact_owner"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "$ref": "#/$defs/ErrorCode"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "item_id": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "next_action": {
+            "$ref": "#/$defs/NextAction"
+          },
+          "budget_charged": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "retryable",
+          "next_action",
+          "budget_charged"
+        ],
+        "additionalProperties": false
+      },
+      "Budget": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "const": 3
+          },
+          "used": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          },
+          "remaining": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          }
+        },
+        "required": [
+          "limit",
+          "used",
+          "remaining"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "used": {
+                  "const": 0
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "remaining": {
+                  "const": 3
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "used": {
+                  "const": 1
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "remaining": {
+                  "const": 2
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "used": {
+                  "const": 2
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "remaining": {
+                  "const": 1
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "used": {
+                  "const": 3
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "remaining": {
+                  "const": 0
+                }
+              }
+            }
+          }
+        ]
+      },
+      "Usage": {
+        "type": "object",
+        "properties": {
+          "memleaf_model_calls": {
+            "const": 0
+          },
+          "host_model_calls": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 2147483647
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "host_input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 2147483647
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "host_output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 2147483647
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "host_cached_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 2147483647
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "usage_complete": {
+            "type": "boolean"
+          },
+          "provenance": {
+            "enum": [
+              "host_observed",
+              "caller_reported",
+              "unavailable"
+            ]
+          }
+        },
+        "required": [
+          "memleaf_model_calls",
+          "host_model_calls",
+          "host_input_tokens",
+          "host_output_tokens",
+          "host_cached_tokens",
+          "usage_complete",
+          "provenance"
+        ],
+        "additionalProperties": false
+      },
+      "OutcomeCounts": {
+        "type": "object",
+        "properties": {
+          "saved": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 64
+          },
+          "unchanged": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 64
+          },
+          "not_recorded": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 64
+          },
+          "unresolved": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 64
+          },
+          "cancelled": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 64
+          }
+        },
+        "required": [
+          "saved",
+          "unchanged",
+          "not_recorded",
+          "unresolved",
+          "cancelled"
+        ],
+        "additionalProperties": false
+      },
+      "WorkSummary": {
+        "type": "object",
+        "properties": {
+          "work_id": {
+            "$ref": "#/$defs/Id"
+          },
+          "related_work_id": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "budget_owner_work_id": {
+            "$ref": "#/$defs/Id"
+          },
+          "work_revision": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "latest_submission_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          },
+          "status": {
+            "enum": [
+              "captured",
+              "pending",
+              "submitted",
+              "partial",
+              "completed",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "terminal": {
+            "type": "boolean"
+          },
+          "stop_reason": {
+            "enum": [
+              null,
+              "needs_host",
+              "needs_evidence",
+              "needs_approval",
+              "validation",
+              "conflict",
+              "io",
+              "budget_exhausted",
+              "authorization_revoked",
+              "authorization_expired",
+              "user_cancelled",
+              "integrity_blocked"
+            ]
+          },
+          "authorization_state": {
+            "enum": [
+              "active",
+              "revoked",
+              "expired"
+            ]
+          },
+          "budget": {
+            "$ref": "#/$defs/Budget"
+          },
+          "outcomes": {
+            "$ref": "#/$defs/OutcomeCounts"
+          },
+          "recovery_required": {
+            "type": "boolean"
+          },
+          "blocked_groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Id"
+            },
+            "minItems": 0,
+            "maxItems": 16,
+            "uniqueItems": true
+          },
+          "index_status": {
+            "enum": [
+              "current",
+              "dirty",
+              "unavailable"
+            ]
+          }
+        },
+        "required": [
+          "work_id",
+          "related_work_id",
+          "budget_owner_work_id",
+          "work_revision",
+          "latest_submission_revision",
+          "status",
+          "terminal",
+          "stop_reason",
+          "authorization_state",
+          "budget",
+          "outcomes",
+          "recovery_required",
+          "blocked_groups",
+          "index_status"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "completed"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "terminal": {
+                  "const": true
+                },
+                "recovery_required": {
+                  "const": false
+                },
+                "blocked_groups": {
+                  "maxItems": 0
+                },
+                "stop_reason": {
+                  "const": null
+                },
+                "outcomes": {
+                  "properties": {
+                    "unresolved": {
+                      "const": 0
+                    },
+                    "cancelled": {
+                      "const": 0
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "cancelled",
+                    "failed"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "terminal": {
+                  "const": true
+                }
+              }
+            }
+          }
+        ]
+      },
+      "ItemReceipt": {
+        "type": "object",
+        "properties": {
+          "item_id": {
+            "$ref": "#/$defs/Id"
+          },
+          "action": {
+            "enum": [
+              "CREATE",
+              "UPDATE",
+              "MERGE",
+              "COMPACT",
+              "NO_CHANGE",
+              "NO_MEMORY",
+              "DEFERRED"
+            ]
+          },
+          "operation_id": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "group_id": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "invalid",
+              "deferred",
+              "prepared",
+              "recovery_required",
+              "saved",
+              "unchanged",
+              "not_recorded",
+              "cancelled"
+            ]
+          },
+          "memory_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/MemoryId"
+            },
+            "minItems": 0,
+            "maxItems": 8,
+            "uniqueItems": true
+          },
+          "committed_revisions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "memory_id": {
+                  "$ref": "#/$defs/MemoryId"
+                },
+                "revision": {
+                  "$ref": "#/$defs/Revision"
+                }
+              },
+              "required": [
+                "memory_id",
+                "revision"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 0,
+            "maxItems": 8
+          },
+          "applied": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "inherited_from_submission": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Error"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "item_id",
+          "action",
+          "operation_id",
+          "group_id",
+          "status",
+          "memory_ids",
+          "committed_revisions",
+          "applied",
+          "settled",
+          "inherited_from_submission",
+          "error"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "saved"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "operation_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "applied": {
+                  "const": true
+                },
+                "settled": {
+                  "const": true
+                },
+                "memory_ids": {
+                  "minItems": 1
+                },
+                "committed_revisions": {
+                  "minItems": 1
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "invalid",
+                    "deferred"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "operation_id": {
+                  "const": null
+                },
+                "applied": {
+                  "const": false
+                },
+                "settled": {
+                  "const": false
+                },
+                "committed_revisions": {
+                  "maxItems": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "prepared"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "operation_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "applied": {
+                  "const": false
+                },
+                "settled": {
+                  "const": false
+                },
+                "committed_revisions": {
+                  "maxItems": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "recovery_required"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "operation_id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "settled": {
+                  "const": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "unchanged",
+                    "not_recorded",
+                    "cancelled"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "applied": {
+                  "const": false
+                },
+                "settled": {
+                  "const": true
+                },
+                "committed_revisions": {
+                  "maxItems": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "not_recorded"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "memory_ids": {
+                  "maxItems": 0
+                },
+                "operation_id": {
+                  "$ref": "#/$defs/Id"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "Page": {
+        "type": "object",
+        "properties": {
+          "has_more": {
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "has_more",
+          "next_cursor"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "has_more": {
+                  "const": false
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "next_cursor": {
+                  "const": null
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "has_more": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "next_cursor": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048
+                }
+              }
+            }
+          }
+        ]
+      },
+      "Receipt": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "receipt"
+          },
+          "work": {
+            "$ref": "#/$defs/WorkSummary"
+          },
+          "submission_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          },
+          "replayed": {
+            "type": "boolean"
+          },
+          "coverage_complete": {
+            "type": "boolean"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ItemReceipt"
+            },
+            "minItems": 0,
+            "maxItems": 20
+          },
+          "page": {
+            "$ref": "#/$defs/Page"
+          },
+          "usage": {
+            "$ref": "#/$defs/Usage"
+          },
+          "next_action": {
+            "$ref": "#/$defs/NextAction"
+          }
+        },
+        "required": [
+          "kind",
+          "work",
+          "submission_revision",
+          "replayed",
+          "coverage_complete",
+          "items",
+          "page",
+          "usage",
+          "next_action"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "type": "object"
+  }
+}

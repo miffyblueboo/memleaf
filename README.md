@@ -4,12 +4,10 @@
 
 [English](README.en.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **稳定版：1.0.0。** 公开接口进入稳定维护，版本与兼容范围见[稳定性约定](docs/stability.md)。
-> 自动提炼和复核共用同一条“未来记忆价值”标准：模型综合未来复用、信息增量、再次读取时的直接可用性和忘记成本，只保留对未来理解、判断或行动有实质影响的最小核心；没有明确价值的信息不提炼，不按具体业务场景硬编码排除。
-> 提炼先比较旧事项中的编号、目标、进展、责任和期限；补全未知信息也应维护原事项，另建独立待办不能替代项目事实更新。确认重复的记忆在现有处理请求中合并，保留历史与来源；项目和独立任务保持各自生命周期，Core 不按标题强行合并。
-> 新请求兼容等价的字段表示；未知执行人保持 `null`，新增或变更负责人和期限需要真实来源；等待条件在正文维护，不再提炼 `waiting_on`。行动及相关字段经过有界语义复核，提炼与复核共用每份工作的最多五次模型请求额度，成功即停止；复核失败不写入。来源时间用于解析相对日期，不补造事实日期。
-> 待办 `due_date` 只表示待办动作本身明确声明的截止日；属于待办主题或预期结果的日期不会被误作截止日。项目归属由模型按语义判断，不要求项目名在证据里逐字出现。复核阶段会保留首轮已选定的更新目标，避免“状态变更”被降级成新增记忆。Markdown 仍是唯一事实源。
-> **当前版本支持 Hermes 和 Codex。** Antigravity（反重力）不检测、不安装、不配置。
+> **稳定版：1.0.1。** 支持 Hermes 和 Codex；版本与兼容范围见[稳定性约定](docs/stability.md)。
+> **Codex 可通过 `--profile host` 使用当前宿主模型完成记忆闭环，无需另配 Memleaf 模型 API Key。** 本地 Owner 仍需配置客户端身份、读写权限及来源信任；客户端主动调用工具，不代表每轮自动记忆。
+> host profile 支持独立于内容类型的 `actionable` 和结构化 `waiting_on`，每份 work 默认最多三次被接受的 submit；Memleaf 负责确定性校验、落盘与恢复。
+> 默认 `model` profile 和 Hermes 原生接入继续使用独立 Model Route，提炼与语义复核共用每份工作的最多五次模型请求。旧接口、现有记忆和默认入口保留，升级无需正式 Vault 迁移。Antigravity（反重力）当前不支持。
 
 ## 项目定位
 
@@ -25,6 +23,8 @@ memleaf 把 AI Agent 的长期记忆保存为用户自己拥有的本地 Markdow
 memleaf 不会把整个 Vault 或整段历史对话自动塞进模型上下文。自动检索采用“Scope Map → 候选目录 → 受控读取正文”的流程。
 
 ## 当前工作流
+
+原有 `model` profile / Hermes 原生工作流：
 
 ```text
 可见的 user/assistant 对话
@@ -70,6 +70,16 @@ Hermes 使用原生 MemoryProvider 维护生命周期，并通过 MCP 获取 Sco
 
 ## 记忆提炼规则
 
+以下规则适用于原有 `model` profile / Hermes 原生自动提炼；host profile 的动作、字段与预算见下文 [Codex host 接入](#codex)。
+
+自动提炼和复核共用同一条“未来记忆价值”标准：模型综合未来复用、信息增量、再次读取时的直接可用性和忘记成本，只保留对未来理解、判断或行动有实质影响的最小核心；没有明确价值的信息不提炼，不按具体业务场景硬编码排除。
+
+提炼先比较旧事项中的编号、目标、进展、责任和期限；补全未知信息也应维护原事项，另建独立待办不能替代项目事实更新。确认重复的记忆在现有处理请求中合并，保留历史与来源；项目和独立任务保持各自生命周期，Core 不按标题强行合并。
+
+新请求兼容等价的字段表示；未知执行人保持 `null`，新增或变更负责人和期限需要真实来源；等待条件在正文维护，不再提炼 `waiting_on`。行动及相关字段经过有界语义复核，提炼与复核共用每份工作的最多五次模型请求额度，成功即停止；复核失败不写入。来源时间用于解析相对日期，不补造事实日期。
+
+待办 `due_date` 只表示待办动作本身明确声明的截止日；属于待办主题或预期结果的日期不会被误作截止日。项目归属由模型按语义判断，不要求项目名在证据里逐字出现。复核阶段会保留首轮已选定的更新目标，避免“状态变更”被降级成新增记忆。Markdown 仍是唯一事实源。
+
 **10 秒是自动提炼的性能目标，不是失败阈值。** HTTP 请求遵循 `llm.request_timeout`（默认 120 秒）；正常返回且通过 Core 校验的结果不会仅因超过 10 秒而丢弃。模型单次请求、有限修复和逐轮提交保留，耗时与是否完成分别统计。详见 [提炼耗时与超时](docs/extraction-latency.md)。
 
 memleaf 不把每句话都保存为记忆。处理一轮完整的 user + assistant 可见文本时，模型先判断是否存在明确的未来复用价值：
@@ -92,7 +102,7 @@ memleaf 不把每句话都保存为记忆。处理一轮完整的 user + assista
 
 ## 安装
 
-要求 Python 3.11+；当前版本支持 Hermes 和 Codex。Hermes 是默认安装目标，Codex 使用明确的独立安装命令。
+要求 Python 3.11+。Hermes 是默认安装目标；Codex 可明确选择下述 host MCP 接入，或保留原有 model profile 自动提炼接入。
 
 ### Windows
 
@@ -161,6 +171,35 @@ Hermes 显式保存使用 MCP `save_turn`：先绑定本轮并排队，轮次完
 
 ### Codex
 
+#### 复用 Codex 当前模型：host profile
+
+安装包后，由本地 Owner 为客户端创建授权：
+
+```bash
+python -m pip install -U memleaf
+python -m memleaf host-grant --vault /path/to/vault --principal codex --accept-caller-asserted --json
+```
+
+`host-grant` 输出 `mcpServers` 的 `command`/`args` 和本地凭据文件路径，不会自动修改 Codex 配置。凭据用于本地授权，是以 `0600` 创建的文件，不是模型 Key；默认路径为 `<vault>/_state/host_credentials/codex.token`，也可通过 `--credential-file` 指定新路径。已有凭据文件不会被覆盖。
+
+默认读写范围为 `global`；需要其他范围时，在创建授权的命令上重复传入 `--read-scope` 和 `--write-scope`。`--accept-caller-asserted` 表示 Owner 信任该客户端如实提交可见对话，不代表 Memleaf 独立验证了用户决定。省略该选项时，应先通过 Owner 确认来源或使用可靠绑定的来源。维护、永久删除等能力需要各自权限和精确审批，详见 [host-v2 合同](docs/host-v2-contract.md)。
+
+将输出中的实际 Python、Vault 和凭据绝对路径显式注册到 Codex，例如：
+
+```bash
+codex mcp add memleaf-host -- /absolute/path/to/python -m memleaf.mcp_server --vault /path/to/vault --profile host --token-file /path/to/credential.token
+```
+
+注册后重启或重新连接 Codex MCP。`memleaf-host` 是示例服务名；已有接入应先核对其 profile，避免同时配置两条处理同一来源的路线。Memleaf 不读取或复制 Codex 的模型 Key；推理使用正在运行的宿主模型，并计入该宿主自身的用量。
+
+客户端先调用 `memory_capabilities`，再以 `prepare_memory → memory_work（按需分页 sources/targets）→ submit_memory` 完成保存，仅在保存项的 receipt 中 `applied=true` 且 `settled=true` 时确认已保存。部分成功后只在同一 work 内修正未完成项；I/O 中断用 `resume_memory` 恢复。后续会话使用 `search → read` 读取正式 Markdown。host profile 允许项目等非 `todo` 内容携带行动属性，`assignee` 与 `waiting_on` 分别表示执行人和依赖方；未知事实保持未知，变化字段需来源依据。
+
+每份 work 默认最多三次被接受的 submit，错误提案也可能消耗预算；这不是三次模型 API 请求额度。换 request ID、连接或重交同一来源不会重置预算。host profile 提供七个 v2 工具、`capture` 和查询工具；客户端需要主动执行闭环，旧 Model Route Hook 不会自动替它处理每轮记忆。
+
+#### 原有自动提炼接入：model profile
+
+以下安装与 Hook 流程继续使用独立 Memleaf Model Route：
+
 先安装或升级 memleaf，再明确选择 Codex：
 
 ```bash
@@ -171,7 +210,7 @@ python -m pip install -U memleaf && python -m memleaf install --host codex
 
 安装后打开 Codex，运行 `/hooks`，审核并信任 memleaf Hook。完成授权前，MCP 可用不等于自动捕获、检索门控和提炼已经激活；安装结果会明确显示 `pending_user_review`，不会把待审核状态报告为已启用。
 
-Codex 只作为宿主，不作为 memleaf 的提炼模型来源。已有的独立 memleaf Model Route 会继续复用；如果当前 Vault 还没有完整 Model Route，Codex 安装仍可完成 MCP/Hook 配置，但结果会明确返回 `processing_status=model_route_required`，在配置模型前不能把“自动记忆提炼”视为已就绪。memleaf 不读取、不复制也不修改 Codex 的 `model`、`model_provider`、`base_url` 或认证信息，也不会为了提炼偷偷消耗 Codex 会话额度。Codex-only 用户可针对同一个 Vault 运行：
+在这条原有 model 路线中，Codex 只作为宿主，不作为 memleaf 的提炼模型来源。已有的独立 memleaf Model Route 会继续复用；如果当前 Vault 还没有完整 Model Route，Codex 安装仍可完成 MCP/Hook 配置，但结果会明确返回 `processing_status=model_route_required`，在配置模型前不能把“自动记忆提炼”视为已就绪。memleaf 不读取、不复制也不修改 Codex 的 `model`、`model_provider`、`base_url` 或认证信息，也不会为了提炼偷偷消耗 Codex 会话额度。Codex-only 用户可针对同一个 Vault 运行：
 
 ```bash
 python -m memleaf init --no-hermes --vault /path/to/the/same/vault
@@ -204,9 +243,9 @@ memleaf init --no-model-discovery
 memleaf init --json
 ```
 
-`init` 下的 `--no-codex` 和 `--no-antigravity` 为兼容保留的无操作参数；Codex 必须通过 `install --host codex` 明确安装。宿主配置只会在检测证据可靠、结构可识别且没有冲突时修改；修改前会创建备份，未知或冲突配置保持不变。
+`init` 下的 `--no-codex` 和 `--no-antigravity` 为兼容保留的无操作参数；原有 model profile 的 Codex 接入使用 `install --host codex`；host profile 使用上面的显式 MCP 注册。宿主配置只会在检测证据可靠、结构可识别且没有冲突时修改；修改前会创建备份，未知或冲突配置保持不变。
 
-## Codex 使用方式
+## Codex 原有 model profile 使用方式
 
 - `UserPromptSubmit` 只注入有界 Scope Map 和当前轮次的检索协议，不注入记忆标题或正文；
 - `PreToolUse` / `PostToolUse` 将 memleaf `search` 和 `read` 绑定到当前 `retrieval_id`，记录真实检索结果与读取预算；
@@ -216,7 +255,7 @@ memleaf init --json
 
 Codex Hook 必须经过用户审核和信任。若 Hook 未激活、被禁用或 Codex 版本不支持对应生命周期事件，自动捕获和自动提炼不会生效；MCP 主动工具与 Hook 生命周期是两个独立状态。
 
-## Hermes 使用方式
+## Hermes 原生接入使用方式
 
 Hermes 的原生 Provider 和 MCP Server 是两个不同入口，但共用同一个 `$HOME/.memleaf`：
 
@@ -252,7 +291,7 @@ python -m memleaf.mcp_server --vault "$HOME/.memleaf"
 
 不传 `--vault` 时默认使用 `~/.memleaf`；也可以设置 `MEMLEAF_VAULT`。正常情况下不需要手工常驻，Hermes 或 Codex 会按需启动它。stdout 只输出 JSON-RPC，日志不会污染协议通道。
 
-当前提供以下工具：
+未传 `--profile` 时使用兼容保留的 `model` profile，其工具如下；host profile 的工具和授权流程见上文。
 
 | 工具 | 用途 |
 | --- | --- |
@@ -338,7 +377,7 @@ python -m memleaf.mcp_server --vault /path/to/your/vault \
   < examples/mcp_stdio.ndjson
 ```
 
-## 模型路由
+## 原有 model profile 的模型路由
 
 捕获、索引、目录检索和读取可离线运行；`process()`、`remember()` 和 `compact()` 需要可用的模型能力。
 
@@ -472,12 +511,12 @@ python -m build --wheel --sdist
 
 以下内容不应被 README 或安装结果误解为已交付能力：
 
-- Windows、macOS 和 Linux 都提供 Hermes 安装入口；Codex 通过 `memleaf install --host codex` 明确接入；源码 `install.sh` 仅保留给开发、离线源码安装和故障排查；
+- Windows、macOS 和 Linux 都提供 Hermes 安装入口；Codex 明确选择 host MCP 或 `memleaf install --host codex` 原有 model 接入；源码 `install.sh` 仅保留给开发、离线源码安装和故障排查；
 - 当前支持 Hermes 和 Codex；Antigravity（反重力）不检测、不安装、不配置；
 - Codex 生命周期 Hook 需要用户在 `/hooks` 中审核并信任，安装程序不能代替用户完成授权；
 - Hermes 的检索门控是 Soft Gate，不保证阻止所有未检索回答；
-- 没有模型路由时只能捕获和检索，不能完成自动提炼、显式记忆或压缩；
-- 真实宿主长期运行效果仍取决于本机 Agent 版本、配置、重启和模型可用性；
+- 原有 model profile / Hermes 原生处理需要 Model Route；host profile 无需独立模型 Key，但仍需 Owner 授权和可接受来源，并由宿主主动执行记忆闭环；
+- 1.0.1 在 macOS 实机验证了 Codex CLI 与 Hermes CLI 的基础 host 行为，以及 Codex 的高级维护行为；该证据不代表所有模型、所有 MCP 客户端或 Windows 真实模型验收；真实宿主长期效果仍取决于本机版本、配置和模型可用性；
 - 不提供 Obsidian 插件、Web 管理界面、云同步或透明加密层；
 - 普通只读检索不会触发保留策略写入；历史淘汰和关闭待办退休只在正常处理/维护生命周期中执行。
 

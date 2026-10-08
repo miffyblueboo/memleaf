@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/GrantRecord"
+    },
+    {
+      "$ref": "#/$defs/ApprovalRecord"
+    }
+  ],
+  "$defs": {
+    "Id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "Revision": {
+      "type": "string",
+      "minLength": 71,
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "ScopeId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+    },
+    "GrantRecord": {
+      "type": "object",
+      "properties": {
+        "principal_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "authorization_domain": {
+          "$ref": "#/$defs/Id"
+        },
+        "grant_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "grant_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "state": {
+          "enum": [
+            "active",
+            "revoked",
+            "expired"
+          ]
+        },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "memory.search",
+              "memory.read",
+              "memory.read_history",
+              "source.capture",
+              "source.read",
+              "work.read",
+              "memory.write",
+              "memory.retract",
+              "memory.maintain",
+              "memory.delete",
+              "work.cancel",
+              "work.resume"
+            ]
+          },
+          "minItems": 0,
+          "maxItems": 12,
+          "uniqueItems": true
+        },
+        "read_scopes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScopeId"
+          },
+          "minItems": 0,
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "write_scopes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScopeId"
+          },
+          "minItems": 0,
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "admissible_source_trust": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "host_bound",
+              "user_confirmed",
+              "caller_asserted"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "allow_automatic_recording": {
+          "type": "boolean"
+        },
+        "allow_other_work_resume": {
+          "type": "boolean"
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "maxLength": 64
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "issued_by": {
+          "const": "vault_owner_control_plane"
+        }
+      },
+      "required": [
+        "principal_id",
+        "authorization_domain",
+        "grant_id",
+        "grant_epoch",
+        "state",
+        "permissions",
+        "read_scopes",
+        "write_scopes",
+        "admissible_source_trust",
+        "allow_automatic_recording",
+        "allow_other_work_resume",
+        "expires_at",
+        "issued_by"
+      ],
+      "additionalProperties": false
+    },
+    "ApprovalRecord": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "kind": {
+          "enum": [
+            "source_confirmation",
+            "permanent_delete",
+            "body_compaction",
+            "resume_after_revocation",
+            "new_processing_budget"
+          ]
+        },
+        "principal_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "grant_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "target_work_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan_digest": {
+          "$ref": "#/$defs/Revision"
+        },
+        "used": {
+          "type": "boolean"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64
+        },
+        "issued_by": {
+          "const": "vault_owner_control_plane"
+        }
+      },
+      "required": [
+        "approval_id",
+        "kind",
+        "principal_id",
+        "grant_epoch",
+        "target_work_id",
+        "plan_digest",
+        "used",
+        "expires_at",
+        "issued_by"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

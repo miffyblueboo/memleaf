@@ -83,6 +83,7 @@ class MemoryWriter:
             and (ignore_scope_source or left.scope_source == right.scope_source)
             and (ignore_sources or left.sources == right.sources)
             and left.status == right.status
+            and left.actionable == right.actionable
             and left.completed_at == right.completed_at
             and left.due_date == right.due_date
             and left.validity == right.validity
@@ -401,15 +402,16 @@ class MemoryWriter:
             values = [scope for scope in values if scope != "unscoped"]
         return values or ["global"]
 
-    def _write_history(
-        self,
+    @classmethod
+    def history_projection(
+        cls,
         old: Memory,
         *,
         superseded_by: str,
         archived_at: str,
         invalidated_reason: str | None = None,
-    ) -> str:
-        history_id = self._history_id(old)
+    ) -> Memory:
+        history_id = cls._history_id(old)
         extra = dict(old.extra)
         # Archive an existing provenance state, without counting its retained
         # sources as new observations or changing a previously bounded digest.
@@ -440,11 +442,19 @@ class MemoryWriter:
             hit_count=old.hit_count,
             last_hit_at=old.last_hit_at,
             status=old.status,
+            actionable=old.actionable,
             completed_at=old.completed_at,
             due_date=old.due_date,
             validity=old.validity,
             extra=extra,
         )
+        return historical
+
+    def _write_history(self, old: Memory, *, superseded_by: str, archived_at: str,
+                       invalidated_reason: str | None = None) -> str:
+        historical = self.history_projection(old, superseded_by=superseded_by,
+            archived_at=archived_at, invalidated_reason=invalidated_reason)
+        history_id = historical.memory_id
         path = self.service.vault.memory_path(history_id, "history")
         if path.exists():
             if path.is_symlink():

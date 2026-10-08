@@ -125,6 +125,141 @@ jobs:
 
           assert importlib.util.find_spec("memleaf.acceptance") is None
 
+          # Deterministic installed-artifact check; no host/model network calls.
+          def verify_host_profile(directory):
+              import os
+              import queue
+              import threading
+              import importlib.metadata
+              from importlib.resources import files
+              from memleaf.host_v2_schema import PROTOCOL_VERSION, tool_definitions
+
+              assert importlib.metadata.version('memleaf') == memleaf.__version__
+              provider = files('memleaf').joinpath('hermes_provider', 'plugin.yaml').read_text(encoding='utf-8')
+              assert f'version: {memleaf.__version__}' in provider.splitlines()
+              assert len(tool_definitions()) == 7
+              clean_env = {key: value for key, value in os.environ.items()
+                           if not key.endswith('API_KEY') and not key.startswith('MEMLEAF_')}
+              vault = Path(directory) / 'host-vault'
+              setup = subprocess.run([sys.executable, '-m', 'memleaf', 'host-grant', '--vault', str(vault),
+                                      '--principal', 'codex-ci', '--accept-caller-asserted', '--json'],
+                                     env=clean_env, capture_output=True, text=True, check=True, timeout=30)
+              configured = json.loads(setup.stdout)
+              assert configured['status'] == 'success'
+              token = Path(configured['credential_file'])
+              assert token.is_file()
+              assert memleaf.Memleaf(vault).router is None
+              command = [sys.executable, '-m', 'memleaf.mcp_server', '--vault', str(vault),
+                         '--profile', 'host', '--token-file', str(token)]
+
+              class Client:
+                  def __init__(self):
+                      self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                                      stderr=subprocess.PIPE, text=True, encoding='utf-8', env=clean_env)
+                      self.rows = queue.Queue()
+                      self.sequence = 0
+                      def receive():
+                          for line in self.process.stdout:
+                              self.rows.put(line)
+                          self.rows.put(None)
+                      self.reader = threading.Thread(target=receive, daemon=True)
+                      self.reader.start()
+                      self.request('initialize', {'protocolVersion': '2025-11-25', 'capabilities': {},
+                                                  'clientInfo': {'name': 'codex-installed-contract', 'version': '1'}})
+                  def request(self, method, params):
+                      self.sequence += 1
+                      self.process.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': self.sequence,
+                                                'method': method, 'params': params}) + '\\n')
+                      self.process.stdin.flush()
+                      line = self.rows.get(timeout=30)
+                      assert line is not None, 'host MCP exited before response'
+                      response = json.loads(line)
+                      assert 'error' not in response, response
+                      return response['result']
+                  def tool(self, name, arguments):
+                      if name in {row['name'] for row in tool_definitions()}:
+                          arguments = {'protocol_version': PROTOCOL_VERSION, **arguments}
+                      response = self.request('tools/call', {'name': name, 'arguments': arguments})
+                      assert not response.get('isError'), response
+                      result = response['structuredContent']
+                      assert result.get('ok', True), result
+                      return result.get('data', result)
+                  def close(self):
+                      try:
+                          self.process.stdin.close()
+                          self.process.wait(timeout=10)
+                      except (BrokenPipeError, subprocess.TimeoutExpired):
+                          self.process.kill()
+                          self.process.wait(timeout=10)
+                      finally:
+                          self.reader.join(timeout=5)
+                          self.process.stdout.close()
+                          self.process.stderr.close()
+
+              writer = Client()
+              try:
+                  names = {row['name'] for row in writer.request('tools/list', {})['tools']}
+                  assert {row['name'] for row in tool_definitions()} <= names
+                  assert {'search', 'read', 'capture', 'list_todos'} <= names
+                  assert not {'remember', 'process', 'save_turn'} & names
+                  capabilities = writer.tool('memory_capabilities', {})
+                  assert capabilities['executor'] == 'host'
+                  assert not capabilities['sampling_required'] and not capabilities['independent_model_fallback']
+                  text = 'The delivery project uses SQLite and is currently active.'
+                  prepared = writer.tool('prepare_memory', {'mode': 'new', 'purpose': 'explicit', 'request_id': 'create-prepare',
+                      'source': {'kind': 'inline', 'messages': [{'role': 'user', 'text': text}]}})
+                  work, snapshot = prepared['work'], prepared['snapshot']
+                  sources = writer.tool('memory_work', {'view': 'sources', 'work_id': work['work_id'],
+                      'snapshot_id': snapshot['snapshot_id'], 'source_refs': ['e1']})
+                  assert sources['fragments'][0]['text'] == text
+                  args = {'work_id': work['work_id'], 'snapshot_id': snapshot['snapshot_id'],
+                      'request_id': 'create-submit', 'expected_work_revision': work['work_revision'],
+                      'submission_revision': 1, 'items': [{'item_id': 'A', 'action': 'CREATE', 'assertion_kind': 'user_fact',
+                          'memory': {'title': 'SQLite delivery project', 'body': text, 'type': 'project',
+                                     'actionable': True, 'status': 'active', 'scopes': ['global']},
+                          'evidence': [{'source': 'e1', 'quote': text}]}],
+                      'coverage': [{'source': 'e1', 'item_ids': ['A']}], 'basis_coverage': []}
+                  saved = writer.tool('submit_memory', args)
+                  receipt = saved['items'][0]
+                  assert (receipt['status'], receipt['applied'], receipt['settled']) == ('saved', True, True)
+                  assert saved['usage']['memleaf_model_calls'] == 0
+                  memory_id = receipt['memory_ids'][0]
+                  replay = writer.tool('submit_memory', args)
+                  assert replay['replayed'] and replay['items'][0]['operation_id'] == receipt['operation_id']
+                  assert replay['work']['budget']['used'] == 1
+                  text2 = 'Cancel the delivery project; keep its SQLite requirement.'
+                  prepared2 = writer.tool('prepare_memory', {'mode': 'new', 'purpose': 'explicit', 'request_id': 'update-prepare',
+                      'source': {'kind': 'inline', 'messages': [{'role': 'user', 'text': text2}]},
+                      'read_context': {'priority_memory_ids': [memory_id]}})
+                  work2, snapshot2 = prepared2['work'], prepared2['snapshot']
+                  target = next(row['ref'] for row in snapshot2['targets'] if row['memory_id'] == memory_id)
+                  writer.tool('memory_work', {'view': 'targets', 'work_id': work2['work_id'],
+                      'snapshot_id': snapshot2['snapshot_id'], 'target_refs': [target]})
+                  updated = writer.tool('submit_memory', {'work_id': work2['work_id'], 'snapshot_id': snapshot2['snapshot_id'],
+                      'request_id': 'update-submit', 'expected_work_revision': work2['work_revision'], 'submission_revision': 1,
+                      'items': [{'item_id': 'U', 'action': 'UPDATE', 'update_kind': 'patch', 'target': target,
+                          'fields': {'status': 'cancelled'}, 'transition': 'normal', 'assertion_kind': 'user_decision',
+                          'evidence': [{'source': 'e1', 'quote': text2}]}],
+                      'coverage': [{'source': 'e1', 'item_ids': ['U']}], 'basis_coverage': []})
+                  assert updated['items'][0]['memory_ids'] == [memory_id]
+                  assert updated['items'][0]['applied'] and updated['items'][0]['settled']
+                  assert updated['usage']['memleaf_model_calls'] == 0
+              finally:
+                  writer.close()
+              reader = Client()
+              try:
+                  result = reader.tool('search', {'query': 'SQLite', 'scope': 'global', 'todo_status': 'all'})
+                  assert memory_id in {row['memory_id'] for row in result['results']}
+                  record = reader.tool('read', {'memory_id': memory_id, 'retrieval_id': result['retrieval_id']})
+                  assert record['body'] == text and record['memory_id'] == memory_id
+                  service = memleaf.Memleaf(vault)
+                  assert service.router is None and service.read(memory_id).status == 'cancelled'
+                  assert len(service.vault.list_markdown('knowledge')) == 1
+                  assert len(service.vault.list_markdown('history')) == 1
+              finally:
+                  reader.close()
+              return {'host_mcp_tools': len(names), 'host_create_update_replay_restart': 'passed', 'host_model_calls': 0}
+
           with tempfile.TemporaryDirectory(prefix="memleaf-mcp-contract-") as temp:
               vault = Path(temp) / "vault"
               memleaf.Memleaf.initialize(vault)
@@ -144,8 +279,10 @@ jobs:
               adapter = HermesAdapter(home=Path(temp), runner=runner)
               assert adapter.test_mcp(detection)
               assert not adapter.test_mcp(detection, expected_tools=count + 1)
+          with tempfile.TemporaryDirectory(prefix="memleaf-host-contract-") as host_temp:
+              host_result = verify_host_profile(host_temp)
           print(json.dumps({"version": memleaf.__version__, "mcp_tools": count,
-                            "hermes_mcp_check": "passed"}))
+                            "hermes_mcp_check": "passed", **host_result}))
           '''
           import textwrap
           smoke = textwrap.dedent(smoke)

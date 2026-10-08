@@ -1051,7 +1051,7 @@ def _observe_mcp_todos(
     )
 
 
-def _invoke_tool(
+def _invoke_legacy_tool(
     service: Memleaf,
     name: str,
     arguments: Any,
@@ -1318,6 +1318,28 @@ def _invoke_tool(
     return _tool_result(value)
 
 
+def _invoke_tool(service: Memleaf, name: str, arguments: Any, *, request_id: Any = None) -> dict[str, Any]:
+    host = getattr(service, "_host_v2", None)
+    if host is not None:
+        from .host_v2_mcp import invoke
+        return invoke(host, name, arguments, request_id, _invoke_legacy_tool)
+    return _invoke_legacy_tool(service, name, arguments, request_id=request_id)
+
+
+def _available_tools(service: Memleaf) -> list[dict[str, Any]]:
+    if getattr(service, "_host_v2", None) is not None:
+        from .host_v2_mcp import definitions
+        return definitions(_TOOLS)
+    return list(_TOOLS)
+
+
+def _instructions(service: Memleaf) -> str:
+    if getattr(service, "_host_v2", None) is not None:
+        from .host_v2_schema import HOST_INSTRUCTIONS
+        return HOST_INSTRUCTIONS + " Search before relying on earlier facts; use the returned retrieval_id for read and pagination."
+    return INSTRUCTIONS
+
+
 def _error_response(request_id: Any, code: int, message: str) -> dict[str, Any]:
     return {
         "jsonrpc": "2.0",
@@ -1404,7 +1426,7 @@ def _dispatch(message: Any, service: Memleaf, *,
                 "protocolVersion": _negotiated_version(params),
                 "capabilities": {"tools": {}},
                 "serverInfo": dict(SERVER_INFO),
-                "instructions": INSTRUCTIONS,
+                "instructions": _instructions(service),
             }
             return None if notification else _success_response(request_id, result, modern=False)
 
@@ -1418,7 +1440,7 @@ def _dispatch(message: Any, service: Memleaf, *,
                 "capabilities": {"tools": {}},
                 "ttlMs": DISCOVERY_TTL_MS,
                 "cacheScope": "private",
-                "instructions": INSTRUCTIONS,
+                "instructions": _instructions(service),
             }
             return None if notification else _success_response(request_id, result, modern=True)
 
@@ -1429,7 +1451,7 @@ def _dispatch(message: Any, service: Memleaf, *,
         if method == "tools/list":
             params = _params_object(message)
             _strip_meta(params)
-            result = {"tools": list(_TOOLS)}
+            result = {"tools": _available_tools(service)}
             return None if notification else _success_response(request_id, result, modern=modern)
 
         if method == "tools/call":
@@ -1437,7 +1459,9 @@ def _dispatch(message: Any, service: Memleaf, *,
             if any(key not in {"name", "arguments", "_meta"} for key in params):
                 raise _InvalidParams
             name = params.get("name")
-            if not isinstance(name, str) or name not in _TOOL_BY_NAME:
+            host_profile = getattr(service, "_host_v2", None) is not None
+            names = {t["name"] for t in _available_tools(service)} if host_profile else set(_TOOL_BY_NAME)
+            if not isinstance(name, str) or name not in names:
                 raise _InvalidParams
             arguments = params.get("arguments", {})
             if connection and connection.get("provider_client") and name not in READ_ONLY_TOOLS:
@@ -1466,7 +1490,22 @@ def _parse_line(raw_line: bytes | str) -> Any:
         text = raw_line.decode("utf-8")
     else:
         text = raw_line
-    return json.loads(text, parse_constant=_reject_json_constant)
+    def unique_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+    if len(text.encode("utf-8")) > 262144:
+        raise ValueError("request too large")
+    def finite_float(value):
+        import math
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("non-finite JSON number")
+        return number
+    return json.loads(text, parse_float=finite_float, parse_constant=_reject_json_constant, object_pairs_hook=unique_pairs)
 
 
 def _write_message(output: TextIO, message: Mapping[str, Any]) -> bool:
@@ -1524,6 +1563,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=SERVER_INFO["version"])
     parser.add_argument("--provider-build", action="store_true",
                         help="print packaged Provider identity without opening a Vault")
+    parser.add_argument("--profile", choices=("model", "host"), default="model", help="host executes MCP proposals without a Memleaf model key")
+    parser.add_argument("--token-file", help="protected local host authorization credential file")
     return parser
 
 
@@ -1536,6 +1577,9 @@ def main(argv: list[str] | None = None) -> int:
     vault = args.vault if args.vault is not None else os.environ.get("MEMLEAF_VAULT") or None
     try:
         service = Memleaf(vault)
+        if args.profile == "host":
+            from .host_v2_mcp import attach
+            attach(service, token_file=args.token_file)
         return serve(service)
     except (BrokenPipeError, OSError):
         return 0

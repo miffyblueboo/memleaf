@@ -12,6 +12,10 @@ from .locking import VaultLock, atomic_unlink, atomic_write_bytes, atomic_write_
 
 
 STATE_LAYOUT_VERSION = 1
+_DURABLE_CONTROLS = frozenset({
+    "processed.json", "extraction_request_budget.json",
+    "host_v2_authorization.json", "host_v2_work.json",
+})
 _STATE_FILES = (
     "processed.json",
     "agents.json",
@@ -160,7 +164,7 @@ def _read_layout(path: Path) -> dict[str, Any] | None:
         raise StateLayoutError("invalid state layout marker")
     required = value.get("required_controls", [])
     if (not isinstance(required, list) or any(not isinstance(name, str) or name not in
-            {"processed.json", "extraction_request_budget.json"} for name in required)
+            _DURABLE_CONTROLS for name in required)
             or len(required) != len(set(required))):
         raise StateLayoutError("invalid required control invariant")
     binding = value.get("binding")
@@ -181,7 +185,7 @@ def control_required(path: Path) -> bool:
     Reads never create a marker. Legacy established processed state is required
     even before the optional invariant list was introduced.
     """
-    if path.name not in {"processed.json", "extraction_request_budget.json"}:
+    if path.name not in _DURABLE_CONTROLS:
         raise StateLayoutError("unknown durable control")
     marker = path.parent / "layout.json"
     layout = _read_layout(marker)
@@ -192,7 +196,7 @@ def control_required(path: Path) -> bool:
 
 def require_control(vault: Any, name: str) -> None:
     """Caller holds the Vault lock. Persist the invariant before reserving IO."""
-    if name not in {"processed.json", "extraction_request_budget.json"}:
+    if name not in _DURABLE_CONTROLS:
         raise StateLayoutError("unknown durable control")
     marker = Path(vault.state_layout_path)
     layout = _read_layout(marker)
