@@ -78,14 +78,23 @@ def covered(row, original, coverage=None):
                 return False
         elif set(proof) == {"target", "old", "source"}:
             selection = proof["source"]
-            if not isinstance(selection, dict) or set(selection) != {"ref", "text"}:
+            if not isinstance(selection, dict) or set(selection) not in ({"ref", "text"}, {"ref", "text", "kind"}):
                 return False
             if not isinstance(selection["ref"], str):
                 return False
             event = evidence.get(selection.get("ref"))
             quote = selection.get("text")
-            # An assistant suggestion cannot authorize discarding user facts.
-            if (event is None or event.get("use") != "new" or event.get("role") != "user"
+            reported = selection.get("kind") == "reported_result"
+            # Only the existing semantic reviewer may classify an exact cited
+            # assistant result as a superseding observation. This does not
+            # authorize retraction, nor turn a suggestion into a user request.
+            role_allowed = event is not None and (
+                event.get("role") == "user" and "kind" not in selection
+                or event.get("role") == "assistant" and reported
+                and row["patch"].get("validity") != "retracted"
+                and any(e.get("role") == "user" and e.get("use") == "new"
+                        and e.get("ref") in row.get("evidence", []) for e in evidence.values()))
+            if (event is None or event.get("use") != "new" or not role_allowed
                     or event["ref"] not in row.get("evidence", [])
                     or not isinstance(quote, str) or not quote.strip() or quote not in event.get("text", "")):
                 return False

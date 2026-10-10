@@ -5,6 +5,34 @@ All notable changes to memleaf are documented here.
 ## Unreleased
 
 
+## 1.0.3 — 2026-10-10
+
+### Conversation-based result maintenance
+
+- Treat clearly reported assistant discoveries and executed results as
+  conversation evidence, without independently judging external business truth
+  or turning suggestions into user obligations.
+- Match the specific item rather than just its contact/customer; distinguish
+  replying, registering and assigning from completing the underlying work.
+  Maintain superseded current-state prose while preserving independent facts.
+- Let the existing semantic review remove a deadline misclassified as a state
+  effective time, only after the original source selection is validated.
+  Malformed, fabricated, unbound and historical citations remain protected.
+  Explicit future state changes retain their existing validation.
+- Guide Hermes deferred-tool discovery through its existing `tool_call` bridge;
+  an unavailable tool is not evidence that memory search found no matches.
+- Validation: 161 targeted deterministic checks passed, including nine new
+  boundary checks. An original saved proposal replay verified the time repair
+  with a fixed review verdict and no network. Six invented-dialogue scenarios
+  passed with the configured DeepSeek Flash route; validation used 14 calls and
+  27,999 observed tokens, including initial incomplete candidate selection and
+  one rejected review corrected before acceptance. No product model call or
+  retry was added, and existing call limits remain unchanged.
+- Original private-dialogue real-model replay requires destination approval and
+  was not performed. Production memories and host installation were not altered.
+  Historical date/responsibility assertions fail identically on the baseline
+  and are outside this patch; full historical-suite success is not claimed.
+
 ## 1.0.2 — 2026-10-08
 
 ### Reliable host recovery and Codex todo retrieval

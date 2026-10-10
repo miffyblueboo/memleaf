@@ -313,6 +313,9 @@ def _scope_context(
         "this map. Use list_todos instead of relevance search for global current-todo questions. "
         "Search/list_todos return directories; read only the selected memory when needed for ordinary "
         "relevance queries; for global todo queries, read every matching todo item. A no-match result is valid.\n"
+        "Discover deferred memleaf tools with tool_search, then invoke the exact returned name through "
+        "tool_call: {\"calls\":[{\"name\":\"mcp__memleaf__search\",\"arguments\":{\"query\":\"business subject\"}}]}. "
+        "Put the turn token inside arguments when required below; never treat an unavailable tool as no-match.\n"
     )
     if host_bound:
         prefix += ("Hermes binds retrieval and retention identity at tool dispatch. "

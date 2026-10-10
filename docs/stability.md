@@ -30,14 +30,20 @@ scope. An internal protocol change may fence pending model responses and require
 an explicit recovery action; it must not silently reinterpret saved work, erase
 unresolved outcomes or reset consumed request budgets.
 
-## Upgrade to 1.0.2
+## Upgrade to 1.0.3
 
-The 1.0.2 release preserves the 1.0.0 public interfaces, existing Model Routes,
+The 1.0.3 release preserves the 1.0.0 public interfaces, existing Model Routes,
 default entry points and Markdown/history formats. The new host-model MCP route
 is optional and selected with `--profile host`; upgrading does not convert an
 existing Codex or Hermes connection to it. No formal Vault migration is required.
 The host contract identifier remains `memleaf-host-v2.0-rc1`; protocol identity
 and package release numbers are separate.
+
+Version 1.0.3 maintains clearly reported assistant results as conversation
+sources, improves item matching and separates deadlines from actual state
+effective times. It preserves source/permission checks and existing model-call
+limits. Updating the installed Hermes provider requires rerunning its installer;
+a package upgrade alone does not replace host plugin files.
 
 Version 1.0.2 fixes incomplete host freezing/recovery, multiline evidence
 serialization and Codex todo retrieval Hooks. Complete older frozen groups
@@ -110,3 +116,11 @@ For 1.0.2, 24 new deterministic regressions and all 152 existing host checks
 passed, including isolated installed-package and real stdio/Hook subprocess
 checks. No new real Codex/Hermes model session or production-Vault migration was
 performed for this patch; those scopes remain distinct from native package CI.
+
+For 1.0.3, 161 targeted deterministic checks passed. Six invented-dialogue
+scenarios passed through the configured DeepSeek Flash route, with 14 total
+validation requests and 27,999 observed tokens. The original saved-proposal
+replay used a fixed review verdict without network; it is not original-dialogue
+real-model acceptance. Original private-dialogue transmission remains subject
+to destination approval. Production-Vault and fresh native Hermes acceptance
+were not performed for this patch.

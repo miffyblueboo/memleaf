@@ -16,8 +16,10 @@ REVIEW_SYSTEM = """核验拟写入的记忆及持续行动。original_input 是�
 存在 body_omissions 时，keep:true 的 UPDATE/MERGE 必须逐项说明省略的去向；仅 body:true 不足以通过。body_omissions 按 item 列出拟议正文中不再原样出现的旧片段（比较辅助，不表示已经失效）。逐项核对完整含义，不能因主题相同、进展重复或用户未再次提及就删除。需要补回或修正文句时，直接在 decision 增加 body（修正后的完整正文字符串），field_support.body=true；不必复制 action、target、evidence，也不要把该 target 放入 updates。Core 沿用该候选的身份、证据和其他字段；已有 replace 方式仍可用，但不能同时使用 body 和 replace。对最终 UPDATE/MERGE（包括 body、replace 和 updates 修正）的剩余省略片段，在对应 decision/updates 项增加 body_coverage 数组：每项 {"target":"旧目标ref","old":"旧片段原文","body":"最终正文中完整承接该片段含义的逐字引文"}，或 {"target":"旧目标ref","old":"旧片段原文","source":{"ref":"new用户证据ref","text":"明确纠正/撤回该内容的逐字引文"}}。body 引文必须完整等价且真实存在于最终正文；不能只引用旧目标中的文字却忘了将它写入修正正文。source 不能引用旧上下文或助手建议。修正后原样保留的片段无需列入。MERGE 对所有被合并目标逐项核对，撤回整个目标也需明确用户依据。无法确认则 keep:false；不要猜测或提供主题相符但实际无关的引文。没有剩余省略时省略 body_coverage。
 每个 draft.items 都必须有且只有一个 decision，item 是从 0 开始的位置。keep 判断该事项本身是否由原文确立且持续值得保留。临时操作及助手额外建议不能产生用户长期待办，原话只证明另一个操作时 keep:false。独立事实不因其他候选有误而拒绝。
 keep:true 时，field_support 必须逐个列出候选 memory/patch 中的业务字段，每个布尔值判断该字段的拟议值是否受来源支持；不列 responsibility_basis、effective、at、reopen 等引用/控制字段。没有 replace 的 NO_CHANGE/DEFERRED/NO_MEMORY 的 field_support 为 {}。keep:false 时 field_support 为 {}。unverified_fields 是系统发现未能验证引用的可选责任字段，必须判为 false；不能补造引用。这不影响其他有依据的事实或任务。归属/客户尚未确定不自动表示行动被阻塞。
-不能仅检查引文存在：必须判断原话是否确立该具体行动、责任、状态和期限。assistant 的建议/计划不能赋予 user 新义务。转发、协调、记录不等于本人执行；支持旧任务不等于接受新安排。
-body 必须逐个事实分句核验；assistant 自行增加的原因、影响判断、条件或后续步骤不受 user 原话支持，不能因整段主题相符就判 true。剔除无依据分句，保留其余已确认事实，可用 replace 修正 CREATE 的 title/body；没有修正时 body:false。title 只标识事项，交期/发生日/进度放正文与结构字段；名称固有的年度等身份信息保留。UPDATE/NO_CHANGE 的旧标题仍含交期时，在现有 replace/updates 中一起维护。
+不能仅检查引文存在：必须判断原话是否确立该具体行动、责任、状态和期限。同名联系人/客户不证明是同一事项；核对具体对象、邮件主题、编号和请求范围，不能将回复/登记/分配完成扩大成另一项修复完成。批量完成应核对所有对应候选；对象范围不明确就保留未知。assistant 的建议/计划不能赋予 user 新义务。转发、协调、记录不等于本人执行；支持旧任务不等于接受新安排。
+body 必须逐个事实分句核验；assistant 明确报告的查询发现、已执行结果和状态是可用的对话来源，应引用该 assistant，不能伪装成 user 提供；不要求 user 再确认，不核验外部业务真假。建议、推测、原因分析或未执行后续步骤不能变成既成事实、用户决定或新义务。保留不确定性，剔除无依据分句，可用 replace 修正 CREATE 的 title/body；没有修正时 body:false。title 只标识事项，交期/发生日/进度放正文与结构字段；名称固有的年度等身份信息保留。UPDATE/NO_CHANGE 的旧标题仍含交期时，在现有 replace/updates 中一起维护。
+旧正文的事实状态被本轮 assistant 明确报告的新结果覆盖时，可用 body_coverage.source:{"ref":"new助手证据ref","text":"明确报告结果的逐字引文","kind":"reported_result"}，且该行 evidence 必须同时引用本轮 user 与 assistant。只用于替换同一事项的过时正文，不授权整条撤回、删除用户要求或采纳助手建议。不能为通过审查保留互相矛盾的新旧当前状态；无关旧事实仍须完整保留。
+仅当原候选行含 effective 控制字段时，才可在对应 decision 输出 effective_support（布尔值）；候选仅有 deadline 或正文日期时禁止输出该键。逐项核对 effective 是否表示实际状态生效时间。截止日、目标完成日或含日期的整个操作请求不证明实际生效时间，可用 effective_support:false 仅移除误分类的 effective；明确生效时间用 true 保留，不能为放行未来状态而丢弃。不能增加候选原本没有的 effective。
 尤其检查拟改 deadline：依赖条件、交接执行人、进度、尚未完成都不证明原期限已取消；只有明确取消/替换这个期限才支持变更。没有明确期限变化时 deadline:false，原期限沿用。卡点和等待条件仅在正文中维护，并清除已经解决的旧卡点。
 新引用只能来自 new；context 和旧目标只供比较，不能重新推动旧变化。候选若仅重新陈述旧目标已覆盖的内容，不应作为新 UPDATE。同一事项补充/纠正维护原目标，独立事项允许 CREATE，不能凭标题相似合并。
 逐字段判断后输出 decisions；对共同事实变更，检查所有候选记忆中是否仍有旧职责或旧状态，不能认可只更新一条而遗留冲突。确认 MERGE 各方确为同一事项且完整保留有效内容；独立生命周期的项目/任务不可合并。
@@ -176,7 +178,7 @@ def apply_review(request, response):
                 rejected.append(deepcopy(row))
         for decision in decisions:
             if (not isinstance(decision, dict) or not {"item", "keep", "field_support"} <= set(decision)
-                    or set(decision) - {"item", "keep", "field_support", "replace", "body", "body_coverage"}):
+                    or set(decision) - {"item", "keep", "field_support", "replace", "body", "body_coverage", "effective_support"}):
                 raise ValueError
             i = decision["item"]
             if type(i) is not int or not 0 <= i < len(rows) or i in positions or type(decision["keep"]) is not bool:
@@ -232,6 +234,23 @@ def apply_review(request, response):
             for name in data.get("unverified_fields", [[] for _ in rows])[i]:
                 if name in support:
                     support[name] = False
+            if "effective_support" in decision:
+                if (type(decision["effective_support"]) is not bool or "effective" not in row
+                        or row.get("action") not in {"CREATE", "UPDATE"} or not decision["keep"]):
+                    raise ValueError
+                if decision["effective_support"] is False:
+                    # Repair classification only after validating the original
+                    # source selection. Otherwise removing it would conceal a
+                    # malformed or fabricated citation from the row compiler.
+                    from .incremental_protocol import _selected
+                    evidence = {e["ref"]: e for e in data["original_input"]["evidence"]}
+                    try:
+                        _selected(row["effective"], evidence, row.get("evidence", []))
+                        fresh = evidence[row["effective"]["ref"]]["use"] == "new"
+                    except (ValueError, TypeError, KeyError):
+                        fresh = False
+                    if fresh:
+                        row.pop("effective")
             if isinstance(row, dict) and row.get("action") in {"NO_CHANGE", "NO_MEMORY", "DEFERRED"}:
                 continue  # Review cannot erase an unresolved control disposition.
             if not decision["keep"] or any(not support.get(k, True) for k in _REQUIRED.get(row["action"].upper(), set())):
