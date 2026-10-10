@@ -27,7 +27,7 @@ MODEL_ERROR_CODES = frozenset(
         "model_failed",
     }
 )
-MODEL_ERROR_STAGES = frozenset({"gate", "summarize", "single_pass"})
+MODEL_ERROR_STAGES = frozenset({"gate", "summarize", "single_pass", "semantic_review"})
 HTTP_RETRYABLE_STATUSES = frozenset({408, 500, 502, 503, 504})
 MODEL_VALIDATION_REASONS = frozenset(
     {"empty_content", "invalid_json", "schema_violation", "response_shape"}

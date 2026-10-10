@@ -249,11 +249,11 @@ class OpenAICompatibleBackend(HTTPModelBackend):
         if not omit_temperature:
             payload["temperature"] = temperature
         payload.update(controls)
-        if self.json_mode and purpose in {"gate", "summarize", "compact", "single_pass"}:
+        if self.json_mode and purpose in {"gate", "summarize", "compact", "single_pass", "semantic_review"}:
             payload["response_format"] = {"type": "json_object"}
 
         max_output_tokens: int | None = None
-        if purpose == "single_pass" and self.single_pass_protocol:
+        if purpose in {"single_pass", "semantic_review"} and self.single_pass_protocol:
             max_output_tokens = self._single_pass_budget(prompt)
             field = self.capabilities.output_token_field
             if isinstance(field, str) and field and isinstance(max_output_tokens, int):

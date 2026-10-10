@@ -40,6 +40,7 @@ from .recording_policy import recording_allowed
 from .turn_plan import input_digest, turn_identity_key
 
 RETRY_SYSTEM = "\n上次请求未获得可用 JSON 决议。按同一输入和原协议返回结果，不补造缺失事实。\n"
+REVIEW_RETRY_SYSTEM = "\n上次审查未返回可用的完整 JSON。请简短推理，优先在输出预算内完成 decisions 和必要的修正；省略解释及无变化的可选字段。不得省略必需字段、引文或有效旧事实，不得为缩短输出而放行无依据内容。\n"
 TRANSIENT = frozenset({"model_timeout", "model_rate_limited", "model_network_error", "model_invalid_response"})
 
 
@@ -330,6 +331,11 @@ def _drive(service, run_id, token, backend, calls, metric_ordinals):
             request = dict(run["request"])
             if ordinal > 1 and not run.get("partial_used") and run.get("semantic_stage") != "review":
                 request["system"] += RETRY_SYSTEM
+            elif (run.get("semantic_stage") == "review" and len(run["attempts"]) > 1
+                  and run["attempts"][-2].get("outcome") == "model_invalid_response"
+                  and sum(len(s.encode("utf-8")) for s in request.values())
+                      + len(REVIEW_RETRY_SYSTEM.encode("utf-8")) <= MAX_BYTES):
+                request["system"] += REVIEW_RETRY_SYSTEM
         error_code = None
         http_status = None
         response = None
@@ -343,7 +349,8 @@ def _drive(service, run_id, token, backend, calls, metric_ordinals):
         try:
             calls[0] += 1
             metric_ordinals.append(ordinal)
-            response = backend.complete(request["user"], system=request["system"], purpose="single_pass")
+            purpose = "semantic_review" if run.get("semantic_stage") == "review" else "single_pass"
+            response = backend.complete(request["user"], system=request["system"], purpose=purpose)
         except ModelError as error:
             error_code = error.code
             http_status = error.http_status

@@ -4,7 +4,7 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Stable release: 1.0.3.** Hermes and Codex are supported; see the [stability policy](docs/stability.md) for compatibility scope.
+> **Stable release: 1.0.4.** Hermes and Codex are supported; see the [stability policy](docs/stability.md) for compatibility scope.
 > **Codex can complete the memory workflow with its current host model through `--profile host`, without a separate Memleaf model API key.** A local Owner still configures client identity, permissions and source trust. Clients invoke the tools deliberately; this does not enable automatic memory on every turn.
 > The host profile supports `actionable` independently of content type and structured `waiting_on`, with at most three accepted submits per work by default. Memleaf validates, persists and recovers deterministically.
 > The default `model` profile and native Hermes integration retain their independent Model Route and shared five-request extraction/review budget. Existing interfaces, memories and default entry points remain; no formal Vault migration is required. Antigravity is not supported.

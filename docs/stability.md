@@ -30,14 +30,25 @@ scope. An internal protocol change may fence pending model responses and require
 an explicit recovery action; it must not silently reinterpret saved work, erase
 unresolved outcomes or reset consumed request budgets.
 
-## Upgrade to 1.0.3
+## Upgrade to 1.0.4
 
-The 1.0.3 release preserves the 1.0.0 public interfaces, existing Model Routes,
+The 1.0.4 release preserves the 1.0.0 public interfaces, existing Model Routes,
 default entry points and Markdown/history formats. The new host-model MCP route
 is optional and selected with `--profile host`; upgrading does not convert an
 existing Codex or Hermes connection to it. No formal Vault migration is required.
 The host contract identifier remains `memleaf-host-v2.0-rc1`; protocol identity
 and package release numbers are separate.
+
+Version 1.0.4 routes existing semantic reviews through the configured `gate`
+thinking policy rather than the extraction policy. It retains JSON output,
+output ceilings and the shared five-request budget. Invalid-response recovery
+uses a bounded concise-review reminder without changing frozen sources or drafts.
+The same review checks item identity, speakers, independent mail history and
+maintenance of superseded current states. For independent additions, Core can
+retain the original body and append only the new review paragraph. Uncommitted
+work from an older prompt remains subject to the existing protocol-upgrade
+block; frozen commit recovery and already saved memories remain compatible. Review reasoning can consume more
+tokens than a disabled extraction policy; this does not add an automatic call.
 
 Version 1.0.3 maintains clearly reported assistant results as conversation
 sources, improves item matching and separates deadlines from actual state
@@ -124,3 +135,12 @@ replay used a fixed review verdict without network; it is not original-dialogue
 real-model acceptance. Original private-dialogue transmission remains subject
 to destination approval. Production-Vault and fresh native Hermes acceptance
 were not performed for this patch.
+
+For 1.0.4, 241 targeted deterministic checks and 42 installed-wheel boundary
+checks passed. Authorized isolated original-dialogue checks verified task
+identity rejection, mail provenance/history, registration/current-state
+maintenance and partial wiki work. The accepted four-turn path used
+11 requests and 131,509 observed tokens, including bounded explicit
+recovery after invalid/truncated reviews. Earlier failed prototypes and rejected
+candidates remain in local reports; unknown usage is not counted as zero.
+No production-memory repair or fresh native Hermes acceptance was performed.

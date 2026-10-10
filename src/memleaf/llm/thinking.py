@@ -34,6 +34,8 @@ THINKING_CONTROLS = frozenset(
 def requested_thinking_mode(settings: Any, purpose: str) -> str:
     """Return memleaf's requested stage policy, defaulting every model stage to low."""
 
+    if purpose == "semantic_review":
+        purpose = "gate"  # The existing gate policy governs semantic validation.
     if purpose not in THINKING_PURPOSES:
         return "default"
     value = settings.get(purpose, "low") if isinstance(settings, Mapping) else "low"

@@ -5,6 +5,34 @@ All notable changes to memleaf are documented here.
 ## Unreleased
 
 
+## 1.0.4 — 2026-10-10
+
+### Honor semantic review policy and conversation identity
+
+- Route the existing semantic review through the configured `gate` thinking
+  policy, independently of `single_pass` extraction. Preserve JSON mode, output
+  ceilings, source checks and the shared five-request budget; add no automatic
+  model request. Keep semantic-review error stages in safe diagnostics.
+- Give invalid-response review recovery a bounded concise-output reminder while
+  retaining the frozen input, draft and all evidence/preservation requirements.
+- Check concrete item identity, questions versus actual assertions, independent
+  mail history and superseded current states, including related existing records
+  when creating an execution result. Agent-reported external facts remain
+  conversation evidence; they are not independently verified business truth.
+- For independent new facts, allow the existing review to return only an
+  appended paragraph; Core retains the original target body byte for byte,
+  avoiding copied-history typos and reducing review output. State replacements
+  still require the existing preservation proof and source checks.
+- Validation: 241 targeted deterministic checks passed. Authorized isolated
+  original-dialogue replay rejected the unrelated task closure, preserved mail
+  history, saved registration with the old state maintained, and retained partial
+  wiki work as active. Two different-content model scenarios also passed.
+  Truncated/invalid reviews were recovered within their original budgets and
+  never committed unreviewed drafts. Gate reasoning increases token use relative
+  to disabled extraction; local reports retain actual requests and observed usage.
+- Production memories and host installation were not altered. A deferred item
+  remains unresolved when the conversation cannot identify a matching target.
+
 ## 1.0.3 — 2026-10-10
 
 ### Conversation-based result maintenance
