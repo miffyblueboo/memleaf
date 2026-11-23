@@ -582,9 +582,7 @@ def _query_metadata(value: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("invalid scan diagnostic")
         if sum(scan["codes"].values()) != scan["issue_count"] or (scan["status"] == "complete") != (scan["issue_count"] == 0):
             raise ValueError("inconsistent scan status")
-        # A clean scan needs no diagnostics in every agent-facing response.
-        result["scan_status"] = ({"status": "complete"} if scan["status"] == "complete" else
-                                 {k: _jsonable(scan[k]) for k in ("status", "issue_count", "codes", "areas")})
+        result["scan_status"] = {k: _jsonable(scan[k]) for k in ("status", "issue_count", "codes", "areas")}
     pipeline = value.get("pipeline_status")
     if pipeline is not None:
         if not isinstance(pipeline, Mapping) or not isinstance(pipeline.get("status"), str) or pipeline.get("status") not in {"current", "pending", "unknown"} or pipeline.get("scope") != "vault":
@@ -599,8 +597,6 @@ def _query_metadata(value: Mapping[str, Any]) -> dict[str, Any]:
             if pipeline["code"] != "control_state_unavailable":
                 raise ValueError("invalid pipeline code")
             projection["code"] = pipeline["code"]
-        if pipeline["status"] == "current" and not any(v for k, v in projection.items() if k not in {"status", "scope"}):
-            projection = {"status": "current", "scope": "vault"}
         result["pipeline_status"] = projection
         if pipeline["status"] != "current":
             result["answer_guidance"] = "These are stored records; pending or unknown processing may leave them behind the latest conversation. Qualify current-state claims and do not treat an old unfinished state as proof that work is still unfinished."

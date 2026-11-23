@@ -11,9 +11,13 @@ All notable changes to memleaf are documented here.
   only the incremental engine; no public API, MCP tool or persisted format
   changes.
 - A bare deadline string such as `"2026-11-27"` or `"明天"` is bound to the one
-  cited new message that contains it and then resolved by the usual
-  source-time rules. An unanchored string is dropped instead of discarding the
-  whole item, so the memory is still written with an unknown deadline.
+  cited new message that contains it as whole tokens and then resolved by the
+  usual source-time rules. An unanchored string is dropped instead of
+  discarding the whole item, so the memory is still written with an unknown
+  deadline.
+- Model-selected time quotes must match source text on token boundaries. A
+  truncated quote such as `2026-11-2` taken from `2026-11-27` is no longer
+  accepted and can no longer be written as a different deadline.
 - An action-only `NO_MEMORY` emitted beside the model's own valid items is
   ignored instead of leaving the turn permanently unresolved; it is still a
   conflict when no other valid disposition exists.
@@ -24,9 +28,9 @@ All notable changes to memleaf are documented here.
 - Anthropic endpoints mark the stable system prompt as cacheable; Claude usage
   now reports the full prompt including cache reads.
 - MCP: remove duplicated and legacy-only sentences from the server
-  instructions (5.1 KB → 4.1 KB), drop the nested schema of the ignored
-  `capture.tool_evidence` field (still accepted), and omit empty diagnostic
-  counters from clean query responses.
+  instructions (5.1 KB → 4.1 KB) and drop the nested schema of the ignored
+  `capture.tool_evidence` field (still accepted). Query response fields are
+  unchanged.
 - CI checks that the Hermes provider's vendored modules match Core.
 - Validation: local deterministic suite and the previous local suite show no
   new failures outside removed code. Real-model acceptance (DeepSeek, isolated

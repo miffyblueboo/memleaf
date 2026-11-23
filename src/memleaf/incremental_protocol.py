@@ -17,7 +17,7 @@ from typing import Any, Mapping
 
 from .incremental_dates import (calendar_hints, parse_source_time,
                                 remove_source_time_provenance_date,
-                                reading_text, selected_calendar, source_basis)
+                                quoted_in, reading_text, selected_calendar, source_basis)
 from .models import Memory
 from .scope_state import validate_scope_key
 from .turn_plan import revision_digest
@@ -184,17 +184,16 @@ def _anchor_string_deadline(row: dict[str, Any], fields: dict[str, Any],
                             state: Mapping[str, Any], action: str) -> str:
     """Bind a bare deadline string to the one cited new source that contains it.
 
-    The string must occur verbatim in exactly one cited new message; that text
+    The string must occur as whole tokens in exactly one cited new message; that text
     is then compiled by the ordinary source-time calendar rules. Otherwise the
     unanchored value is dropped so the remaining memory can still be written;
     an unproven deadline stays unknown instead of discarding the whole item.
     """
     value = fields["deadline"]
     cited = row.get("evidence") if isinstance(row.get("evidence"), list) else []
-    quote = reading_text(value.strip()) if value.strip() else ""
     matches = [item["ref"] for item in state.get("evidence", [])
-               if item.get("ref") in cited and item.get("use") == "new" and quote
-               and quote in reading_text(str(item.get("text", "")))]
+               if item.get("ref") in cited and item.get("use") == "new"
+               and quoted_in(value.strip(), str(item.get("text", "")))]
     if len(matches) == 1:
         fields["deadline"] = {"ref": matches[0], "text": value.strip()}
         return "deadline_string_anchored"

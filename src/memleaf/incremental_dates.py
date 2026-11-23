@@ -35,6 +35,29 @@ def reading_text(value: str) -> str:
     return re.sub(r"\*\*|__|`", "", value)
 
 
+def _word_char(value: str) -> bool:
+    return value.isdigit() or (value.isascii() and value.isalpha())
+
+
+def quoted_in(quote: str, source: str) -> bool:
+    """True when *quote* occurs in *source* without splitting a number or word.
+
+    A plain substring test would accept a truncated quote such as "2026-11-2"
+    from "2026-11-27" and resolve it to a different date.
+    """
+    quote, source = reading_text(quote), reading_text(source)
+    if not quote:
+        return False
+    start = source.find(quote)
+    while start >= 0:
+        end = start + len(quote)
+        if not (start > 0 and _word_char(quote[0]) and _word_char(source[start - 1])
+                or end < len(source) and _word_char(quote[-1]) and _word_char(source[end])):
+            return True
+        start = source.find(quote, start + 1)
+    return False
+
+
 def source_basis(evidence: Mapping[str, Any]) -> dict[str, Any]:
     value = {key: evidence[key] for key in (
         "source", "session_id", "event_key", "message_id", "message_revision",
@@ -109,7 +132,7 @@ def selected_calendar(text: str, evidence: Mapping[str, Any]) -> dict[str, Any]:
     """
     if not isinstance(text, str) or not text.strip() or len(text) > 512:
         raise ValueError("invalid_time_expression")
-    if reading_text(text) not in reading_text(str(evidence.get("text", ""))):
+    if not quoted_in(text, str(evidence.get("text", ""))):
         raise ValueError("unsupported_time_quote")
     anchor = parse_source_time(evidence.get("source_time"))
     local_day = anchor.date() if anchor is not None else None
