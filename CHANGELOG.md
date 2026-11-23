@@ -18,6 +18,13 @@ All notable changes to memleaf are documented here.
 - Model-selected time quotes must match source text on token boundaries. A
   truncated quote such as `2026-11-2` taken from `2026-11-27` is no longer
   accepted and can no longer be written as a different deadline.
+- A quoted date takes its year from its source literal: `1 月 15 日` quoted
+  from `明年 1 月 15 日` or `2027年1月15日` resolves to 2027, and relative year
+  words (今年/明年/后年/去年/前年, this/next/last year) are now understood.
+  A yearless deadline earlier than its own message stays unknown instead of
+  being saved as already overdue. Non-deadline times are unchanged.
+  Real-model check (DeepSeek, 4 cross-year scenarios): all correct, 8 calls,
+  18,560 prompt / 2,104 completion tokens, 14,848 cached.
 - An action-only `NO_MEMORY` emitted beside the model's own valid items is
   ignored instead of leaving the turn permanently unresolved; it is still a
   conflict when no other valid disposition exists.

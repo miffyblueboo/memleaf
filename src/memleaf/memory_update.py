@@ -161,7 +161,7 @@ def _patched(current: Memory, request: Mapping[str, Any], now: str) -> Memory:
             derived["due_status"] = "cleared"
         else:
             selected = selected_calendar(deadline["text"], {
-                "text": deadline["text"], "source_time": request.get("source_time")})
+                "text": deadline["text"], "source_time": request.get("source_time")}, deadline=True)
             fields.update(due_date=selected["date"], due_text=selected["text"])
             derived["due_status"] = selected["status"]
     changed_request = dict(request, patch=fields)

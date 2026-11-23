@@ -503,7 +503,8 @@ class PlanningSnapshot:
         }
 
 
-def _selected(value: Any, evidence: Mapping[str, Any], refs: list[str], *, clear: bool = False) -> dict[str, Any]:
+def _selected(value: Any, evidence: Mapping[str, Any], refs: list[str], *, clear: bool = False,
+              deadline: bool = False) -> dict[str, Any]:
     if clear and isinstance(value, dict) and set(value) == {"ref", "clear"} and value["clear"] is True:
         ref = _ref(value["ref"], evidence)
         if ref not in refs or evidence[ref]["use"] != "new":
@@ -513,7 +514,7 @@ def _selected(value: Any, evidence: Mapping[str, Any], refs: list[str], *, clear
     ref = _ref(value["ref"], evidence)
     if ref not in refs:
         raise ValueError("invalid_reference")
-    return selected_calendar(value["text"], evidence[ref])
+    return selected_calendar(value["text"], evidence[ref], deadline=deadline)
 
 
 def _deadline(value: Any, evidence: Mapping[str, Any], refs: list[str], *, update: bool) -> tuple[dict[str, Any] | None, str | None]:
@@ -540,7 +541,7 @@ def _deadline(value: Any, evidence: Mapping[str, Any], refs: list[str], *, updat
         if reading_text(quote) not in reading_text(str(evidence[ref].get("text", ""))):
             return None, "deadline_clear_unproven"
         return {"clear": True, "anchor": source_basis(evidence[ref])}, None
-    return _selected(value, evidence, refs, clear=False), None
+    return _selected(value, evidence, refs, clear=False, deadline=True), None
 
 
 def _scope(value: Any, state: Mapping[str, Any], *, create: bool = False) -> str:

@@ -7,7 +7,7 @@ message to guess which date is an action deadline.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Mapping
 
 from .validation import calendar_tokens, normalize_relative_calendar_text, _RELATIVE_CALENDAR_EXPRESSION
@@ -39,23 +39,74 @@ def _word_char(value: str) -> bool:
     return value.isdigit() or (value.isascii() and value.isalpha())
 
 
+def _quote_spans(quote: str, source: str) -> list[tuple[int, int]]:
+    """Occurrences of *quote* in *source* (both reading_text) on token boundaries."""
+    spans = []
+    if not quote:
+        return spans
+    start = source.find(quote)
+    while start >= 0:
+        end = start + len(quote)
+        if not (start > 0 and _word_char(quote[0]) and _word_char(source[start - 1])
+                or end < len(source) and _word_char(quote[-1]) and _word_char(source[end])):
+            spans.append((start, end))
+        start = source.find(quote, start + 1)
+    return spans
+
+
 def quoted_in(quote: str, source: str) -> bool:
     """True when *quote* occurs in *source* without splitting a number or word.
 
     A plain substring test would accept a truncated quote such as "2026-11-2"
     from "2026-11-27" and resolve it to a different date.
     """
-    quote, source = reading_text(quote), reading_text(source)
-    if not quote:
-        return False
-    start = source.find(quote)
-    while start >= 0:
-        end = start + len(quote)
-        if not (start > 0 and _word_char(quote[0]) and _word_char(source[start - 1])
-                or end < len(source) and _word_char(quote[-1]) and _word_char(source[end])):
-            return True
-        start = source.find(quote, start + 1)
-    return False
+    return bool(_quote_spans(reading_text(quote), reading_text(source)))
+
+
+# Relative year words of the calendar grammar, like the relative day table.
+_YEAR_QUALIFIER = re.compile(
+    r"(?:(?P<zh>今年|明年|后年|去年|前年)\s*(?:的\s*)?"
+    r"|(?<![A-Za-z])(?P<en>this|next|last)\s+year\s*,?\s*(?:on\s+|in\s+)?)$",
+    re.IGNORECASE,
+)
+_YEAR_OFFSETS = {"今年": 0, "明年": 1, "后年": 2, "去年": -1, "前年": -2, "this": 0, "next": 1, "last": -1}
+
+
+def _source_calendar(quote: str, source: str, local_day: date | None) -> tuple[str | None, bool] | None:
+    """Resolve a quoted date literal in the context of its whole source message.
+
+    A quote only points into the source. When it lies inside a source date
+    literal, the literal's own year or an adjacent relative year word decides
+    the year, so "1月15日" quoted from "明年1月15日" or "2027年1月15日" cannot
+    fall back to the message year. Returns (date, year_stated) or None when
+    the quote is not part of exactly one source date literal.
+    """
+    results = set()
+    tokens = calendar_tokens(source, local_day)
+    for start, end in _quote_spans(quote, source):
+        covering = [token for token in tokens if token.start < end and start < token.end]
+        if len(covering) != 1:
+            return None
+        token = covering[0]
+        if token.has_year:
+            results.add((token.canonical, True))
+            continue
+        qualifier = _YEAR_QUALIFIER.search(source[:token.start])
+        if qualifier is None:
+            results.add((token.canonical, False))
+            continue
+        word = (qualifier.group("zh") or qualifier.group("en")).casefold()
+        # The anchor-year projection drops impossible days (2月29日 in a
+        # non-leap message year); read month/day from the literal itself.
+        literal = calendar_tokens(token.raw)
+        monthday = literal[0].monthday if len(literal) == 1 else None
+        month, day = (int(part) for part in monthday.split("-")) if monthday else (None, None)
+        try:
+            value = date(local_day.year + _YEAR_OFFSETS[word], month, day).isoformat()
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            value = None
+        results.add((value, True))
+    return next(iter(results)) if len(results) == 1 else ((None, True) if results else None)
 
 
 def source_basis(evidence: Mapping[str, Any]) -> dict[str, Any]:
@@ -123,7 +174,7 @@ def remove_source_time_provenance_date(body: str, events: list[Mapping[str, Any]
     return "".join(lines)
 
 
-def selected_calendar(text: str, evidence: Mapping[str, Any]) -> dict[str, Any]:
+def selected_calendar(text: str, evidence: Mapping[str, Any], *, deadline: bool = False) -> dict[str, Any]:
     """Return a lossless text/anchor projection plus an optional calendar date.
 
     Pass a local *date* to the legacy calendar grammar, which otherwise converts
@@ -163,8 +214,20 @@ def selected_calendar(text: str, evidence: Mapping[str, Any]) -> dict[str, Any]:
     # Relative expressions which cannot be resolved must not borrow another date.
     resolved = (converted is not None and bool(tokens)
                 and None not in dates and len(dates) == 1)
+    value = next(iter(dates)) if resolved else None
+    year_stated = True
+    context = _source_calendar(reading_text(text), reading_text(str(evidence.get("text", ""))), local_day)
+    if context is not None and _RELATIVE_CALENDAR_EXPRESSION.search(reading_text(text)) is None:
+        value, year_stated = context
+        resolved = value is not None
+    if (deadline and resolved and not year_stated and local_day is not None
+            and value < local_day.isoformat()):
+        # A yearless deadline before its own message cannot be placed in a
+        # year from the source; keep it unknown rather than guess or mark it
+        # overdue on arrival.
+        value, resolved = None, False
     return {
-        "date": next(iter(dates)) if resolved else None,
+        "date": value,
         "text": text,
         "anchor": source_basis(evidence),
         "status": "resolved" if resolved else "unresolved",
