@@ -175,7 +175,33 @@ def _normalize_model_row(row: Any, state: Mapping[str, Any], *, only_row: bool) 
                 raise ValueError("conflicting_responsibility_basis")
             normalized["responsibility_basis"] = {**offered, **nested}
             warnings.append("nested_responsibility_basis_normalized")
+        if isinstance(fields, dict) and isinstance(fields.get("deadline"), str):
+            warnings.append(_anchor_string_deadline(normalized, fields, state, action))
     return normalized, list(dict.fromkeys(warnings))
+
+
+def _anchor_string_deadline(row: dict[str, Any], fields: dict[str, Any],
+                            state: Mapping[str, Any], action: str) -> str:
+    """Bind a bare deadline string to the one cited new source that contains it.
+
+    The string must occur verbatim in exactly one cited new message; that text
+    is then compiled by the ordinary source-time calendar rules. Otherwise the
+    unanchored value is dropped so the remaining memory can still be written;
+    an unproven deadline stays unknown instead of discarding the whole item.
+    """
+    value = fields["deadline"]
+    cited = row.get("evidence") if isinstance(row.get("evidence"), list) else []
+    quote = reading_text(value.strip()) if value.strip() else ""
+    matches = [item["ref"] for item in state.get("evidence", [])
+               if item.get("ref") in cited and item.get("use") == "new" and quote
+               and quote in reading_text(str(item.get("text", "")))]
+    if len(matches) == 1:
+        fields["deadline"] = {"ref": matches[0], "text": value.strip()}
+        return "deadline_string_anchored"
+    fields.pop("deadline")
+    if row.get("deadline_decision") == "selected":
+        row["deadline_decision"] = "none" if action == "CREATE" else "unchanged"
+    return "deadline_string_unanchored_dropped"
 
 
 def _normalize_flat_create_row(row: Any) -> tuple[Any, bool]:
@@ -919,7 +945,15 @@ def compile_incremental(raw: str, snapshot: PlanningSnapshot) -> dict[str, Any]:
     turn_wide = [op for op in operations if op["action"] == "NO_MEMORY" and op.get("_turn_wide")]
     if turn_wide and (len(value["items"]) != 1 or len(turn_wide) != 1 or len(operations) != 1):
         operations = [op for op in operations if not op.get("_turn_wide")]
-        problem(None, "conflicting_turn_disposition", {"evidence": sorted(new)})
+        retained = [op for op in operations if op["action"] in {"CREATE", "UPDATE", "MERGE", "NO_CHANGE", "DEFERRED"}]
+        if retained and not issues:
+            # Evidence coverage is not a per-message checklist, so a bare
+            # NO_MEMORY next to the model's own valid dispositions adds nothing
+            # those items do not already state. Keep the turn resolved instead
+            # of leaving a permanent "pending" signal for every later query.
+            retained[0].setdefault("warnings", []).append("redundant_turn_no_memory_ignored")
+        else:
+            problem(None, "conflicting_turn_disposition", {"evidence": sorted(new)})
     for op in operations:
         op.pop("_turn_wide", None)
     # Completeness is turn-level. Evidence refs support particular operations;

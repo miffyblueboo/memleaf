@@ -8,8 +8,11 @@ semantics would be surprising without a full YAML implementation.
 
 from __future__ import annotations
 
+from collections import OrderedDict
+from copy import deepcopy
 import json
 import re
+import threading
 from dataclasses import dataclass
 from typing import Any, Iterable, List, Mapping, Sequence, Tuple
 
@@ -380,7 +383,35 @@ def dump_yaml(value: Mapping[str, Any]) -> str:
     return "\n".join(_dump_mapping(value, 0)) + "\n"
 
 
+_PARSE_CACHE: "OrderedDict[str, Tuple[dict[str, Any], str]]" = OrderedDict()
+_PARSE_CACHE_LOCK = threading.Lock()
+_PARSE_CACHE_ITEMS = 4096
+_PARSE_CACHE_MAX_TEXT = 256 * 1024
+
+
 def parse_frontmatter(text: str) -> Tuple[dict[str, Any], str]:
+    """Parse one Markdown memory; identical text reuses a private parsed copy.
+
+    Parsing is a pure function of the text, so a bounded cache is exact. Callers
+    always receive a fresh metadata copy and may mutate it freely.
+    """
+    if not isinstance(text, str) or len(text) > _PARSE_CACHE_MAX_TEXT:
+        return _parse_frontmatter(text)
+    with _PARSE_CACHE_LOCK:
+        cached = _PARSE_CACHE.get(text)
+        if cached is not None:
+            _PARSE_CACHE.move_to_end(text)
+    if cached is None:
+        cached = _parse_frontmatter(text)
+        with _PARSE_CACHE_LOCK:
+            _PARSE_CACHE[text] = (deepcopy(cached[0]), cached[1])
+            while len(_PARSE_CACHE) > _PARSE_CACHE_ITEMS:
+                _PARSE_CACHE.popitem(last=False)
+        return cached
+    return deepcopy(cached[0]), cached[1]
+
+
+def _parse_frontmatter(text: str) -> Tuple[dict[str, Any], str]:
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         raise FrontmatterError("Markdown memory must start with frontmatter")

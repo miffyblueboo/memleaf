@@ -80,15 +80,16 @@ def atomic_write_text(path: Path, text: str, mode: int = 0o600) -> None:
     atomic_write_bytes(Path(path), text.encode("utf-8"), mode=mode)
 
 
+_READABLE_JSON_BYTES = 64 * 1024
+
+
 def atomic_write_json(path: Path, value: Any, mode: int = 0o600) -> None:
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        indent=2,
-        sort_keys=True,
-        separators=(",", ": "),
-    ) + "\n"
-    atomic_write_text(Path(path), payload, mode=mode)
+    # Small state stays indented for people; large runtime ledgers use the
+    # compact C encoder because they are rewritten many times per turn.
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if len(payload) <= _READABLE_JSON_BYTES:
+        payload = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, separators=(",", ": "))
+    atomic_write_text(Path(path), payload + "\n", mode=mode)
 
 
 def atomic_unlink(path: Path) -> None:

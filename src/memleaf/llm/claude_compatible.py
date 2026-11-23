@@ -24,6 +24,11 @@ class ClaudeCompatibleBackend(HTTPModelBackend):
         super().__init__(base_url=base_url, api_key=api_key, model=model, timeout=timeout, opener=opener)
         self.thinking = dict(thinking) if isinstance(thinking, Mapping) else {}
 
+    def _explicit_prompt_cache(self) -> bool:
+        from urllib.parse import urlsplit
+        host = (urlsplit(self.base_url).hostname or "").casefold()
+        return host == "anthropic.com" or host.endswith(".anthropic.com")
+
     @staticmethod
     def _usage_metrics(value: Mapping[str, Any], thinking_metrics: Mapping[str, Any]) -> dict[str, Any]:
         result: dict[str, Any] = dict(thinking_metrics)
@@ -33,7 +38,12 @@ class ClaudeCompatibleBackend(HTTPModelBackend):
         input_tokens = usage.get("input_tokens")
         output_tokens = usage.get("output_tokens")
         if isinstance(input_tokens, int) and not isinstance(input_tokens, bool) and 0 <= input_tokens <= 10_000_000:
-            result["prompt_tokens"] = input_tokens
+            # Anthropic input_tokens excludes cache reads/writes; report the full
+            # prompt like OpenAI-compatible usage, with cache hits separately.
+            cached = [usage.get(key) for key in ("cache_read_input_tokens", "cache_creation_input_tokens")]
+            total = input_tokens + sum(v for v in cached if isinstance(v, int) and not isinstance(v, bool) and v >= 0)
+            if total <= 10_000_000:
+                result["prompt_tokens"] = total
         if isinstance(output_tokens, int) and not isinstance(output_tokens, bool) and 0 <= output_tokens <= 10_000_000:
             result["completion_tokens"] = output_tokens
         if "prompt_tokens" in result and "completion_tokens" in result:
@@ -55,7 +65,11 @@ class ClaudeCompatibleBackend(HTTPModelBackend):
         if not omit_temperature:
             payload["temperature"] = temperature
         if system:
-            payload["system"] = system
+            # The long extraction/review contracts are a stable prefix. Anthropic
+            # caches only explicitly marked blocks; compatible gateways keep the
+            # plain string form they already accept.
+            payload["system"] = ([{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+                                 if self._explicit_prompt_cache() else system)
         payload.update(controls)
         value = self._post_json(
             self.base_url + "/v1/messages",

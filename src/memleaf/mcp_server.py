@@ -69,36 +69,30 @@ INSTRUCTIONS = (
     "twice, then honestly report degraded retrieval; do not claim memory was checked successfully. "
     "When a host supplies retrieval_id, reuse it. A bare MCP client may omit retrieval_id only on "
     "the first search or first list_todos page; memleaf then returns a short-lived retrieval_id that "
-    "must be reused for pagination and read. "
+    "must be reused for pagination and read. Never invent a retrieval_id. "
     "Treat directory entries as leads, never as verified facts; do not infer facts from a title. "
     "Use read(memory_id) on the best matching entry before relying on a past fact. Read more only "
     "when needed, not every entry to filter unrelated items. You may refine the query/scope and "
-    "search again. Never invent a retrieval_id: use the host-provided token when present, otherwise "
-    "use the token returned by the first bare-MCP search/list_todos call. Managed reads have no "
-    "aggregate ID/character quota; read every relevant memory needed for "
-    "the user's question while keeping each read page at 2000 characters. MCP read requires retrieval_id "
-    "at the execution boundary (supplied by a bound host or explicitly by a bare client), "
-    "and a current FOUND search or list_todos result; NO_MATCH, ERROR, and DEGRADED turns cannot read. "
+    "search again. Managed reads have no aggregate quota; read every memory relevant to the "
+    "user's question. read requires that retrieval_id and a current FOUND search or list_todos "
+    "result; NO_MATCH, ERROR, and DEGRADED turns cannot read. Follow the read tool's paging and "
+    "version rules. "
     "For global current-action questions use list_todos rather than relevance search, omit scope to cover "
-    "all scopes. Use view=full on server-managed turns, follow returned continuation arguments "
-    "until has_more=false, then follow body_continuation with read until it is absent. "
-    "Directory clients pass next_cursor as cursor, then read each relevant action body. "
+    "all scopes, and page until has_more=false. "
     "For 'my work' use list_todos responsibility=mine; use delegated or all for others' work. "
     "Unassigned ownership is uncertain. A dependency alone does not create a user follow-up task; "
     "an active item is not automatically the user's personal work. "
-    "Legacy context is an explicit compatibility interface, not an alternative to this "
-    "scope/search/read flow. Managed MCP search is directory-only and rejects view=full; "
-    "Python full-result search remains compatible. Without host integration, tools remain an explicit fallback only; "
+    "context is a legacy compatibility tool, not an alternative to this scope/search/read flow; "
+    "if called explicitly, pass source and session_id together and avoid duplicating native "
+    "memory that the host already loads. "
+    "Without host integration, tools remain an explicit fallback only; "
     "do not claim automatic recall, recording or final-answer enforcement succeeded. "
     "Hermes and Codex are supported hosts; Hermes uses a Soft Gate, not a hard guarantee. "
-    "When explicitly calling legacy context, pass source and session_id together and avoid "
-    "duplicating native memory that the target host already loads. "
     "Capture only user-visible and assistant-visible text. Never capture system or developer "
     "messages or hidden reasoning. Do not place raw tool output or attachment bodies in "
     "visible-message content. Memory is extracted only from visible user and assistant "
-    "conversation, including findings already reported in the assistant reply. Legacy "
-    "tool_evidence parameters are ignored and cannot enable raw-source extraction. "
-    "Process only complete user+assistant turns; do not process incomplete turns. "
+    "conversation, including findings already reported in the assistant reply. "
+    "Process only complete user+assistant turns. "
     "Automatic hosts may pass background=true to enqueue processing and then use "
     "process_status; accepted does not mean completed. "
     "Use remember only when the user explicitly asks to remember something. If the user has "
@@ -111,14 +105,9 @@ INSTRUCTIONS = (
     "Forgetting permanently deletes the selected memory and its history. Use forget_memory or "
     "forget_about only for an explicit user request to permanently forget a reliably identified "
     "target, with confirm_delete=true; task completion is not such a request. A do-not-remember "
-    "or forget request takes precedence. Use "
-    "include_history=true only for an explicit request "
-    "about historical memory. MCP read returns at most 2000 body characters per page; when "
-    "has_more is true, continue with next_offset only as needed and pass the returned version "
-    "as expected_version. If memory_version_changed is reported, restart at offset 0 without "
-    "expected_version and use the new version for continuation. If a tool fails, report the "
-    "failure honestly; never use terminal, read_file, Python, or direct vault files as a fallback "
-    "and claim that MCP succeeded."
+    "or forget request takes precedence. Use include_history=true only for an explicit request "
+    "about historical memory. If a tool fails, report the failure honestly; never use terminal, "
+    "read_file, Python, or direct vault files as a fallback and claim that MCP succeeded."
 )
 
 _MAX_READ_PAGE_CHARS = 2000
@@ -178,19 +167,7 @@ _TOOLS: tuple[dict[str, Any], ...] = (
                 "final": {"type": "boolean"},
                 "record": {"type": "boolean"},
                 "visible": {"type": "boolean"},
-                "tool_evidence": {
-                    "description": "Deprecated compatibility field; ignored. Only visible conversation is memory input.",
-                    "type": "array",
-                    "items": _object_schema(
-                        {
-                            "message_id": {"type": "string"},
-                            "subject": {"type": "string"},
-                            "sender": {"type": "string"},
-                            "domain": {"type": "string"},
-                            **{key: {"type": "string"} for key in ("tool_name", "call_id", "record_id", "title", "kind", "result_status", "content", "result_digest", "execution_status", "completeness", "schema_version", "omitted_count", "omitted_bytes", "source_type", "retention")},
-                        }
-                    ),
-                },
+                "tool_evidence": {"type": "array", "description": "Deprecated; ignored."},
             },
             required=["source", "session_id", "turn_id", "role", "content"],
         ),
@@ -605,7 +582,9 @@ def _query_metadata(value: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("invalid scan diagnostic")
         if sum(scan["codes"].values()) != scan["issue_count"] or (scan["status"] == "complete") != (scan["issue_count"] == 0):
             raise ValueError("inconsistent scan status")
-        result["scan_status"] = {k: _jsonable(scan[k]) for k in ("status", "issue_count", "codes", "areas")}
+        # A clean scan needs no diagnostics in every agent-facing response.
+        result["scan_status"] = ({"status": "complete"} if scan["status"] == "complete" else
+                                 {k: _jsonable(scan[k]) for k in ("status", "issue_count", "codes", "areas")})
     pipeline = value.get("pipeline_status")
     if pipeline is not None:
         if not isinstance(pipeline, Mapping) or not isinstance(pipeline.get("status"), str) or pipeline.get("status") not in {"current", "pending", "unknown"} or pipeline.get("scope") != "vault":
@@ -620,6 +599,8 @@ def _query_metadata(value: Mapping[str, Any]) -> dict[str, Any]:
             if pipeline["code"] != "control_state_unavailable":
                 raise ValueError("invalid pipeline code")
             projection["code"] = pipeline["code"]
+        if pipeline["status"] == "current" and not any(v for k, v in projection.items() if k not in {"status", "scope"}):
+            projection = {"status": "current", "scope": "vault"}
         result["pipeline_status"] = projection
         if pipeline["status"] != "current":
             result["answer_guidance"] = "These are stored records; pending or unknown processing may leave them behind the latest conversation. Qualify current-state claims and do not treat an old unfinished state as proof that work is still unfinished."

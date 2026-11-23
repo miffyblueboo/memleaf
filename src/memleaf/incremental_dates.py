@@ -16,15 +16,6 @@ _CLOCK_AFTER_DATE = re.compile(r"\s*(?:(?:日|号|上午|下午|晚上|中午|�
 _PROVENANCE_PREFIX = re.compile(r"^[ \t]*(?:来源|source)[：:][ \t]*", re.IGNORECASE)
 
 
-def _dated_clocks(text: str) -> set[tuple[str, str]]:
-    pairs = set()
-    for token in calendar_tokens(text):
-        clock = _CLOCK_AFTER_DATE.match(text, token.end)
-        if token.canonical and clock:
-            pairs.add((token.canonical, clock.group(1)))
-    return pairs
-
-
 def parse_source_time(value: Any) -> datetime | None:
     if value is None:
         return None

@@ -54,10 +54,34 @@ def decode_receipt(wrapper: Any, *, version: int, maximum: int, payload_versions
     return {"version": wrapper["payload_version"], "payload": text, "checksum": wrapper["checksum"]}
 
 
+_USAGE_CACHE: dict[int, tuple[Any, tuple[Any, ...], tuple[int, ...], int, dict[str, int]]] = {}
+_USAGE_CACHE_ITEMS = 8
+
+
 def ledger_usage(wrappers: Any, *, compact_version: int) -> dict[str, int]:
-    """Inspect sizes without decompressing; individual loads still verify bytes."""
+    """Inspect sizes without decompressing; individual loads still verify bytes.
+
+    Receipt wrappers are replaced, never edited in place. A ledger whose dict
+    and every wrapper object are identical to a verified one has the same
+    usage, so loops loading many receipts do not rescan the ledger each time.
+    The cache holds strong references, so object ids cannot be recycled.
+    """
     if not isinstance(wrappers, dict):
         raise ValueError("invalid_receipt_ledger")
+    values = tuple(wrappers.values())
+    ids = tuple(map(id, values))
+    cached = _USAGE_CACHE.get(id(wrappers))
+    if (cached is not None and cached[0] is wrappers and cached[2] == ids
+            and cached[3] == compact_version):
+        return dict(cached[4])
+    result = _ledger_usage(wrappers, compact_version=compact_version)
+    if len(_USAGE_CACHE) >= _USAGE_CACHE_ITEMS:
+        _USAGE_CACHE.clear()
+    _USAGE_CACHE[id(wrappers)] = (wrappers, values, ids, compact_version, dict(result))
+    return result
+
+
+def _ledger_usage(wrappers: dict[str, Any], *, compact_version: int) -> dict[str, int]:
     compact = decoded = 0
     for wrapper in wrappers.values():
         if not isinstance(wrapper, dict) or not isinstance(wrapper.get("payload"), str):

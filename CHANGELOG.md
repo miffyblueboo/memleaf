@@ -4,6 +4,36 @@ All notable changes to memleaf are documented here.
 
 ## Unreleased
 
+### Slimmer core, fewer lost memories and faster processing
+
+- Remove the retired single-pass/legacy planner pipeline (16 modules, about
+  10k lines) and its now-unused helpers. `process` and `remember` already ran
+  only the incremental engine; no public API, MCP tool or persisted format
+  changes.
+- A bare deadline string such as `"2026-11-27"` or `"明天"` is bound to the one
+  cited new message that contains it and then resolved by the usual
+  source-time rules. An unanchored string is dropped instead of discarding the
+  whole item, so the memory is still written with an unknown deadline.
+- An action-only `NO_MEMORY` emitted beside the model's own valid items is
+  ignored instead of leaving the turn permanently unresolved; it is still a
+  conflict when no other valid disposition exists.
+- Processing no longer reparses unchanged Markdown memories or rescans the
+  whole receipt ledger for every receipt load, and large runtime ledgers are
+  written in compact JSON. Synthetic 300-turn run: per-turn processing
+  1.8 s → 1.0 s, search 153 ms → 91 ms.
+- Anthropic endpoints mark the stable system prompt as cacheable; Claude usage
+  now reports the full prompt including cache reads.
+- MCP: remove duplicated and legacy-only sentences from the server
+  instructions (5.1 KB → 4.1 KB), drop the nested schema of the ignored
+  `capture.tool_evidence` field (still accepted), and omit empty diagnostic
+  counters from clean query responses.
+- CI checks that the Hermes provider's vendored modules match Core.
+- Validation: local deterministic suite and the previous local suite show no
+  new failures outside removed code. Real-model acceptance (DeepSeek, isolated
+  vault, 9 scenarios): 14 calls, 32,169 prompt / 5,174 completion tokens,
+  28,160 cached prompt tokens; one of five retraction runs stayed unresolved
+  without writing.
+
 
 ## 1.0.4 — 2026-10-10
 

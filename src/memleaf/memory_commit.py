@@ -1,6 +1,7 @@
 """The shared automatic/explicit commit boundary and forward recovery."""
 from __future__ import annotations
 import json
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 from .config import save_config
 from .memory_writer import MemoryWriter

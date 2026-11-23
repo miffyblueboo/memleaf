@@ -32,6 +32,13 @@ jobs:
         run: python -m pip install --upgrade pip build "setuptools>=77"
       - name: Check source syntax
         run: python -m compileall -q src
+      - name: Check Hermes provider copies match Core
+        # The provider is installed as a self-contained plugin, so these two
+        # modules are vendored copies; they must never drift from Core.
+        run: |
+          for name in provider_compatibility evidence_budget; do
+            cmp "src/memleaf/${name}.py" "src/memleaf/hermes_provider/${name}.py"
+          done
       - name: Build wheel and source distribution once
         run: python -m build --wheel --sdist
       - name: Check release payload boundaries
