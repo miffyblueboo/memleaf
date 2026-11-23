@@ -445,5 +445,3 @@ Proposed candidates and summaries are model output, not new evidence. Do not
 invent a target, switch Scope/type, add scope_operations, or authorize native
 shadowing. Return JSON only.
 """
-
-

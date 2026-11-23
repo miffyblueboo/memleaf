@@ -318,5 +318,3 @@ When a candidate has these validated bindings, omit its evidence_event_ids field
 Core maps each claim unit_id to that unit's exact event_key after validation.
 Never use a surrounding user/assistant event key for an external source unit.
 """
-
-

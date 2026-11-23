@@ -30,14 +30,19 @@ scope. An internal protocol change may fence pending model responses and require
 an explicit recovery action; it must not silently reinterpret saved work, erase
 unresolved outcomes or reset consumed request budgets.
 
-## Upgrade to 1.0.4
+## Upgrade to 1.0.5
 
-The 1.0.4 release preserves the 1.0.0 public interfaces, existing Model Routes,
+The 1.0.5 release preserves the 1.0.0 public interfaces, existing Model Routes,
 default entry points and Markdown/history formats. The new host-model MCP route
 is optional and selected with `--profile host`; upgrading does not convert an
 existing Codex or Hermes connection to it. No formal Vault migration is required.
 The host contract identifier remains `memleaf-host-v2.0-rc1`; protocol identity
 and package release numbers are separate.
+
+Version 1.0.5 validates quoted date boundaries and carries forward the year
+stated in the source. Existing MCP query response fields remain available.
+The retired private planner modules are removed; `process` and `remember`
+continue to use the incremental engine.
 
 Version 1.0.4 routes existing semantic reviews through the configured `gate`
 thinking policy rather than the extraction policy. It retains JSON output,

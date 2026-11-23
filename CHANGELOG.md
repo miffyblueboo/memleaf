@@ -2,7 +2,7 @@
 
 All notable changes to memleaf are documented here.
 
-## Unreleased
+## 1.0.5 — 2026-11-23
 
 ### Slimmer core, fewer lost memories and faster processing
 
