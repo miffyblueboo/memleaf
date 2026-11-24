@@ -169,6 +169,28 @@ Hermes 显式保存使用 MCP `save_turn`：先绑定本轮并排队，轮次完
 
 仓库中的 `install.sh` 保留给源码开发、离线源码安装和故障排查；普通 PyPI 用户不需要执行它。
 
+### 一条命令接入所有 Agent（MCP）
+
+扫描本机已安装的 Agent，并为找到的每一个完成接入。Hermes 走原生 Provider 安装，其他 Agent 统一使用 host profile MCP 服务：
+
+```bash
+python -m pip install -U memleaf && python -m memleaf install --all
+```
+
+只接入某一个 Agent 时用 `--host`：
+
+```bash
+python -m memleaf install --host claude-code
+```
+
+可选值：`claude-code`、`codex`、`cursor`、`vscode`（Copilot）、`gemini`、`junie`、`windsurf`（含 Devin Desktop）、`claude-desktop`、`hermes`。加 `--dry-run` 只报告将要修改的内容，不写任何文件。
+
+- 每个 Agent 各自获得一份本地凭据（`<vault>/_state/host_credentials/<agent>.token`，权限 `0600`），可单独用 `memleaf host-revoke` 撤销；安装即表示信任这些本地 Agent 如实提交可见对话。
+- 只新增或更新名为 `memleaf` 的条目，其他 MCP 服务保持不变；修改前会备份为 `*.memleaf-backup`。不是本安装器创建的 `memleaf` 条目、无法解析的配置文件和符号链接都不会被改动，只报告原因。
+- Claude Code 通过它自己的 `claude mcp add` 写入（macOS 上也会找到桌面版自带的 CLI），不直接编辑 `~/.claude.json`。
+- Codex 已有 model profile hook 时保持原样；新接入默认使用 host profile，`--profile model` 可选用原有自动提炼方式。
+- 接入后重启对应 Agent。推理使用各 Agent 自身的模型，Memleaf 不调用模型。
+
 ### Codex
 
 #### 复用 Codex 当前模型：host profile

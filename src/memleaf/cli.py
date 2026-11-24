@@ -61,14 +61,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     install = commands.add_parser(
         "install",
-        help="install memleaf for Hermes (default) or an explicitly selected host",
+        help="install memleaf for Hermes (default), one selected agent, or every detected agent (--all)",
     )
     install.add_argument(
         "--host",
-        choices=("hermes", "codex"),
+        choices=("hermes", "claude-code", "codex", "cursor", "vscode", "gemini", "junie", "windsurf", "claude-desktop"),
         default="hermes",
-        help="host to configure (default: hermes)",
+        help="agent to configure (default: hermes); every agent except Hermes uses the host-profile MCP server",
     )
+    install.add_argument("--all", action="store_true",
+                         help="scan for local agents and install into every one found (Hermes natively, others via MCP)")
+    install.add_argument("--dry-run", action="store_true",
+                         help="with --all or an MCP agent: report what would change without writing anything")
+    install.add_argument("--profile", choices=("host", "model"), default=None,
+                         help="Codex only: host (MCP, uses Codex's own model) or model (legacy hooks and memleaf model route); "
+                              "default keeps an existing model-profile setup, otherwise host")
     install.add_argument("--vault", type=Path, default=None, help="vault directory")
     install.add_argument(
         "--mcp-runtime",
@@ -261,7 +268,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "install":
             from .installer import install_codex, install_hermes
 
-            if args.host == "codex":
+            if args.all or _uses_mcp_install(args):
+                output = _install_agents(args)
+            elif args.host == "codex":
                 if args.mcp_runtime != "auto":
                     output = {
                         "status": "failure",
@@ -363,6 +372,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "host-event":
         print(json.dumps(output, ensure_ascii=False, separators=(",", ":")))
         return 0
+    if args.command == "install" and output.get("mode") == "agents":
+        if args.json:
+            print(json.dumps(output, ensure_ascii=False, sort_keys=True))
+        else:
+            _print_agents_result(output)
+        return {"success": 0, "dry_run": 0, "partial": 1}.get(output["status"], 2)
     if args.command == "install":
         if args.json:
             print(json.dumps(output, ensure_ascii=False, sort_keys=True))
@@ -671,6 +686,82 @@ def _prompt_for_model() -> ModelCandidate:
         model=model,
         api_key=api_key,
     )
+
+
+def _codex_model_profile_present() -> bool:
+    hooks = Path(os.environ.get("CODEX_HOME") or _home_from_environment() / ".codex") / "hooks.json"
+    try:
+        return "memleaf.cli host-event codex" in hooks.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return False
+
+
+def _uses_mcp_install(args: argparse.Namespace) -> bool:
+    if args.host == "hermes":
+        return False
+    if args.host == "codex":
+        return args.profile == "host" or (args.profile is None and not _codex_model_profile_present())
+    return True
+
+
+def _install_agents(args: argparse.Namespace) -> dict:
+    from .mcp_install import LABELS, MCP_AGENTS, install_mcp_agents
+    invalid = [name for name, used in (("--mcp-runtime", args.mcp_runtime != "auto"),
+                                         ("--profile", args.profile is not None and args.host != "codex"))
+               if used and not (args.all and name == "--mcp-runtime")]
+    if invalid:
+        return {"mode": "agents", "status": "failure", "vault": None, "agents": [],
+                "reason": f"{', '.join(invalid)} does not apply to this installation"}
+    agents = list(MCP_AGENTS) if args.all else [args.host]
+    output = install_mcp_agents(agents, vault_path=args.vault, dry_run=args.dry_run, only_detected=args.all)
+    output["mode"] = "agents"
+    if args.all:
+        from .adapters.hermes import HermesAdapter
+        row = {"agent": "hermes", "label": LABELS["hermes"]}
+        if not HermesAdapter(home=_home_from_environment()).detect().detected:
+            row = None
+        elif args.dry_run:
+            row.update(status="dry_run", reason="would run the native Hermes install")
+        else:
+            from .installer import install_hermes
+            kwargs = {"vault_path": args.vault}
+            if args.mcp_runtime != "auto":
+                kwargs["mcp_runtime"] = args.mcp_runtime
+            if args.no_model_discovery:
+                kwargs["skip_model_discovery"] = True
+            result = install_hermes(**kwargs)
+            row.update(status=result.get("status", "failure"), reason=result.get("reason") or "native Hermes install",
+                       hermes=result)
+        if row is not None:
+            output["agents"].insert(0, row)
+            if row["status"] not in {"configured", "already_configured", "dry_run"} and output["status"] == "success":
+                output["status"] = "partial"
+        if not output["agents"]:
+            output.update(status="failure", reason="no supported agent was found")
+    return output
+
+
+_STATUS_MARK = {"configured": "+", "already_configured": "=", "dry_run": "~", "kept_existing": "!",
+                "diagnostic": "!", "failed": "x", "failure": "x", "not_detected": "-"}
+
+
+def _print_agents_result(output: dict) -> None:
+    if output.get("reason") and not output.get("agents"):
+        print(f"memleaf install: {output['reason']}", file=sys.stderr)
+        return
+    title = "memleaf install (dry run)" if output["status"] == "dry_run" else "memleaf install"
+    print(f"{title}: vault {output['vault']}")
+    for row in output["agents"]:
+        print(f"  [{_STATUS_MARK.get(row['status'], '?')}] {row['label']:<26} {row['status']}: {row['reason']}")
+        if row.get("config_path") and row["status"] in {"configured", "dry_run", "kept_existing", "diagnostic"}:
+            print(f"      {row['config_path']}")
+    if output.get("server_verified") is False:
+        print("  warning: the configured memleaf server did not answer tools/list", file=sys.stderr)
+    if output.get("next_step"):
+        print(output["next_step"])
+    if any(row["status"] == "configured" and row["agent"] != "hermes" for row in output["agents"]):
+        print("Each agent received its own local credential; agents are trusted to submit "
+              "their visible conversation faithfully (revoke with `memleaf host-revoke`).")
 
 
 def _home_from_environment() -> Path:

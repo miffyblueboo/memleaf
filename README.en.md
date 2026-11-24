@@ -169,6 +169,28 @@ If Hermes cannot be detected, no complete model route can be configured, Provide
 
 The repository `install.sh` remains for source development, offline source installation, and troubleshooting. Normal PyPI users do not need to run it.
 
+### Every agent in one command (MCP)
+
+Scan for locally installed agents and set up each one found. Hermes uses its native provider install; every other agent uses the host-profile MCP server:
+
+```bash
+python -m pip install -U memleaf && python -m memleaf install --all
+```
+
+Use `--host` for a single agent:
+
+```bash
+python -m memleaf install --host claude-code
+```
+
+Values: `claude-code`, `codex`, `cursor`, `vscode` (Copilot), `gemini`, `junie`, `windsurf` (including Devin Desktop), `claude-desktop`, `hermes`. Add `--dry-run` to report the planned changes without writing anything.
+
+- Each agent gets its own local credential (`<vault>/_state/host_credentials/<agent>.token`, mode `0600`) that `memleaf host-revoke` can revoke individually; installing means trusting these local agents to submit their visible conversation faithfully.
+- Only an entry named `memleaf` is added or updated; other MCP servers are untouched and the previous file is kept as `*.memleaf-backup`. A `memleaf` entry this installer did not create, an unparsable config file or a symlink is reported and left unchanged.
+- Claude Code is configured through its own `claude mcp add` (on macOS the CLI bundled with the desktop app is found too); `~/.claude.json` is never edited directly.
+- An existing Codex model-profile hook setup is kept; new Codex installs default to the host profile, and `--profile model` selects the original automatic extraction.
+- Restart each agent afterwards. Reasoning uses each agent's own model; Memleaf makes no model calls.
+
 ### Codex
 
 #### Reuse the current Codex model: host profile

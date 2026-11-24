@@ -16,6 +16,7 @@ import sys
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
+from copy import deepcopy
 from typing import Any, TextIO
 
 from . import __version__
@@ -215,7 +216,9 @@ _TOOLS: tuple[dict[str, Any], ...] = (
     {
         "name": "search",
         "description": (
-            "Search once per ordinary user turn. Return found/no_match and paged lightweight "
+            "Search once per ordinary user turn before answering, since earlier conversations may hold "
+            "relevant facts; read the best match before relying on it. Memories keep the conversation's language, "
+            "so include keywords in both languages when they may differ. Return found/no_match and paged lightweight "
             "results (memory_id, title), at most 20/4000 characters, without changing hits. "
             "With host integration, retrieval_id is the host-provided current-turn token. A bare "
             "MCP client may omit it only on the first page; memleaf returns a short-lived retrieval_id "
@@ -1306,8 +1309,61 @@ def _invoke_tool(service: Memleaf, name: str, arguments: Any, *, request_id: Any
 def _available_tools(service: Memleaf) -> list[dict[str, Any]]:
     if getattr(service, "_host_v2", None) is not None:
         from .host_v2_mcp import definitions
-        return definitions(_TOOLS)
-    return list(_TOOLS)
+        tools = definitions(_TOOLS)
+    else:
+        tools = list(_TOOLS)
+    return [_portable_tool(tool) for tool in tools]
+
+
+# Display keywords every mainstream MCP client accepts, including Gemini's
+# OpenAPI subset. Arguments are still validated against the full schemas.
+_PORTABLE_JSON_TYPES = ("object", "array", "string", "integer", "number", "boolean")
+
+
+def _portable_schema(node: Any) -> dict[str, Any]:
+    if not isinstance(node, Mapping):
+        return {"type": "string"}
+    kinds = node.get("type")
+    kinds = [kinds] if isinstance(kinds, str) else list(kinds or [])
+    if "const" in node and "enum" not in node:
+        node = {**node, "enum": [node["const"]]}
+    if not kinds and "properties" in node:
+        kinds = ["object"]
+    if not kinds and "enum" in node:
+        kinds = [{bool: "boolean", int: "integer", float: "number"}.get(type(node["enum"][0]), "string")]
+    kind = next((value for value in kinds if value in _PORTABLE_JSON_TYPES), "string")
+    result: dict[str, Any] = {"type": kind}
+    if isinstance(node.get("description"), str):
+        result["description"] = node["description"]
+    if isinstance(node.get("enum"), list):
+        expected = {"string": str, "integer": int, "number": (int, float), "boolean": bool}.get(kind)
+        values = [value for value in node["enum"] if expected is not None and isinstance(value, expected)
+                  and (kind == "boolean" or type(value) is not bool)]
+        if values:
+            result["enum"] = values
+    if kind == "object":
+        properties = node.get("properties") if isinstance(node.get("properties"), Mapping) else {}
+        result["properties"] = {name: _portable_schema(field) for name, field in properties.items()}
+        required = [name for name in node.get("required", []) if name in result["properties"]]
+        if required:
+            result["required"] = required
+    elif kind == "array":
+        result["items"] = _portable_schema(node.get("items"))
+    return result
+
+
+def _portable_tool(tool: Mapping[str, Any]) -> dict[str, Any]:
+    """One tools/list shape for every client.
+
+    Combinators, string/number bounds, patterns and formats are left to Core
+    validation, and the large outputSchema is not advertised: structured
+    results are still returned, so clients that never saw a schema keep
+    reading them while strict SDK clients have nothing to reject.
+    """
+    from .host_v2_schema import _flat_input_schema
+    result = {key: deepcopy(value) for key, value in tool.items() if key not in {"inputSchema", "outputSchema"}}
+    result["inputSchema"] = _portable_schema(_flat_input_schema(tool["inputSchema"]))
+    return result
 
 
 def _instructions(service: Memleaf) -> str:

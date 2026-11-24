@@ -103,6 +103,43 @@ def _longest_common_substring(left: str, right: str) -> int:
     return longest
 
 
+def _ascii_synonyms_only(query: str | Iterable[str], parts: list[str], explicit: set[str],
+                         strong_cjk: set[str]) -> bool:
+    """Lowercase English words added beside a specific, matched CJK topic.
+
+    Agents often append translations ("部署区域 deployment region"). Such words
+    are optional only when every CJK component matched and together they are
+    specific (three or more characters). Capitalized names (Atlas), acronyms
+    and numeric identifiers stay required, and so do words beside a lone
+    generic term like 项目.
+    """
+    if explicit:
+        return False
+    cjk = [part for part in parts if any(_is_cjk_char(char) for char in part)]
+    if not cjk or any(part not in strong_cjk for part in cjk) or sum(map(len, cjk)) < 3:
+        return False
+    raw = query if isinstance(query, str) else " ".join(str(item) for item in query)
+    words = [word for word in re.findall(r"[^\W_]+", raw, re.UNICODE)
+             if not any(_is_cjk_char(char) for char in word)]
+    return all(word.isascii() and word.isalpha() and word.islower() for word in words)
+
+
+def _cjk_bigram_cover(part: str, values: list[str]) -> bool:
+    """A CJK term whose words appear apart, e.g. 部署区域 in 部署在东京区域.
+
+    Natural queries often join words that the memory separates. Require at
+    least two of the term's character pairs, and at least half of them, so a
+    single shared local word (项目 inside 火星仓库项目) still cannot match.
+    """
+    pairs = list(dict.fromkeys(part[i:i + 2] for i in range(len(part) - 1)
+                               if _is_cjk_char(part[i]) and _is_cjk_char(part[i + 1])))
+    if len(pairs) < 2:
+        return False
+    text = "\n".join(values)
+    matched = sum(1 for pair in pairs if pair in text)
+    return matched >= 2 and matched * 2 >= len(pairs)
+
+
 def _candidate_values(memory: Memory) -> list[str]:
     """Return searchable fields, including metadata not present in fulltext."""
 
@@ -144,7 +181,8 @@ def candidate_matches_query(memory: Memory, query: str | Iterable[str]) -> bool:
         if not any(_is_cjk_char(char) for char in part):
             return False
         minimum = _cjk_span_bar(part)
-        return max((_longest_common_substring(part, value) for value in values), default=0) >= minimum
+        return (max((_longest_common_substring(part, value) for value in values), default=0) >= minimum
+                or _cjk_bigram_cover(part, values))
 
     has_cjk_part = any(any(_is_cjk_char(char) for char in part) for part in parts)
     explicit_ascii_required = bool(explicit_parts) or (
@@ -159,13 +197,15 @@ def candidate_matches_query(memory: Memory, query: str | Iterable[str]) -> bool:
     strong_cjk_match = False
     explicit_ascii_match = False
     weak_matches = 0
+    strong_cjk_parts: set[str] = set()
     for part in parts:
         if any(_is_cjk_char(char) for char in part):
             longest = max((_longest_common_substring(part, value) for value in values), default=0)
             minimum = _cjk_span_bar(part)
-            if longest >= minimum:
+            if longest >= minimum or _cjk_bigram_cover(part, values):
                 strong_match = True
                 strong_cjk_match = True
+                strong_cjk_parts.add(part)
             elif longest:
                 weak_matches += 1
             continue
@@ -181,7 +221,8 @@ def candidate_matches_query(memory: Memory, query: str | Iterable[str]) -> bool:
             else:
                 weak_matches += 1
 
-    if explicit_ascii_required and not explicit_ascii_match:
+    if explicit_ascii_required and not explicit_ascii_match and not _ascii_synonyms_only(
+            query, parts, explicit_parts, strong_cjk_parts):
         return False
     if explicit_ascii_required and has_cjk_part and not strong_cjk_match:
         return False

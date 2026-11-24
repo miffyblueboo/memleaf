@@ -223,6 +223,20 @@ _INPUT_HELP = {
 }
 
 
+# When-to-use rules repeated in descriptions: several MCP clients never show
+# the server instructions to the model, so each entry point carries its own.
+_USAGE_HINT = {
+    "memory_capabilities": "Call once per session before the first save. ",
+    "prepare_memory": (
+        "Use after a completed turn in which the user states a durable fact, decision, preference, "
+        "task, deadline or progress worth keeping, or asks you to remember something; then read the "
+        "needed memory_work pages and call submit_memory. Do not save questions, chit-chat or your own "
+        "suggestions. purpose=explicit when the user asked to remember; otherwise purpose=automatic. Pass the "
+        "user's message as source.messages (role=user, exact text); add your reply last only if it holds facts to keep. "
+    ),
+}
+
+
 @lru_cache(maxsize=1)
 def _client_tools() -> list[dict[str, Any]]:
     result = []
@@ -230,7 +244,7 @@ def _client_tools() -> list[dict[str, Any]]:
         tool = copy.deepcopy(definition)
         tool["inputSchema"] = _client_schema(tool["inputSchema"], shape_hints=True)
         tool["outputSchema"] = _client_schema(tool["outputSchema"], shape_hints=False)
-        tool["description"] += _INPUT_HELP.get(tool["name"], "")
+        tool["description"] = _USAGE_HINT.get(tool["name"], "") + tool["description"] + _INPUT_HELP.get(tool["name"], "")
         result.append(tool)
     return result
 

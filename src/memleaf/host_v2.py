@@ -411,10 +411,13 @@ class HostMemory:
                 if not context.get("allow_automatic_recording", False):
                     raise V2Error("FORBIDDEN")
                 roles = [s["role"] for s in sources]
-                if not roles or roles[0] != "user" or roles[-1] != "assistant":
-                    raise V2Error("SOURCE_NOT_ADMISSIBLE")
+                # An agent saves before its final reply, so the user's own
+                # message may stand alone; an included reply must come last.
+                if not roles or roles[0] != "user" or ("assistant" in roles and roles[-1] != "assistant"):
+                    raise V2Error("SOURCE_NOT_ADMISSIBLE", "purpose=automatic messages must start with the user "
+                                  "message; if you include your assistant reply it must be the last message.")
             if purpose == "explicit" and not any(s["role"] == "user" for s in sources):
-                raise V2Error("SOURCE_NOT_ADMISSIBLE")
+                raise V2Error("SOURCE_NOT_ADMISSIBLE", "purpose=explicit needs the user's own message among the sources.")
             owned = {s.get("owner_work_id") for s in sources if s.get("owner_work_id")}
             selected_ids = {s["source_id"] for s in sources}
             prior = [self._work(state, context, owner) for owner in owned]

@@ -34,7 +34,7 @@ _SAFE_ERROR_MESSAGES = {
     "retrieval_id_required": "retrieval turn id is required for memory read",
     "retrieval_id_invalid": "retrieval turn is unknown or expired",
     "retrieval_identity_invalid": "retrieval turn identity is invalid",
-    "retrieval_turn_mismatch": "retrieval turn does not match the current host turn",
+    "retrieval_turn_mismatch": "retrieval_id is not the current turn; use the retrieval_id returned by your most recent search or list_todos call",
     "retrieval_status_invalid": "retrieval status is invalid",
     "retrieval_search_required": "a successful search is required before reading memory",
     "retrieval_call_id_invalid": "retrieval tool call id is invalid",

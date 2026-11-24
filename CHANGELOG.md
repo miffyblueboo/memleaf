@@ -2,6 +2,44 @@
 
 All notable changes to memleaf are documented here.
 
+## Unreleased
+
+### One install for every MCP agent
+
+- `memleaf install --all` scans for local agents and sets up each one found:
+  Hermes through its native provider, every other agent through the
+  host-profile MCP server. `memleaf install --host <agent>` targets one of
+  `claude-code`, `codex`, `cursor`, `vscode`, `gemini`, `junie`, `windsurf`,
+  `claude-desktop` or `hermes`; `--dry-run` reports without writing. Each
+  agent gets its own revocable credential. Only an entry named `memleaf` is
+  written, with a backup; foreign `memleaf` entries, invalid files and
+  symlinks are reported and left unchanged. Claude Code is configured through
+  its CLI. An existing Codex model-profile hook setup is kept; `--profile`
+  chooses explicitly.
+- tools/list now has one portable shape for every client: input schemas use
+  only `type`, `properties`, `required`, `items`, `enum` and `description`
+  (Gemini's subset), and `outputSchema` is not advertised. Arguments are still
+  validated against the full schemas and results still carry
+  `structuredContent`. The host-profile listing shrinks from about 242 KB to
+  19 KB.
+- When-to-save and when-to-search rules are repeated in tool descriptions for
+  clients that never show server instructions to the model.
+- Host `prepare_memory(purpose=automatic)` accepts the user's message alone, so
+  an agent can save before its final reply; an included assistant reply must
+  still come last, and the error now says how to fix the request.
+- Directory search matches natural CJK queries whose words the memory keeps
+  apart (`部署区域` → `部署在东京区域`), and lowercase English translations next
+  to a specific matched CJK topic no longer block a match. Capitalized names,
+  acronyms, numeric identifiers and words beside a lone generic term such as
+  `项目` stay required.
+- Validation: local deterministic suite (40 cases) and the installed-artifact
+  smoke pass; installer tests use a throwaway HOME. Real-model agent loop
+  (DeepSeek driving the host tools with no server instructions, fresh vault,
+  5 scenarios): all correct, 19 requests, 119,389 prompt / 4,036 completion
+  tokens, 112,128 cached. Claude Code itself was not run (its bundled CLI was
+  not logged in), and Cursor, VS Code, Gemini CLI, Junie and Windsurf were
+  checked at the configuration level only.
+
 ## 1.0.5 — 2026-11-23
 
 ### Slimmer core, fewer lost memories and faster processing
