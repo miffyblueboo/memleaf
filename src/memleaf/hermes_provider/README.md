@@ -24,6 +24,75 @@ remain separate. MCP lifecycle updates do not accept model-supplied source times
 trusted Python callers keep their explicit metadata API. Restart Hermes after
 upgrading to load the current Provider.
 
+## Setup when installed from the Hermes catalog
+
+The catalog installs the Hermes provider, not the separate Memleaf Core
+executable. The provider and Core must be compatible. For this plugin release,
+install Core 1.0.5 in a separate environment (not in the Hermes-managed Python
+environment):
+
+```sh
+pipx install memleaf==1.0.5
+memleaf init --no-hermes --no-model-discovery --defaults --vault /absolute/path/to/vault
+```
+
+Use the same Vault for the provider and the MCP entry. For a fresh Hermes profile,
+put the following in that profile's `memleaf.json` (default:
+`~/.hermes/memleaf.json`). Replace the paths with the actual absolute paths on
+the machine running Hermes. On Windows, use forward slashes in the JSON or
+escape backslashes.
+
+```json
+{
+  "vault": "/absolute/path/to/vault",
+  "command": "/absolute/path/to/memleaf-mcp",
+  "auto_process": false
+}
+```
+
+Add this entry under `mcp_servers` in the same profile's `config.yaml`.
+Merge it with any other entries; do not replace the configuration file.
+
+```yaml
+mcp_servers:
+  memleaf:
+    command: /absolute/path/to/memleaf-mcp
+    args: ["--vault", "/absolute/path/to/vault"]
+    enabled: true
+    lazy: true
+    idle_timeout_seconds: 60
+    tools:
+      exclude: [remember, update_memory]
+```
+
+Keep the server name `memleaf` so the provider can bind its MCP calls to the
+current Hermes turn. Excluding these two legacy tools leaves the source-bound
+`save_turn` route available. Then select the provider with `hermes memory setup`
+and choose **memleaf**, or run `hermes config set memory.provider memleaf`.
+Restart Hermes and check `hermes memory status` and `hermes mcp test memleaf`.
+
+If a standalone Memleaf install already occupies the same Hermes plugin
+directory, do not remove or overwrite it blindly. Back up the active profile
+configuration and Vault, keep using the same Vault, and review the catalog
+installation before replacing the old provider. Do not run the standalone
+`memleaf install` on a catalog-managed profile: it can copy provider files
+over the directory Hermes manages and its default model discovery can inspect
+host credential files.
+
+### Data and execution disclosure
+
+The provider starts the explicitly configured local `memleaf-mcp` process over
+stdio. The Vault holds Markdown memories and local capture/index state. Selecting
+Memleaf enables capture of eligible completed Hermes turns: visible user and
+assistant text, not hidden tool results or attachment bodies. The setup above
+leaves automatic processing off and does not discover host credentials. Basic
+search and read of existing memories do not need an inference model. Enabling
+processing with a separately configured cloud route sends eligible processing
+inputs to that endpoint; choose that route and its scope deliberately. No
+telemetry is enabled by this setup.
+
+## Standalone setup
+
 Hermes discovers this directory when it is installed as:
 
 ```text
