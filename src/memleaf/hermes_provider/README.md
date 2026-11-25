@@ -70,6 +70,9 @@ current Hermes turn. Excluding these two legacy tools leaves the source-bound
 `save_turn` route available. Then select the provider with `hermes memory setup`
 and choose **memleaf**, or run `hermes config set memory.provider memleaf`.
 Restart Hermes and check `hermes memory status` and `hermes mcp test memleaf`.
+If Hermes reports that the MCP Python SDK is missing, install Hermes MCP support
+through `hermes setup` and retry. The MCP connection test lists the server's
+advertised tools, not the assistant-visible set after tool exclusions.
 
 If a standalone Memleaf install already occupies the same Hermes plugin
 directory, do not remove or overwrite it blindly. Back up the active profile
