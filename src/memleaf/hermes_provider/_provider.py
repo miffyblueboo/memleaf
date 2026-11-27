@@ -29,84 +29,21 @@ def _capture_assistant_text(value: str) -> str:
                   flags=re.IGNORECASE)
 
 
-def _source_messages(messages: Any) -> Any:
-    """Use the host's durable transcript boundary, not its internal nudges.
-
-    Hermes may retain synthetic user/assistant rows while continuing after an
-    empty response. Its persistence contract excludes those rows. Follow that
-    exact host predicate rather than recognizing wording or scanning past a
-    real user. Hosts without this predicate retain the strict legacy boundary.
-    """
-    if not isinstance(messages, list):
-        return messages
-    try:
-        from agent.session_persistence import _is_ephemeral_scaffolding
-        return [row for row in messages if not _is_ephemeral_scaffolding(row)]
-    except (ImportError, AttributeError, TypeError, ValueError):
-        return messages
-
-
 def _assistant_source_matches(messages: Any, content: str) -> bool:
-    """Accept exact text or an exactly reconstructed native verifier footer.
+    """Accept only the exact final assistant text of the supplied transcript.
 
-    No generic prefix/suffix matching. Tool receipts are used only to check
-    Hermes' display transformation, never as message times or memory facts.
-    Unsupported host formats fail closed.
+    The provider relies only on Hermes' public MemoryProvider arguments, never
+    on private host modules. A reply the host transformed for display (for
+    example with an appended notice) or a transcript holding host scaffolding
+    rows is therefore not reconstructed: it fails closed, and callers keep
+    their unverified-source fallback instead of guessing.
     """
     if not isinstance(messages, list) or not messages:
         return False
     final = messages[-1]
     if not isinstance(final, Mapping) or final.get("role") != "assistant" or final.get("tool_calls"):
         return False
-    raw = final.get("content")
-    if raw == content:
-        return True
-    if not isinstance(raw, str) or not raw.strip():
-        return False
-    try:
-        from agent.turn_explainers import TurnExplainersMixin
-        from agent.tool_dispatch_helpers import _extract_error_preview, _extract_file_mutation_targets
-        from agent.tool_result_classification import file_mutation_result_landed
-        # The last real user bounds the supported single-message legacy turn.
-        anchor = max(i for i, row in enumerate(messages[:-1])
-                     if isinstance(row, Mapping) and row.get("role") == "user")
-        tail = messages[anchor:-1]
-        calls, results = _visible_tool_calls(tail), _visible_tool_results(tail)
-        failed = {}
-        for call in calls:
-            name, args = call.get("name"), call.get("arguments")
-            if name not in {"write_file", "patch"} or not isinstance(args, Mapping):
-                continue
-            matches = [row for row in results if call.get("call_id")
-                       and row.get("call_id") == call["call_id"]]
-            if not matches:
-                # Hermes' persisted transcript can omit tool_call_id. Accept
-                # only one call immediately followed by its named tool row.
-                for index, row in enumerate(tail[:-1]):
-                    row_calls = _visible_tool_calls([row])
-                    following = tail[index + 1]
-                    if (len(row_calls) == 1 and row_calls[0] == call
-                            and isinstance(following, Mapping) and following.get("role") == "tool"
-                            and not following.get("tool_call_id")
-                            and following.get("name", following.get("tool_name")) == name):
-                        matches.append({"payload": following.get("content")})
-            if len(matches) != 1:
-                return False
-            payload = matches[0]["payload"]
-            decoded = _decode_tool_value(payload)
-            if not isinstance(decoded, Mapping):
-                return False
-            targets = _extract_file_mutation_targets(name, dict(args))
-            if decoded.get("error") and not file_mutation_result_landed(name, payload):
-                for path in targets:
-                    failed.setdefault(path, {"tool": name, "error_preview": _extract_error_preview(payload)})
-            else:
-                for path in targets:
-                    failed.pop(path, None)
-        footer = TurnExplainersMixin._format_file_mutation_failure_footer(failed)
-        return bool(footer) and content == raw.rstrip() + "\n\n" + footer
-    except (ImportError, AttributeError, TypeError, ValueError, KeyError):
-        return False
+    return final.get("content") == content
 
 
 def _legacy_correction_users(messages: Any, merged: str) -> Optional[list[Mapping[str, Any]]]:
@@ -180,7 +117,6 @@ def _sync_source_metadata(messages: Any, user_content: str, assistant_content: s
     from datetime import datetime
     from math import isfinite
 
-    messages = _source_messages(messages)
     if not isinstance(messages, list) or not messages:
         logger.info("memleaf source-metadata reason=messages_missing")
         return {}
@@ -1957,7 +1893,7 @@ class MemleafMemoryProvider(MemoryProvider):
         # Snapshot the list at invocation; subsequent tool/turn appends cannot
         # change which source rows this callback verifies.
         import copy
-        messages = _source_messages(copy.deepcopy(messages))
+        messages = copy.deepcopy(messages)
         # Hermes serializes provider sync work, but this lock also protects
         # direct/plugin-level concurrent calls and makes process one-shot per
         # captured turn within this provider instance.
@@ -2109,7 +2045,16 @@ class MemleafMemoryProvider(MemoryProvider):
 
     def bind_external_tool_call(self, tool_name: str, args: Dict[str, Any], *,
                                 turn_context: Any = None, tool_call_id: str = "") -> Optional[Dict[str, Any]]:
-        """Bind the existing MCP surface at the trusted host dispatch boundary."""
+        """Opt-in host hook; stock Hermes never calls it.
+
+        Only a Hermes host carrying ``integrations/hermes/host-contract.patch``
+        from the Memleaf repository calls this, at its trusted tool-dispatch
+        boundary, to bind ``mcp__memleaf__*`` arguments to the host turn
+        identity. Without that patch it is inert: MCP calls run unbound, its
+        only state (``_bound_retrieval_calls``) stays empty, and the sync-time
+        retrieval observer reads the visible call arguments instead. Kept for
+        patched hosts; it is not part of the public Hermes provider contract.
+        """
         prefix = "mcp__memleaf__"
         if not tool_name.startswith(prefix):
             return None

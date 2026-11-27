@@ -24,6 +24,13 @@ remain separate. MCP lifecycle updates do not accept model-supplied source times
 trusted Python callers keep their explicit metadata API. Restart Hermes after
 upgrading to load the current Provider.
 
+The provider imports only Hermes' public `agent.memory_provider` interface. It
+accepts an assistant source only when the final transcript row equals the
+reply text exactly; a reply that Hermes changed for display keeps its capture
+but is recorded without a verified assistant source. `bind_external_tool_call`
+is an opt-in hook used only by hosts that apply this repository's
+`integrations/hermes/host-contract.patch`; stock Hermes does not call it.
+
 ## Setup when installed from the Hermes catalog
 
 The catalog installs the Hermes provider, not the separate Memleaf Core
