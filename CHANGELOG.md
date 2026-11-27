@@ -2,7 +2,7 @@
 
 All notable changes to memleaf are documented here.
 
-## 1.1.1 — Unreleased
+## 1.1.1 — 2026-11-27
 
 ### Hermes provider
 
@@ -11,7 +11,8 @@ All notable changes to memleaf are documented here.
   paths, HTTP proxy and CA bundle settings) and, only when the Vault's
   `llm.api_key_env` names one, that single model key variable. Other Hermes
   environment variables, including unrelated API keys and tokens, are no longer
-  inherited.
+  inherited. The provider uses the same YAML parser as Core so existing
+  supported config formats can still supply the configured key.
 - The provider/core mismatch warning no longer suggests
   `python -m memleaf install`, which overwrites a catalog-managed plugin. It
   points to a matching Core install and `hermes plugins update memleaf`.

@@ -16,7 +16,7 @@ from collections.abc import Mapping
 BUILD_META = "io.memleaf/provider-build"
 BUILD_SCHEMA = 1
 PROVIDER_FILES = ("__init__.py", "_shared.py", "_mcp_client.py", "_provider.py",
-                  "evidence_budget.py", "provider_compatibility.py", "plugin.yaml")
+                  "evidence_budget.py", "frontmatter.py", "provider_compatibility.py", "plugin.yaml")
 MAX_FILE_BYTES = 512 * 1024
 MAX_BUNDLE_BYTES = 2 * 1024 * 1024
 READ_ONLY_TOOLS = frozenset({"stats", "process_status", "scope_catalog", "search",

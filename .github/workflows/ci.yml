@@ -33,10 +33,10 @@ jobs:
       - name: Check source syntax
         run: python -m compileall -q src
       - name: Check Hermes provider copies match Core
-        # The provider is installed as a self-contained plugin, so these two
+        # The provider is installed as a self-contained plugin, so these
         # modules are vendored copies; they must never drift from Core.
         run: |
-          for name in provider_compatibility evidence_budget; do
+          for name in provider_compatibility evidence_budget frontmatter; do
             cmp "src/memleaf/${name}.py" "src/memleaf/hermes_provider/${name}.py"
           done
       - name: Build wheel and source distribution once

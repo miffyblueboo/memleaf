@@ -27,6 +27,20 @@ from typing import Any, Deque, Dict, List, Mapping, Optional, Tuple
 from agent.memory_provider import MemoryProvider, RecallStatus
 
 try:
+    from .frontmatter import FrontmatterError, load_yaml
+except (ImportError, ValueError):
+    _YAML_SPEC = importlib.util.spec_from_file_location(
+        "_memleaf_hermes_frontmatter", Path(__file__).with_name("frontmatter.py"),
+    )
+    if _YAML_SPEC is None or _YAML_SPEC.loader is None:
+        raise ImportError("Hermes Vault YAML reader is unavailable")
+    _YAML_MODULE = importlib.util.module_from_spec(_YAML_SPEC)
+    sys.modules[_YAML_SPEC.name] = _YAML_MODULE
+    _YAML_SPEC.loader.exec_module(_YAML_MODULE)
+    FrontmatterError = _YAML_MODULE.FrontmatterError
+    load_yaml = _YAML_MODULE.load_yaml
+
+try:
     from .evidence_budget import apply_evidence_budget
 except (ImportError, ValueError):
     # Hermes installs this file as a standalone plugin directory.  Load the

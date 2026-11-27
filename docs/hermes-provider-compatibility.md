@@ -7,8 +7,8 @@ extraction prompt, model allowance, default pipelines or package version.
 
 ## Existing boundary, not a new memory pipeline
 
-The seven fixed resources are `__init__.py`, `_shared.py`, `_mcp_client.py`,
-`_provider.py`, `evidence_budget.py`, `provider_compatibility.py`, and `plugin.yaml`.
+The fixed resources are `__init__.py`, `_shared.py`, `_mcp_client.py`, `_provider.py`,
+`evidence_budget.py`, `frontmatter.py`, `provider_compatibility.py`, and `plugin.yaml`.
 README text, bytecode caches and local paths do not define the bundle identity.
 Core and the standalone directory use identical standard-library-only identity
 helpers. The helper does not import Hermes or initialize/read a Vault.
