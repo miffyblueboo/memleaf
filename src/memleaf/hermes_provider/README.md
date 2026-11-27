@@ -27,12 +27,14 @@ upgrading to load the current Provider.
 ## Setup when installed from the Hermes catalog
 
 The catalog installs the Hermes provider, not the separate Memleaf Core
-executable. The provider and Core must be compatible. For this plugin release,
-install Core 1.0.5 in a separate environment (not in the Hermes-managed Python
-environment):
+executable. Core allows provider writes only when the Provider build packaged
+in Core (`memleaf-mcp --provider-build`) matches these plugin files; otherwise
+capture and processing are blocked and only search and read work. Install the
+Core release with the same version as this plugin's `plugin.yaml`, in a
+separate environment (not in the Hermes-managed Python environment):
 
 ```sh
-pipx install memleaf==1.0.5
+pipx install "memleaf==<plugin.yaml version>"
 memleaf init --no-hermes --no-model-discovery --defaults --vault /absolute/path/to/vault
 ```
 
@@ -82,10 +84,28 @@ installation before replacing the old provider. Do not run the standalone
 over the directory Hermes manages and its default model discovery can inspect
 host credential files.
 
+### Updating a catalog install
+
+Update Core and the plugin separately, then restart Hermes:
+
+```sh
+pipx install --force "memleaf==<new plugin.yaml version>"
+hermes plugins update memleaf
+```
+
+Do not use `python -m pip install -U memleaf && python -m memleaf install` for
+a catalog-managed plugin; the second command overwrites the plugin directory.
+If Hermes logs a provider/core mismatch, writes stay blocked until both sides
+match again.
+
 ### Data and execution disclosure
 
 The provider starts the explicitly configured local `memleaf-mcp` process over
-stdio. The Vault holds Markdown memories and local capture/index state. Selecting
+stdio with a minimal environment: basic system variables (path, home,
+locale, time zone, temporary directory, Windows system paths, HTTP proxy and
+CA bundle settings) plus, only when the Vault's `llm.api_key_env` names one,
+that single model key variable. Other Hermes environment variables are not
+passed. The Vault holds Markdown memories and local capture/index state. Selecting
 Memleaf enables capture of eligible completed Hermes turns: visible user and
 assistant text, not hidden tool results or attachment bodies. The setup above
 leaves automatic processing off and does not discover host credentials. Basic

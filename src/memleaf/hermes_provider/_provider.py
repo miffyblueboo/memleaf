@@ -1086,10 +1086,10 @@ class MemleafMemoryProvider(MemoryProvider):
                 logger.warning(
                     "memleaf provider/core version check unavailable "
                     "(provider=%s core=%s); do not assume they are synchronized. "
-                    "Run: %s",
+                    "To update: %s",
                     provider_version or "unknown",
                     core_version or "unknown",
-                    _UPDATE_COMMAND,
+                    _UPDATE_GUIDANCE,
                 )
                 self._version_warning_emitted = True
             return
@@ -1098,10 +1098,10 @@ class MemleafMemoryProvider(MemoryProvider):
         if not self._version_warning_emitted:
             logger.warning(
                 "memleaf provider/core version mismatch (provider=%s core=%s). "
-                "Run: %s",
+                "To update: %s",
                 provider_version,
                 core_version,
-                _UPDATE_COMMAND,
+                _UPDATE_GUIDANCE,
             )
             self._version_warning_emitted = True
 

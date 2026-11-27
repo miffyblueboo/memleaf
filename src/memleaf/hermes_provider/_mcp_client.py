@@ -19,6 +19,83 @@ except (ImportError, ValueError):
         _spec.loader.exec_module(_module)
     globals().update({name: getattr(_module, name) for name in getattr(_module, "__all__", ())})
 
+# The stdio child, its Python runtime and its process-job worker read only
+# these host variables. Hermes keeps every other key, token and setting.
+# MEMLEAF_VAULT is not needed: the Vault is always passed as --vault.
+_MCP_CHILD_ENV_NAMES = (
+    "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP",
+    # Windows: CPython runtime initialization and Path.home().
+    "SYSTEMROOT", "WINDIR", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+    # urllib model transport: proxy routing and CA bundle location.
+    "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR",
+)
+_ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_YAML_NULLS = frozenset({"", "~", "null", "Null", "NULL"})
+
+
+def _yaml_scalar_text(raw: str) -> Optional[str]:
+    """Decode one single-line YAML scalar; anything unclear is unknown."""
+    text = raw.strip()
+    double = re.fullmatch(r'"((?:[^"\\]|\\.)*)"\s*(?:#.*)?', text)
+    if double:
+        try:
+            return json.loads('"' + double.group(1) + '"')
+        except ValueError:
+            return None
+    single = re.fullmatch(r"'((?:[^']|'')*)'\s*(?:#.*)?", text)
+    if single:
+        return single.group(1).replace("''", "'")
+    if text[:1] in {"'", '"', "{", "[", "|", ">", "&", "*", "!"}:
+        return None
+    plain = re.split(r"\s#", text, maxsplit=1)[0].strip()
+    return None if plain in _YAML_NULLS else plain
+
+
+def _vault_api_key_env(vault: Path) -> Optional[str]:
+    """Return ``llm.api_key_env`` only when the Vault config states it once.
+
+    The copied provider cannot import Core's YAML reader. It reads just this
+    block-style key; any other shape leaves the model key name unknown, so no
+    key is passed and Core reports the model route as unavailable.
+    """
+    try:
+        text = (vault / "config.yaml").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    llm_blocks, values, in_llm = 0, [], False
+    for raw in text.splitlines():
+        raw = raw.lstrip("\ufeff")
+        content = raw.strip()
+        if not content or content.startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        key, separator, rest = content.partition(":")
+        if indent == 0:
+            in_llm = bool(separator) and key == "llm"
+            if in_llm:
+                llm_blocks += 1
+                if _yaml_scalar_text(rest) is not None:
+                    return None
+            continue
+        if in_llm and indent == 2 and separator and key == "api_key_env":
+            values.append(rest)
+    if llm_blocks != 1 or len(values) != 1:
+        return None
+    name = _yaml_scalar_text(values[0])
+    return name if name and _ENV_NAME_RE.match(name) else None
+
+
+def _mcp_child_environment(vault: Path, source: Optional[Mapping[str, str]] = None) -> dict[str, str]:
+    """Build the MCP child environment from an allowlist, never a host copy."""
+    source = os.environ if source is None else source
+    environment = {name: source[name] for name in _MCP_CHILD_ENV_NAMES if name in source}
+    key_name = _vault_api_key_env(vault)
+    if key_name is not None and key_name in source:
+        environment[key_name] = source[key_name]
+    return environment
+
+
 class _MCPClient:
     """Small synchronous JSON-RPC client for memleaf's stdio MCP server."""
 
@@ -99,8 +176,10 @@ class _MCPClient:
         if self._process is not None and self._process.poll() is None:
             return
         self._close_locked()
+        vault = Path(self.vault).expanduser().resolve()
         self._process = subprocess.Popen(
-            [self._resolve_command(), "--vault", str(Path(self.vault).expanduser().resolve())],
+            [self._resolve_command(), "--vault", str(vault)],
+            env=_mcp_child_environment(vault),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,

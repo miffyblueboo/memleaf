@@ -141,6 +141,8 @@ python -m pip install -U memleaf && python -m memleaf install
 
 Do not run only `pip install -U memleaf`; that upgrades the core package but does not refresh the Provider under `~/.hermes/plugins/memleaf`.
 
+These commands apply only to standalone installs. If the Provider was installed from the Hermes plugin catalog, do not run `python -m memleaf install` (it overwrites the catalog-managed plugin); install the matching Memleaf Core separately and update the plugin with `hermes plugins update memleaf`. See the [Provider guide](src/memleaf/hermes_provider/README.md).
+
 Upgrades do not migrate or delete existing memories. Vault selection has a fixed precedence:
 
 1. an explicit `--vault` supplied for this run;

@@ -71,7 +71,13 @@ _DEFAULT_TIMEOUT = 5.0
 _MAX_TIMEOUT = 30.0
 _DEFAULT_PROCESS_TIMEOUT = 300.0
 _MAX_PROCESS_TIMEOUT = 900.0
-_UPDATE_COMMAND = "python -m pip install -U memleaf && python -m memleaf install"
+# Never point at the standalone installer here: it copies provider files over
+# a plugin directory that the Hermes catalog manages.
+_UPDATE_GUIDANCE = (
+    "install the Memleaf Core release whose `memleaf-mcp --provider-build` "
+    "matches this provider, in its own environment; update a catalog-installed "
+    "provider with `hermes plugins update memleaf`; then restart Hermes"
+)
 _MAX_SCOPE_ITEMS = 20
 _MAX_SCOPE_CHARS = 2000
 _SCOPE_MAP_INCOMPLETE = (

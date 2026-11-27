@@ -141,6 +141,8 @@ python -m pip install -U memleaf && python -m memleaf install
 
 不要只执行 `pip install -U memleaf`；那只会升级核心包，不会刷新 `~/.hermes/plugins/memleaf` 中的 Provider。
 
+以上命令只适用于独立安装。若 Provider 是从 Hermes 插件目录安装的，不要执行 `python -m memleaf install`（它会覆盖目录管理的插件），请单独安装与插件匹配的 Memleaf Core，并用 `hermes plugins update memleaf` 更新插件，详见 [Provider 说明](src/memleaf/hermes_provider/README.md)。
+
 升级时不会迁移或删除现有记忆。Vault 选择顺序固定为：
 
 1. 用户本次明确传入的 `--vault`；
