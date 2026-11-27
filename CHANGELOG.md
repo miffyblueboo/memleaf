@@ -2,6 +2,11 @@
 
 All notable changes to memleaf are documented here.
 
+## 1.1.2 — 2026-11-27
+
+- Native Hermes and Codex model-profile installs reject `--dry-run` before
+  writing any files. MCP installs and `install --all` still support previews.
+
 ## 1.1.1 — 2026-11-27
 
 ### Hermes provider

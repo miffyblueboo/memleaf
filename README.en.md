@@ -4,7 +4,7 @@
 
 [中文](README.md) · [PyPI](https://pypi.org/project/memleaf/) · [GitHub](https://github.com/miffyblueboo/memleaf)
 
-> **Stable release 1.1.1** supports native Hermes integration and host-profile MCP integration for Codex and other supported agents. See the [stability policy](docs/stability.md) for compatibility scope.
+> **Stable release 1.1.2** supports native Hermes integration and host-profile MCP integration for Codex and other supported agents. See the [stability policy](docs/stability.md) for compatibility scope.
 > **Codex can complete the memory workflow with its current host model through `--profile host`, without a separate Memleaf model API key.** A local Owner still configures client identity, permissions and source trust. Clients invoke the tools deliberately; this does not enable automatic memory on every turn.
 > The host profile supports `actionable` independently of content type and structured `waiting_on`, with at most three accepted submits per work by default. Memleaf validates, persists and recovers deterministically.
 > The default `model` profile and native Hermes integration retain their independent Model Route and shared five-request extraction/review budget. Existing interfaces, memories and default entry points remain; no formal Vault migration is required. Antigravity is not supported.
@@ -185,7 +185,7 @@ Use `--host` for a single agent:
 python -m memleaf install --host claude-code
 ```
 
-Values: `claude-code`, `codex`, `cursor`, `vscode` (Copilot), `gemini`, `junie`, `windsurf` (including Devin Desktop), `claude-desktop`, `hermes`. Add `--dry-run` to report the planned changes without writing anything.
+Values: `claude-code`, `codex`, `cursor`, `vscode` (Copilot), `gemini`, `junie`, `windsurf` (including Devin Desktop), `claude-desktop`, `hermes`. Add `--dry-run` to report the planned changes without writing anything; the native Hermes install and Codex `--profile model` have no preview, so `--dry-run` there exits with an error before changing anything.
 
 - Each agent gets its own local credential (`<vault>/_state/host_credentials/<agent>.token`, mode `0600`) that `memleaf host-revoke` can revoke individually; installing means trusting these local agents to submit their visible conversation faithfully.
 - Only an entry named `memleaf` is added or updated; other MCP servers are untouched and the previous file is kept as `*.memleaf-backup`. A `memleaf` entry this installer did not create, an unparsable config file or a symlink is reported and left unchanged.

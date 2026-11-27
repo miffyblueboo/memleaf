@@ -72,7 +72,8 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--all", action="store_true",
                          help="scan for local agents and install into every one found (Hermes natively, others via MCP)")
     install.add_argument("--dry-run", action="store_true",
-                         help="with --all or an MCP agent: report what would change without writing anything")
+                         help="with --all or an MCP agent: report what would change without writing anything; "
+                              "rejected for the native Hermes install and the Codex model profile")
     install.add_argument("--profile", choices=("host", "model"), default=None,
                          help="Codex only: host (MCP, uses Codex's own model) or model (legacy hooks and memleaf model route); "
                               "default keeps an existing model-profile setup, otherwise host")
@@ -159,7 +160,7 @@ def _format_command(command: Sequence[object]) -> str:
     return subprocess.list2cmdline(values) if os.name == "nt" else shlex.join(values)
 
 
-def _print_install_failure(output: dict, *, host: str) -> None:
+def _print_install_failure(output: dict, *, host: str, dry_run: bool) -> None:
     print(
         f"memleaf install failed: {output.get('reason', 'unknown error')}",
         file=sys.stderr,
@@ -241,6 +242,8 @@ def _print_install_failure(output: dict, *, host: str) -> None:
             if isinstance(command, list) and command:
                 print(f"  {_format_command(command)}", file=sys.stderr)
 
+    if dry_run:
+        return
     diagnostic = ["python", "-m", "memleaf", "install", "--host", host]
     if host == "hermes" and isinstance(runtime, dict):
         policy = runtime.get("policy")
@@ -270,6 +273,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             if args.all or _uses_mcp_install(args):
                 output = _install_agents(args)
+            elif args.dry_run:
+                # The native Hermes and Codex model-profile installers have no
+                # preview mode; stop before any of them can write.
+                output = {
+                    "status": "failure",
+                    "stage": "arguments",
+                    "reason": (
+                        "--dry-run is not supported for the native Hermes install"
+                        if args.host == "hermes"
+                        else "--dry-run is not supported for the Codex model profile"
+                    ) + "; nothing was changed",
+                    "vault": str(args.vault) if args.vault is not None else None,
+                }
             elif args.host == "codex":
                 if args.mcp_runtime != "auto":
                     output = {
@@ -420,7 +436,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if output.get("user_action"):
                     print(f"  {output['user_action']}")
         else:
-            _print_install_failure(output, host=args.host)
+            _print_install_failure(output, host=args.host, dry_run=args.dry_run)
         return 0 if output.get("status") in {"configured", "already_configured"} else 2
     if args.json:
         print(json.dumps(output, ensure_ascii=False, sort_keys=True))
