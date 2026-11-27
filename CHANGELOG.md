@@ -2,6 +2,26 @@
 
 All notable changes to memleaf are documented here.
 
+## 1.1.1 — Unreleased
+
+### Hermes provider
+
+- The provider starts `memleaf-mcp` with a minimal environment: basic system
+  variables (path, home, locale, time zone, temporary directory, Windows system
+  paths, HTTP proxy and CA bundle settings) and, only when the Vault's
+  `llm.api_key_env` names one, that single model key variable. Other Hermes
+  environment variables, including unrelated API keys and tokens, are no longer
+  inherited.
+- The provider/core mismatch warning no longer suggests
+  `python -m memleaf install`, which overwrites a catalog-managed plugin. It
+  points to a matching Core install and `hermes plugins update memleaf`.
+- The provider imports only Hermes' public `agent.memory_provider` interface.
+  An assistant reply is a verified source only when it equals the final
+  transcript row exactly; a reply Hermes changed for display is still captured
+  without a verified assistant source.
+- `bind_external_tool_call` is documented as an opt-in hook for hosts that
+  apply `integrations/hermes/host-contract.patch`; stock Hermes does not call it.
+
 ## 1.1.0 — 2026-11-27
 
 ### One install for every MCP agent

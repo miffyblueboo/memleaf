@@ -30,6 +30,13 @@ scope. An internal protocol change may fence pending model responses and require
 an explicit recovery action; it must not silently reinterpret saved work, erase
 unresolved outcomes or reset consumed request budgets.
 
+## Upgrade to 1.1.1
+
+Version 1.1.1 changes only the Hermes provider: a minimal `memleaf-mcp` child
+environment, a catalog-safe update hint, and no private Hermes imports. Install
+Core and the provider at the same version and restart Hermes; a mismatched pair
+keeps search and read available and blocks writes.
+
 ## Upgrade to 1.1.0
 
 Version 1.1.0 adds `memleaf install --all` and per-agent MCP installation.
