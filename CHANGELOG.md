@@ -2,7 +2,7 @@
 
 All notable changes to memleaf are documented here.
 
-## Unreleased
+## 1.1.0 — 2026-11-27
 
 ### One install for every MCP agent
 

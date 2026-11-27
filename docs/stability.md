@@ -30,6 +30,14 @@ scope. An internal protocol change may fence pending model responses and require
 an explicit recovery action; it must not silently reinterpret saved work, erase
 unresolved outcomes or reset consumed request budgets.
 
+## Upgrade to 1.1.0
+
+Version 1.1.0 adds `memleaf install --all` and per-agent MCP installation.
+Hermes continues to use its native provider. Other supported clients use the
+host profile and receive separate credentials for the shared Vault. Existing
+Codex model-profile hook setups are preserved. Restart configured clients to
+load the updated MCP tools.
+
 ## Upgrade to 1.0.5
 
 The 1.0.5 release preserves the 1.0.0 public interfaces, existing Model Routes,
